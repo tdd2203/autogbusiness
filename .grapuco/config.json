@@ -1,0 +1,23 @@
+{
+  "repoId": "29b280df-5bfc-45ca-bc81-1ffea792328c",
+  "repoName": "AutoGPT",
+  "server": "https://api.grapuco.com",
+  "language": "python",
+  "features": {
+    "embeddings": true,
+    "dataFlowAnalysis": true
+  },
+  "ignore": [
+    "node_modules",
+    "dist",
+    ".next",
+    ".git",
+    ".grapuco",
+    "__pycache__",
+    "vendor",
+    "target",
+    "build"
+  ],
+  "workspaceId": "55b4725a-6d48-4b23-af6d-1293f071891f",
+  "workspaceName": "autogpt"
+}

@@ -1,0 +1,89 @@
+from collections.abc import Iterator
+from uuid import UUID
+
+from fastapi import Depends, Header, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
+
+from sqlalchemy import select
+
+from app.db import get_db
+from app.models import User, Workspace
+from app.permissions import Permission
+from app.security import decode_access_token
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+
+
+def get_session() -> Iterator[Session]:
+    yield from get_db()
+
+
+def get_current_user(
+    token: str | None = Depends(oauth2_scheme),
+    db: Session = Depends(get_session),
+) -> User:
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token")
+    try:
+        payload = decode_access_token(token)
+        user_id = UUID(payload["sub"])
+        token_version = int(payload.get("tv", -1))
+    except (ValueError, KeyError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+        ) from e
+    user = db.get(User, user_id)
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="User inactive or not found"
+        )
+    if token_version != user.token_version:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token đã bị thu hồi, vui lòng đăng nhập lại",
+        )
+    return user
+
+
+def require_permission(perm: Permission):
+    """Dependency factory: require `perm` (super-admin luôn pass)."""
+
+    def _checker(user: User = Depends(get_current_user)) -> User:
+        if user.is_super_admin:
+            return user
+        if perm.value not in (user.permissions or []):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Thiếu permission: {perm.value}",
+            )
+        return user
+
+    return _checker
+
+
+def require_super_admin(user: User = Depends(get_current_user)) -> User:
+    if not user.is_super_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Chỉ super-admin được phép"
+        )
+    return user
+
+
+def require_extension_workspace(
+    x_api_key: str | None = Header(default=None),
+    db: Session = Depends(get_session),
+) -> Workspace:
+    """Extension auth: tra X-API-KEY → workspace tương ứng. 401 nếu không khớp."""
+    if not x_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing X-API-KEY header"
+        )
+    workspace = db.execute(
+        select(Workspace).where(Workspace.extension_api_key == x_api_key)
+    ).scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key"
+        )
+    return workspace
