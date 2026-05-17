@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.3.6";
+export const VERSION = "0.3.17";
 
 export type ChangelogEntry = {
   version: string;
@@ -28,6 +28,140 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.3.17",
+    date: "2026-05-17",
+    kind: "fix",
+    summary: "SYNC_BILLING click tab thay vì URL — fix UI_ELEMENT_NOT_FOUND khi ?tab=invoices sticky",
+    details: [
+      "Bug v0.3.16: history.pushState('/admin/billing') không reset tab về Kế hoạch — ChatGPT giữ ?tab=invoices sticky → seat scrape fail trên trang Hoá đơn → UI_ELEMENT_NOT_FOUND",
+      "Fix: click button 'Kế hoạch' rồi 'Hoá đơn' theo text — không phụ thuộc URL query",
+      "Nới yêu cầu fail: chỉ trả UI_ELEMENT_NOT_FOUND khi CẢ seat lẫn invoices đều rỗng. Partial data (vd có invoices mà thiếu seat) vẫn push lên backend",
+      "Progress message rõ hơn 2 phase: 'Đang đọc tab Kế hoạch' → 'Đang đọc tab Hoá đơn'",
+    ],
+  },
+  {
+    version: "0.3.16",
+    date: "2026-05-17",
+    kind: "fix",
+    summary: "SYNC_BILLING navigate sang ?tab=invoices để scrape giá per-slot từ bảng Hoá đơn",
+    details: [
+      "Bug: ChatGPT đặt list hoá đơn ở /admin/billing?tab=invoices (tab riêng), không phải trên trang summary mặc định → trước đây invoices array luôn rỗng",
+      "Fix sync-billing 2 bước: (1) /admin/billing scrape seat/plan/renewal cycle (text 'Chu kỳ hiện tại: 11 thg 5 - 11 thg 6'); (2) /admin/billing?tab=invoices scrape list hoá đơn",
+      "Merge kết quả: giữ field nào có giá trị, ưu tiên step 2 cho invoices",
+    ],
+  },
+  {
+    version: "0.3.15",
+    date: "2026-05-17",
+    kind: "fix",
+    summary: "FIX THẬT scrape email — dùng TreeWalker SHOW_TEXT thay vì children.length",
+    details: [
+      "Bug v0.3.13: ChatGPT đôi khi render email là TEXT NODE TRỰC TIẾP cạnh <span>avatar</span> trong cùng div (mixed content). Code cũ kiểm tra el.children.length===0 sẽ skip vì element có 1 child <span> → fallback regex greedy lại nuốt 'D'+'dhealth.220' → email sai",
+      "Fix: dùng TreeWalker(SHOW_TEXT) walk text nodes trực tiếp. Mỗi text node là 1 string độc lập, email luôn tách khỏi avatar text node bên cạnh",
+      "Cùng cách áp dụng cho name + joined_at (findNameInRow, findJoinedAtInRow)",
+    ],
+  },
+  {
+    version: "0.3.14",
+    date: "2026-05-17",
+    kind: "feature",
+    summary: "SYNC_BILLING scrape thêm lịch sử hoá đơn — dashboard tính giá per-slot hôm nay",
+    details: [
+      "Bug nghiệp vụ: per-slot price prorated theo days_remaining_until_renewal — giảm dần từng ngày. Admin cần biết giá hôm nay nếu thêm member mới",
+      "Scraper extension đọc bảng hoá đơn /admin/billing: extract list {date, amount_vnd, status}",
+      "Backend lưu billing_invoices JSONB (migration 0007), trả qua WorkspaceOut",
+      "Dashboard hiển thị bảng lịch sử + tính giá hôm nay = invoice gần nhất × (days_until_renewal_hôm_nay / days_until_renewal_lúc_đó)",
+    ],
+  },
+  {
+    version: "0.3.13",
+    date: "2026-05-17",
+    kind: "fix",
+    summary: "Fix scrape email/name sai do regex greedy nuốt name avatar — thêm Ngày thêm",
+    details: [
+      "Bug nghiêm trọng: row ChatGPT render 'D dhealth.220@gmail.com' (avatar + tên + email). row.textContent = 'Ddhealth.220@gmail.com' → regex greedy match toàn bộ → email sai 'Ddhealth.220@gmail.com' thay vì 'dhealth.220@gmail.com'",
+      "Hậu quả: backend tạo records mới với email sai (dddhealth, nkieutanthanh, hhaisocialwork...) → dhealth thật giữ trạng thái pending; name/role NULL vì không match được Member record",
+      "Fix scrape:",
+      "- findEmailLeaf: tìm element leaf có textContent ĐÚNG là email format (không nuốt name)",
+      "- findNameLeaf: walk up từ email element tìm leaf khác (không phải email/date/role/license) làm name",
+      "- findJoinedAtLeaf: parse 'DD thg M, YYYY' từ cột Ngày thêm trên ChatGPT → ISO date",
+      "- ScrapedMember nhận thêm field optional joined_at",
+    ],
+  },
+  {
+    version: "0.3.12",
+    date: "2026-05-17",
+    kind: "fix",
+    summary: "Drain pending tasks ngay sau SSE subscribe — fix task tạo lúc disconnect bị miss",
+    details: [
+      "Bug: nếu user tạo task TRONG LÚC SSE đang disconnect (vd backend restart, network glitch), task nằm PENDING trong DB nhưng SSE event task-available bị mất (SSE không replay history)",
+      "Hậu quả: extension subscribe lại OK nhưng không biết có task đang chờ → task treo cho tới khi fast-poll 5s kế tiếp đụng tới (hoặc backup alarm 60s)",
+      "Fix: ngay sau khi SSE subscribe thành công → gọi runUntilIdle() 1 lần để drain mọi task PENDING còn sót. Idempotent với fast-poll/alarms (có lock in-flight)",
+    ],
+  },
+  {
+    version: "0.3.11",
+    date: "2026-05-17",
+    kind: "fix",
+    summary: "Fix reinject path sai sau build — đọc manifest runtime thay vì hardcode src/.ts",
+    details: [
+      "Bug: chrome.scripting.executeScript({files: ['src/content/dashboard-bridge.ts']}) thất bại với 'Không thể tải tệp' sau build, vì vite rename thành assets/dashboard-bridge.ts-loader-<hash>.js (hash đổi mỗi build)",
+      "Cùng bug ở runner.ts ensureContentInjected — file 'src/content/index.ts' không tồn tại trong dist",
+      "Fix: lookup content_scripts trong chrome.runtime.getManifest() để lấy đúng bundled path. Match theo URL pattern (':5173/' cho dashboard-bridge, 'chatgpt.com/admin' cho content)",
+    ],
+  },
+  {
+    version: "0.3.10",
+    date: "2026-05-17",
+    kind: "feature",
+    summary: "SYNC chọn scope (include_pending) + rogue invite detection + revoke batch action + invite skip role click khi member",
+    details: [
+      "SYNC_DATA payload nhận include_pending (default true). Nếu false → chỉ scrape tab 'Người dùng', bỏ qua 'Lời mời' + 'Yêu cầu' (~3x nhanh)",
+      "bulk_upsert nhận scraped_statuses → backend chỉ reconcile (mark removed) status trong scope đã scrape; tránh wipe pending khi user chọn sync chỉ active",
+      "Rogue invite detection: backend trả rogue_pending_emails (invite trên ChatGPT mà KHÔNG có Member record trong DB hoặc record status=removed) → đẩy vào task.result",
+      "New action REVOKE_INVITES + revoke-invite.ts: click ... menu → 'Thu hồi lời mời' → confirm. Batch handler navigate /admin/members?tab=invites trước khi loop",
+      "New backend endpoint POST /workspaces/{wid}/revoke-invites — dashboard queue REVOKE_INVITES task sau khi admin xác nhận rogue list",
+      "Invite: nếu role='member' (default) thì SKIP click role select — giảm pattern bot, nhanh hơn",
+    ],
+  },
+  {
+    version: "0.3.9",
+    date: "2026-05-17",
+    kind: "feature",
+    summary: "INVITE_MEMBER tự bật 'Cho phép lời mời từ miền bên ngoài' trước invite, tự tắt sau khi xong",
+    details: [
+      "Bug bảo mật: nếu để toggle 'Cho phép lời mời từ miền bên ngoài' ở ON lâu dài, mọi member workspace có thể tự mời email từ bất kỳ domain → rất rủi ro",
+      "Yêu cầu: dashboard mời được email ngoài domain, nhưng toggle phải về OFF ngay sau invite",
+      "Fix: helper withExternalInvitesEnabled() — navigate /admin/identity, đọc state toggle, bật ON nếu OFF, navigate về /admin/members, chạy invite, navigate về /admin/identity tắt lại (try/finally đảm bảo restore kể cả khi invite fail)",
+      "Selectors toggle heuristic: button[role='switch'] hoặc input[type='checkbox'] có label text 'Cho phép lời mời từ miền bên ngoài' / 'external'. Fallback aria-checked + data-state cho Radix UI",
+      "Nếu không control được toggle → vẫn chạy invite + warn log, không phá flow",
+    ],
+  },
+  {
+    version: "0.3.8",
+    date: "2026-05-17",
+    kind: "feature",
+    summary: "Auto-mở admin tab khi nhận task mà không có tab chatgpt.com/admin/*",
+    details: [
+      "Trước: nếu user không mở sẵn chatgpt.com/admin → task FAILED với NOT_LOGGED_IN_CHATGPT, bắt user mở tab thủ công",
+      "Sau: runner tự tabs.create({url: 'chatgpt.com/admin/members', active: false}) (background tab, không steal focus), đợi tab load complete tối đa 30s, verify URL vẫn ở /admin",
+      "Chỉ trả NOT_LOGGED_IN_CHATGPT khi tab tự mở bị redirect khỏi /admin (= chưa login ChatGPT)",
+      "Cộng thêm waitForTabComplete helper dùng chrome.tabs.onUpdated.status='complete'",
+    ],
+  },
+  {
+    version: "0.3.7",
+    date: "2026-05-17",
+    kind: "fix",
+    summary: "SYNC auto-navigate sang /admin/members — fix 'tab not found' khi admin tab đang ở /admin/billing",
+    details: [
+      "Bug: executeSync chỉ check pathname.includes('/admin') — pass cho cả /admin/billing, /admin/settings,...; tabs Người dùng/Lời mời/Yêu cầu chỉ tồn tại trên /admin/members",
+      "Triệu chứng: [autogpt-sync] tab not found cho cả 3 tab; fallback scrape DOM hiện tại đánh nhãn 'active' → DB chứa dữ liệu sai (vd: user dhealth đã bị xoá khỏi pending invites trên ChatGPT vẫn còn ở dashboard)",
+      "Fix: nếu pathname không phải /admin/members → history.pushState + dispatchEvent('popstate') để SPA Router điều hướng → poll tối đa 10s đợi tab 'Người dùng' render",
+      "Nếu sau 10s vẫn không tìm thấy tab → trả PAGE_NOT_ADMIN với hint mở /admin/members thủ công",
+    ],
+  },
   {
     version: "0.3.6",
     date: "2026-05-17",

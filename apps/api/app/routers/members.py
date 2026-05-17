@@ -262,13 +262,23 @@ def bulk_upsert_members(
     workspace.last_synced_at = now
 
     removed_count = 0
-    if body.is_full_sync and body.members:
+    # Xác định scope reconcile:
+    #   - Nếu body.scraped_statuses set → dùng list đó (chính xác per-sync)
+    #   - Else fallback body.is_full_sync: True → ['active','pending']; False → []
+    if body.scraped_statuses is not None:
+        scopes = tuple(body.scraped_statuses)
+    elif body.is_full_sync:
+        scopes = ("active", "pending")
+    else:
+        scopes = ()
+
+    if scopes and body.members:
         incoming_emails = {m.email.lower() for m in body.members}
         stale = (
             db.execute(
                 select(Member).where(
                     Member.workspace_id == workspace_id,
-                    Member.status == "active",
+                    Member.status.in_(scopes),
                     Member.email.notin_(incoming_emails),
                 )
             )
@@ -279,6 +289,30 @@ def bulk_upsert_members(
             m.status = "removed"
             m.last_synced_at = now
             removed_count += 1
+
+    # Rogue pending detection: nếu scrape "Lời mời" (pending) thấy email mà
+    # KHÔNG có Member record (hoặc record status='removed') → invite này không
+    # qua dashboard → trả về để extension auto-revoke trên ChatGPT.
+    rogue_pending_emails: list[str] = []
+    if scopes and "pending" in scopes:
+        # Tất cả pending emails từ scrape
+        scraped_pending = [
+            m.email.lower() for m in body.members if m.status == "pending"
+        ]
+        if scraped_pending:
+            existing_by_email = {
+                row.email.lower(): row
+                for row in db.execute(
+                    select(Member).where(
+                        Member.workspace_id == workspace_id,
+                        Member.email.in_(scraped_pending),
+                    )
+                ).scalars()
+            }
+            for email in scraped_pending:
+                row = existing_by_email.get(email)
+                if row is None or row.status == "removed":
+                    rogue_pending_emails.append(email)
 
     db.add(workspace)
     log_event(
@@ -304,6 +338,7 @@ def bulk_upsert_members(
         "updated": updated,
         "removed_missing": removed_count,
         "total": len(body.members),
+        "rogue_pending_emails": rogue_pending_emails,
     }
 
 

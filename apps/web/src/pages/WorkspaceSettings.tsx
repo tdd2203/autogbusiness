@@ -60,49 +60,56 @@ export default function WorkspaceSettings() {
   }
 
   return (
-    <div className="max-w-xl">
-      <h2 className="text-lg font-medium mb-4">{t("wsettings.title")}</h2>
-      <form onSubmit={onSubmit} className="bg-white rounded shadow p-5 space-y-4">
-        <div>
-          <label className="block text-sm font-medium mb-1">
-            {t("wsettings.rateInvite")}
-          </label>
+    <div style={{ maxWidth: 640 }}>
+      <form onSubmit={onSubmit} className="settings-section" style={{ marginBottom: 20 }}>
+        <h3 className="display-h3">{t("wsettings.title")}</h3>
+        <p
+          style={{
+            fontSize: 13,
+            color: "var(--ink-3)",
+            marginTop: 4,
+            marginBottom: 20,
+          }}
+        >
+          {t("settings.accountDesc")}
+        </p>
+        <div style={{ marginBottom: 16 }}>
+          <label className="form-label">{t("wsettings.rateInvite")}</label>
           <input
             type="number"
             min={0}
             max={600000}
             value={invite}
             onChange={(e) => setInvite(e.target.value)}
-            className="w-full border rounded px-3 py-2"
+            className="form-input"
           />
         </div>
-        <div>
-          <label className="block text-sm font-medium mb-1">
-            {t("wsettings.rateRole")}
-          </label>
+        <div style={{ marginBottom: 16 }}>
+          <label className="form-label">{t("wsettings.rateRole")}</label>
           <input
             type="number"
             min={0}
             max={600000}
             value={role}
             onChange={(e) => setRole(e.target.value)}
-            className="w-full border rounded px-3 py-2"
+            className="form-input"
           />
         </div>
-        <div>
-          <label className="block text-sm font-medium mb-1">
-            {t("wsettings.rateRemove")}
-          </label>
+        <div style={{ marginBottom: 16 }}>
+          <label className="form-label">{t("wsettings.rateRemove")}</label>
           <input
             type="number"
             min={0}
             max={600000}
             value={remove}
             onChange={(e) => setRemove(e.target.value)}
-            className="w-full border rounded px-3 py-2"
+            className="form-input"
           />
         </div>
-        <label className="flex items-center gap-2 text-sm">
+        <label
+          className="flex items-center"
+          style={{ gap: 8, fontSize: 13, marginBottom: 16 }}
+        >
           <input
             type="checkbox"
             checked={dryRun}
@@ -112,17 +119,16 @@ export default function WorkspaceSettings() {
         </label>
         {msg && (
           <div
-            className={`text-sm ${
-              msg.ok ? "text-emerald-700" : "text-rose-600"
-            }`}
+            style={{
+              fontSize: 13,
+              color: msg.ok ? "var(--success)" : "var(--danger)",
+              marginBottom: 12,
+            }}
           >
             {msg.text}
           </div>
         )}
-        <button
-          disabled={save.isPending}
-          className="bg-slate-900 text-white px-4 py-2 rounded disabled:opacity-60"
-        >
+        <button disabled={save.isPending} className="btn btn-primary">
           {save.isPending ? t("common.saving") : t("common.save")}
         </button>
       </form>

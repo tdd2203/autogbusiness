@@ -53,7 +53,12 @@ class ResetPasswordIn(BaseModel):
 
 # ---------- Queue ----------
 QueueType = Literal[
-    "INVITE_MEMBER", "REMOVE_MEMBER", "CHANGE_ROLE", "SYNC_DATA", "SYNC_BILLING"
+    "INVITE_MEMBER",
+    "REMOVE_MEMBER",
+    "CHANGE_ROLE",
+    "SYNC_DATA",
+    "SYNC_BILLING",
+    "REVOKE_INVITES",
 ]
 QueueStatus = Literal["PENDING", "IN_PROGRESS", "COMPLETED", "FAILED"]
 
@@ -135,8 +140,17 @@ class WorkspaceOut(BaseModel):
     billing_status: str | None
     renewal_date: datetime | None
     last_billing_synced_at: datetime | None
+    billing_invoices: list[dict] | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class BillingInvoice(BaseModel):
+    """Một dòng trong bảng "Hoá đơn" trên /admin/billing."""
+
+    date: datetime
+    amount_vnd: int = Field(ge=0)
+    status: str = Field(default="unknown", max_length=16)
 
 
 class BillingSyncIn(BaseModel):
@@ -150,6 +164,7 @@ class BillingSyncIn(BaseModel):
     seat_used: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)
     billing_status: BillingStatus | None = None
     renewal_date: datetime | None = None
+    invoices: list[BillingInvoice] | None = None
 
 
 class ExtensionInfoIn(BaseModel):
@@ -214,7 +229,13 @@ class MemberBulkUpsert(BaseModel):
     """Extension gọi sau khi scrape danh sách member của workspace."""
 
     members: list[MemberUpsert]
-    is_full_sync: bool = True  # nếu True, member không có trong list sẽ bị mark 'removed'
+    is_full_sync: bool = True  # legacy: True = reconcile active+pending; False = không reconcile
+    # Mới (override is_full_sync): liệt kê status nào đã scrape. Backend sẽ
+    # mark "removed" chỉ những member trong DB có status thuộc danh sách này
+    # mà KHÔNG xuất hiện trong scrape. Vd:
+    #   - sync 1 tab "Người dùng" → scraped_statuses=["active"] → chỉ reconcile active
+    #   - sync 3 tab → scraped_statuses=["active","pending"] → reconcile cả 2
+    scraped_statuses: list[Literal["active", "pending"]] | None = None
 
 
 class MemberInviteIn(BaseModel):

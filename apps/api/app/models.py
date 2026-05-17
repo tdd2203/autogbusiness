@@ -142,6 +142,13 @@ class Workspace(Base):
     last_billing_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Lịch sử hoá đơn scrape từ /admin/billing — list các transactions:
+    #   [{"date": "2026-05-17", "amount_vnd": 230535, "quantity": 1, "status": "paid"}]
+    # Dashboard dùng để (1) hiển thị lịch sử và (2) ước tính giá per-slot hôm
+    # nay dựa trên transaction gần nhất + days_until_renewal.
+    billing_invoices: Mapped[list[dict] | None] = mapped_column(
+        JSONB, nullable=True
+    )
     created_by_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

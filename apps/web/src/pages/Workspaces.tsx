@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
@@ -12,6 +12,7 @@ import {
   type WorkspaceWithKey,
 } from "../types";
 import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
+import { SearchInput } from "./Members";
 
 export default function Workspaces() {
   const t = useT();
@@ -23,6 +24,7 @@ export default function Workspaces() {
   const [seatTotal, setSeatTotal] = useState<string>("");
   const [createdKey, setCreatedKey] = useState<WorkspaceWithKey | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
   const { data: workspaces = [], isLoading } = useQuery({
     queryKey: ["workspaces"],
@@ -59,8 +61,6 @@ export default function Workspaces() {
     string | null
   >(null);
 
-  // Poll recent tasks (cross-workspace) để bắt completion của billing sync.
-  // limit nhỏ vì user chỉ quan tâm vài task gần nhất.
   const { data: recentTasks = [] } = useQuery({
     queryKey: ["recent-tasks-global"],
     queryFn: () => api<QueueItem[]>("/api/v1/queue?limit=20"),
@@ -77,7 +77,6 @@ export default function Workspaces() {
 
   useEffect(() => {
     if (!showBillingCompletion) return;
-    // Refresh seat numbers ngay khi billing sync xong.
     qc.invalidateQueries({ queryKey: ["workspaces"] });
     if (lastBillingTask?.status !== "COMPLETED") return;
     const timer = setTimeout(() => setLastBillingTaskId(null), 10000);
@@ -108,54 +107,85 @@ export default function Workspaces() {
     create.mutate();
   }
 
+  const filtered = useMemo(() => {
+    if (!search.trim()) return workspaces;
+    const s = search.trim().toLowerCase();
+    return workspaces.filter((w) => w.name.toLowerCase().includes(s));
+  }, [workspaces, search]);
+
   return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold">{t("workspace.listTitle")}</h1>
+    <div className="page-fade">
+      <div
+        className="flex items-start justify-between"
+        style={{ gap: 24, marginBottom: 32, flexWrap: "wrap" }}
+      >
+        <div>
+          <h1 className="display-h1">{t("workspace.listTitle")}</h1>
+          <p className="page-sub">{t("workspace.pageSub")}</p>
+        </div>
         {user?.is_super_admin && !showForm && (
           <button
             onClick={() => setShowForm(true)}
-            className="bg-slate-900 text-white px-4 py-2 rounded text-sm"
+            className="btn btn-primary"
           >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} width={14} height={14}>
+              <path d="M12 5v14M5 12h14" />
+            </svg>
             {t("workspace.createButton")}
           </button>
         )}
       </div>
 
       {showBillingCompletion && lastBillingTask && (
-        <TaskCompletionBanner
-          task={lastBillingTask}
-          onDismiss={() => setLastBillingTaskId(null)}
-          contextLabel={lastBillingWorkspaceName ?? undefined}
-        />
+        <div style={{ marginBottom: 16 }}>
+          <TaskCompletionBanner
+            task={lastBillingTask}
+            onDismiss={() => setLastBillingTaskId(null)}
+            contextLabel={lastBillingWorkspaceName ?? undefined}
+          />
+        </div>
       )}
 
       {createdKey && (
-        <div className="bg-amber-50 border border-amber-300 rounded p-4 mb-6">
-          <div className="font-semibold text-amber-900 mb-1">
-            {t("workspace.createdBanner", { name: createdKey.name })}
-          </div>
-          <p className="text-sm text-amber-800 mb-3">
-            {t("workspace.apiKeyOnce")}
-          </p>
-          <div className="flex gap-2 items-center">
-            <code className="flex-1 bg-white border rounded px-3 py-2 text-xs font-mono break-all">
-              {createdKey.extension_api_key}
-            </code>
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(createdKey.extension_api_key);
-              }}
-              className="bg-slate-900 text-white px-3 py-2 rounded text-sm"
-            >
-              {t("common.copy")}
-            </button>
-            <button
-              onClick={() => setCreatedKey(null)}
-              className="text-sm text-slate-600 px-2"
-            >
-              {t("common.close")}
-            </button>
+        <div className="notice warn" style={{ marginBottom: 20, alignItems: "flex-start" }}>
+          <div className="notice-icon">!</div>
+          <div style={{ flex: 1 }}>
+            <div className="notice-title">
+              {t("workspace.createdBanner", { name: createdKey.name })}
+            </div>
+            <div className="notice-body" style={{ marginBottom: 8 }}>
+              {t("workspace.apiKeyOnce")}
+            </div>
+            <div className="flex items-center gap-2">
+              <code
+                style={{
+                  flex: 1,
+                  background: "var(--surface)",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)",
+                  padding: "8px 10px",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 12,
+                  wordBreak: "break-all",
+                }}
+              >
+                {createdKey.extension_api_key}
+              </code>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(createdKey.extension_api_key);
+                }}
+                className="btn btn-primary btn-sm"
+              >
+                {t("common.copy")}
+              </button>
+              <button
+                onClick={() => setCreatedKey(null)}
+                className="btn btn-ghost btn-sm"
+              >
+                {t("common.close")}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -163,21 +193,26 @@ export default function Workspaces() {
       {showForm && (
         <form
           onSubmit={onSubmit}
-          className="bg-white rounded shadow p-5 mb-6 space-y-3"
+          className="surface-card"
+          style={{ padding: 20, marginBottom: 20 }}
         >
-          <h2 className="font-medium">{t("workspace.createTitle")}</h2>
+          <div className="display-h3" style={{ marginBottom: 12 }}>
+            {t("workspace.createTitle")}
+          </div>
           <input
             required
             placeholder={t("workspace.namePlaceholder")}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full border rounded px-3 py-2"
+            className="form-input"
+            style={{ marginBottom: 12 }}
           />
-          <div className="flex gap-3">
+          <div className="flex gap-3" style={{ marginBottom: 8 }}>
             <select
               value={plan}
               onChange={(e) => setPlan(e.target.value as "business" | "enterprise")}
-              className="border rounded px-3 py-2"
+              className="form-input"
+              style={{ width: 180 }}
             >
               <option value="business">{t("workspace.planBusiness")}</option>
               <option value="enterprise">{t("workspace.planEnterprise")}</option>
@@ -189,18 +224,20 @@ export default function Workspaces() {
               placeholder={t("workspace.seatPlaceholder")}
               value={seatTotal}
               onChange={(e) => setSeatTotal(e.target.value)}
-              className="flex-1 border rounded px-3 py-2"
+              className="form-input"
+              style={{ flex: 1 }}
             />
           </div>
-          <p className="text-xs text-slate-500">
+          <div className="form-hint" style={{ marginBottom: 12 }}>
             {t("workspace.seatHint", { max: SEAT_TOTAL_MAX })}
-          </p>
-          {formError && <div className="text-rose-600 text-sm">{formError}</div>}
+          </div>
+          {formError && (
+            <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>
+              {formError}
+            </div>
+          )}
           <div className="flex gap-2">
-            <button
-              disabled={create.isPending}
-              className="bg-slate-900 text-white px-4 py-2 rounded disabled:opacity-60"
-            >
+            <button disabled={create.isPending} className="btn btn-primary">
               {create.isPending ? t("common.creating") : t("common.create")}
             </button>
             <button
@@ -209,7 +246,7 @@ export default function Workspaces() {
                 setShowForm(false);
                 setFormError(null);
               }}
-              className="px-4 py-2 rounded border"
+              className="btn btn-ghost"
             >
               {t("common.cancel")}
             </button>
@@ -217,66 +254,92 @@ export default function Workspaces() {
         </form>
       )}
 
-      <div className="bg-white rounded shadow overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-slate-700">
-            <tr>
-              <th className="p-3 font-medium">{t("workspace.tableName")}</th>
-              <th className="p-3 font-medium">{t("workspace.tablePlan")}</th>
-              <th className="p-3 font-medium">{t("workspace.tableSeat")}</th>
-              <th className="p-3 font-medium">
-                {t("workspace.tableLastSync")}
-              </th>
-              <th className="p-3 font-medium">{t("workspace.tableCreated")}</th>
-              {user?.is_super_admin && (
-                <th className="p-3 font-medium">{t("workspace.tableActions")}</th>
+      <div className="table-card">
+        <div className="table-head">
+          <div>
+            <div className="table-title">{t("workspace.listTitle")}</div>
+            <div className="table-meta" style={{ marginTop: 2 }}>
+              {t("members.countLabel", { n: workspaces.length })}
+            </div>
+          </div>
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder={t("members.searchPlaceholder")}
+          />
+        </div>
+
+        <div style={{ overflowX: "auto" }}>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>{t("workspace.tableName")}</th>
+                <th>{t("workspace.tablePlan")}</th>
+                <th>{t("workspace.tableSeat")}</th>
+                <th>{t("workspace.tableLastSync")}</th>
+                <th>{t("workspace.tableCreated")}</th>
+                {user?.is_super_admin && (
+                  <th style={{ textAlign: "right" }}>
+                    {t("workspace.tableActions")}
+                  </th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading && (
+                <tr>
+                  <td colSpan={6} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
+                    {t("common.loading")}
+                  </td>
+                </tr>
               )}
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading && (
-              <tr>
-                <td colSpan={6} className="p-6 text-center text-slate-500">
-                  {t("common.loading")}
-                </td>
-              </tr>
-            )}
-            {!isLoading && workspaces.length === 0 && (
-              <tr>
-                <td colSpan={6} className="p-6 text-center text-slate-500">
-                  {t("workspace.emptyList")}
-                </td>
-              </tr>
-            )}
-            {workspaces.map((ws) => {
-              const isSyncing = syncBilling.isPending && syncBillingId === ws.id;
-              const unpaid = ws.billing_status === "UNPAID";
-              const billingNeverSynced = !ws.last_billing_synced_at;
-              return (
-                <tr key={ws.id} className="border-t hover:bg-slate-50">
-                  <td className="p-3">
-                    <Link
-                      to={`/workspaces/${ws.id}/members`}
-                      className="text-slate-900 font-medium hover:underline"
-                    >
-                      {ws.name}
-                    </Link>
+              {!isLoading && filtered.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
+                    {t("workspace.emptyList")}
                   </td>
-                  <td className="p-3 text-slate-600">
-                    <div className="flex items-center gap-2">
-                      <span>{ws.plan ?? "—"}</span>
-                      {unpaid && (
-                        <span
-                          className="text-xs px-2 py-0.5 rounded bg-rose-100 text-rose-700"
-                          title={t("workspace.billingUnpaid")}
-                        >
-                          {t("workspace.billingUnpaid")}
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="p-3 text-slate-600">
-                    <span
+                </tr>
+              )}
+              {filtered.map((ws) => {
+                const isSyncing = syncBilling.isPending && syncBillingId === ws.id;
+                const unpaid = ws.billing_status === "UNPAID";
+                const billingNeverSynced = !ws.last_billing_synced_at;
+                return (
+                  <tr key={ws.id}>
+                    <td>
+                      <Link
+                        to={`/workspaces/${ws.id}/members`}
+                        style={{
+                          color: "var(--ink)",
+                          fontWeight: 500,
+                          textDecoration: "none",
+                        }}
+                        onMouseEnter={(e) =>
+                          (e.currentTarget.style.textDecoration = "underline")
+                        }
+                        onMouseLeave={(e) =>
+                          (e.currentTarget.style.textDecoration = "none")
+                        }
+                      >
+                        {ws.name}
+                      </Link>
+                    </td>
+                    <td>
+                      <div className="flex items-center gap-2">
+                        <span className="role-tag">{ws.plan ?? "—"}</span>
+                        {unpaid && (
+                          <span
+                            className="badge badge-danger"
+                            title={t("workspace.billingUnpaid")}
+                          >
+                            {t("workspace.billingUnpaid")}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td
+                      className="cell-muted mono"
+                      style={{ fontSize: 12.5 }}
                       title={
                         billingNeverSynced
                           ? t("workspace.billingNeverSynced")
@@ -286,35 +349,35 @@ export default function Workspaces() {
                       }
                     >
                       {ws.seat_used ?? 0}/{ws.seat_total ?? "—"}
-                    </span>
-                  </td>
-                  <td className="p-3 text-slate-600">
-                    {ws.last_synced_at
-                      ? new Date(ws.last_synced_at).toLocaleString()
-                      : t("workspace.lastSyncNever")}
-                  </td>
-                  <td className="p-3 text-slate-600">
-                    {new Date(ws.created_at).toLocaleDateString()}
-                  </td>
-                  {user?.is_super_admin && (
-                    <td className="p-3 text-slate-600">
-                      <button
-                        onClick={() => syncBilling.mutate(ws)}
-                        disabled={isSyncing}
-                        title={t("workspace.syncBillingTooltip")}
-                        className="text-xs px-2 py-1 rounded border border-slate-300 hover:bg-slate-100 disabled:opacity-60"
-                      >
-                        {isSyncing
-                          ? t("workspace.syncBillingBusy")
-                          : t("workspace.syncBilling")}
-                      </button>
                     </td>
-                  )}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                    <td className="cell-muted" style={{ fontSize: 12.5 }}>
+                      {ws.last_synced_at
+                        ? new Date(ws.last_synced_at).toLocaleString()
+                        : t("workspace.lastSyncNever")}
+                    </td>
+                    <td className="cell-muted" style={{ fontSize: 12.5 }}>
+                      {new Date(ws.created_at).toLocaleDateString()}
+                    </td>
+                    {user?.is_super_admin && (
+                      <td style={{ textAlign: "right" }}>
+                        <button
+                          onClick={() => syncBilling.mutate(ws)}
+                          disabled={isSyncing}
+                          title={t("workspace.syncBillingTooltip")}
+                          className="btn btn-ghost btn-sm"
+                        >
+                          {isSyncing
+                            ? t("workspace.syncBillingBusy")
+                            : t("workspace.syncBilling")}
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

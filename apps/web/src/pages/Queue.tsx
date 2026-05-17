@@ -1,27 +1,25 @@
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useT } from "../i18n";
+import type { QueueItem } from "../types";
+import { SearchInput } from "./Members";
 
-type QueueItem = {
-  id: string;
-  type: string;
-  status: string;
-  payload: Record<string, unknown>;
-  result: Record<string, unknown> | null;
-  error_code: string | null;
-  error_message: string | null;
-  workspace_id: string | null;
-  created_by_id: string | null;
-  created_at: string;
-  picked_at: string | null;
-  completed_at: string | null;
+type Filter = "all" | "FAILED" | "COMPLETED" | "IN_PROGRESS" | "PENDING";
+
+const STATUS_BADGE: Record<string, string> = {
+  PENDING: "badge badge-neutral",
+  IN_PROGRESS: "badge badge-warning",
+  COMPLETED: "badge badge-success",
+  FAILED: "badge badge-danger",
 };
 
 export default function Queue() {
   const t = useT();
   const { hasPermission } = useAuth();
+  const qc = useQueryClient();
 
   const items = useQuery({
     queryKey: ["queue", "all"],
@@ -30,95 +28,304 @@ export default function Queue() {
     refetchInterval: 5000,
   });
 
-  return (
-    <div>
-      <h1 className="text-2xl font-semibold mb-2">{t("queue.title")}</h1>
-      <p className="text-sm text-slate-600 mb-6">
-        {t("queue.subtitle")}{" "}
-        <Link to="/workspaces" className="underline">
-          {t("nav.workspaces")}
-        </Link>
-        .
-      </p>
+  const [filter, setFilter] = useState<Filter>("all");
+  const [search, setSearch] = useState("");
 
-      <div className="bg-white rounded shadow overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600">
-            <tr>
-              <th className="text-left px-4 py-2">{t("queue.colTime")}</th>
-              <th className="text-left px-4 py-2">{t("queue.colWorkspace")}</th>
-              <th className="text-left px-4 py-2">{t("queue.colType")}</th>
-              <th className="text-left px-4 py-2">{t("queue.colStatus")}</th>
-              <th className="text-left px-4 py-2">{t("queue.colPayload")}</th>
-              <th className="text-left px-4 py-2">{t("queue.colResult")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.data?.map((it) => (
-              <tr key={it.id} className="border-t align-top">
-                <td className="px-4 py-2 whitespace-nowrap text-slate-600">
-                  {new Date(it.created_at).toLocaleString()}
-                </td>
-                <td className="px-4 py-2 text-xs font-mono">
-                  {it.workspace_id ? (
-                    <Link
-                      to={`/workspaces/${it.workspace_id}/members`}
-                      className="text-slate-700 hover:underline"
-                    >
-                      {it.workspace_id.slice(0, 8)}…
-                    </Link>
-                  ) : (
-                    <span className="text-slate-400">—</span>
-                  )}
-                </td>
-                <td className="px-4 py-2 font-mono text-xs">{it.type}</td>
-                <td className="px-4 py-2">
-                  <StatusBadge status={it.status} />
-                </td>
-                <td className="px-4 py-2 font-mono text-xs max-w-xs break-all">
-                  {JSON.stringify(it.payload)}
-                </td>
-                <td className="px-4 py-2 text-xs max-w-xs break-words">
-                  {it.error_code ? (
-                    <span className="text-rose-600">
-                      {it.error_code}: {it.error_message}
-                    </span>
-                  ) : it.result ? (
-                    <span className="text-emerald-700 font-mono">
-                      {JSON.stringify(it.result)}
-                    </span>
-                  ) : (
-                    "—"
-                  )}
-                </td>
-              </tr>
-            ))}
-            {!items.isLoading && (items.data?.length ?? 0) === 0 && (
+  const data = items.data ?? [];
+  const counts = useMemo(() => {
+    const c: Record<Filter, number> = {
+      all: data.length,
+      FAILED: 0,
+      COMPLETED: 0,
+      IN_PROGRESS: 0,
+      PENDING: 0,
+    };
+    for (const it of data) {
+      if (it.status === "FAILED") c.FAILED++;
+      else if (it.status === "COMPLETED") c.COMPLETED++;
+      else if (it.status === "IN_PROGRESS") c.IN_PROGRESS++;
+      else if (it.status === "PENDING") c.PENDING++;
+    }
+    return c;
+  }, [data]);
+
+  const filtered = useMemo(() => {
+    let list = data;
+    if (filter !== "all") list = list.filter((it) => it.status === filter);
+    if (search.trim()) {
+      const s = search.trim().toLowerCase();
+      list = list.filter(
+        (it) =>
+          (it.workspace_id ?? "").toLowerCase().includes(s) ||
+          it.type.toLowerCase().includes(s) ||
+          JSON.stringify(it.payload).toLowerCase().includes(s),
+      );
+    }
+    return list;
+  }, [data, filter, search]);
+
+  return (
+    <div className="page-fade">
+      <div
+        className="flex items-start justify-between"
+        style={{ gap: 24, marginBottom: 32, flexWrap: "wrap" }}
+      >
+        <div>
+          <div className="breadcrumb">
+            System<span className="breadcrumb-sep">/</span>Queue
+          </div>
+          <h1 className="display-h1">{t("queue.title")}</h1>
+          <p className="page-sub">{t("queue.pageSub")}</p>
+        </div>
+        <button
+          onClick={() => qc.invalidateQueries({ queryKey: ["queue", "all"] })}
+          className="btn btn-ghost"
+        >
+          <RefreshIcon />
+          {t("queue.refresh")}
+        </button>
+      </div>
+
+      <div className="metrics" style={{ marginBottom: 24 }}>
+        <MetricSimple
+          label={t("metrics.totalTasks")}
+          value={counts.all}
+          delta={t("metrics.last24h")}
+        />
+        <MetricSimple
+          label={t("metrics.completed")}
+          value={counts.COMPLETED}
+          delta={
+            counts.all > 0
+              ? t("metrics.successRate", {
+                  n: Math.round((counts.COMPLETED / counts.all) * 100),
+                })
+              : ""
+          }
+          deltaKind={counts.COMPLETED > 0 ? "up" : undefined}
+        />
+        <MetricSimple
+          label={t("metrics.failed")}
+          value={counts.FAILED}
+          delta={
+            counts.all > 0
+              ? t("metrics.failureRate", {
+                  n: Math.round((counts.FAILED / counts.all) * 100),
+                })
+              : ""
+          }
+          deltaKind={counts.FAILED > 0 ? "down" : undefined}
+        />
+        <MetricSimple
+          label={t("metrics.inProgress")}
+          value={counts.IN_PROGRESS + counts.PENDING}
+          delta={t("metrics.runningHint")}
+        />
+      </div>
+
+      <div className="flex flex-wrap gap-2" style={{ marginBottom: 16 }}>
+        <Chip
+          active={filter === "all"}
+          onClick={() => setFilter("all")}
+          label={t("queue.filterAll")}
+          count={counts.all}
+        />
+        <Chip
+          active={filter === "FAILED"}
+          onClick={() => setFilter("FAILED")}
+          label={t("queue.filterFailed")}
+          count={counts.FAILED}
+        />
+        <Chip
+          active={filter === "COMPLETED"}
+          onClick={() => setFilter("COMPLETED")}
+          label={t("queue.filterCompleted")}
+          count={counts.COMPLETED}
+        />
+        <Chip
+          active={filter === "IN_PROGRESS"}
+          onClick={() => setFilter("IN_PROGRESS")}
+          label={t("queue.filterInProgress")}
+          count={counts.IN_PROGRESS}
+        />
+        <Chip
+          active={filter === "PENDING"}
+          onClick={() => setFilter("PENDING")}
+          label={t("queue.filterPending")}
+          count={counts.PENDING}
+        />
+      </div>
+
+      <div className="table-card">
+        <div className="table-head">
+          <div className="table-title">{t("queue.recentTitle")}</div>
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder={t("queue.searchPlaceholder")}
+          />
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="data-table">
+            <thead>
               <tr>
-                <td colSpan={6} className="px-4 py-6 text-center text-slate-500">
-                  {t("queue.empty")}
-                </td>
+                <th>{t("queue.colTime")}</th>
+                <th>{t("queue.colWorkspace")}</th>
+                <th>{t("queue.colType")}</th>
+                <th>{t("queue.colStatus")}</th>
+                <th>{t("queue.colPayload")}</th>
+                <th>{t("queue.colResult")}</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {filtered.map((it) => (
+                <tr key={it.id}>
+                  <td>
+                    <TimeCell iso={it.created_at} />
+                  </td>
+                  <td>
+                    {it.workspace_id ? (
+                      <Link
+                        to={`/workspaces/${it.workspace_id}/members`}
+                        style={{ textDecoration: "none" }}
+                      >
+                        <span className="role-tag">
+                          {it.workspace_id.slice(0, 8)}
+                        </span>
+                      </Link>
+                    ) : (
+                      <span className="cell-muted">—</span>
+                    )}
+                  </td>
+                  <td>
+                    <span className="action-name">{it.type}</span>
+                  </td>
+                  <td>
+                    <span
+                      className={STATUS_BADGE[it.status] ?? "badge badge-neutral"}
+                    >
+                      {it.status.toLowerCase()}
+                    </span>
+                  </td>
+                  <td>
+                    <span className="payload">
+                      {JSON.stringify(it.payload)}
+                    </span>
+                  </td>
+                  <td>
+                    {it.error_code ? (
+                      <div
+                        style={{
+                          fontSize: 12.5,
+                          color: "var(--danger)",
+                          lineHeight: 1.45,
+                          maxWidth: 380,
+                        }}
+                      >
+                        <strong className="mono">{it.error_code}:</strong>{" "}
+                        {it.error_message}
+                      </div>
+                    ) : it.result ? (
+                      <span className="payload payload-success">
+                        {JSON.stringify(it.result)}
+                      </span>
+                    ) : (
+                      <span className="cell-muted">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {!items.isLoading && filtered.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
+                    {t("queue.empty")}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const cls =
-    status === "COMPLETED"
-      ? "bg-emerald-100 text-emerald-700"
-      : status === "FAILED"
-      ? "bg-rose-100 text-rose-700"
-      : status === "IN_PROGRESS"
-      ? "bg-amber-100 text-amber-700"
-      : "bg-slate-200 text-slate-700";
+export function Chip({
+  active,
+  onClick,
+  label,
+  count,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  count?: number;
+}) {
   return (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium ${cls}`}>
-      {status}
+    <button
+      onClick={onClick}
+      className={active ? "filter-chip active" : "filter-chip"}
+    >
+      {label}
+      {typeof count === "number" && <span className="count">{count}</span>}
+    </button>
+  );
+}
+
+export function TimeCell({ iso }: { iso: string }) {
+  const d = new Date(iso);
+  return (
+    <span className="timestamp">
+      {d.toLocaleTimeString()}
+      <span className="date">{d.toLocaleDateString()}</span>
     </span>
+  );
+}
+
+function MetricSimple({
+  label,
+  value,
+  delta,
+  deltaKind,
+}: {
+  label: string;
+  value: number | string;
+  delta?: string;
+  deltaKind?: "up" | "down";
+}) {
+  return (
+    <div className="metric">
+      <div className="metric-label">{label}</div>
+      <div className="metric-value">{value}</div>
+      {delta && (
+        <div
+          className={
+            "metric-delta" +
+            (deltaKind === "up"
+              ? " up"
+              : deltaKind === "down"
+              ? " down"
+              : "")
+          }
+        >
+          {delta}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+    >
+      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M3 21v-5h5" />
+    </svg>
   );
 }

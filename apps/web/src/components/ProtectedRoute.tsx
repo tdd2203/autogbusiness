@@ -16,25 +16,30 @@ export default function ProtectedRoute({
   const { user, loading, hasPermission } = useAuth();
   const location = useLocation();
 
-  if (loading) return <div className="p-8">{t("common.loading")}</div>;
+  if (loading)
+    return (
+      <div style={{ padding: 32, color: "var(--ink-3)" }}>
+        {t("common.loading")}
+      </div>
+    );
   if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
   if (requireSuperAdmin && !user.is_super_admin) {
     return (
-      <div className="p-8">
-        <h1 className="text-xl font-semibold mb-2">
+      <div style={{ padding: 32 }}>
+        <h1 className="display-h2" style={{ marginBottom: 8 }}>
           {t("protected.403SuperTitle")}
         </h1>
-        <p className="text-slate-600">{t("protected.403Super")}</p>
+        <p style={{ color: "var(--ink-2)" }}>{t("protected.403Super")}</p>
       </div>
     );
   }
   if (requirePermission && !hasPermission(requirePermission)) {
     return (
-      <div className="p-8">
-        <h1 className="text-xl font-semibold mb-2">
+      <div style={{ padding: 32 }}>
+        <h1 className="display-h2" style={{ marginBottom: 8 }}>
           {t("protected.403Title")}
         </h1>
-        <p className="text-slate-600">
+        <p style={{ color: "var(--ink-2)" }}>
           {t("protected.403Perm", { perm: requirePermission })}
         </p>
       </div>

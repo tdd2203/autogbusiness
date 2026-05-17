@@ -1,154 +1,60 @@
 /**
- * Trigger extension auto-run sau khi user tạo task ở dashboard.
+ * Extension status detection via BACKEND POLL (cross-browser).
  *
- * ⚠️ KHÔNG dùng global flag (window.__autogptExtensionInstalled) để detect bridge!
- *    Content scripts chạy trong ISOLATED WORLD → flag không truyền sang page.
- *    Đây là bug fixed ở v0.2.2.
+ * Lịch sử: trước đây dashboard ↔ extension giao tiếp qua postMessage bridge
+ * (content script `dashboard-bridge.ts`). Nhược điểm: chỉ work khi extension
+ * + dashboard ở CÙNG browser. Khi user chạy dashboard ở trình duyệt khác
+ * (vd MoreLogin chứa extension, Edge thường chứa dashboard) → bridge fail.
  *
- * Detection mechanism: bridge announces itself qua window.postMessage khi load
- *   { source: "autogpt-extension", type: "bridge-ready", version }
- * Dashboard listen postMessage indefinitely. Khi mount, dashboard cũng gửi ping
- *   { source: "autogpt-dashboard", type: "ping" }
- * để cover trường hợp bridge load trước React mount → bridge pong lại.
+ * Giải pháp mới: dashboard poll backend `/extension-status` mỗi 5s. Backend
+ * biết extension nào đang subscribe SSE (per-workspace) → trả `online: bool`.
+ * Hoạt động ở mọi browser vì chỉ cần HTTP tới localhost:8000.
  *
- * Khi user reload extension trong chrome://extensions/, background SW tự gọi
- * chrome.scripting.executeScript inject bridge vào dashboard tab đang mở
- * (xem background/index.ts) → user KHÔNG cần F5.
+ * Task auto-execute đã được backend SSE handle từ v0.3.0 — KHÔNG cần dashboard
+ * gửi tín hiệu "run-now" qua bridge nữa. `triggerExtensionRun` giờ là no-op
+ * giữ lại cho callsite (Members/Workspaces) không phải sửa.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "../lib/api";
 
-type RunResult = {
-  processed: number;
-  lastStatus: string;
+type ExtensionStatusResp = {
+  online: boolean;
+  subscribers: number;
 };
 
-/** Bridge timeout cho `triggerExtensionRun` — đợi pong tối đa 300ms. */
-const BRIDGE_PROBE_TIMEOUT_MS = 300;
-
-/** Probe bridge bằng ping + chờ pong. Trả version nếu có bridge, null nếu không. */
-function probeBridge(): Promise<string | null> {
-  return new Promise((resolve) => {
-    let resolved = false;
-    const onMessage = (ev: MessageEvent) => {
-      if (ev.source !== window) return;
-      const data = ev.data;
-      if (data?.source !== "autogpt-extension") return;
-      if (data.type !== "pong" && data.type !== "bridge-ready") return;
-      if (resolved) return;
-      resolved = true;
-      window.removeEventListener("message", onMessage);
-      resolve(typeof data.version === "string" ? data.version : "");
-    };
-    window.addEventListener("message", onMessage);
-    window.postMessage(
-      { source: "autogpt-dashboard", type: "ping" },
-      window.origin,
-    );
-    setTimeout(() => {
-      if (resolved) return;
-      resolved = true;
-      window.removeEventListener("message", onMessage);
-      resolve(null);
-    }, BRIDGE_PROBE_TIMEOUT_MS);
-  });
-}
-
-function bridgeMissingMessage(): string {
-  return (
-    "Extension chưa được dashboard nhận diện.\n\n" +
-    "Để khắc phục (chọn 1 trong 2):\n" +
-    "  A) Mở chrome://extensions/ → bấm 'Reload' trên AutoGPT Admin Extension\n" +
-    "     (background sẽ tự inject bridge vào tab này — không cần F5)\n\n" +
-    "  B) Nếu vẫn không được: F5 trang dashboard này\n\n" +
-    "Sau đó kiểm tra badge sidebar đổi thành '✓ Extension: connected'."
-  );
-}
-
 /**
- * Trigger extension drain queue.
- *
- * Bắn postMessage `run-pending` qua bridge. Nếu bridge missing (probe timeout),
- * alert user hướng dẫn fix. Returns boolean tiện debug.
+ * No-op compat: SSE đã handle auto-execute. Callsite hiện tại gọi sau khi
+ * task được tạo qua API; task đã được publish_task_event → extension nhận
+ * trong <1s không cần thêm gì.
  */
 export async function triggerExtensionRun(): Promise<boolean> {
-  const version = await probeBridge();
-  console.log(
-    `[autogpt-dashboard] triggerExtensionRun — bridge v${version ?? "MISSING"}`,
-  );
-
-  if (version === null) {
-    window.alert(bridgeMissingMessage());
-    return false;
-  }
-
-  window.postMessage(
-    { source: "autogpt-dashboard", type: "run-pending" },
-    window.origin,
-  );
   return true;
 }
 
 /**
- * Hook trả về extension status. Listen postMessage indefinitely cho cả 2 case:
- *   - Bridge load trước mount → ta send ping, bridge pong
- *   - Bridge load sau mount  → bridge auto-broadcast "bridge-ready"
+ * Hook trả về extension status cho một workspace cụ thể.
+ * Poll backend mỗi 5s — extension subscribe SSE thì online=true.
+ *
+ * Pass workspaceId=null khi không có context workspace (vd /workspaces list)
+ * → hook return online=null (unknown).
  */
-export function useExtensionStatus(): {
-  installed: boolean;
-  version: string | null;
-  lastRunResult: RunResult | null;
+export function useExtensionStatus(workspaceId: string | null | undefined): {
+  online: boolean | null;
+  subscribers: number;
 } {
-  const [installed, setInstalled] = useState(false);
-  const [version, setVersion] = useState<string | null>(null);
-  const [lastRunResult, setLastRunResult] = useState<RunResult | null>(null);
-  const lastPingRef = useRef<number>(0);
+  const { data } = useQuery({
+    queryKey: ["extension-status", workspaceId],
+    queryFn: () =>
+      api<ExtensionStatusResp>(
+        `/api/v1/workspaces/${workspaceId}/extension-status`,
+      ),
+    enabled: !!workspaceId,
+    refetchInterval: 5000,
+    refetchIntervalInBackground: false,
+  });
 
-  useEffect(() => {
-    const onMessage = (ev: MessageEvent) => {
-      if (ev.source !== window) return;
-      const data = ev.data;
-      if (data?.source !== "autogpt-extension") return;
-
-      if (data.type === "bridge-ready" || data.type === "pong") {
-        setInstalled(true);
-        if (typeof data.version === "string") setVersion(data.version);
-      } else if (data.type === "run-pending-result") {
-        setLastRunResult({
-          processed: Number(data.payload?.processed ?? 0),
-          lastStatus: String(data.payload?.lastStatus ?? "unknown"),
-        });
-      }
-    };
-    window.addEventListener("message", onMessage);
-
-    function ping() {
-      lastPingRef.current = Date.now();
-      window.postMessage(
-        { source: "autogpt-dashboard", type: "ping" },
-        window.origin,
-      );
-    }
-
-    // Ping ngay khi mount (covers bridge loaded trước React).
-    ping();
-
-    // Heartbeat 3s — re-detect khi bridge inject muộn (vd background SW
-    // executeScript sau onInstalled). Cheap: postMessage tới chính tab.
-    const heartbeat = setInterval(ping, 3000);
-
-    // Nếu sau 1s vẫn chưa nhận pong, đánh dấu chính thức "not installed"
-    // (đã từng installed thì giữ true cho tới khi tab unload).
-    const probeTimer = setTimeout(() => {
-      setInstalled((prev) => prev); // no-op, chỉ trigger render check
-    }, 1000);
-
-    return () => {
-      window.removeEventListener("message", onMessage);
-      clearInterval(heartbeat);
-      clearTimeout(probeTimer);
-    };
-  }, []);
-
-  return { installed, version, lastRunResult };
+  if (!workspaceId) return { online: null, subscribers: 0 };
+  if (!data) return { online: null, subscribers: 0 };
+  return { online: data.online, subscribers: data.subscribers };
 }

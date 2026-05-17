@@ -24,6 +24,8 @@ const RATE_LIMIT = {
 };
 
 const CHATGPT_TAB_MATCH = "https://chatgpt.com/admin/*";
+const CHATGPT_ADMIN_URL = "https://chatgpt.com/admin/members";
+const TAB_LOAD_TIMEOUT_MS = 30_000;
 
 type RunnerState = {
   lastTaskAt: number;
@@ -41,6 +43,83 @@ async function findAdminTab(): Promise<chrome.tabs.Tab | null> {
   return tabs[0] ?? null;
 }
 
+/**
+ * Đợi tab load xong (status='complete') hoặc timeout.
+ * Cần thiết sau khi tabs.create / tabs.update để content script kịp inject
+ * và DOM admin page render.
+ */
+function waitForTabComplete(
+  tabId: number,
+  timeoutMs: number,
+): Promise<chrome.tabs.Tab | null> {
+  return new Promise((resolve) => {
+    let resolved = false;
+    const cleanup = (): void => {
+      if (resolved) return;
+      resolved = true;
+      chrome.tabs.onUpdated.removeListener(listener);
+    };
+    const listener = (
+      id: number,
+      info: chrome.tabs.TabChangeInfo,
+      tab: chrome.tabs.Tab,
+    ): void => {
+      if (id !== tabId) return;
+      if (info.status !== "complete") return;
+      cleanup();
+      resolve(tab);
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    setTimeout(() => {
+      if (resolved) return;
+      cleanup();
+      chrome.tabs.get(tabId).then(resolve).catch(() => resolve(null));
+    }, timeoutMs);
+  });
+}
+
+/**
+ * Đảm bảo có tab chatgpt.com/admin/* đang mở.
+ * Logic:
+ *   1. Có tab khớp → trả ngay
+ *   2. Không có → tự mở tab MỚI tới chatgpt.com/admin/members (background tab,
+ *      không steal focus), đợi load xong
+ *   3. Sau khi load, verify URL vẫn ở /admin (nếu bị redirect tới login = chưa
+ *      đăng nhập ChatGPT trong browser này) → trả null
+ *
+ * Trả về tab khớp hoặc null nếu user chưa đăng nhập ChatGPT.
+ */
+async function ensureAdminTab(): Promise<chrome.tabs.Tab | null> {
+  const existing = await findAdminTab();
+  if (existing) return existing;
+
+  console.log(
+    `[autogpt-runner] không có admin tab — tự mở ${CHATGPT_ADMIN_URL} (background)`,
+  );
+  const created = await chrome.tabs.create({
+    url: CHATGPT_ADMIN_URL,
+    active: false,
+  });
+  if (created.id === undefined) return null;
+
+  const loaded = await waitForTabComplete(created.id, TAB_LOAD_TIMEOUT_MS);
+  if (!loaded || !loaded.url) {
+    console.warn("[autogpt-runner] tab vừa tạo không load được");
+    return null;
+  }
+  // ChatGPT chưa đăng nhập sẽ redirect tới /auth/login hoặc /
+  if (!loaded.url.includes("/admin")) {
+    console.warn(
+      `[autogpt-runner] tab bị redirect khỏi /admin: ${loaded.url} — user chưa login ChatGPT trong browser này`,
+    );
+    return null;
+  }
+  console.log(
+    `[autogpt-runner] admin tab mới tạo OK: tab ${created.id} ${loaded.url}`,
+  );
+  return loaded;
+}
+
 async function pingContent(tabId: number): Promise<boolean> {
   try {
     const resp = await chrome.tabs.sendMessage(tabId, { kind: "PING" });
@@ -50,14 +129,38 @@ async function pingContent(tabId: number): Promise<boolean> {
   }
 }
 
+/**
+ * Lấy JS files của content script chạy trên chatgpt.com/admin từ manifest.
+ * Sau khi vite build, source `.ts` được rename thành `assets/index.ts-<hash>.js`
+ * — hash đổi mỗi build nên KHÔNG hardcode được. Đọc manifest runtime.
+ */
+function getChatGPTContentScriptFiles(): string[] {
+  const manifest = chrome.runtime.getManifest();
+  const scripts = (manifest.content_scripts ?? []) as Array<{
+    matches?: string[];
+    js?: string[];
+  }>;
+  const entry = scripts.find((cs) =>
+    (cs.matches ?? []).some((m) => m.includes("chatgpt.com/admin")),
+  );
+  return entry?.js ?? [];
+}
+
 async function ensureContentInjected(tabId: number): Promise<boolean> {
   if (await pingContent(tabId)) return true;
   // Content script chưa có (extension reload sau khi tab đã load).
-  // Thử inject manual qua chrome.scripting — file path là từ manifest content_scripts.
+  // Thử inject manual qua chrome.scripting với bundled path từ manifest.
+  const files = getChatGPTContentScriptFiles();
+  if (files.length === 0) {
+    console.warn(
+      "[autogpt] không tìm thấy content_script chatgpt.com/admin trong manifest",
+    );
+    return false;
+  }
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ["src/content/index.ts"],
+      files,
     });
   } catch (e) {
     console.warn("[autogpt] executeScript failed:", e);
@@ -117,9 +220,22 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
         old_role: (p.old_role as "owner" | "admin" | "member" | null) ?? null,
       };
     case "SYNC_DATA":
-      return { kind: "SYNC_DATA", taskId: task.id };
+      return {
+        kind: "SYNC_DATA",
+        taskId: task.id,
+        // Backend default include_pending=true (3-tab scrape); chỉ false khi
+        // dashboard chủ động chọn "Chỉ thành viên" để chạy nhanh.
+        includePending: (p.include_pending as boolean | undefined) !== false,
+      };
     case "SYNC_BILLING":
       return { kind: "SYNC_BILLING", taskId: task.id };
+    case "REVOKE_INVITES": {
+      const rawEmails = (task.payload?.emails as unknown) ?? [];
+      const emails = Array.isArray(rawEmails)
+        ? rawEmails.filter((e): e is string => typeof e === "string")
+        : [];
+      return { kind: "REVOKE_INVITES", taskId: task.id, emails };
+    }
     default:
       return null;
   }
@@ -143,6 +259,11 @@ async function reportToBackend(
               seat_used?: number | null;
               billing_status?: "PAID" | "UNPAID" | "UNKNOWN" | null;
               renewal_date?: string | null;
+              invoices?: Array<{
+                date: string;
+                amount_vnd: number;
+                status: string;
+              }>;
             };
           }
         | undefined;
@@ -179,6 +300,15 @@ async function reportToBackend(
 
     // Special case: SYNC_DATA mang theo members → chunked bulk-upsert.
     if (task.type === "SYNC_DATA" && task.workspace_id) {
+      // Đọc include_pending từ task.payload để báo backend scope reconcile:
+      //   - true (default) → scraped active+pending tab → backend reconcile cả 2
+      //   - false → chỉ scraped active → backend chỉ reconcile active, KHÔNG
+      //     đụng tới pending (giữ trạng thái pending từ sync trước)
+      const includePending =
+        (task.payload?.include_pending as boolean | undefined) !== false;
+      const scrapedStatuses: Array<"active" | "pending"> = includePending
+        ? ["active", "pending"]
+        : ["active"];
       const data = response.data as
         | {
             members?: Array<Record<string, unknown>>;
@@ -203,16 +333,25 @@ async function reportToBackend(
 
       let totalCreated = 0;
       let totalUpdated = 0;
+      const rogueEmailsAggregated: string[] = [];
       try {
         for (let i = 0; i < members.length; i += CHUNK_SIZE) {
           const chunk = members.slice(i, i + CHUNK_SIZE);
-          const result = await bulkUpsertMembers(
+          const result = (await bulkUpsertMembers(
             config,
             task.workspace_id,
             chunk,
-          );
+            { scrapedStatuses },
+          )) as {
+            created: number;
+            updated: number;
+            rogue_pending_emails?: string[];
+          };
           totalCreated += result.created;
           totalUpdated += result.updated;
+          if (Array.isArray(result.rogue_pending_emails)) {
+            rogueEmailsAggregated.push(...result.rogue_pending_emails);
+          }
           console.log(
             `[autogpt-sync-upsert] chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${Math.ceil(
               members.length / CHUNK_SIZE,
@@ -229,6 +368,16 @@ async function reportToBackend(
         return;
       }
 
+      // Rogue emails (invite trên ChatGPT mà KHÔNG có Member record trong DB)
+      // được đẩy vào task.result để dashboard hiển thị + hỏi admin xác nhận.
+      // KHÔNG auto-revoke ở đây — admin chọn trên dashboard.
+      if (rogueEmailsAggregated.length > 0) {
+        console.log(
+          `[autogpt-sync] phát hiện ${rogueEmailsAggregated.length} rogue pending invite(s):`,
+          rogueEmailsAggregated,
+        );
+      }
+
       await updateTask(config, task.id, {
         status: "COMPLETED",
         result: {
@@ -236,6 +385,7 @@ async function reportToBackend(
           created: totalCreated,
           updated: totalUpdated,
           chunks: Math.ceil(members.length / CHUNK_SIZE),
+          rogue_pending_emails: rogueEmailsAggregated,
         },
       });
       return;
@@ -353,20 +503,20 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
     return { status: "task-not-supported", detail: task.type };
   }
 
-  const tab = await findAdminTab();
+  const tab = await ensureAdminTab();
   if (!tab || tab.id === undefined) {
     console.warn(
-      "[autogpt-runner] NOT_LOGGED_IN_CHATGPT — không có tab khớp chatgpt.com/admin/*",
+      "[autogpt-runner] NOT_LOGGED_IN_CHATGPT — không mở được admin tab (chưa login ChatGPT trong browser này)",
     );
     await updateTask(config, task.id, {
       status: "FAILED",
       error_code: "NOT_LOGGED_IN_CHATGPT",
       error_message:
-        "Không tìm thấy tab nào đang mở chatgpt.com/admin/*. Hãy mở admin page rồi thử lại.",
+        "Đã thử mở chatgpt.com/admin/members nhưng bị redirect — user chưa đăng nhập ChatGPT trong browser này. Hãy login rồi thử lại.",
     });
     return { status: "no-admin-tab" };
   }
-  console.log(`[autogpt-runner] found admin tab ${tab.id} ${tab.url}`);
+  console.log(`[autogpt-runner] using admin tab ${tab.id} ${tab.url}`);
 
   await applyRateLimit();
   console.log(`[autogpt-runner] sending ${request.kind} to content script...`);

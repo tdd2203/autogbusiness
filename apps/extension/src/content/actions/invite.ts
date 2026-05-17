@@ -12,6 +12,7 @@ import {
 } from "../human";
 import { reportProgress } from "../progress";
 import { SELECTORS, TEXT_FALLBACKS } from "../selectors";
+import { withExternalInvitesEnabled } from "./external-invites";
 
 function findInviteOpenButton(): HTMLElement | null {
   const bySel = querySelectorFirst<HTMLElement>(SELECTORS.inviteButtonOpen);
@@ -61,6 +62,13 @@ function findInviteSubmitButton(): HTMLElement | null {
 }
 
 async function setRole(role: ChatGPTRole): Promise<void> {
+  // ChatGPT mặc định role = 'member' trong dialog Mời thành viên.
+  // Nếu cần role = 'member' thì không cần click — vừa nhanh hơn vừa giảm
+  // pattern bot (mỗi click thêm là một interaction có thể bị detect).
+  if (role === "member") {
+    console.log("[autogpt-invite] role='member' = default, không click role select");
+    return;
+  }
   const selectEl = querySelectorFirst<HTMLSelectElement>(
     SELECTORS.inviteRoleSelect,
   );
@@ -118,6 +126,21 @@ export async function executeInvite(
       error_message: `Trang hiện tại không phải admin (${location.pathname}). Mở chatgpt.com/admin/members trước.`,
     };
   }
+
+  // Wrap: bật toggle "Cho phép lời mời từ miền bên ngoài" trên /admin/identity
+  // trước khi invite (cho phép email ngoài domain) → restore lại trạng thái cũ
+  // ngay sau khi invite xong, kể cả khi fail. ChatGPT giữ toggle này nhanh chóng
+  // OFF lại sau invite để tránh rủi ro bảo mật.
+  return await withExternalInvitesEnabled(() =>
+    executeInviteInner(taskId, email, role),
+  );
+}
+
+async function executeInviteInner(
+  taskId: string,
+  email: string,
+  role: ChatGPTRole,
+): Promise<ExecuteActionResponse> {
 
   await reportProgress(
     taskId,

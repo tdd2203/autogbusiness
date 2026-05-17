@@ -1,115 +1,319 @@
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useI18n, type Lang } from "../i18n";
-import { useExtensionStatus } from "../hooks/useExtensionTrigger";
+import type { ReactNode } from "react";
 
-const NAV: { to: string; labelKey: string; perm?: string }[] = [
-  { to: "/workspaces", labelKey: "nav.workspaces", perm: "MEMBER_VIEW" },
-  { to: "/queue", labelKey: "nav.queue", perm: "QUEUE_VIEW" },
-  { to: "/audit-logs", labelKey: "nav.auditLog", perm: "AUDIT_LOG_VIEW" },
-  { to: "/billing", labelKey: "nav.billing", perm: "BILLING_VIEW" },
-  { to: "/users", labelKey: "nav.users", perm: "USER_MANAGE" },
-  { to: "/settings", labelKey: "nav.settings" },
+type NavEntry = {
+  to: string;
+  labelKey: string;
+  perm?: string;
+  icon: ReactNode;
+  section: "manage" | "org";
+};
+
+const ICONS = {
+  workspaces: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M3 7h18M3 12h18M3 17h18" />
+    </svg>
+  ),
+  queue: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <rect x="3" y="4" width="18" height="4" rx="1" />
+      <rect x="3" y="10" width="18" height="4" rx="1" />
+      <rect x="3" y="16" width="18" height="4" rx="1" />
+    </svg>
+  ),
+  audit: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2" />
+      <rect x="9" y="3" width="6" height="4" rx="1" />
+      <path d="M9 12h6M9 16h4" />
+    </svg>
+  ),
+  billing: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <rect x="2" y="6" width="20" height="12" rx="2" />
+      <path d="M2 10h20" />
+    </svg>
+  ),
+  users: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  ),
+  settings: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  ),
+};
+
+const NAV: NavEntry[] = [
+  { to: "/workspaces", labelKey: "nav.workspaces", perm: "MEMBER_VIEW", icon: ICONS.workspaces, section: "manage" },
+  { to: "/queue", labelKey: "nav.queue", perm: "QUEUE_VIEW", icon: ICONS.queue, section: "manage" },
+  { to: "/audit-logs", labelKey: "nav.auditLog", perm: "AUDIT_LOG_VIEW", icon: ICONS.audit, section: "manage" },
+  { to: "/billing", labelKey: "nav.billing", perm: "BILLING_VIEW", icon: ICONS.billing, section: "org" },
+  { to: "/users", labelKey: "nav.users", perm: "USER_MANAGE", icon: ICONS.users, section: "org" },
+  { to: "/settings", labelKey: "nav.settings", icon: ICONS.settings, section: "org" },
 ];
 
 export default function Layout() {
   const { user, logout, hasPermission } = useAuth();
   const { lang, setLang, t } = useI18n();
   const navigate = useNavigate();
-  const {
-    installed: extInstalled,
-    version: extVersion,
-    lastRunResult,
-  } = useExtensionStatus();
 
   function onLogout() {
     logout();
     navigate("/login");
   }
 
+  const initial = (user?.email ?? user?.username ?? "?").charAt(0).toUpperCase();
+  const manageItems = NAV.filter(
+    (n) => n.section === "manage" && (!n.perm || hasPermission(n.perm)),
+  );
+  const orgItems = NAV.filter(
+    (n) => n.section === "org" && (!n.perm || hasPermission(n.perm)),
+  );
+
   return (
-    <div className="min-h-screen flex">
-      <aside className="w-60 bg-slate-900 text-slate-100 flex flex-col">
-        <div className="px-5 py-4 text-lg font-semibold border-b border-slate-700">
-          AutoGPT Admin
-        </div>
-        <nav className="flex-1 px-2 py-3 space-y-1">
-          {NAV.filter((n) => !n.perm || hasPermission(n.perm)).map((n) => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              className={({ isActive }) =>
-                `block px-3 py-2 rounded text-sm ${
-                  isActive ? "bg-slate-700" : "hover:bg-slate-800"
-                }`
-              }
+    <div
+      className="min-h-screen"
+      style={{ display: "grid", gridTemplateColumns: "240px 1fr" }}
+    >
+      <aside
+        className="flex flex-col sticky top-0 h-screen"
+        style={{
+          background: "var(--surface)",
+          borderRight: "1px solid var(--border)",
+        }}
+      >
+        <div style={{ padding: "24px 24px 32px" }}>
+          <Link
+            to="/workspaces"
+            aria-label="AutoGPT home"
+            style={{
+              display: "inline-block",
+              textDecoration: "none",
+              color: "inherit",
+            }}
+          >
+            <div
+              style={{
+                fontFamily: "var(--font-display)",
+                fontSize: 18,
+                fontWeight: 600,
+                letterSpacing: "-0.01em",
+                color: "var(--ink)",
+              }}
             >
-              {t(n.labelKey)}
-            </NavLink>
-          ))}
+              AutoGPT
+            </div>
+            <div
+              style={{
+                marginTop: 4,
+                fontSize: 11,
+                color: "var(--ink-3)",
+                fontFamily: "var(--font-mono)",
+                letterSpacing: "0.02em",
+                textTransform: "uppercase",
+              }}
+            >
+              Admin
+            </div>
+          </Link>
+        </div>
+
+        <nav className="flex-1" style={{ padding: "0 12px" }}>
+          <SidebarSection label={t("nav.sectionManage")}>
+            {manageItems.map((n) => (
+              <SidebarItem key={n.to} to={n.to} icon={n.icon}>
+                {t(n.labelKey)}
+              </SidebarItem>
+            ))}
+          </SidebarSection>
+          {orgItems.length > 0 && (
+            <SidebarSection label={t("nav.sectionOrg")}>
+              {orgItems.map((n) => (
+                <SidebarItem key={n.to} to={n.to} icon={n.icon}>
+                  {t(n.labelKey)}
+                </SidebarItem>
+              ))}
+            </SidebarSection>
+          )}
         </nav>
-        <div className="px-4 py-3 border-t border-slate-700 text-xs space-y-2">
-          <div>
-            <div className="font-medium">{user?.email}</div>
-            <div className="text-slate-400">
-              {user?.is_super_admin ? t("role.super") : t("role.sub")}
+
+        <div
+          style={{ padding: 16, borderTop: "1px solid var(--border)" }}
+        >
+          <div className="flex items-center" style={{ gap: 10 }}>
+            <div
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: "50%",
+                background: "var(--ink)",
+                color: "var(--surface)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 12,
+                fontWeight: 500,
+                flexShrink: 0,
+              }}
+            >
+              {initial}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div
+                style={{
+                  fontSize: 12.5,
+                  color: "var(--ink)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+                title={user?.email}
+              >
+                {user?.email}
+              </div>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--ink-3)",
+                  fontFamily: "var(--font-mono)",
+                }}
+              >
+                {user?.is_super_admin ? t("role.super") : t("role.sub")}
+              </div>
             </div>
           </div>
-          <div
-            className={`px-2 py-1 rounded text-xs ${
-              extInstalled
-                ? "bg-emerald-700/40 text-emerald-200"
-                : "bg-rose-700/40 text-rose-200"
-            }`}
-            title={
-              extInstalled
-                ? "Bridge content script đã inject. Mutation tự trigger extension."
-                : "Bridge chưa inject. Reload extension trong chrome://extensions/ rồi F5 trang này."
-            }
+          <select
+            value={lang}
+            onChange={(e) => setLang(e.target.value as Lang)}
+            style={{
+              marginTop: 12,
+              width: "100%",
+              padding: "7px 10px",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              background: "var(--bg)",
+              fontFamily: "inherit",
+              fontSize: 12.5,
+              color: "var(--ink)",
+              cursor: "pointer",
+            }}
           >
-            {extInstalled
-              ? `✓ Extension${extVersion ? ` v${extVersion}` : ""}: connected`
-              : "✗ Extension: not detected"}
-            {!extInstalled && (
-              <button
-                onClick={() => window.location.reload()}
-                className="block mt-1 text-[10px] underline text-rose-100 hover:text-white"
-                title="Reload extension trong chrome://extensions/ trước khi bấm nút này"
-              >
-                {t("ext.reloadHint")}
-              </button>
-            )}
-            {lastRunResult && (
-              <div className="text-slate-300 mt-1 text-[10px]">
-                last run: {lastRunResult.processed} task ·{" "}
-                {lastRunResult.lastStatus}
-              </div>
-            )}
-          </div>
-          <div>
-            <label className="block text-slate-400 mb-1">
-              {t("lang.switch")}
-            </label>
-            <select
-              value={lang}
-              onChange={(e) => setLang(e.target.value as Lang)}
-              className="w-full bg-slate-800 text-slate-100 border border-slate-700 rounded px-2 py-1 text-xs"
-            >
-              <option value="vi">{t("lang.vi")}</option>
-              <option value="zh-CN">{t("lang.zh-CN")}</option>
-            </select>
-          </div>
+            <option value="vi">{t("lang.vi")}</option>
+            <option value="zh-CN">{t("lang.zh-CN")}</option>
+          </select>
           <button
             onClick={onLogout}
-            className="w-full text-left text-rose-300 hover:text-rose-200"
+            style={{
+              marginTop: 10,
+              display: "block",
+              fontSize: 12,
+              color: "var(--ink-3)",
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+              fontFamily: "inherit",
+              textAlign: "left",
+              transition: "color 0.12s",
+            }}
+            onMouseEnter={(e) => (e.currentTarget.style.color = "var(--danger)")}
+            onMouseLeave={(e) => (e.currentTarget.style.color = "var(--ink-3)")}
           >
-            {t("auth.logout")}
+            {t("auth.logout")} →
           </button>
         </div>
       </aside>
-      <main className="flex-1 p-8 overflow-auto">
+
+      <main
+        style={{
+          padding: "32px 48px 64px",
+          maxWidth: 1440,
+          width: "100%",
+          overflow: "auto",
+        }}
+      >
         <Outlet />
       </main>
     </div>
+  );
+}
+
+function SidebarSection({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div
+        style={{
+          fontSize: 10,
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          color: "var(--ink-3)",
+          padding: "0 12px 8px",
+          fontWeight: 500,
+        }}
+      >
+        {label}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function SidebarItem({
+  to,
+  icon,
+  children,
+}: {
+  to: string;
+  icon: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive }) => (isActive ? "nav-item active" : "nav-item")}
+      style={({ isActive }) => ({
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "8px 12px",
+        borderRadius: "var(--radius)",
+        color: isActive ? "var(--ink)" : "var(--ink-2)",
+        background: isActive ? "var(--surface-2)" : "transparent",
+        textDecoration: "none",
+        fontSize: 13.5,
+        marginBottom: 1,
+        fontWeight: isActive ? 500 : 400,
+        transition: "background 0.12s ease, color 0.12s ease",
+      })}
+    >
+      <span
+        aria-hidden
+        style={{
+          width: 16,
+          height: 16,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        {icon}
+      </span>
+      {children}
+    </NavLink>
   );
 }

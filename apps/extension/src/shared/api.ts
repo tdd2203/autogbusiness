@@ -92,6 +92,11 @@ export async function pushBillingSync(
     seat_used?: number | null;
     billing_status?: "PAID" | "UNPAID" | "UNKNOWN" | null;
     renewal_date?: string | null;
+    invoices?: Array<{
+      date: string;
+      amount_vnd: number;
+      status: string;
+    }>;
   },
 ): Promise<Workspace> {
   return request<Workspace>(config, "/api/v1/workspaces/billing-sync", {
@@ -109,13 +114,22 @@ export async function bulkUpsertMembers(
     chatgpt_role?: "owner" | "admin" | "member" | null;
     status?: "active" | "pending" | "removed";
   }>,
-): Promise<{ created: number; updated: number; total: number }> {
+  options?: { scrapedStatuses?: Array<"active" | "pending"> },
+): Promise<{
+  created: number;
+  updated: number;
+  total: number;
+  rogue_pending_emails?: string[];
+}> {
   return request(
     config,
     `/api/v1/workspaces/${workspaceId}/members/bulk-upsert`,
     {
       method: "POST",
-      body: JSON.stringify({ members }),
+      body: JSON.stringify({
+        members,
+        scraped_statuses: options?.scrapedStatuses,
+      }),
     },
   );
 }

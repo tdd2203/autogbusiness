@@ -88,22 +88,45 @@ export function TaskCompletionBanner({
   return (
     <div
       role="status"
-      className={`rounded p-3 mb-4 text-sm flex items-start gap-3 ${
-        isError
-          ? "bg-rose-50 border border-rose-300 text-rose-900"
-          : "bg-emerald-50 border border-emerald-300 text-emerald-900"
-      }`}
+      className={isError ? "notice danger" : "notice success"}
+      style={{ alignItems: "flex-start" }}
     >
-      <div className="flex-1 min-w-0">
-        <div className="font-medium">
-          {title} · <span className="font-normal opacity-80">{typeLabel}</span>
+      <div
+        className="notice-icon"
+        aria-hidden
+        style={{
+          color: isError ? "var(--danger)" : "var(--success)",
+          fontWeight: 600,
+        }}
+      >
+        {isError ? "✕" : "✓"}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="notice-title">
+          {title} ·{" "}
+          <span style={{ fontWeight: 400, opacity: 0.85 }}>{typeLabel}</span>
           {contextLabel && (
-            <span className="font-normal opacity-80"> · {contextLabel}</span>
+            <span style={{ fontWeight: 400, opacity: 0.85 }}>
+              {" "}
+              · {contextLabel}
+            </span>
           )}
         </div>
-        <div className="mt-1 break-words">{detail}</div>
+        <div
+          className="notice-body"
+          style={{ marginTop: 4, wordBreak: "break-word" }}
+        >
+          {detail}
+        </div>
         {task.completed_at && (
-          <div className="text-xs opacity-70 mt-1">
+          <div
+            style={{
+              fontSize: 11,
+              opacity: 0.7,
+              marginTop: 4,
+              fontFamily: "var(--font-mono)",
+            }}
+          >
             {new Date(task.completed_at).toLocaleTimeString()}
           </div>
         )}
@@ -111,8 +134,18 @@ export function TaskCompletionBanner({
       <button
         type="button"
         onClick={onDismiss}
-        className="text-current opacity-50 hover:opacity-100 px-2"
         aria-label={t("common.close")}
+        style={{
+          background: "transparent",
+          border: "none",
+          cursor: "pointer",
+          color: "inherit",
+          opacity: 0.5,
+          padding: "0 6px",
+          fontSize: 14,
+        }}
+        onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+        onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.5")}
       >
         ✕
       </button>

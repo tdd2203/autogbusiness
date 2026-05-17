@@ -1,3 +1,9 @@
+export type BillingInvoice = {
+  date: string; // ISO datetime
+  amount_vnd: number;
+  status: string; // "paid" | "unpaid" | "unknown"
+};
+
 export type Workspace = {
   id: string;
   name: string;
@@ -12,6 +18,7 @@ export type Workspace = {
   billing_status: "PAID" | "UNPAID" | "UNKNOWN" | null;
   renewal_date: string | null;
   last_billing_synced_at: string | null;
+  billing_invoices: BillingInvoice[] | null;
   created_at: string;
   updated_at: string;
 };

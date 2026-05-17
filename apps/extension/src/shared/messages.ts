@@ -15,8 +15,9 @@ export type ExecuteActionRequest =
       new_role: ChatGPTRole;
       old_role: ChatGPTRole | null;
     }
-  | { kind: "SYNC_DATA"; taskId: string }
+  | { kind: "SYNC_DATA"; taskId: string; includePending?: boolean }
   | { kind: "SYNC_BILLING"; taskId: string }
+  | { kind: "REVOKE_INVITES"; taskId: string; emails: string[] }
   | { kind: "PING"; taskId?: string };
 
 export type ScrapedBilling = {
@@ -32,6 +33,8 @@ export type ScrapedMember = {
   name?: string | null;
   chatgpt_role?: ChatGPTRole | null;
   status?: "active" | "pending" | "removed";
+  /** ISO date string từ cột "Ngày thêm" trên ChatGPT — null nếu không scrape được. */
+  joined_at?: string | null;
 };
 
 export type ExecuteActionResponse =

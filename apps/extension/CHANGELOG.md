@@ -18,6 +18,41 @@ Mọi thay đổi đáng kể của extension được ghi tại đây. File nà
 
 ---
 
+## v0.3.9 — 2026-05-17 — feature
+
+**INVITE_MEMBER tự bật/tắt "Cho phép lời mời từ miền bên ngoài"**
+
+- **Vấn đề bảo mật:** toggle "Cho phép lời mời từ miền bên ngoài" trên `chatgpt.com/admin/identity` nếu để ON lâu dài → mọi member workspace có thể tự mời email từ bất kỳ domain → ảnh hưởng nghiêm trọng.
+- **Yêu cầu:** dashboard mời email ngoài domain được, nhưng toggle phải về OFF ngay sau invite.
+- **Fix:** helper [`withExternalInvitesEnabled()`](src/content/actions/external-invites.ts):
+  1. Navigate `/admin/identity`, đọc state toggle (qua `aria-checked` / `data-state`)
+  2. Bật ON nếu đang OFF, nhớ `prev`
+  3. Navigate về `/admin/members`, chạy invite
+  4. `try/finally`: nếu `prev === false` → navigate lại `/admin/identity` tắt toggle. Chạy cả khi invite throw/fail.
+- Selectors heuristic: `button[role="switch"]` hoặc `input[type="checkbox"]` có label text chứa "Cho phép lời mời từ miền bên ngoài" / "external". Fallback Radix UI: `data-state="checked"` / `"unchecked"`.
+- Nếu không tìm thấy toggle (ChatGPT đổi UI) → log warn + chạy invite KHÔNG bật toggle, không phá flow. Email ngoài domain có thể fail trong trường hợp này.
+
+## v0.3.8 — 2026-05-17 — feature
+
+**Auto-mở admin tab khi nhận task mà không có tab `chatgpt.com/admin/*`**
+
+- **Trước:** nếu user không mở sẵn `chatgpt.com/admin/members` → mọi task FAILED với `NOT_LOGGED_IN_CHATGPT`, message bắt user mở tab thủ công.
+- **Sau:** runner gọi `ensureAdminTab()`:
+  1. Tìm tab khớp `https://chatgpt.com/admin/*` → dùng ngay
+  2. Không có → tự `chrome.tabs.create({url: 'chatgpt.com/admin/members', active: false})` (background tab, không steal focus của user)
+  3. Đợi `tabs.onUpdated.status='complete'` tối đa 30s
+  4. Verify URL vẫn ở `/admin` (nếu bị redirect tới login = chưa đăng nhập ChatGPT trong browser này)
+- Chỉ trả `NOT_LOGGED_IN_CHATGPT` khi tab tự mở bị redirect — error message rõ hơn: "Hãy login ChatGPT trong browser này rồi thử lại".
+- Helper `waitForTabComplete(tabId, timeoutMs)` dùng `chrome.tabs.onUpdated`.
+
+## v0.3.7 — 2026-05-17 — fix
+
+**SYNC auto-navigate sang `/admin/members` — fix "tab not found" khi admin tab đang ở `/admin/billing`**
+
+- **Bug:** [`executeSync`](src/content/actions/sync.ts) chỉ check `location.pathname.includes("/admin")` — pass luôn cho `/admin/billing`, `/admin/settings`, v.v. Nhưng các tab "Người dùng / Lời mời đang chờ xử lý / Yêu cầu đang chờ xử lý" CHỈ tồn tại trên `/admin/members`.
+- **Triệu chứng:** `[autogpt-sync] tab not found` cho cả 3 tab; fallback scrape DOM hiện tại (vd billing page) và đánh nhãn `active` → DB chứa dữ liệu sai. Ví dụ: user `dhealth.220@gmail.com` đã bị xoá khỏi pending invites trên ChatGPT nhưng vẫn còn ở dashboard với status `pending` từ sync trước đó, sync mới không sửa được vì không vào được tab "Lời mời".
+- **Fix:** nếu pathname không phải `/admin/members` → `history.pushState` + `dispatchEvent("popstate")` để SPA Router điều hướng → poll tối đa 10s đợi tab "Người dùng" xuất hiện. Nếu sau 10s vẫn không thấy → trả `PAGE_NOT_ADMIN` với hint mở `/admin/members` thủ công.
+
 ## v0.3.6 — 2026-05-17 — fix
 
 **Re-inject dashboard bridge ở top-level SW — không cần F5 sau khi Reload extension**

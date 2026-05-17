@@ -178,6 +178,20 @@ export async function connectSSE(): Promise<void> {
     reconnectAttempt = 0;
     startFastPoll();
 
+    // Drain ngay: nếu user tạo task TRONG LÚC SSE đang disconnect (vd backend
+    // restart, network glitch) thì task đó nằm PENDING không có event push
+    // tương ứng (SSE không replay). Subscribe xong → poll backend lấy hết task
+    // pending còn sót.
+    runUntilIdle()
+      .then((r) => {
+        if (r.processed > 0) {
+          console.log(
+            `[autogpt-sse] drain-after-subscribe: ${r.processed} task(s) caught up`,
+          );
+        }
+      })
+      .catch((e) => console.warn("[autogpt-sse] drain-after-subscribe failed", e));
+
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";

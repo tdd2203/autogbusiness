@@ -1,19 +1,25 @@
+import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useT } from "../i18n";
 import type { QueueItem } from "../types";
+import { Chip, TimeCell } from "./Queue";
+import { SearchInput } from "./Members";
+
+type Filter = "all" | "FAILED" | "COMPLETED" | "IN_PROGRESS" | "PENDING";
 
 const STATUS_BADGE: Record<string, string> = {
-  PENDING: "bg-amber-100 text-amber-800",
-  IN_PROGRESS: "bg-blue-100 text-blue-800",
-  COMPLETED: "bg-emerald-100 text-emerald-800",
-  FAILED: "bg-rose-100 text-rose-800",
+  PENDING: "badge badge-neutral",
+  IN_PROGRESS: "badge badge-warning",
+  COMPLETED: "badge badge-success",
+  FAILED: "badge badge-danger",
 };
 
 export default function WorkspaceQueue() {
   const t = useT();
   const { workspaceId } = useParams<{ workspaceId: string }>();
+  const qc = useQueryClient();
 
   const { data: tasks = [], isLoading } = useQuery({
     queryKey: ["queue", workspaceId],
@@ -25,85 +31,183 @@ export default function WorkspaceQueue() {
     refetchInterval: 5000,
   });
 
+  const [filter, setFilter] = useState<Filter>("all");
+  const [search, setSearch] = useState("");
+
+  const counts = useMemo(() => {
+    const c: Record<Filter, number> = {
+      all: tasks.length,
+      FAILED: 0,
+      COMPLETED: 0,
+      IN_PROGRESS: 0,
+      PENDING: 0,
+    };
+    for (const it of tasks) {
+      if (it.status === "FAILED") c.FAILED++;
+      else if (it.status === "COMPLETED") c.COMPLETED++;
+      else if (it.status === "IN_PROGRESS") c.IN_PROGRESS++;
+      else if (it.status === "PENDING") c.PENDING++;
+    }
+    return c;
+  }, [tasks]);
+
+  const filtered = useMemo(() => {
+    let list = tasks;
+    if (filter !== "all") list = list.filter((it) => it.status === filter);
+    if (search.trim()) {
+      const s = search.trim().toLowerCase();
+      list = list.filter(
+        (it) =>
+          it.type.toLowerCase().includes(s) ||
+          JSON.stringify(it.payload).toLowerCase().includes(s),
+      );
+    }
+    return list;
+  }, [tasks, filter, search]);
+
   return (
     <div>
-      <h2 className="text-lg font-medium mb-4">{t("queue.subtitleWs")}</h2>
-      <div className="bg-white rounded shadow overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50 text-left text-slate-700">
-            <tr>
-              <th className="p-3 font-medium">{t("queue.colTime")}</th>
-              <th className="p-3 font-medium">{t("queue.colType")}</th>
-              <th className="p-3 font-medium">{t("queue.colStatus")}</th>
-              <th className="p-3 font-medium">{t("queue.colPayload")}</th>
-              <th className="p-3 font-medium">{t("queue.colResult")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading && (
+      <div
+        className="flex items-center justify-between"
+        style={{ marginBottom: 16, gap: 12, flexWrap: "wrap" }}
+      >
+        <div className="display-h3">{t("queue.subtitleWs")}</div>
+        <button
+          onClick={() => qc.invalidateQueries({ queryKey: ["queue", workspaceId] })}
+          className="btn btn-ghost btn-sm"
+        >
+          {t("queue.refresh")}
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-2" style={{ marginBottom: 16 }}>
+        <Chip
+          active={filter === "all"}
+          onClick={() => setFilter("all")}
+          label={t("queue.filterAll")}
+          count={counts.all}
+        />
+        <Chip
+          active={filter === "FAILED"}
+          onClick={() => setFilter("FAILED")}
+          label={t("queue.filterFailed")}
+          count={counts.FAILED}
+        />
+        <Chip
+          active={filter === "COMPLETED"}
+          onClick={() => setFilter("COMPLETED")}
+          label={t("queue.filterCompleted")}
+          count={counts.COMPLETED}
+        />
+        <Chip
+          active={filter === "IN_PROGRESS"}
+          onClick={() => setFilter("IN_PROGRESS")}
+          label={t("queue.filterInProgress")}
+          count={counts.IN_PROGRESS}
+        />
+        <Chip
+          active={filter === "PENDING"}
+          onClick={() => setFilter("PENDING")}
+          label={t("queue.filterPending")}
+          count={counts.PENDING}
+        />
+      </div>
+
+      <div className="table-card">
+        <div className="table-head">
+          <div className="table-title">{t("queue.recentTitle")}</div>
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            placeholder={t("queue.searchPlaceholder")}
+          />
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table className="data-table">
+            <thead>
               <tr>
-                <td colSpan={5} className="p-6 text-center text-slate-500">
-                  {t("common.loading")}
-                </td>
+                <th>{t("queue.colTime")}</th>
+                <th>{t("queue.colType")}</th>
+                <th>{t("queue.colStatus")}</th>
+                <th>{t("queue.colPayload")}</th>
+                <th>{t("queue.colResult")}</th>
               </tr>
-            )}
-            {!isLoading && tasks.length === 0 && (
-              <tr>
-                <td colSpan={5} className="p-6 text-center text-slate-500">
-                  {t("queue.emptyWs")}
-                </td>
-              </tr>
-            )}
-            {tasks.map((task) => (
-              <tr key={task.id} className="border-t align-top">
-                <td className="p-3 text-slate-600 whitespace-nowrap">
-                  {new Date(task.created_at).toLocaleString()}
-                </td>
-                <td className="p-3 font-mono text-xs">{task.type}</td>
-                <td className="p-3">
-                  <span
-                    className={`px-2 py-0.5 rounded text-xs font-medium ${
-                      STATUS_BADGE[task.status] ?? "bg-slate-100"
-                    }`}
-                  >
-                    {task.status}
-                  </span>
-                </td>
-                <td className="p-3 text-xs font-mono text-slate-700 max-w-md break-all">
-                  {JSON.stringify(task.payload)}
-                </td>
-                <td className="p-3 text-xs text-slate-700 max-w-md break-words">
-                  {task.error_message ? (
-                    <span className="text-rose-700">
-                      {task.error_code}: {task.error_message}
+            </thead>
+            <tbody>
+              {isLoading && (
+                <tr>
+                  <td colSpan={5} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
+                    {t("common.loading")}
+                  </td>
+                </tr>
+              )}
+              {!isLoading && filtered.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
+                    {t("queue.emptyWs")}
+                  </td>
+                </tr>
+              )}
+              {filtered.map((task) => (
+                <tr key={task.id}>
+                  <td>
+                    <TimeCell iso={task.created_at} />
+                  </td>
+                  <td>
+                    <span className="action-name">{task.type}</span>
+                  </td>
+                  <td>
+                    <span
+                      className={STATUS_BADGE[task.status] ?? "badge badge-neutral"}
+                    >
+                      {task.status.toLowerCase()}
                     </span>
-                  ) : task.status === "IN_PROGRESS" && task.progress ? (
-                    <span className="text-blue-700">
-                      {(task.progress.message as string | undefined) ??
-                        t(`progress.${task.progress.phase ?? "IN_PROGRESS"}`)}
-                      {typeof task.progress.current === "number" && (
-                        <>
-                          {" "}
-                          ({String(task.progress.current)}
-                          {typeof task.progress.total === "number"
-                            ? `/${task.progress.total}`
-                            : ""}
-                          )
-                        </>
-                      )}
+                  </td>
+                  <td>
+                    <span className="payload">
+                      {JSON.stringify(task.payload)}
                     </span>
-                  ) : task.result ? (
-                    <span className="font-mono">
-                      {JSON.stringify(task.result)}
-                    </span>
-                  ) : (
-                    <span className="text-slate-400">—</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  </td>
+                  <td>
+                    {task.error_message ? (
+                      <div
+                        style={{
+                          fontSize: 12.5,
+                          color: "var(--danger)",
+                          maxWidth: 420,
+                        }}
+                      >
+                        <strong className="mono">{task.error_code}:</strong>{" "}
+                        {task.error_message}
+                      </div>
+                    ) : task.status === "IN_PROGRESS" && task.progress ? (
+                      <span style={{ color: "var(--info)", fontSize: 12.5 }}>
+                        {(task.progress.message as string | undefined) ??
+                          t(`progress.${task.progress.phase ?? "IN_PROGRESS"}`)}
+                        {typeof task.progress.current === "number" && (
+                          <>
+                            {" "}
+                            ({String(task.progress.current)}
+                            {typeof task.progress.total === "number"
+                              ? `/${task.progress.total}`
+                              : ""}
+                            )
+                          </>
+                        )}
+                      </span>
+                    ) : task.result ? (
+                      <span className="payload payload-success">
+                        {JSON.stringify(task.result)}
+                      </span>
+                    ) : (
+                      <span className="cell-muted">—</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );

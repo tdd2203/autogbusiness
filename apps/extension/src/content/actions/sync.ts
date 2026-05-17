@@ -3,7 +3,7 @@ import type {
   ExecuteActionResponse,
   ScrapedMember,
 } from "../../shared/messages";
-import { humanClick, queryByText, querySelectorFirst, sleep } from "../human";
+import { humanClick, queryByText, sleep } from "../human";
 import { reportProgress } from "../progress";
 import { getChatGPTUserInfo } from "../scrapers/user";
 import { SELECTORS, TEXT_FALLBACKS } from "../selectors";
@@ -11,41 +11,9 @@ import { SELECTORS, TEXT_FALLBACKS } from "../selectors";
 function parseRole(raw: string | null | undefined): ChatGPTRole | null {
   if (!raw) return null;
   const t = raw.trim().toLowerCase();
-  if (t.includes("owner")) return "owner";
-  if (t.includes("admin")) return "admin";
-  if (t.includes("member")) return "member";
-  return null;
-}
-
-/**
- * DOM concatenate text từ nhiều element không có space giữa email và role.
- * Ví dụ: "abc@gmail.com" + "Thành viên" → textContent = "abc@gmail.comThành viên"
- * → regex greedy ăn cả "comTh" thành TLD sai.
- *
- * Fix: match email + tld-chunk, rồi check prefix thuộc TLD whitelist.
- */
-const EMAIL_RE = /([a-z0-9._%+\-]+@[a-z0-9.\-]+\.)([a-zA-Z]+)/i;
-
-const KNOWN_TLDS = new Set([
-  "com", "net", "org", "info", "biz", "edu", "gov", "mil",
-  "io", "co", "ai", "app", "dev", "xyz", "me", "tv", "us",
-  "vn", "cn", "uk", "jp", "kr", "de", "fr", "ru", "eu", "asia",
-  "in", "sg", "hk", "tw", "au", "ca", "br", "mx", "ph", "th", "id", "my",
-  "name", "pro", "tech", "online", "store", "site", "blog", "shop",
-]);
-
-function extractEmail(text: string): string | null {
-  const m = text.match(EMAIL_RE);
-  if (!m) return null;
-  const prefix = m[1].toLowerCase();
-  const tldChunk = m[2].toLowerCase();
-  // Tìm prefix TLD dài nhất nằm trong whitelist
-  for (let len = Math.min(tldChunk.length, 6); len >= 2; len--) {
-    const tld = tldChunk.slice(0, len);
-    if (KNOWN_TLDS.has(tld)) {
-      return prefix + tld;
-    }
-  }
+  if (t.includes("owner") || t.includes("chủ sở hữu")) return "owner";
+  if (t.includes("admin") || t.includes("quản trị")) return "admin";
+  if (t.includes("member") || t.includes("thành viên")) return "member";
   return null;
 }
 
@@ -88,72 +56,166 @@ async function clickTabAndWait(
   return true;
 }
 
+/**
+ * Email FULL match regex — toàn bộ string phải là email, không có ký tự thừa.
+ * Dùng để identify leaf element chứa CHỈ email (chính xác hơn extractEmail
+ * vì không bị nuốt ký tự name avatar phía trước).
+ */
+const EMAIL_FULL_RE = /^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i;
+
+/**
+ * Date keyword match — tìm cột "Ngày thêm" (vd "17 thg 5, 2026").
+ * ChatGPT vi: "DD thg M, YYYY" hoặc "DD tháng M, YYYY".
+ */
+const DATE_RE = /^\d{1,2}\s+(?:thg|tháng)\s+\d{1,2},\s+\d{4}$/i;
+
+/**
+ * Tìm trong root 1 TEXT NODE có nodeValue chính xác là email format.
+ *
+ * Vì sao text node (không phải element)? ChatGPT đôi khi render email như TEXT
+ * NODE TRỰC TIẾP của element cha — bên cạnh <span>D</span> avatar. Nếu chỉ check
+ * `el.children.length === 0`, parent có cả span và text node sẽ bị skip (children
+ * count = 1), còn fallback regex sẽ thấy textContent = "Ddhealth.220@gmail.com"
+ * và match toàn bộ → email sai.
+ *
+ * TreeWalker SHOW_TEXT đi qua text nodes trực tiếp, mỗi node là 1 string độc lập
+ * → email luôn tách khỏi avatar text.
+ */
+function findEmailTextNode(
+  root: Node,
+): { email: string; parent: HTMLElement } | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const text = (node.nodeValue ?? "").trim();
+    if (!text || text.length > 100) continue;
+    if (!EMAIL_FULL_RE.test(text)) continue;
+    const parent = (node.parentElement ?? root) as HTMLElement;
+    return { email: text.toLowerCase(), parent };
+  }
+  return null;
+}
+
+/**
+ * Tìm "Ngày thêm" — walk text nodes trong row tìm format "DD thg M, YYYY".
+ * Trả ISO date string hoặc null.
+ */
+function findJoinedAtInRow(row: HTMLElement): string | null {
+  const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const text = (node.nodeValue ?? "").trim();
+    if (!DATE_RE.test(text)) continue;
+    const m = text.match(/^(\d{1,2})\s+(?:thg|tháng)\s+(\d{1,2}),\s+(\d{4})$/i);
+    if (!m) continue;
+    const day = parseInt(m[1], 10);
+    const month = parseInt(m[2], 10);
+    const year = parseInt(m[3], 10);
+    if (year < 2020 || year > 2100) continue;
+    const d = new Date(Date.UTC(year, month - 1, day));
+    if (isNaN(d.getTime())) continue;
+    return d.toISOString();
+  }
+  return null;
+}
+
+/**
+ * Tìm name — walk text nodes trong row, loại trừ email/date/role/license/avatar
+ * initial. Trả về first qualifying text node trimmed.
+ */
+function findNameInRow(row: HTMLElement, email: string): string | null {
+  const emailPrefix = email.split("@")[0] ?? "";
+  const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const text = (node.nodeValue ?? "").trim();
+    if (!text || text.length > 80) continue;
+    if (EMAIL_FULL_RE.test(text)) continue;
+    if (DATE_RE.test(text)) continue;
+    if (parseRole(text)) continue;
+    const lower = text.toLowerCase();
+    if (lower === "chatgpt") continue;
+    // Avatar initial thường ≤ 3 ký tự (vd "D", "hai", "HP")
+    if (text.length < 2) continue;
+    // Skip nếu trùng email prefix (vd "dhealth.220" duplicate text)
+    if (lower === emailPrefix.toLowerCase()) continue;
+    return text;
+  }
+  return null;
+}
+
 function scrapeAllRows(): ScrapedMember[] {
   const members: ScrapedMember[] = [];
   const seen = new Set<string>();
 
-  // 1) Thử selectors có cấu trúc
+  // 1) Thử selectors có cấu trúc (data-testid v.v.) — hiện ChatGPT KHÔNG có,
+  // sẽ fall qua bước 2. Giữ làm fallback nếu có Future ChatGPT release.
   for (const sel of SELECTORS.memberRow) {
     const rows = document.querySelectorAll<HTMLElement>(sel);
     if (rows.length === 0) continue;
     for (const row of Array.from(rows)) {
-      const emailEl = querySelectorFirst<HTMLElement>(
-        SELECTORS.memberRowEmail,
-        row,
-      );
-      const nameEl = querySelectorFirst<HTMLElement>(
-        SELECTORS.memberRowName,
-        row,
-      );
-      const roleEl = querySelectorFirst<HTMLElement>(
-        SELECTORS.memberRowRole,
-        row,
-      );
-
-      const emailText = (emailEl?.textContent ?? row.textContent ?? "").trim();
-      const email = extractEmail(emailText);
-      if (!email || seen.has(email)) continue;
-      seen.add(email);
+      const found = findEmailTextNode(row);
+      if (!found || seen.has(found.email)) continue;
+      seen.add(found.email);
       members.push({
-        email,
-        name: nameEl?.textContent?.trim() ?? null,
-        chatgpt_role: parseRole(roleEl?.textContent ?? row.textContent ?? null),
+        email: found.email,
+        name: findNameInRow(row, found.email),
+        chatgpt_role: parseRole(row.textContent ?? null),
         status: "active",
+        joined_at: findJoinedAtInRow(row),
       });
     }
     if (members.length > 0) return members;
   }
 
-  // 2) Fallback theo email regex — scan tất cả elements
-  const allEls = document.querySelectorAll<HTMLElement>(
-    "div, tr, li, [role='row'], [role='listitem']",
-  );
-  const emailToContainer = new Map<string, HTMLElement>();
-  for (const el of Array.from(allEls)) {
-    // bỏ qua nếu có descendant là chính element khác đã được chọn
-    if (el.children.length === 0) continue;
-    const text = el.textContent ?? "";
-    const email = extractEmail(text);
-    if (!email) continue;
-    const existing = emailToContainer.get(email);
-    // Chọn container nhỏ nhất (innermost) chứa email
-    if (!existing || existing.contains(el)) {
-      emailToContainer.set(email, el);
-    }
-  }
-  for (const [email, container] of emailToContainer) {
+  // 2) Fallback: TreeWalker SHOW_TEXT toàn DOM, mỗi text node trim đúng email
+  // format = 1 row. Walk up tìm container hợp lý.
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const text = (node.nodeValue ?? "").trim();
+    if (!text || text.length > 100) continue;
+    if (!EMAIL_FULL_RE.test(text)) continue;
+    const email = text.toLowerCase();
     if (seen.has(email)) continue;
     seen.add(email);
-    const text = container.textContent ?? "";
+
+    // Walk up tìm row chứa email; stop khi parent chứa >1 email
+    let row: HTMLElement | null = node.parentElement;
+    for (let i = 0; i < 6 && row?.parentElement; i++) {
+      const parent = row.parentElement;
+      const emailCountInParent = countEmailsInSubtree(parent);
+      if (emailCountInParent > 1) break;
+      row = parent;
+    }
+    if (!row) continue;
+
     members.push({
       email,
-      name: null,
-      chatgpt_role: parseRole(text),
+      name: findNameInRow(row, email),
+      chatgpt_role: parseRole(row.textContent ?? null),
       status: "active",
+      joined_at: findJoinedAtInRow(row),
     });
   }
 
   return members;
+}
+
+/**
+ * Đếm số email-format text nodes trong subtree (không bao gồm root chính nó
+ * nếu root chỉ có 1 text node email — vẫn count 1).
+ */
+function countEmailsInSubtree(root: Node): number {
+  let count = 0;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const text = (node.nodeValue ?? "").trim();
+    if (EMAIL_FULL_RE.test(text)) count += 1;
+    if (count > 1) break;
+  }
+  return count;
 }
 
 /** Scroll tới đáy, lặp lại tới khi số row không tăng nữa (xử lý virtualized list). */
@@ -260,13 +322,48 @@ async function scrapeCurrentTab(
   return { members: Array.from(collected.values()), timedOut };
 }
 
-export async function executeSync(taskId: string): Promise<ExecuteActionResponse> {
+export async function executeSync(
+  taskId: string,
+  includePending: boolean = true,
+): Promise<ExecuteActionResponse> {
   if (!location.pathname.includes("/admin")) {
     return {
       ok: false,
       error_code: "PAGE_NOT_ADMIN",
       error_message: `Trang hiện tại không phải admin (${location.pathname}). Mở chatgpt.com/admin/members trước.`,
     };
+  }
+
+  // Tab "Người dùng / Lời mời / Yêu cầu" chỉ tồn tại trên /admin/members.
+  // Nếu admin tab đang ở /admin/billing hay /admin/something-else thì điều
+  // hướng tới /admin/members và đợi SPA render xong trước khi scrape.
+  if (!location.pathname.includes("/admin/members")) {
+    console.log(
+      `[autogpt-sync] đang ở ${location.pathname}, điều hướng sang /admin/members`,
+    );
+    await reportProgress(
+      taskId,
+      { phase: "discover", message: "Điều hướng sang /admin/members..." },
+      true,
+    );
+    history.pushState({}, "", "/admin/members");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    // Đợi SPA route + render tab buttons (best-effort polling)
+    let tabReady = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(500);
+      if (findTabButton(TEXT_FALLBACKS.tabActiveMembers)) {
+        tabReady = true;
+        break;
+      }
+    }
+    if (!tabReady) {
+      return {
+        ok: false,
+        error_code: "PAGE_NOT_ADMIN",
+        error_message: `Không điều hướng được sang /admin/members sau 10s (path hiện tại: ${location.pathname}). Mở tab chatgpt.com/admin/members thủ công và thử lại.`,
+      };
+    }
   }
 
   const startedAt = Date.now();
@@ -278,28 +375,34 @@ export async function executeSync(taskId: string): Promise<ExecuteActionResponse
   // active thắng. Nhưng thường email pending không trùng với active.
   const merged = new Map<string, ScrapedMember>();
 
-  // ----- Tab 1: Lời mời đang chờ xử lý (pending invites) -----
-  if (await clickTabAndWait(TEXT_FALLBACKS.tabPendingInvites)) {
-    const { members } = await scrapeCurrentTab(
-      taskId,
-      "pending",
-      "Lời mời",
-      isOverTime,
-    );
-    console.log(`[autogpt-sync] tab Lời mời: ${members.length} entries`);
-    for (const m of members) merged.set(m.email, m);
-  }
+  if (includePending) {
+    // ----- Tab 1: Lời mời đang chờ xử lý (pending invites) -----
+    if (await clickTabAndWait(TEXT_FALLBACKS.tabPendingInvites)) {
+      const { members } = await scrapeCurrentTab(
+        taskId,
+        "pending",
+        "Lời mời",
+        isOverTime,
+      );
+      console.log(`[autogpt-sync] tab Lời mời: ${members.length} entries`);
+      for (const m of members) merged.set(m.email, m);
+    }
 
-  // ----- Tab 2: Yêu cầu đang chờ xử lý (pending requests) -----
-  if (await clickTabAndWait(TEXT_FALLBACKS.tabPendingRequests)) {
-    const { members } = await scrapeCurrentTab(
-      taskId,
-      "pending",
-      "Yêu cầu",
-      isOverTime,
+    // ----- Tab 2: Yêu cầu đang chờ xử lý (pending requests) -----
+    if (await clickTabAndWait(TEXT_FALLBACKS.tabPendingRequests)) {
+      const { members } = await scrapeCurrentTab(
+        taskId,
+        "pending",
+        "Yêu cầu",
+        isOverTime,
+      );
+      console.log(`[autogpt-sync] tab Yêu cầu: ${members.length} entries`);
+      for (const m of members) merged.set(m.email, m);
+    }
+  } else {
+    console.log(
+      "[autogpt-sync] includePending=false → bỏ qua Lời mời + Yêu cầu, chỉ scrape Người dùng",
     );
-    console.log(`[autogpt-sync] tab Yêu cầu: ${members.length} entries`);
-    for (const m of members) merged.set(m.email, m);
   }
 
   // ----- Tab 3: Người dùng (active members) — scrape CUỐI để status active

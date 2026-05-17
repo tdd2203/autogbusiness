@@ -4,6 +4,7 @@ import { useMutation } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useT } from "../i18n";
 import type { WorkspaceWithKey } from "../types";
+import { confirm } from "../components/Toast";
 
 export default function WorkspaceExtension() {
   const t = useT();
@@ -43,61 +44,91 @@ export default function WorkspaceExtension() {
   }
 
   return (
-    <div className="max-w-2xl">
-      <h2 className="text-lg font-medium mb-4">{t("extension.title")}</h2>
-
-      <div className="bg-white rounded shadow p-5 space-y-4">
-        <div className="text-sm text-slate-700 space-y-2">
-          <p>{t("extension.description")}</p>
-        </div>
+    <div style={{ maxWidth: 720 }}>
+      <div className="settings-section">
+        <h3 className="display-h3">{t("extension.title")}</h3>
+        <p
+          style={{
+            fontSize: 13,
+            color: "var(--ink-3)",
+            marginTop: 4,
+            marginBottom: 20,
+          }}
+        >
+          {t("extension.description")}
+        </p>
 
         {revealedKey && (
-          <div className="bg-amber-50 border border-amber-300 rounded p-4">
-            <div className="font-semibold text-amber-900 mb-1">
-              {t("extension.keyBannerTitle")}
-            </div>
-            <p className="text-sm text-amber-800 mb-3">
-              {t("extension.keyBannerWarning")}
-            </p>
-            <div className="flex gap-2 items-center">
-              <code className="flex-1 bg-white border rounded px-3 py-2 text-xs font-mono break-all">
-                {revealedKey}
-              </code>
-              <button
-                onClick={onCopy}
-                className="bg-slate-900 text-white px-3 py-2 rounded text-sm whitespace-nowrap"
-              >
-                {copied ? t("common.copied") : t("common.copy")}
-              </button>
+          <div className="notice warn" style={{ marginBottom: 16, alignItems: "flex-start" }}>
+            <div className="notice-icon">!</div>
+            <div style={{ flex: 1 }}>
+              <div className="notice-title">{t("extension.keyBannerTitle")}</div>
+              <div className="notice-body" style={{ marginBottom: 8 }}>
+                {t("extension.keyBannerWarning")}
+              </div>
+              <div className="flex items-center gap-2">
+                <code
+                  style={{
+                    flex: 1,
+                    background: "var(--surface)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "var(--radius)",
+                    padding: "8px 10px",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12,
+                    wordBreak: "break-all",
+                  }}
+                >
+                  {revealedKey}
+                </code>
+                <button
+                  onClick={onCopy}
+                  className="btn btn-primary btn-sm"
+                  style={{ whiteSpace: "nowrap" }}
+                >
+                  {copied ? t("common.copied") : t("common.copy")}
+                </button>
+              </div>
             </div>
           </div>
         )}
 
-        <div className="flex gap-2">
+        <div className="flex gap-2" style={{ flexWrap: "wrap" }}>
           <button
             onClick={() => reveal.mutate()}
             disabled={reveal.isPending}
-            className="bg-slate-900 text-white px-4 py-2 rounded text-sm disabled:opacity-60"
+            className="btn btn-primary"
           >
             {reveal.isPending
               ? t("extension.revealBusy")
               : t("extension.revealButton")}
           </button>
           <button
-            onClick={() => {
-              if (window.confirm(t("extension.regenConfirm"))) {
-                regen.mutate();
-              }
+            onClick={async () => {
+              const ok = await confirm(t("extension.regenConfirm"), {
+                okText: t("extension.regenButton"),
+                cancelText: t("common.cancel"),
+                danger: true,
+              });
+              if (ok) regen.mutate();
             }}
             disabled={regen.isPending}
-            className="bg-rose-600 text-white px-4 py-2 rounded text-sm disabled:opacity-60"
+            className="btn btn-danger"
           >
             {regen.isPending
               ? t("extension.regenBusy")
               : t("extension.regenButton")}
           </button>
         </div>
-        <p className="text-xs text-slate-500 mt-2">{t("extension.helpText")}</p>
+        <p
+          style={{
+            fontSize: 11.5,
+            color: "var(--ink-3)",
+            marginTop: 12,
+          }}
+        >
+          {t("extension.helpText")}
+        </p>
       </div>
     </div>
   );

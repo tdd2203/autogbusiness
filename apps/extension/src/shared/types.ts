@@ -20,7 +20,13 @@ export type Workspace = {
 
 export type QueueItem = {
   id: string;
-  type: "INVITE_MEMBER" | "REMOVE_MEMBER" | "CHANGE_ROLE" | "SYNC_DATA" | "SYNC_BILLING";
+  type:
+    | "INVITE_MEMBER"
+    | "REMOVE_MEMBER"
+    | "CHANGE_ROLE"
+    | "SYNC_DATA"
+    | "SYNC_BILLING"
+    | "REVOKE_INVITES";
   status: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "FAILED";
   payload: Record<string, unknown>;
   workspace_id: string | null;

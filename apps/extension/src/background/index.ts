@@ -26,7 +26,33 @@ const DASHBOARD_MATCHES = [
  * Fix: mỗi lần extension install/reload/update, query tab khớp dashboard
  * matches và bắn executeScript để inject bridge mới NGAY LẬP TỨC.
  */
+/**
+ * Lấy danh sách bundled JS files của content script dashboard-bridge từ
+ * manifest. Sau khi vite build, file source `.ts` được đóng gói thành
+ * `assets/dashboard-bridge.ts-loader-<hash>.js` (hash đổi mỗi lần build) →
+ * không thể hardcode path. Đọc trực tiếp từ manifest.content_scripts là cách
+ * duy nhất chính xác cả ở dev lẫn prod.
+ */
+function getDashboardBridgeFiles(): string[] {
+  const manifest = chrome.runtime.getManifest();
+  const scripts = (manifest.content_scripts ?? []) as Array<{
+    matches?: string[];
+    js?: string[];
+  }>;
+  const entry = scripts.find((cs) =>
+    (cs.matches ?? []).some((m) => m.includes(":5173/")),
+  );
+  return entry?.js ?? [];
+}
+
 async function reinjectDashboardBridge(): Promise<void> {
+  const files = getDashboardBridgeFiles();
+  if (files.length === 0) {
+    console.warn(
+      "[autogpt] không tìm thấy content_script dashboard-bridge trong manifest — skip reinject",
+    );
+    return;
+  }
   try {
     const tabs = await chrome.tabs.query({ url: DASHBOARD_MATCHES });
     for (const tab of tabs) {
@@ -34,7 +60,7 @@ async function reinjectDashboardBridge(): Promise<void> {
       try {
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
-          files: ["src/content/dashboard-bridge.ts"],
+          files,
         });
         console.log(
           `[autogpt] reinjected bridge into tab ${tab.id} (${tab.url})`,

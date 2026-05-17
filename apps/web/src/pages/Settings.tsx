@@ -4,9 +4,12 @@ import { api, ApiError, setToken } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useT } from "../i18n";
 
+type SettingsTab = "account" | "security";
+
 export default function Settings() {
   const t = useT();
   const { user, refresh } = useAuth();
+  const [tab, setTab] = useState<SettingsTab>("account");
   const [oldPw, setOldPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -39,63 +42,135 @@ export default function Settings() {
     mut.mutate();
   }
 
-  return (
-    <div className="max-w-xl">
-      <h1 className="text-2xl font-semibold mb-6">{t("settings.title")}</h1>
+  const joinedAt = user?.created_at
+    ? new Date(user.created_at).toLocaleDateString()
+    : "—";
 
-      <div className="bg-white rounded shadow p-5 mb-6">
-        <h2 className="font-medium mb-2">{t("settings.accountInfo")}</h2>
-        <div className="text-sm text-slate-700 space-y-1">
-          <div>
-            {t("settings.email")}: {user?.email}
-          </div>
-          <div>
-            {t("settings.username")}: {user?.username}
-          </div>
-          <div>
-            {t("settings.role")}:{" "}
-            {user?.is_super_admin ? t("role.super") : t("role.sub")}
-          </div>
+  return (
+    <div className="page-fade">
+      <div style={{ marginBottom: 32 }}>
+        <div className="breadcrumb">
+          Account<span className="breadcrumb-sep">/</span>
+          {t("nav.settings")}
         </div>
+        <h1 className="display-h1">{t("settings.title")}</h1>
+        <p className="page-sub">{t("settings.subtitle")}</p>
       </div>
 
-      <form onSubmit={onSubmit} className="bg-white rounded shadow p-5 space-y-3">
-        <h2 className="font-medium">{t("settings.changePasswordHeader")}</h2>
-        <input
-          required
-          type="password"
-          placeholder={t("auth.oldPassword")}
-          value={oldPw}
-          onChange={(e) => setOldPw(e.target.value)}
-          className="w-full border rounded px-3 py-2"
-        />
-        <input
-          required
-          type="password"
-          placeholder={t("auth.newPassword")}
-          minLength={8}
-          value={newPw}
-          onChange={(e) => setNewPw(e.target.value)}
-          className="w-full border rounded px-3 py-2"
-        />
-        {msg && (
-          <div
-            className={`text-sm ${
-              msg.ok ? "text-emerald-700" : "text-rose-600"
-            }`}
+      <div className="settings-grid">
+        <nav className="settings-sidenav">
+          <button
+            onClick={() => setTab("account")}
+            className={tab === "account" ? "settings-link active" : "settings-link"}
           >
-            {msg.text}
-          </div>
-        )}
-        <button
-          disabled={mut.isPending}
-          className="bg-slate-900 text-white px-4 py-2 rounded disabled:opacity-60"
-        >
-          {mut.isPending
-            ? t("auth.changePasswordBusy")
-            : t("auth.changePassword")}
-        </button>
-      </form>
+            {t("settings.sectionAccount")}
+          </button>
+          <button
+            onClick={() => setTab("security")}
+            className={tab === "security" ? "settings-link active" : "settings-link"}
+          >
+            {t("settings.sectionSecurity")}
+          </button>
+        </nav>
+
+        <div>
+          {tab === "account" && (
+            <div className="settings-section">
+              <h3 className="display-h3">{t("settings.sectionAccountInfo")}</h3>
+              <p
+                style={{
+                  fontSize: 13,
+                  color: "var(--ink-3)",
+                  marginTop: 4,
+                  marginBottom: 20,
+                }}
+              >
+                {t("settings.accountDesc")}
+              </p>
+              <div className="info-row">
+                <div className="key">{t("settings.email")}</div>
+                <div className="val">{user?.email}</div>
+              </div>
+              <div className="info-row">
+                <div className="key">{t("settings.username")}</div>
+                <div className="val">{user?.username}</div>
+              </div>
+              <div className="info-row">
+                <div className="key">{t("settings.role")}</div>
+                <div className="val">
+                  {user?.is_super_admin ? (
+                    <span className="badge badge-info">{t("role.super")}</span>
+                  ) : (
+                    <span className="role-tag">{t("role.sub")}</span>
+                  )}
+                </div>
+              </div>
+              <div className="info-row">
+                <div className="key">{t("settings.joinedAt")}</div>
+                <div className="val">{joinedAt}</div>
+              </div>
+            </div>
+          )}
+
+          {tab === "security" && (
+            <div className="settings-section">
+              <h3 className="display-h3">
+                {t("settings.sectionPasswordHeader")}
+              </h3>
+              <p
+                style={{
+                  fontSize: 13,
+                  color: "var(--ink-3)",
+                  marginTop: 4,
+                  marginBottom: 20,
+                }}
+              >
+                {t("settings.passwordDesc")}
+              </p>
+              <form onSubmit={onSubmit}>
+                <div style={{ marginBottom: 16 }}>
+                  <label className="form-label">{t("auth.oldPassword")}</label>
+                  <input
+                    required
+                    type="password"
+                    placeholder="••••••••"
+                    value={oldPw}
+                    onChange={(e) => setOldPw(e.target.value)}
+                    className="form-input"
+                  />
+                </div>
+                <div style={{ marginBottom: 16 }}>
+                  <label className="form-label">{t("auth.newPassword")}</label>
+                  <input
+                    required
+                    type="password"
+                    minLength={8}
+                    value={newPw}
+                    onChange={(e) => setNewPw(e.target.value)}
+                    className="form-input"
+                  />
+                </div>
+                {msg && (
+                  <div
+                    style={{
+                      fontSize: 13,
+                      color: msg.ok ? "var(--success)" : "var(--danger)",
+                      marginBottom: 12,
+                    }}
+                  >
+                    {msg.text}
+                  </div>
+                )}
+                <button disabled={mut.isPending} className="btn btn-primary">
+                  {mut.isPending
+                    ? t("auth.changePasswordBusy")
+                    : t("settings.update")}
+                </button>
+              </form>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

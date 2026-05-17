@@ -3,12 +3,18 @@ import { useT } from "../i18n";
 export default function Billing() {
   const t = useT();
   return (
-    <div>
-      <h1 className="text-2xl font-semibold mb-6">{t("billing.title")}</h1>
-      <div className="bg-white rounded shadow p-6">
-        <p className="text-slate-600">
-          {t("nav.billing")} — coming soon.
-        </p>
+    <div className="page-fade">
+      <div style={{ marginBottom: 32 }}>
+        <div className="breadcrumb">
+          Organization<span className="breadcrumb-sep">/</span>
+          {t("nav.billing")}
+        </div>
+        <h1 className="display-h1">{t("billing.title")}</h1>
+        <p className="page-sub">{t("billing.subtitle")}</p>
+      </div>
+      <div className="empty-state surface-card">
+        <h4>{t("billing.comingSoon")}</h4>
+        <p>{t("billing.subtitle")}</p>
       </div>
     </div>
   );

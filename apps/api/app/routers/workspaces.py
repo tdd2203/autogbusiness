@@ -18,7 +18,7 @@ from app.deps import (
 )
 from app.models import QueueItem, User, Workspace, WorkspaceSettings
 from app.permissions import Permission
-from app.sse import publish_task_event
+from app.sse import publish_task_event, subscriber_count
 from app.schemas import (
     BillingSyncIn,
     ExtensionInfoIn,
@@ -95,6 +95,21 @@ def push_billing_sync(
                 "after": new_val.isoformat() if isinstance(new_val, datetime) else new_val,
             }
             setattr(workspace, field, new_val)
+
+    if body.invoices is not None:
+        # Lưu list serialized (date thành ISO string) → JSONB
+        workspace.billing_invoices = [
+            {
+                "date": inv.date.isoformat(),
+                "amount_vnd": inv.amount_vnd,
+                "status": inv.status,
+            }
+            for inv in body.invoices
+        ]
+        changes["invoices_count"] = {
+            "before": "?",
+            "after": len(body.invoices),
+        }
 
     workspace.last_billing_synced_at = datetime.now(timezone.utc)
     db.add(workspace)
@@ -177,6 +192,25 @@ def get_workspace(
     return _get_workspace_or_404(db, workspace_id)
 
 
+@router.get("/{workspace_id}/extension-status", response_model=dict)
+def get_extension_status(
+    workspace_id: UUID,
+    db: Session = Depends(get_session),
+    _: User = Depends(get_current_user),
+) -> dict:
+    """Dashboard poll endpoint này để biết extension nào có đang subscribe SSE
+    cho workspace tương ứng. Cross-browser detection — KHÔNG cần postMessage
+    bridge cùng trình duyệt.
+
+    Trả:
+      - online: bool — có ít nhất 1 extension SSE subscriber đang kết nối
+      - subscribers: int — số extension đang subscribe (thường 0 hoặc 1)
+    """
+    ws = _get_workspace_or_404(db, workspace_id)
+    count = subscriber_count(ws.id)
+    return {"online": count > 0, "subscribers": count}
+
+
 @router.patch("/{workspace_id}", response_model=WorkspaceOut)
 def update_workspace(
     workspace_id: UUID,
@@ -240,16 +274,23 @@ def reveal_api_key(
 @router.post("/{workspace_id}/sync", status_code=status.HTTP_202_ACCEPTED)
 def trigger_sync(
     workspace_id: UUID,
+    include_pending: bool = True,
     db: Session = Depends(get_session),
     user: User = Depends(require_permission(Permission.WORKSPACE_SYNC_TRIGGER)),
 ) -> dict:
-    """Tạo task SYNC_DATA để Extension scrape danh sách member từ ChatGPT về DB."""
+    """Tạo task SYNC_DATA để Extension scrape danh sách member từ ChatGPT về DB.
+
+    Args:
+        include_pending: nếu True (default) → scrape cả 3 tab (Người dùng + Lời
+        mời + Yêu cầu); nếu False → chỉ scrape Người dùng (nhanh hơn ~3 lần
+        nhưng không cập nhật trạng thái pending invites).
+    """
     _get_workspace_or_404(db, workspace_id)
     queue_item = QueueItem(
         type="SYNC_DATA",
         status="PENDING",
         workspace_id=workspace_id,
-        payload={},
+        payload={"include_pending": include_pending},
         created_by_id=user.id,
     )
     db.add(queue_item)
@@ -263,7 +304,10 @@ def trigger_sync(
         result="PENDING",
         target_type="WORKSPACE",
         target_id=str(workspace_id),
-        data={"queue_item_id": str(queue_item.id)},
+        data={
+            "queue_item_id": str(queue_item.id),
+            "include_pending": include_pending,
+        },
         commit=False,
     )
     db.commit()
@@ -272,6 +316,72 @@ def trigger_sync(
         {"type": "task-available", "task_id": str(queue_item.id), "task_type": "SYNC_DATA"},
     )
     return {"queue_item_id": str(queue_item.id), "status": "queued"}
+
+
+@router.post(
+    "/{workspace_id}/revoke-invites", status_code=status.HTTP_202_ACCEPTED
+)
+def trigger_revoke_invites(
+    workspace_id: UUID,
+    body: dict,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_permission(Permission.MEMBER_REMOVE)),
+) -> dict:
+    """Tạo task REVOKE_INVITES để Extension thu hồi danh sách pending invites.
+
+    Body: {"emails": ["a@x.com", "b@y.com", ...]}
+
+    Dùng cho flow "rogue invite detection": sau khi sync, dashboard phát hiện
+    pending invites trên ChatGPT KHÔNG có trong DB → admin xác nhận thu hồi.
+    """
+    _get_workspace_or_404(db, workspace_id)
+    raw_emails = body.get("emails") or []
+    emails = [
+        str(e).strip().lower()
+        for e in raw_emails
+        if isinstance(e, str) and "@" in e
+    ]
+    if not emails:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Danh sách emails rỗng hoặc không hợp lệ",
+        )
+
+    queue_item = QueueItem(
+        type="REVOKE_INVITES",
+        status="PENDING",
+        workspace_id=workspace_id,
+        payload={"emails": emails},
+        created_by_id=user.id,
+    )
+    db.add(queue_item)
+    db.flush()
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.email,
+        action="REVOKE_INVITES_QUEUED",
+        result="PENDING",
+        target_type="WORKSPACE",
+        target_id=str(workspace_id),
+        data={"queue_item_id": str(queue_item.id), "count": len(emails)},
+        commit=False,
+    )
+    db.commit()
+    publish_task_event(
+        workspace_id,
+        {
+            "type": "task-available",
+            "task_id": str(queue_item.id),
+            "task_type": "REVOKE_INVITES",
+        },
+    )
+    return {
+        "queue_item_id": str(queue_item.id),
+        "status": "queued",
+        "count": len(emails),
+    }
 
 
 @router.post("/{workspace_id}/sync-billing", status_code=status.HTTP_202_ACCEPTED)

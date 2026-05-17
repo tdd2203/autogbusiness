@@ -4,14 +4,35 @@
  */
 
 import type { ExecuteActionResponse } from "../../shared/messages";
-import { sleep } from "../human";
+import { humanClick, queryByText, sleep } from "../human";
 import { reportProgress } from "../progress";
 import { scrapeBillingFromDom } from "../scrapers/billing";
 
 const BILLING_PATH = "/admin/billing";
 
-/** Render delay sau khi navigate trong cùng SPA tab. */
+/** Render delay sau khi navigate / click tab trong SPA. */
 const POST_NAV_RENDER_MS = 2500;
+
+/** Text labels của 2 tab trên trang /admin/billing. */
+const TAB_PLAN_TEXTS = ["Kế hoạch", "Plan"];
+const TAB_INVOICES_TEXTS = ["Hoá đơn", "Hóa đơn", "Invoices"];
+
+/**
+ * Click 1 trong các tab buttons theo text. Trả true nếu click được, false nếu
+ * không tìm thấy.
+ */
+async function clickBillingTab(texts: string[]): Promise<boolean> {
+  for (const text of texts) {
+    const btn = queryByText("button", text) ?? queryByText("a", text);
+    if (btn) {
+      console.log(`[autogpt-sync-billing] click tab "${text}"`);
+      await humanClick(btn);
+      await sleep(POST_NAV_RENDER_MS);
+      return true;
+    }
+  }
+  return false;
+}
 
 export async function executeSyncBilling(
   taskId: string,
@@ -31,38 +52,89 @@ export async function executeSyncBilling(
     true,
   );
 
-  // Nếu đang ở trang khác trong /admin, dùng history.pushState để chuyển nội bộ
-  // Next.js sẽ tự render component billing. KHÔNG full reload (tránh mất context).
-  if (location.pathname !== BILLING_PATH) {
+  // Navigate vào trang billing (nếu chưa ở đó).
+  if (!location.pathname.startsWith(BILLING_PATH)) {
     history.pushState({}, "", BILLING_PATH);
-    // Kích next.js intercept popstate
     window.dispatchEvent(new PopStateEvent("popstate"));
     await sleep(POST_NAV_RENDER_MS);
   } else {
-    // Đang ở billing rồi, vẫn cần chờ render ổn định (mở popup → tab vừa load).
     await sleep(800);
   }
 
+  // Step 1: click tab "Kế hoạch" → scrape seat + plan + chu kỳ
+  // (URL ?tab=invoices có thể sticky nên dùng click button thay vì URL).
   await reportProgress(
     taskId,
-    { phase: "scraping", message: "Đang đọc thông tin billing..." },
+    { phase: "scraping", message: "Đang đọc tab Kế hoạch (seat + chu kỳ)..." },
     true,
   );
+  const planTabClicked = await clickBillingTab(TAB_PLAN_TEXTS);
+  if (!planTabClicked) {
+    console.warn(
+      "[autogpt-sync-billing] không tìm thấy tab Kế hoạch — có thể đã active sẵn",
+    );
+  }
 
-  // Re-poll vài lần vì SPA có thể chưa render xong text
   let billing = scrapeBillingFromDom();
   for (let i = 0; i < 6 && billing.seat_total === null; i++) {
     await sleep(700);
     billing = scrapeBillingFromDom();
   }
+  const seatFromPlan = {
+    plan: billing.plan,
+    seat_total: billing.seat_total,
+    seat_used: billing.seat_used,
+    billing_status: billing.billing_status,
+    renewal_date: billing.renewal_date,
+  };
 
-  if (billing.seat_total === null && billing.seat_used === null) {
+  // Step 2: click tab "Hoá đơn" → scrape list invoices (giá per-slot prorated)
+  await reportProgress(
+    taskId,
+    { phase: "scraping", message: "Đang đọc tab Hoá đơn (lịch sử giá)..." },
+    true,
+  );
+  const invoicesTabClicked = await clickBillingTab(TAB_INVOICES_TEXTS);
+  if (!invoicesTabClicked) {
+    console.warn(
+      "[autogpt-sync-billing] không tìm thấy tab Hoá đơn — skip invoices",
+    );
+  } else {
+    for (let i = 0; i < 6; i++) {
+      const next = scrapeBillingFromDom();
+      if (next.invoices.length > 0) {
+        billing = {
+          ...seatFromPlan,
+          // Giữ seat/plan/renewal từ step 1 (vì ở tab Hoá đơn không có)
+          plan: seatFromPlan.plan ?? next.plan,
+          seat_total: seatFromPlan.seat_total ?? next.seat_total,
+          seat_used: seatFromPlan.seat_used ?? next.seat_used,
+          billing_status:
+            seatFromPlan.billing_status ?? next.billing_status,
+          renewal_date: seatFromPlan.renewal_date ?? next.renewal_date,
+          invoices: next.invoices,
+        };
+        break;
+      }
+      await sleep(700);
+    }
+  }
+
+  // Nới yêu cầu: nếu CẢ seat lẫn invoices đều rỗng → mới fail.
+  // Trường hợp chỉ thiếu seat (vd ChatGPT đổi UI Kế hoạch) nhưng vẫn có
+  // invoices → push partial data còn hơn fail toàn task.
+  if (
+    billing.seat_total === null &&
+    billing.seat_used === null &&
+    billing.invoices.length === 0
+  ) {
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
       error_message:
-        "Không tìm thấy '<số> / <số> giấy phép' trên trang /admin/billing. " +
-        "ChatGPT có thể đã đổi UI — cập nhật scrapers/billing.ts.",
+        "Không scrape được gì từ /admin/billing — cả seat ratio lẫn invoices " +
+        "list đều trống. Verify: page render xong, URL hiện tại " +
+        location.href,
     };
   }
 
@@ -70,7 +142,7 @@ export async function executeSyncBilling(
     taskId,
     {
       phase: "uploading",
-      message: `Đã đọc seat ${billing.seat_used ?? "?"}/${billing.seat_total ?? "?"}, đang upload...`,
+      message: `Seat ${billing.seat_used ?? "?"}/${billing.seat_total ?? "?"} · ${billing.invoices.length} hoá đơn, đang upload...`,
     },
     true,
   );

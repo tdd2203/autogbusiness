@@ -7,6 +7,7 @@ import { executeRemove } from "./actions/remove";
 import { executeChangeRole } from "./actions/change-role";
 import { executeSync } from "./actions/sync";
 import { executeSyncBilling } from "./actions/sync-billing";
+import { executeRevokeInvites } from "./actions/revoke-invites-batch";
 
 console.log("[autogpt-content] injected vào", location.href);
 
@@ -42,9 +43,11 @@ async function dispatch(
     case "CHANGE_ROLE":
       return executeChangeRole(msg.taskId, msg.email, msg.new_role);
     case "SYNC_DATA":
-      return executeSync(msg.taskId);
+      return executeSync(msg.taskId, msg.includePending !== false);
     case "SYNC_BILLING":
       return executeSyncBilling(msg.taskId);
+    case "REVOKE_INVITES":
+      return executeRevokeInvites(msg.taskId, msg.emails);
     default: {
       const exhaustive: never = msg;
       return {

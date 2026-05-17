@@ -36,45 +36,99 @@ export default function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-100">
+    <div
+      className="min-h-screen flex items-center justify-center"
+      style={{ background: "var(--bg)" }}
+    >
       <form
         onSubmit={onSubmit}
-        className="w-full max-w-sm bg-white p-8 rounded-lg shadow"
+        className="surface-card page-fade"
+        style={{
+          width: "100%",
+          maxWidth: 380,
+          padding: 32,
+          boxShadow: "var(--shadow-sm)",
+        }}
       >
-        <h1 className="text-xl font-semibold mb-1">{t("auth.title")}</h1>
-        <p className="text-sm text-slate-500 mb-6">{t("auth.subtitle")}</p>
+        <div
+          className="flex items-baseline"
+          style={{ gap: 8, marginBottom: 4 }}
+        >
+          <span
+            style={{
+              fontFamily: "var(--font-display)",
+              fontSize: 20,
+              fontWeight: 600,
+              letterSpacing: "-0.01em",
+              color: "var(--ink)",
+            }}
+          >
+            AutoGPT
+          </span>
+          <span
+            style={{
+              fontSize: 11,
+              color: "var(--ink-3)",
+              fontFamily: "var(--font-mono)",
+              letterSpacing: "0.02em",
+              textTransform: "uppercase",
+            }}
+          >
+            Admin
+          </span>
+        </div>
+        <p
+          style={{
+            fontSize: 13,
+            color: "var(--ink-3)",
+            marginBottom: 28,
+          }}
+        >
+          {t("auth.subtitle")}
+        </p>
 
-        <label className="block text-sm font-medium mb-1">
-          {t("auth.identifier")}
-        </label>
-        <input
-          autoFocus
-          required
-          value={identifier}
-          onChange={(e) => setIdentifier(e.target.value)}
-          className="w-full border border-slate-300 rounded px-3 py-2 mb-4 outline-none focus:border-slate-500"
-        />
+        <div style={{ marginBottom: 16 }}>
+          <label className="form-label">{t("auth.identifier")}</label>
+          <input
+            autoFocus
+            required
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value)}
+            className="form-input"
+          />
+        </div>
 
-        <label className="block text-sm font-medium mb-1">
-          {t("auth.password")}
-        </label>
-        <input
-          type="password"
-          required
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="w-full border border-slate-300 rounded px-3 py-2 mb-4 outline-none focus:border-slate-500"
-        />
+        <div style={{ marginBottom: 16 }}>
+          <label className="form-label">{t("auth.password")}</label>
+          <input
+            type="password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="form-input"
+          />
+        </div>
 
         {error && (
-          <div className="text-rose-600 text-sm mb-3 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+          <div
+            style={{
+              fontSize: 12.5,
+              color: "var(--danger)",
+              background: "var(--danger-bg)",
+              border: "1px solid #fecaca",
+              borderRadius: "var(--radius)",
+              padding: "8px 12px",
+              marginBottom: 16,
+            }}
+          >
             {error}
           </div>
         )}
 
         <button
           disabled={busy}
-          className="w-full bg-slate-900 text-white rounded py-2 hover:bg-slate-800 disabled:opacity-60"
+          className="btn btn-primary"
+          style={{ width: "100%", justifyContent: "center", padding: "10px 14px" }}
         >
           {busy ? t("auth.loginBusy") : t("auth.login")}
         </button>

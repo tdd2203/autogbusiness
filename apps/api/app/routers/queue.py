@@ -16,7 +16,7 @@ from app.deps import (
     require_extension_workspace,
     require_permission,
 )
-from app.models import QueueItem, User, Workspace
+from app.models import Member, QueueItem, User, Workspace
 from app.permissions import Permission
 from app.schemas import QueueCreate, QueueOut, QueueProgressUpdate, QueueUpdate
 from app.sse import subscribe, unsubscribe
@@ -30,6 +30,7 @@ _TYPE_TO_PERMISSION = {
     "CHANGE_ROLE": Permission.MEMBER_CHANGE_ROLE,
     "SYNC_DATA": Permission.WORKSPACE_SYNC_TRIGGER,
     "SYNC_BILLING": Permission.WORKSPACE_SYNC_TRIGGER,
+    "REVOKE_INVITES": Permission.MEMBER_REMOVE,
 }
 
 
@@ -221,32 +222,145 @@ def update_task(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Queue item không thuộc workspace của API key này",
         )
-    item.status = body.status
+    # ---- Auto-reconcile các trường hợp "phantom record" trên dashboard ----
+    # Khi extension báo lỗi mà thực ra ChatGPT đã ở đúng state mong muốn rồi
+    # (vd: remove một member đã không còn trên ChatGPT), backend convert
+    # FAILED → COMPLETED và update DB cho khớp thực tế, tránh phantom record.
+    reconcile_note: str | None = None
+    effective_status = body.status
+    if (
+        body.status == "FAILED"
+        and body.error_code == "UI_ELEMENT_NOT_FOUND"
+        and item.type == "REMOVE_MEMBER"
+    ):
+        member_id_str = (item.payload or {}).get("member_id")
+        if member_id_str:
+            try:
+                member_uuid = UUID(str(member_id_str))
+                member = db.get(Member, member_uuid)
+                if member and member.workspace_id == workspace.id:
+                    member.status = "removed"
+                    db.add(member)
+                    reconcile_note = (
+                        f"Member không tìm thấy trên ChatGPT → đã có sẵn trong "
+                        f"trạng thái removed; coi như xoá thành công."
+                    )
+                    effective_status = "COMPLETED"
+            except (ValueError, TypeError):
+                pass
+
+    # ---- REVOKE_INVITES COMPLETED → mark các email trong payload là removed ----
+    # Extension đã click "Thu hồi lời mời" trên ChatGPT thành công cho danh sách
+    # email; DB phải khớp theo (status='removed') để dashboard không còn hiển
+    # thị các pending record này.
+    if body.status == "COMPLETED" and item.type == "REVOKE_INVITES":
+        raw_emails = (item.payload or {}).get("emails") or []
+        revoke_emails = [
+            str(e).strip().lower()
+            for e in raw_emails
+            if isinstance(e, str) and "@" in e
+        ]
+        if revoke_emails:
+            stale_members = (
+                db.execute(
+                    select(Member).where(
+                        Member.workspace_id == workspace.id,
+                        Member.email.in_(revoke_emails),
+                        Member.status.in_(("pending", "active")),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for member in stale_members:
+                member.status = "removed"
+                db.add(member)
+
+    item.status = effective_status
     if body.result is not None:
         item.result = body.result
-    item.error_code = body.error_code
-    item.error_message = body.error_message
-    if body.status in ("COMPLETED", "FAILED"):
+    elif reconcile_note:
+        item.result = {"reconciled": True, "note": reconcile_note}
+    item.error_code = None if effective_status == "COMPLETED" else body.error_code
+    item.error_message = (
+        reconcile_note
+        if effective_status == "COMPLETED" and reconcile_note
+        else (None if effective_status == "COMPLETED" else body.error_message)
+    )
+    if effective_status in ("COMPLETED", "FAILED"):
         item.completed_at = datetime.now(timezone.utc)
     db.add(item)
     log_event(
         db,
         actor_type="EXTENSION",
         actor_label=f"workspace:{workspace.name}",
-        action=f"QUEUE_UPDATED:{item.type}",
-        result=body.status if body.status in ("COMPLETED", "FAILED") else "PENDING",
+        action=f"QUEUE_UPDATED:{item.type}"
+        + (":RECONCILED" if reconcile_note else ""),
+        result=effective_status
+        if effective_status in ("COMPLETED", "FAILED")
+        else "PENDING",
         target_type="QUEUE_ITEM",
         target_id=str(item.id),
         data={
-            "status": body.status,
+            "status": effective_status,
             "error_code": body.error_code,
             "error_message": body.error_message,
+            "reconciled": bool(reconcile_note),
         },
         commit=False,
     )
     db.commit()
     db.refresh(item)
     return item
+
+
+@router.post("/{item_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+def cancel_task(
+    item_id: UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Dashboard user huỷ task đang PENDING hoặc IN_PROGRESS.
+
+    Use case: task treo lâu (extension không pick được, hoặc execution hang) →
+    user bấm Huỷ thay vì chờ vô hạn.
+
+    Quyền: super-admin huỷ mọi task; sub-admin chỉ huỷ task mình tạo
+    (created_by_id = user.id). Task đã COMPLETED/FAILED → 400 (terminal).
+    """
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task không tồn tại"
+        )
+    if item.status in ("COMPLETED", "FAILED"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Task đã ở trạng thái terminal: {item.status}",
+        )
+    if not user.is_super_admin and item.created_by_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Chỉ super-admin hoặc người tạo task mới huỷ được",
+        )
+    item.status = "FAILED"
+    item.error_code = "USER_CANCELED"
+    item.error_message = f"Huỷ bởi {user.email}"
+    item.completed_at = datetime.now(timezone.utc)
+    db.add(item)
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.email,
+        action=f"QUEUE_CANCELED:{item.type}",
+        result="FAILED",
+        target_type="QUEUE_ITEM",
+        target_id=str(item.id),
+        commit=False,
+    )
+    db.commit()
+    return {"id": str(item.id), "status": "FAILED"}
 
 
 @router.patch("/{item_id}/progress", response_model=QueueOut)
