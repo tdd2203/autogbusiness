@@ -17,6 +17,7 @@ from app.deps import (
 )
 from app.models import Invite, Member, QueueItem, User, Workspace
 from app.permissions import Permission
+from app.sse import publish_task_event
 from app.schemas import (
     MemberBulkUpsert,
     MemberChangeRoleIn,
@@ -64,6 +65,7 @@ def list_members(
     workspace_id: UUID,
     db: Session = Depends(get_session),
     user: User = Depends(require_permission(Permission.MEMBER_VIEW)),
+    include_removed: bool = False,
 ) -> list[Member]:
     _get_workspace_or_404(db, workspace_id)
     stmt = (
@@ -71,6 +73,8 @@ def list_members(
         .where(Member.workspace_id == workspace_id)
         .order_by(Member.created_at.desc())
     )
+    if not include_removed:
+        stmt = stmt.where(Member.status != "removed")
     stmt = _visibility_filter(stmt, user)
     return list(db.execute(stmt).scalars())
 
@@ -150,6 +154,10 @@ def invite_member(
     )
     db.commit()
     db.refresh(member)
+    publish_task_event(
+        workspace_id,
+        {"type": "task-available", "task_id": str(queue_item.id), "task_type": "INVITE_MEMBER"},
+    )
     return member
 
 
@@ -190,6 +198,10 @@ def remove_member(
         commit=False,
     )
     db.commit()
+    publish_task_event(
+        workspace_id,
+        {"type": "task-available", "task_id": str(queue_item.id), "task_type": "REMOVE_MEMBER"},
+    )
     return {"queue_item_id": str(queue_item.id), "status": "queued"}
 
 
@@ -248,6 +260,26 @@ def bulk_upsert_members(
             created += 1
 
     workspace.last_synced_at = now
+
+    removed_count = 0
+    if body.is_full_sync and body.members:
+        incoming_emails = {m.email.lower() for m in body.members}
+        stale = (
+            db.execute(
+                select(Member).where(
+                    Member.workspace_id == workspace_id,
+                    Member.status == "active",
+                    Member.email.notin_(incoming_emails),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for m in stale:
+            m.status = "removed"
+            m.last_synced_at = now
+            removed_count += 1
+
     db.add(workspace)
     log_event(
         db,
@@ -257,11 +289,22 @@ def bulk_upsert_members(
         result="SUCCESS",
         target_type="WORKSPACE",
         target_id=str(workspace_id),
-        data={"created": created, "updated": updated, "total": len(body.members)},
+        data={
+            "created": created,
+            "updated": updated,
+            "removed_missing": removed_count,
+            "total": len(body.members),
+            "is_full_sync": body.is_full_sync,
+        },
         commit=False,
     )
     db.commit()
-    return {"created": created, "updated": updated, "total": len(body.members)}
+    return {
+        "created": created,
+        "updated": updated,
+        "removed_missing": removed_count,
+        "total": len(body.members),
+    }
 
 
 @router.patch("/{member_id}/role", status_code=status.HTTP_202_ACCEPTED)
@@ -309,4 +352,8 @@ def change_member_role(
         commit=False,
     )
     db.commit()
+    publish_task_event(
+        workspace_id,
+        {"type": "task-available", "task_id": str(queue_item.id), "task_type": "CHANGE_ROLE"},
+    )
     return {"queue_item_id": str(queue_item.id), "status": "queued"}

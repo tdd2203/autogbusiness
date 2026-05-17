@@ -60,3 +60,31 @@
 - Mọi hành động đồng bộ phải tạo một bản ghi Audit Log tại Backend.
 - Rate limit: 1 request mỗi 5 phút để tránh bị phát hiện spam.
 
+## Changelog
+
+### 2026-05-16 — Bugfix: dashboard auto-trigger extension
+- **Bug**: Nút "↻ Sync billing" enqueue task xong **không** auto-trigger extension drain queue → user phải mở popup extension bấm "Thực hiện task đang chờ".
+- **Cause**: `Workspaces.tsx` thiếu `triggerExtensionRun()` trong `onSuccess` của mutation (Members.tsx đã có cho invite/sync member).
+- **Fix**: gọi `triggerExtensionRun()` ngay sau khi enqueue task ([Workspaces.tsx](../../apps/web/src/pages/Workspaces.tsx)). Bridge content script (đã có sẵn ở [dashboard-bridge.ts](../../apps/extension/src/content/dashboard-bridge.ts)) sẽ forward sang background → `runUntilIdle` chạy ngay.
+- **Bỏ luôn**: `window.alert(...)` sau khi sync — đã có badge "Extension: connected/not detected" + lastRunResult ở sidebar Layout, không cần popup blocking.
+- **Lưu ý**: nếu badge sidebar vẫn báo "Extension: not detected", check (a) extension đã reload sau khi build, (b) dashboard đang chạy ở `localhost:5173` hoặc `127.0.0.1:5173` (manifest content_scripts chỉ inject bridge ở 2 URL này).
+
+### 2026-05-16 — MVP implementation (user-triggered, không auto-poll)
+- **Display rule**: trên Dashboard `Workspaces`, cột Seat hiển thị `seat_used / seat_total` (vd `6/8`). Nguồn dữ liệu: trang `chatgpt.com/admin/billing`, scraping cụm "Đang dùng X/Y giấy phép".
+- **Trigger**: Super-admin bấm nút "↻ Sync billing" trên hàng workspace ([Workspaces.tsx](../../apps/web/src/pages/Workspaces.tsx)). KHÔNG có auto-poll — theo nguyên tắc "thao tác như người dùng thật" đã ghi trong [background/index.ts:6-7](../../apps/extension/src/background/index.ts#L6-L7). Nếu auto-poll cần lại trong tương lai, đọc note đó trước.
+- **Pipeline**:
+  1. Dashboard `POST /api/v1/workspaces/{id}/sync-billing` (cần permission `WORKSPACE_SYNC_TRIGGER`) → enqueue task `SYNC_BILLING`.
+  2. Extension pick task qua `GET /api/v1/queue/next`, dispatch action [`executeSyncBilling`](../../apps/extension/src/content/actions/sync-billing.ts).
+  3. Action navigate `/admin/billing` (history.pushState, không full reload), gọi [`scrapeBillingFromDom`](../../apps/extension/src/content/scrapers/billing.ts).
+  4. Background gọi `POST /api/v1/workspaces/billing-sync` (X-API-KEY) với data `{plan, seat_total, seat_used, billing_status, renewal_date}`.
+  5. Backend cập nhật workspace + ghi audit `WORKSPACE_BILLING_SYNCED`.
+- **Validation**: `seat_total` max = **999** (ChatGPT Business hard cap). Áp dụng cho cả `WorkspaceCreate`, `WorkspaceUpdate`, `BillingSyncIn` trong [schemas.py](../../apps/api/app/schemas.py).
+- **Visibility**: tất cả role (super + sub-admin) đều thấy seat. Nút "Sync billing" chỉ super-admin.
+- **DB**: thêm cột `billing_status`, `renewal_date`, `last_billing_synced_at` qua migration `0006_workspace_billing`.
+- **Tooltip cột Seat**: hover hiển thị thời điểm `last_billing_synced_at` (hoặc "Chưa sync billing").
+- **UNPAID indicator**: nếu `billing_status == "UNPAID"`, hiển thị badge đỏ "Chưa thanh toán" cạnh tên plan.
+- **Chưa làm (intentional)**:
+  - Chưa tự động alert/email khi `UNPAID` — chỉ hiển thị badge passive.
+  - Chưa có nút "Thanh toán ngay" redirect tới OpenAI billing page.
+  - Chưa rate limit per-workspace 5 phút (queue-level rate limit đã có ở runner).
+

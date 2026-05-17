@@ -2,9 +2,11 @@ import { useState } from "react";
 import { useParams } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { useT } from "../i18n";
 import type { WorkspaceWithKey } from "../types";
 
 export default function WorkspaceExtension() {
+  const t = useT();
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -42,23 +44,20 @@ export default function WorkspaceExtension() {
 
   return (
     <div className="max-w-2xl">
-      <h2 className="text-lg font-medium mb-4">Extension API Key</h2>
+      <h2 className="text-lg font-medium mb-4">{t("extension.title")}</h2>
 
       <div className="bg-white rounded shadow p-5 space-y-4">
         <div className="text-sm text-slate-700 space-y-2">
-          <p>
-            Mỗi workspace có 1 API key dùng cho Chrome Extension xác thực với
-            backend (gửi qua header <code className="font-mono text-xs bg-slate-100 px-1 rounded">X-API-KEY</code>).
-          </p>
+          <p>{t("extension.description")}</p>
         </div>
 
         {revealedKey && (
           <div className="bg-amber-50 border border-amber-300 rounded p-4">
             <div className="font-semibold text-amber-900 mb-1">
-              Key mới — copy ngay
+              {t("extension.keyBannerTitle")}
             </div>
             <p className="text-sm text-amber-800 mb-3">
-              Lần sau truy cập trang này sẽ KHÔNG thấy lại key này.
+              {t("extension.keyBannerWarning")}
             </p>
             <div className="flex gap-2 items-center">
               <code className="flex-1 bg-white border rounded px-3 py-2 text-xs font-mono break-all">
@@ -68,7 +67,7 @@ export default function WorkspaceExtension() {
                 onClick={onCopy}
                 className="bg-slate-900 text-white px-3 py-2 rounded text-sm whitespace-nowrap"
               >
-                {copied ? "✓ Copied" : "Copy"}
+                {copied ? t("common.copied") : t("common.copy")}
               </button>
             </div>
           </div>
@@ -80,27 +79,25 @@ export default function WorkspaceExtension() {
             disabled={reveal.isPending}
             className="bg-slate-900 text-white px-4 py-2 rounded text-sm disabled:opacity-60"
           >
-            {reveal.isPending ? "Đang lấy..." : "Hiển thị key hiện tại"}
+            {reveal.isPending
+              ? t("extension.revealBusy")
+              : t("extension.revealButton")}
           </button>
           <button
             onClick={() => {
-              if (
-                window.confirm(
-                  "Sinh key mới sẽ vô hiệu key cũ NGAY LẬP TỨC. Tất cả extension đang chạy với key cũ sẽ bị mất kết nối. Tiếp tục?",
-                )
-              ) {
+              if (window.confirm(t("extension.regenConfirm"))) {
                 regen.mutate();
               }
             }}
             disabled={regen.isPending}
             className="bg-rose-600 text-white px-4 py-2 rounded text-sm disabled:opacity-60"
           >
-            {regen.isPending ? "Đang sinh..." : "Regenerate API Key"}
+            {regen.isPending
+              ? t("extension.regenBusy")
+              : t("extension.regenButton")}
           </button>
         </div>
-        <p className="text-xs text-slate-500 mt-2">
-          "Hiển thị key hiện tại" trả về key đang dùng (audit log ghi nhận). "Regenerate" sinh key MỚI và vô hiệu key cũ.
-        </p>
+        <p className="text-xs text-slate-500 mt-2">{t("extension.helpText")}</p>
       </div>
     </div>
   );

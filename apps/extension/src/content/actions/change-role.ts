@@ -9,13 +9,17 @@ import {
   randomDelay,
   waitFor,
 } from "../human";
+import { reportProgress } from "../progress";
 import { SELECTORS, TEXT_FALLBACKS } from "../selectors";
 import { findMemberRow, findRowMenuButton } from "./member-row";
 
 export async function executeChangeRole(
+  taskId: string,
   email: string,
   newRole: ChatGPTRole,
 ): Promise<ExecuteActionResponse> {
+  await reportProgress(taskId, { phase: "locating", message: `Tìm row của ${email}...` }, true);
+
   if (!location.pathname.includes("/admin")) {
     return {
       ok: false,
@@ -78,6 +82,7 @@ export async function executeChangeRole(
       error_message: `Không tìm thấy option role '${newRole}' trong UI.`,
     };
   }
+  await reportProgress(taskId, { phase: "applying", message: `Đang đổi role sang ${newRole}...` }, true);
   await humanClick(roleOption);
 
   // Verify — đợi role text trong row đổi (best-effort; tuỳ theo UI có refresh ngay không)

@@ -11,6 +11,9 @@ export type Workspace = {
   seat_total: number | null;
   seat_used: number | null;
   last_synced_at: string | null;
+  billing_status: "PAID" | "UNPAID" | "UNKNOWN" | null;
+  renewal_date: string | null;
+  last_billing_synced_at: string | null;
   created_at: string;
   updated_at: string;
 };

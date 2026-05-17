@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
-import { GRANTABLE, PERMISSION_LABEL, type PermissionKey } from "../lib/permissions";
+import { GRANTABLE, type PermissionKey } from "../lib/permissions";
+import { useT } from "../i18n";
 
 type UserItem = {
   id: string;
@@ -14,6 +15,7 @@ type UserItem = {
 };
 
 export default function Users() {
+  const t = useT();
   const qc = useQueryClient();
   const users = useQuery({
     queryKey: ["users"],
@@ -25,12 +27,12 @@ export default function Users() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-semibold">Tài khoản phụ</h1>
+        <h1 className="text-2xl font-semibold">{t("users.title")}</h1>
         <button
           onClick={() => setShowForm((v) => !v)}
           className="bg-slate-900 text-white px-4 py-2 rounded"
         >
-          {showForm ? "Đóng" : "+ Tạo tài khoản"}
+          {showForm ? t("users.close") : t("users.create")}
         </button>
       </div>
 
@@ -47,12 +49,14 @@ export default function Users() {
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
-              <th className="text-left px-4 py-2">Email</th>
-              <th className="text-left px-4 py-2">Username</th>
-              <th className="text-left px-4 py-2">Loại</th>
-              <th className="text-left px-4 py-2">Permissions</th>
-              <th className="text-left px-4 py-2">Trạng thái</th>
-              <th className="text-left px-4 py-2">Thao tác</th>
+              <th className="text-left px-4 py-2">{t("users.email")}</th>
+              <th className="text-left px-4 py-2">{t("users.username")}</th>
+              <th className="text-left px-4 py-2">{t("users.typeCol")}</th>
+              <th className="text-left px-4 py-2">
+                {t("users.permissionsCol")}
+              </th>
+              <th className="text-left px-4 py-2">{t("users.statusCol")}</th>
+              <th className="text-left px-4 py-2">{t("users.actionsCol")}</th>
             </tr>
           </thead>
           <tbody>
@@ -67,6 +71,7 @@ export default function Users() {
 }
 
 function CreateUserForm({ onCreated }: { onCreated: () => void }) {
+  const t = useT();
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -89,7 +94,9 @@ function CreateUserForm({ onCreated }: { onCreated: () => void }) {
       onCreated();
     },
     onError: (e) => {
-      setErr(e instanceof ApiError ? JSON.stringify(e.detail) : "Lỗi tạo user");
+      setErr(
+        e instanceof ApiError ? JSON.stringify(e.detail) : t("users.createError"),
+      );
     },
   });
 
@@ -111,7 +118,7 @@ function CreateUserForm({ onCreated }: { onCreated: () => void }) {
     <form onSubmit={onSubmit} className="bg-white rounded shadow p-5 mb-6">
       <div className="grid grid-cols-3 gap-3 mb-4">
         <input
-          placeholder="Email"
+          placeholder={t("users.email")}
           required
           type="email"
           value={email}
@@ -119,7 +126,7 @@ function CreateUserForm({ onCreated }: { onCreated: () => void }) {
           className="border rounded px-3 py-2"
         />
         <input
-          placeholder="Username"
+          placeholder={t("users.username")}
           required
           minLength={3}
           value={username}
@@ -127,7 +134,7 @@ function CreateUserForm({ onCreated }: { onCreated: () => void }) {
           className="border rounded px-3 py-2"
         />
         <input
-          placeholder="Password (≥8 ký tự)"
+          placeholder={t("users.password")}
           required
           minLength={8}
           type="text"
@@ -138,7 +145,7 @@ function CreateUserForm({ onCreated }: { onCreated: () => void }) {
       </div>
 
       <div className="mb-4">
-        <div className="text-sm font-medium mb-2">Cấp permissions:</div>
+        <div className="text-sm font-medium mb-2">{t("users.grantTitle")}</div>
         <div className="grid grid-cols-2 gap-2">
           {GRANTABLE.map((p) => (
             <label key={p} className="flex items-center gap-2 text-sm">
@@ -148,8 +155,7 @@ function CreateUserForm({ onCreated }: { onCreated: () => void }) {
                 onChange={() => toggle(p)}
               />
               <span>
-                {PERMISSION_LABEL[p]}{" "}
-                <code className="text-xs text-slate-500">{p}</code>
+                {t(`perm.${p}`)} <code className="text-xs text-slate-500">{p}</code>
               </span>
             </label>
           ))}
@@ -162,13 +168,14 @@ function CreateUserForm({ onCreated }: { onCreated: () => void }) {
         disabled={mut.isPending}
         className="bg-slate-900 text-white px-4 py-2 rounded disabled:opacity-60"
       >
-        {mut.isPending ? "Đang tạo..." : "Tạo tài khoản"}
+        {mut.isPending ? t("users.createBusy") : t("users.createSubmit")}
       </button>
     </form>
   );
 }
 
 function UserRow({ user }: { user: UserItem }) {
+  const t = useT();
   const qc = useQueryClient();
   const toggleActive = useMutation({
     mutationFn: () =>
@@ -188,7 +195,7 @@ function UserRow({ user }: { user: UserItem }) {
   });
 
   function onReset() {
-    const np = window.prompt("Nhập password mới (≥ 8 ký tự):");
+    const np = window.prompt(t("users.resetPrompt"));
     if (!np || np.length < 8) return;
     reset.mutate(np);
   }
@@ -199,16 +206,16 @@ function UserRow({ user }: { user: UserItem }) {
       <td className="px-4 py-2">{user.username}</td>
       <td className="px-4 py-2">
         {user.is_super_admin ? (
-          <span className="text-indigo-700 font-medium">Super-admin</span>
+          <span className="text-indigo-700 font-medium">{t("role.super")}</span>
         ) : (
-          "Sub-admin"
+          t("role.sub")
         )}
       </td>
       <td className="px-4 py-2 text-xs">
         {user.is_super_admin ? (
-          <span className="text-slate-500">Toàn quyền</span>
+          <span className="text-slate-500">{t("users.fullPerms")}</span>
         ) : user.permissions.length === 0 ? (
-          <span className="text-slate-400">(không có)</span>
+          <span className="text-slate-400">{t("users.noPerms")}</span>
         ) : (
           user.permissions.map((p) => (
             <span
@@ -222,9 +229,9 @@ function UserRow({ user }: { user: UserItem }) {
       </td>
       <td className="px-4 py-2">
         {user.is_active ? (
-          <span className="text-emerald-700">Active</span>
+          <span className="text-emerald-700">{t("users.active")}</span>
         ) : (
-          <span className="text-rose-700">Disabled</span>
+          <span className="text-rose-700">{t("users.disabled")}</span>
         )}
       </td>
       <td className="px-4 py-2 space-x-2">
@@ -234,13 +241,13 @@ function UserRow({ user }: { user: UserItem }) {
               onClick={() => toggleActive.mutate()}
               className="text-sm text-slate-700 underline"
             >
-              {user.is_active ? "Vô hiệu hoá" : "Kích hoạt"}
+              {user.is_active ? t("users.disable") : t("users.enable")}
             </button>
             <button
               onClick={onReset}
               className="text-sm text-slate-700 underline"
             >
-              Reset password
+              {t("users.resetPassword")}
             </button>
           </>
         )}

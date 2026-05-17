@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
+import { useT } from "../i18n";
 
 type QueueItem = {
   id: string;
@@ -12,12 +13,14 @@ type QueueItem = {
   error_code: string | null;
   error_message: string | null;
   workspace_id: string | null;
+  created_by_id: string | null;
   created_at: string;
   picked_at: string | null;
   completed_at: string | null;
 };
 
 export default function Queue() {
+  const t = useT();
   const { hasPermission } = useAuth();
 
   const items = useQuery({
@@ -29,32 +32,32 @@ export default function Queue() {
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold mb-2">Queue tasks (toàn cục)</h1>
+      <h1 className="text-2xl font-semibold mb-2">{t("queue.title")}</h1>
       <p className="text-sm text-slate-600 mb-6">
-        Trang này hiển thị TẤT CẢ task của mọi workspace. Để tạo task mới, vào{" "}
+        {t("queue.subtitle")}{" "}
         <Link to="/workspaces" className="underline">
-          Workspaces
-        </Link>{" "}
-        → chọn workspace → trang Thành viên có nút "Mời".
+          {t("nav.workspaces")}
+        </Link>
+        .
       </p>
 
       <div className="bg-white rounded shadow overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
-              <th className="text-left px-4 py-2">Thời gian</th>
-              <th className="text-left px-4 py-2">Workspace</th>
-              <th className="text-left px-4 py-2">Loại</th>
-              <th className="text-left px-4 py-2">Trạng thái</th>
-              <th className="text-left px-4 py-2">Payload</th>
-              <th className="text-left px-4 py-2">Kết quả / Lỗi</th>
+              <th className="text-left px-4 py-2">{t("queue.colTime")}</th>
+              <th className="text-left px-4 py-2">{t("queue.colWorkspace")}</th>
+              <th className="text-left px-4 py-2">{t("queue.colType")}</th>
+              <th className="text-left px-4 py-2">{t("queue.colStatus")}</th>
+              <th className="text-left px-4 py-2">{t("queue.colPayload")}</th>
+              <th className="text-left px-4 py-2">{t("queue.colResult")}</th>
             </tr>
           </thead>
           <tbody>
             {items.data?.map((it) => (
               <tr key={it.id} className="border-t align-top">
                 <td className="px-4 py-2 whitespace-nowrap text-slate-600">
-                  {new Date(it.created_at).toLocaleString("vi-VN")}
+                  {new Date(it.created_at).toLocaleString()}
                 </td>
                 <td className="px-4 py-2 text-xs font-mono">
                   {it.workspace_id ? (
@@ -93,7 +96,7 @@ export default function Queue() {
             {!items.isLoading && (items.data?.length ?? 0) === 0 && (
               <tr>
                 <td colSpan={6} className="px-4 py-6 text-center text-slate-500">
-                  Chưa có task nào
+                  {t("queue.empty")}
                 </td>
               </tr>
             )}

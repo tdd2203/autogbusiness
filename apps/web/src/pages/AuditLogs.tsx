@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { useT } from "../i18n";
 
 type AuditLog = {
   id: string;
@@ -14,6 +15,7 @@ type AuditLog = {
 };
 
 export default function AuditLogs() {
+  const t = useT();
   const logs = useQuery({
     queryKey: ["audit-logs"],
     queryFn: () => api<AuditLog[]>("/api/v1/audit-logs?limit=200"),
@@ -21,15 +23,15 @@ export default function AuditLogs() {
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold mb-6">Audit Log</h1>
+      <h1 className="text-2xl font-semibold mb-6">{t("audit.title")}</h1>
       <div className="bg-white rounded shadow overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
-              <th className="text-left px-4 py-2">Thời gian</th>
+              <th className="text-left px-4 py-2">{t("queue.colTime")}</th>
               <th className="text-left px-4 py-2">Actor</th>
               <th className="text-left px-4 py-2">Action</th>
-              <th className="text-left px-4 py-2">Kết quả</th>
+              <th className="text-left px-4 py-2">{t("queue.colResult")}</th>
               <th className="text-left px-4 py-2">Target</th>
               <th className="text-left px-4 py-2">Data</th>
             </tr>
@@ -71,7 +73,7 @@ export default function AuditLogs() {
             {!logs.isLoading && (logs.data?.length ?? 0) === 0 && (
               <tr>
                 <td colSpan={6} className="px-4 py-6 text-center text-slate-500">
-                  Chưa có log
+                  {t("common.empty")}
                 </td>
               </tr>
             )}

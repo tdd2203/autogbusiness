@@ -16,7 +16,16 @@ export type ExecuteActionRequest =
       old_role: ChatGPTRole | null;
     }
   | { kind: "SYNC_DATA"; taskId: string }
+  | { kind: "SYNC_BILLING"; taskId: string }
   | { kind: "PING"; taskId?: string };
+
+export type ScrapedBilling = {
+  plan: string | null;
+  seat_total: number | null;
+  seat_used: number | null;
+  billing_status: "PAID" | "UNPAID" | "UNKNOWN" | null;
+  renewal_date: string | null;
+};
 
 export type ScrapedMember = {
   email: string;

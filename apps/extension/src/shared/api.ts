@@ -31,6 +31,26 @@ export async function whoami(config: ExtensionConfig): Promise<Workspace> {
   return request<Workspace>(config, "/api/v1/workspaces/whoami");
 }
 
+export async function updateExtensionInfo(
+  config: ExtensionConfig,
+  info: { email?: string | null; name?: string | null },
+): Promise<void> {
+  await request(config, "/api/v1/workspaces/extension-info", {
+    method: "POST",
+    body: JSON.stringify(info),
+  });
+}
+
+export async function countPendingTasks(
+  config: ExtensionConfig,
+): Promise<number> {
+  const resp = await request<{ count: number }>(
+    config,
+    "/api/v1/queue/pending-count",
+  );
+  return resp.count;
+}
+
 export async function pickNextTask(
   config: ExtensionConfig,
 ): Promise<QueueItem | null> {
@@ -50,6 +70,33 @@ export async function updateTask(
   await request(config, `/api/v1/queue/${itemId}`, {
     method: "PATCH",
     body: JSON.stringify(body),
+  });
+}
+
+export async function updateProgress(
+  config: ExtensionConfig,
+  itemId: string,
+  progress: Record<string, unknown>,
+): Promise<void> {
+  await request(config, `/api/v1/queue/${itemId}/progress`, {
+    method: "PATCH",
+    body: JSON.stringify({ progress }),
+  });
+}
+
+export async function pushBillingSync(
+  config: ExtensionConfig,
+  billing: {
+    plan?: string | null;
+    seat_total?: number | null;
+    seat_used?: number | null;
+    billing_status?: "PAID" | "UNPAID" | "UNKNOWN" | null;
+    renewal_date?: string | null;
+  },
+): Promise<Workspace> {
+  return request<Workspace>(config, "/api/v1/workspaces/billing-sync", {
+    method: "POST",
+    body: JSON.stringify(billing),
   });
 }
 

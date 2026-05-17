@@ -6,12 +6,16 @@ import {
   randomDelay,
   waitFor,
 } from "../human";
+import { reportProgress } from "../progress";
 import { SELECTORS, TEXT_FALLBACKS } from "../selectors";
 import { findMemberRow, findRowMenuButton } from "./member-row";
 
 export async function executeRemove(
+  taskId: string,
   email: string,
 ): Promise<ExecuteActionResponse> {
+  await reportProgress(taskId, { phase: "locating", message: `Tìm row của ${email}...` }, true);
+
   if (!location.pathname.includes("/admin")) {
     return {
       ok: false,
@@ -83,10 +87,12 @@ export async function executeRemove(
     };
   }
 
+  await reportProgress(taskId, { phase: "confirming", message: "Click confirm Remove..." }, true);
   await randomDelay();
   await humanClick(confirmBtn);
 
   // Verify member biến mất khỏi danh sách
+  await reportProgress(taskId, { phase: "verifying", message: "Đợi member biến mất khỏi danh sách..." }, true);
   try {
     await waitFor(() => (findMemberRow(email) ? null : document.body), 10_000);
   } catch {

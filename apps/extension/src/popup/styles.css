@@ -132,3 +132,111 @@ button.danger {
 .flex-1 {
   flex: 1;
 }
+
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.header-row h1 {
+  margin: 0;
+}
+
+.version-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.1s;
+}
+
+.version-badge:hover {
+  background: #334155;
+}
+
+.version-badge .caret {
+  font-size: 8px;
+  opacity: 0.7;
+}
+
+.changelog-panel {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.changelog-entry {
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px dashed #e2e8f0;
+}
+
+.changelog-entry:last-child {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+.changelog-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.changelog-version {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.changelog-kind {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: white;
+  letter-spacing: 0.4px;
+}
+
+.changelog-date {
+  font-size: 10px;
+  color: #94a3b8;
+  margin-left: auto;
+}
+
+.changelog-summary {
+  font-size: 11px;
+  color: #334155;
+  margin-bottom: 4px;
+  font-weight: 500;
+}
+
+.changelog-details {
+  margin: 0;
+  padding-left: 14px;
+  font-size: 11px;
+  color: #475569;
+  line-height: 1.5;
+}
+
+.changelog-details li {
+  margin-bottom: 2px;
+}

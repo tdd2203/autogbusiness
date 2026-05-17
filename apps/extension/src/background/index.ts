@@ -1,31 +1,151 @@
-import { runOnce } from "./runner";
+import { runUntilIdle } from "./runner";
+import { connectSSE, disconnectSSE } from "./sse";
+import { updateProgress } from "../shared/api";
+import { getConfig } from "../shared/storage";
 
-const ALARM_NAME = "autogpt.poll";
-const POLL_INTERVAL_MINUTES = 0.5;
+/**
+ * Backup poll alarm: dù SSE có rớt (Chrome MV3 SW kill, network glitch, ...)
+ * thì cứ ~1 phút SW tự wake, gọi runUntilIdle drain queue.
+ * SSE primary (real-time), polling này chỉ là safety net.
+ */
+const BACKUP_POLL_ALARM = "autogpt-backup-poll";
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create(ALARM_NAME, { periodInMinutes: POLL_INTERVAL_MINUTES });
-  console.log("[autogpt] installed, alarm scheduled");
+const DASHBOARD_MATCHES = [
+  "http://localhost:5173/*",
+  "http://127.0.0.1:5173/*",
+];
+
+/**
+ * Re-inject dashboard bridge vào các tab đang mở.
+ *
+ * Lý do: content_scripts trong manifest chỉ inject lúc PAGE LOAD. Nếu user
+ * reload extension trong chrome://extensions/ thì tab dashboard đang mở
+ * vẫn chạy bridge của bản cũ (hoặc không có bridge nếu user vừa cài).
+ * Phải F5 thủ công — UX kém.
+ *
+ * Fix: mỗi lần extension install/reload/update, query tab khớp dashboard
+ * matches và bắn executeScript để inject bridge mới NGAY LẬP TỨC.
+ */
+async function reinjectDashboardBridge(): Promise<void> {
+  try {
+    const tabs = await chrome.tabs.query({ url: DASHBOARD_MATCHES });
+    for (const tab of tabs) {
+      if (tab.id === undefined) continue;
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ["src/content/dashboard-bridge.ts"],
+        });
+        console.log(
+          `[autogpt] reinjected bridge into tab ${tab.id} (${tab.url})`,
+        );
+      } catch (e) {
+        console.warn(`[autogpt] reinject bridge failed for tab ${tab.id}`, e);
+      }
+    }
+  } catch (e) {
+    console.warn("[autogpt] dashboard tab query failed", e);
+  }
+}
+
+// ⚠️ KHÔNG poll tự động — extension chỉ chạy khi user bấm "Thực hiện task đang chờ"
+// trong popup HOẶC dashboard postMessage qua bridge. Tránh hành vi bot, theo
+// nguyên tắc "thao tác như người dùng thật". (Trước đây có chrome.alarms 30s;
+// đã bỏ theo yêu cầu user 2026-05-16.)
+function setupBackupPoll(): void {
+  // delayInMinutes=0.1 (~6s) cho lần đầu sau install/startup để bắt task ngay.
+  // periodInMinutes=1 (min cho phép trong prod Chrome 117+).
+  chrome.alarms.create(BACKUP_POLL_ALARM, {
+    delayInMinutes: 0.1,
+    periodInMinutes: 1,
+  });
+  console.log("[autogpt] backup poll alarm scheduled (every 1 min)");
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== BACKUP_POLL_ALARM) return;
+  console.log("[autogpt-poll] backup tick — checking pending tasks");
+  runUntilIdle()
+    .then((r) => {
+      if (r.processed > 0) {
+        console.log(
+          `[autogpt-poll] processed ${r.processed} task(s) via backup poll`,
+        );
+      }
+    })
+    .catch((e) => console.warn("[autogpt-poll] failed", e));
+  // Cũng thử reconnect SSE nếu connection chết.
+  void connectSSE();
+});
+
+chrome.runtime.onInstalled.addListener((details) => {
+  console.log(`[autogpt] onInstalled reason=${details.reason}`);
+  void reinjectDashboardBridge();
+  setupBackupPoll();
+  // Auto-connect SSE — backend sẽ push task event tới đây, KHÔNG cần user
+  // thao tác gì trên extension.
+  void connectSSE();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create(ALARM_NAME, { periodInMinutes: POLL_INTERVAL_MINUTES });
+  console.log("[autogpt] onStartup");
+  void reinjectDashboardBridge();
+  setupBackupPoll();
+  void connectSSE();
 });
 
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name !== ALARM_NAME) return;
-  const result = await runOnce();
-  console.log("[autogpt] alarm tick →", result);
+// User save/clear API key trong popup → reconnect SSE với credentials mới.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  if (!("autogpt.config" in changes)) return;
+  const newConfig = changes["autogpt.config"].newValue;
+  console.log("[autogpt] config changed, reconnecting SSE");
+  if (newConfig) {
+    void connectSSE();
+  } else {
+    disconnectSSE();
+  }
 });
+
+// Watchdog: nếu SW vừa wake từ idle mà SSE chưa kết nối, thử connect ngay.
+// (chrome.runtime.onStartup chỉ fire 1 lần khi browser khởi động.)
+void connectSSE();
+setupBackupPoll();
+// Manual reload từ chrome://extensions/ KHÔNG fire onInstalled/onStartup,
+// chỉ SW restart và chạy top-level code. Phải re-inject bridge ở đây nữa để
+// các tab dashboard đang mở không cần F5 sau mỗi lần reload extension.
+void reinjectDashboardBridge();
+
+// Cũng drain queue ngay khi SW load (covers case SSE chưa connect xong nhưng
+// có task đang chờ — vd extension vừa reload sau khi user đã queue task).
+runUntilIdle()
+  .then((r) => {
+    if (r.processed > 0) {
+      console.log(`[autogpt-boot] drained ${r.processed} task(s) on SW load`);
+    }
+  })
+  .catch((e) => console.warn("[autogpt-boot] failed", e));
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type === "poll-now") {
-    runOnce()
-      .then((r) => sendResponse({ ok: true, ...r }))
-      .catch((e) =>
-        sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }),
-      );
+  if (msg?.type === "run-pending") {
+    // User-triggered: drain task queue cho đến khi không còn PENDING
+    (async () => {
+      const result = await runUntilIdle();
+      sendResponse({ ok: true, ...result });
+    })();
     return true;
+  }
+  if (msg?.type === "task-progress" && typeof msg.taskId === "string") {
+    (async () => {
+      const config = await getConfig();
+      if (!config) return;
+      try {
+        await updateProgress(config, msg.taskId, msg.progress ?? {});
+      } catch (e) {
+        console.warn("[autogpt-progress] failed", e);
+      }
+    })();
+    return false;
   }
   return undefined;
 });

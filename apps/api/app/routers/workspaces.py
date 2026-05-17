@@ -1,6 +1,7 @@
 """Workspace CRUD + extension API key management."""
 
 import secrets
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,7 +18,10 @@ from app.deps import (
 )
 from app.models import QueueItem, User, Workspace, WorkspaceSettings
 from app.permissions import Permission
+from app.sse import publish_task_event
 from app.schemas import (
+    BillingSyncIn,
+    ExtensionInfoIn,
     WorkspaceCreate,
     WorkspaceOut,
     WorkspaceSettingsOut,
@@ -46,6 +50,67 @@ def extension_whoami(
     workspace: Workspace = Depends(require_extension_workspace),
 ) -> Workspace:
     """Extension dùng để verify X-API-KEY hợp lệ + lấy thông tin workspace tương ứng."""
+    return workspace
+
+
+@router.post("/extension-info", response_model=WorkspaceOut)
+def update_extension_info(
+    body: ExtensionInfoIn,
+    db: Session = Depends(get_session),
+    workspace: Workspace = Depends(require_extension_workspace),
+) -> Workspace:
+    """Extension báo ChatGPT user đang đăng nhập trên browser."""
+    if body.email is not None:
+        workspace.chatgpt_user_email = body.email.strip().lower() or None
+    if body.name is not None:
+        workspace.chatgpt_user_name = body.name.strip() or None
+    db.add(workspace)
+    db.commit()
+    db.refresh(workspace)
+    return workspace
+
+
+@router.post("/billing-sync", response_model=WorkspaceOut)
+def push_billing_sync(
+    body: BillingSyncIn,
+    db: Session = Depends(get_session),
+    workspace: Workspace = Depends(require_extension_workspace),
+) -> Workspace:
+    """Extension push billing data scrape được từ /admin/billing.
+
+    Format display dashboard: seat_used / seat_total (vd 6/8).
+    """
+    changes: dict = {}
+    for field in (
+        "plan",
+        "seat_total",
+        "seat_used",
+        "billing_status",
+        "renewal_date",
+    ):
+        new_val = getattr(body, field)
+        if new_val is not None and new_val != getattr(workspace, field):
+            changes[field] = {
+                "before": getattr(workspace, field),
+                "after": new_val.isoformat() if isinstance(new_val, datetime) else new_val,
+            }
+            setattr(workspace, field, new_val)
+
+    workspace.last_billing_synced_at = datetime.now(timezone.utc)
+    db.add(workspace)
+    log_event(
+        db,
+        actor_type="EXTENSION",
+        actor_label=f"workspace:{workspace.name}",
+        action="WORKSPACE_BILLING_SYNCED",
+        result="SUCCESS",
+        target_type="WORKSPACE",
+        target_id=str(workspace.id),
+        data={"changes": changes} if changes else None,
+        commit=False,
+    )
+    db.commit()
+    db.refresh(workspace)
     return workspace
 
 
@@ -202,6 +267,47 @@ def trigger_sync(
         commit=False,
     )
     db.commit()
+    publish_task_event(
+        workspace_id,
+        {"type": "task-available", "task_id": str(queue_item.id), "task_type": "SYNC_DATA"},
+    )
+    return {"queue_item_id": str(queue_item.id), "status": "queued"}
+
+
+@router.post("/{workspace_id}/sync-billing", status_code=status.HTTP_202_ACCEPTED)
+def trigger_sync_billing(
+    workspace_id: UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_permission(Permission.WORKSPACE_SYNC_TRIGGER)),
+) -> dict:
+    """Tạo task SYNC_BILLING để Extension scrape seat_total/seat_used từ trang billing."""
+    _get_workspace_or_404(db, workspace_id)
+    queue_item = QueueItem(
+        type="SYNC_BILLING",
+        status="PENDING",
+        workspace_id=workspace_id,
+        payload={},
+        created_by_id=user.id,
+    )
+    db.add(queue_item)
+    db.flush()
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.email,
+        action="WORKSPACE_BILLING_SYNC_QUEUED",
+        result="PENDING",
+        target_type="WORKSPACE",
+        target_id=str(workspace_id),
+        data={"queue_item_id": str(queue_item.id)},
+        commit=False,
+    )
+    db.commit()
+    publish_task_event(
+        workspace_id,
+        {"type": "task-available", "task_id": str(queue_item.id), "task_type": "SYNC_BILLING"},
+    )
     return {"queue_item_id": str(queue_item.id), "status": "queued"}
 
 

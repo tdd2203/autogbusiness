@@ -2,8 +2,10 @@ import { useState, type FormEvent } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { ApiError } from "../lib/api";
+import { useT } from "../i18n";
 
 export default function Login() {
+  const t = useT();
   const { login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation() as { state?: { from?: { pathname?: string } } };
@@ -18,13 +20,15 @@ export default function Login() {
     setBusy(true);
     try {
       await login(identifier.trim(), password);
-      const to = location.state?.from?.pathname ?? "/queue";
+      const to = location.state?.from?.pathname ?? "/workspaces";
       navigate(to, { replace: true });
     } catch (err) {
       if (err instanceof ApiError) {
-        setError(typeof err.detail === "string" ? err.detail : "Đăng nhập thất bại");
+        setError(
+          typeof err.detail === "string" ? err.detail : t("auth.errorAuth"),
+        );
       } else {
-        setError("Lỗi kết nối tới server");
+        setError(t("auth.errorConnection"));
       }
     } finally {
       setBusy(false);
@@ -37,10 +41,12 @@ export default function Login() {
         onSubmit={onSubmit}
         className="w-full max-w-sm bg-white p-8 rounded-lg shadow"
       >
-        <h1 className="text-xl font-semibold mb-1">AutoGPT Dashboard</h1>
-        <p className="text-sm text-slate-500 mb-6">Đăng nhập để điều khiển Extension</p>
+        <h1 className="text-xl font-semibold mb-1">{t("auth.title")}</h1>
+        <p className="text-sm text-slate-500 mb-6">{t("auth.subtitle")}</p>
 
-        <label className="block text-sm font-medium mb-1">Email hoặc Username</label>
+        <label className="block text-sm font-medium mb-1">
+          {t("auth.identifier")}
+        </label>
         <input
           autoFocus
           required
@@ -49,7 +55,9 @@ export default function Login() {
           className="w-full border border-slate-300 rounded px-3 py-2 mb-4 outline-none focus:border-slate-500"
         />
 
-        <label className="block text-sm font-medium mb-1">Mật khẩu</label>
+        <label className="block text-sm font-medium mb-1">
+          {t("auth.password")}
+        </label>
         <input
           type="password"
           required
@@ -68,7 +76,7 @@ export default function Login() {
           disabled={busy}
           className="w-full bg-slate-900 text-white rounded py-2 hover:bg-slate-800 disabled:opacity-60"
         >
-          {busy ? "Đang đăng nhập..." : "Đăng nhập"}
+          {busy ? t("auth.loginBusy") : t("auth.login")}
         </button>
       </form>
     </div>

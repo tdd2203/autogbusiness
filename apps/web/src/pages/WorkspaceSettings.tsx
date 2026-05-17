@@ -2,9 +2,11 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
+import { useT } from "../i18n";
 import type { WorkspaceSettings as WSettings } from "../types";
 
 export default function WorkspaceSettings() {
+  const t = useT();
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const qc = useQueryClient();
   const [invite, setInvite] = useState("5000");
@@ -41,13 +43,13 @@ export default function WorkspaceSettings() {
         }),
       }),
     onSuccess: () => {
-      setMsg({ ok: true, text: "Đã lưu cài đặt" });
+      setMsg({ ok: true, text: t("wsettings.saveOk") });
       qc.invalidateQueries({ queryKey: ["workspace-settings", workspaceId] });
     },
     onError: (e) =>
       setMsg({
         ok: false,
-        text: e instanceof ApiError ? String(e.detail) : "Lỗi lưu",
+        text: e instanceof ApiError ? String(e.detail) : t("wsettings.saveError"),
       }),
   });
 
@@ -59,11 +61,11 @@ export default function WorkspaceSettings() {
 
   return (
     <div className="max-w-xl">
-      <h2 className="text-lg font-medium mb-4">Cài đặt workspace</h2>
+      <h2 className="text-lg font-medium mb-4">{t("wsettings.title")}</h2>
       <form onSubmit={onSubmit} className="bg-white rounded shadow p-5 space-y-4">
         <div>
           <label className="block text-sm font-medium mb-1">
-            Rate limit — Invite (ms giữa các thao tác)
+            {t("wsettings.rateInvite")}
           </label>
           <input
             type="number"
@@ -76,7 +78,7 @@ export default function WorkspaceSettings() {
         </div>
         <div>
           <label className="block text-sm font-medium mb-1">
-            Rate limit — Change role (ms)
+            {t("wsettings.rateRole")}
           </label>
           <input
             type="number"
@@ -89,7 +91,7 @@ export default function WorkspaceSettings() {
         </div>
         <div>
           <label className="block text-sm font-medium mb-1">
-            Rate limit — Remove (ms)
+            {t("wsettings.rateRemove")}
           </label>
           <input
             type="number"
@@ -106,10 +108,7 @@ export default function WorkspaceSettings() {
             checked={dryRun}
             onChange={(e) => setDryRun(e.target.checked)}
           />
-          <span>
-            Dry-run mode (Extension log thao tác nhưng KHÔNG thực thi trên
-            ChatGPT)
-          </span>
+          <span>{t("wsettings.dryRun")}</span>
         </label>
         {msg && (
           <div
@@ -124,7 +123,7 @@ export default function WorkspaceSettings() {
           disabled={save.isPending}
           className="bg-slate-900 text-white px-4 py-2 rounded disabled:opacity-60"
         >
-          {save.isPending ? "Đang lưu..." : "Lưu"}
+          {save.isPending ? t("common.saving") : t("common.save")}
         </button>
       </form>
     </div>

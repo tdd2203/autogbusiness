@@ -1,7 +1,11 @@
+import asyncio
+import json
+import queue as _queue
 from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -14,7 +18,8 @@ from app.deps import (
 )
 from app.models import QueueItem, User, Workspace
 from app.permissions import Permission
-from app.schemas import QueueCreate, QueueOut, QueueUpdate
+from app.schemas import QueueCreate, QueueOut, QueueProgressUpdate, QueueUpdate
+from app.sse import subscribe, unsubscribe
 
 router = APIRouter(prefix="/api/v1/queue", tags=["queue"])
 
@@ -89,6 +94,76 @@ def list_tasks(
 
 
 # ---------- Extension endpoints (X-API-KEY) ----------
+@router.get("/pending-count", response_model=dict)
+def pending_count(
+    db: Session = Depends(get_session),
+    workspace: Workspace = Depends(require_extension_workspace),
+) -> dict:
+    """Extension popup hiển thị số task đang chờ cho workspace tương ứng."""
+    from sqlalchemy import func as sa_func
+
+    count = (
+        db.execute(
+            select(sa_func.count(QueueItem.id)).where(
+                QueueItem.workspace_id == workspace.id,
+                QueueItem.status == "PENDING",
+            )
+        ).scalar()
+        or 0
+    )
+    return {"count": int(count), "workspace_id": str(workspace.id)}
+
+
+
+@router.get("/stream")
+async def stream_queue_events(
+    workspace: Workspace = Depends(require_extension_workspace),
+) -> StreamingResponse:
+    """SSE stream: backend push real-time event tới extension khi có task mới.
+
+    Extension fetch /queue/stream với header X-API-KEY, giữ connection mở.
+    Khi dashboard tạo task → publish_task_event → SSE yield event NGAY LẬP TỨC.
+    Extension nhận event → gọi runUntilIdle → drain queue trong 1-2s.
+
+    Heartbeat 25s/lần để (a) giữ proxy/SW alive, (b) detect dead connection.
+    """
+    q = subscribe(workspace.id)
+    workspace_id = workspace.id
+    workspace_name = workspace.name
+
+    async def generator():
+        try:
+            # Initial event để client biết đã connect thành công.
+            hello = {
+                "type": "connected",
+                "workspace_id": str(workspace_id),
+                "workspace_name": workspace_name,
+            }
+            yield f"data: {json.dumps(hello)}\n\n"
+
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        asyncio.to_thread(q.get, True, 25),
+                        timeout=30,
+                    )
+                    yield f"data: {json.dumps(event)}\n\n"
+                except (asyncio.TimeoutError, _queue.Empty):
+                    # Heartbeat comment — client ignore.
+                    yield ": heartbeat\n\n"
+        finally:
+            unsubscribe(workspace_id, q)
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",  # disable nginx buffering nếu reverse proxy
+        },
+    )
+
+
 @router.get("/next", response_model=QueueOut | None)
 def pick_next(
     db: Session = Depends(get_session),
@@ -169,6 +244,31 @@ def update_task(
         },
         commit=False,
     )
+    db.commit()
+    db.refresh(item)
+    return item
+
+
+@router.patch("/{item_id}/progress", response_model=QueueOut)
+def update_progress(
+    item_id: UUID,
+    body: QueueProgressUpdate,
+    db: Session = Depends(get_session),
+    workspace: Workspace = Depends(require_extension_workspace),
+) -> QueueItem:
+    """Extension báo progress real-time, KHÔNG audit log từng tick (tránh spam)."""
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Queue item không tồn tại"
+        )
+    if item.workspace_id != workspace.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Queue item không thuộc workspace của API key này",
+        )
+    item.progress = body.progress
+    db.add(item)
     db.commit()
     db.refresh(item)
     return item

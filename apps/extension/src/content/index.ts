@@ -6,6 +6,7 @@ import { executeInvite } from "./actions/invite";
 import { executeRemove } from "./actions/remove";
 import { executeChangeRole } from "./actions/change-role";
 import { executeSync } from "./actions/sync";
+import { executeSyncBilling } from "./actions/sync-billing";
 
 console.log("[autogpt-content] injected vào", location.href);
 
@@ -35,13 +36,15 @@ async function dispatch(
     case "PING":
       return { ok: true, data: { url: location.href } };
     case "INVITE_MEMBER":
-      return executeInvite(msg.email, msg.role);
+      return executeInvite(msg.taskId, msg.email, msg.role);
     case "REMOVE_MEMBER":
-      return executeRemove(msg.email);
+      return executeRemove(msg.taskId, msg.email);
     case "CHANGE_ROLE":
-      return executeChangeRole(msg.email, msg.new_role);
+      return executeChangeRole(msg.taskId, msg.email, msg.new_role);
     case "SYNC_DATA":
-      return executeSync();
+      return executeSync(msg.taskId);
+    case "SYNC_BILLING":
+      return executeSyncBilling(msg.taskId);
     default: {
       const exhaustive: never = msg;
       return {

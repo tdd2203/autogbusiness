@@ -74,7 +74,10 @@ def require_extension_workspace(
     x_api_key: str | None = Header(default=None),
     db: Session = Depends(get_session),
 ) -> Workspace:
-    """Extension auth: tra X-API-KEY → workspace tương ứng. 401 nếu không khớp."""
+    """Extension auth: tra X-API-KEY → workspace tương ứng. 401 nếu không khớp.
+
+    Side effect: cập nhật `last_extension_seen_at = NOW()` để dashboard biết extension đang online.
+    """
     if not x_api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing X-API-KEY header"
@@ -86,4 +89,11 @@ def require_extension_workspace(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key"
         )
+    # Update last seen — separate transaction để tránh impact request chính
+    from datetime import datetime, timezone
+
+    workspace.last_extension_seen_at = datetime.now(timezone.utc)
+    db.add(workspace)
+    db.commit()
+    db.refresh(workspace)
     return workspace

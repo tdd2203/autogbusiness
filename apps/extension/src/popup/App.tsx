@@ -1,26 +1,45 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { ApiError, whoami } from "../shared/api";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { ApiError, countPendingTasks, whoami } from "../shared/api";
 import { getConfig, setConfig } from "../shared/storage";
 import type { ConnectionStatus, ExtensionConfig } from "../shared/types";
+import { useI18n, type Lang } from "../i18n";
+import { CHANGELOG, KIND_COLOR, VERSION } from "../version";
 
 export default function App() {
+  const { t, lang, setLang } = useI18n();
   const [apiBaseUrl, setApiBaseUrl] = useState("http://localhost:8000");
   const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<ConnectionStatus>({ state: "checking" });
   const [saving, setSaving] = useState(false);
+  const [pendingCount, setPendingCount] = useState<number>(0);
+  const [running, setRunning] = useState(false);
+  const [lastRunMsg, setLastRunMsg] = useState<string | null>(null);
+  const [showChangelog, setShowChangelog] = useState(false);
+
+  const refreshPendingCount = useCallback(async () => {
+    const config = await getConfig();
+    if (!config) return;
+    try {
+      const n = await countPendingTasks(config);
+      setPendingCount(n);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   useEffect(() => {
     (async () => {
       const config = await getConfig();
       if (!config) {
-        setStatus({ state: "disconnected", message: "Chưa cấu hình" });
+        setStatus({ state: "disconnected" });
         return;
       }
       setApiBaseUrl(config.apiBaseUrl);
       setApiKey(config.apiKey);
       await verify(config);
+      await refreshPendingCount();
     })();
-  }, []);
+  }, [refreshPendingCount]);
 
   async function verify(config: ExtensionConfig): Promise<void> {
     setStatus({ state: "checking" });
@@ -29,11 +48,11 @@ export default function App() {
       setStatus({ state: "connected", workspace: ws });
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) {
-        setStatus({ state: "error", message: "API key sai hoặc đã bị thu hồi" });
+        setStatus({ state: "error", message: t("popup.errorBadKey") });
       } else if (e instanceof Error) {
         setStatus({ state: "error", message: e.message });
       } else {
-        setStatus({ state: "error", message: "Lỗi không xác định" });
+        setStatus({ state: "error", message: t("popup.errorUnknown") });
       }
     }
   }
@@ -47,50 +66,131 @@ export default function App() {
     };
     await setConfig(config);
     await verify(config);
+    await refreshPendingCount();
     setSaving(false);
   }
 
   async function onDisconnect(): Promise<void> {
-    if (!window.confirm("Xoá cấu hình? Extension sẽ ngừng polling.")) return;
+    if (!window.confirm(t("popup.disconnectConfirm"))) return;
     await setConfig(null);
     setApiKey("");
-    setStatus({ state: "disconnected", message: "Đã xoá cấu hình" });
+    setStatus({ state: "disconnected" });
+    setPendingCount(0);
   }
 
-  async function onPollNow(): Promise<void> {
-    await chrome.runtime.sendMessage({ type: "poll-now" });
+  async function onRunPending(): Promise<void> {
+    setRunning(true);
+    setLastRunMsg(null);
+    try {
+      const resp = (await chrome.runtime.sendMessage({ type: "run-pending" })) as
+        | { ok: boolean; processed?: number; lastStatus?: string; lastDetail?: string }
+        | undefined;
+      if (resp?.ok) {
+        setLastRunMsg(
+          t("popup.runDone", { n: resp.processed ?? 0 }) +
+            (resp.lastStatus && resp.lastStatus !== "idle"
+              ? ` · ${resp.lastStatus}${resp.lastDetail ? `: ${resp.lastDetail}` : ""}`
+              : ""),
+        );
+      }
+    } finally {
+      setRunning(false);
+      await refreshPendingCount();
+    }
   }
+
+  const canRun = status.state === "connected" && !running;
 
   return (
     <div>
-      <h1>AutoGPT Admin</h1>
+      <div className="header-row">
+        <h1>{t("popup.title")}</h1>
+        <span
+          className="version-badge"
+          onClick={() => setShowChangelog((v) => !v)}
+          title={t("popup.versionTooltip")}
+        >
+          v{VERSION} <span className="caret">{showChangelog ? "▴" : "▾"}</span>
+        </span>
+      </div>
+
+      {showChangelog && (
+        <div className="changelog-panel">
+          {CHANGELOG.map((entry) => (
+            <div key={entry.version} className="changelog-entry">
+              <div className="changelog-header">
+                <span className="changelog-version">v{entry.version}</span>
+                <span
+                  className="changelog-kind"
+                  style={{ background: KIND_COLOR[entry.kind] }}
+                >
+                  {t(`popup.changelogKind.${entry.kind}`)}
+                </span>
+                <span className="changelog-date">{entry.date}</span>
+              </div>
+              <div className="changelog-summary">{entry.summary}</div>
+              <ul className="changelog-details">
+                {entry.details.map((d, i) => (
+                  <li key={i}>{d}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
 
       {status.state === "connected" && (
         <div className="status connected">
           <div>
-            <strong>✓ Kết nối</strong>: {status.workspace.name}
+            <strong>{t("popup.statusConnected")}</strong>: {status.workspace.name}
           </div>
           <div className="workspace-info">
-            Plan: {status.workspace.plan ?? "—"} · Seat:{" "}
+            {t("popup.plan")}: {status.workspace.plan ?? "—"} · {t("popup.seat")}:{" "}
             {status.workspace.seat_used ?? 0}/{status.workspace.seat_total ?? "—"}
           </div>
         </div>
       )}
       {status.state === "checking" && (
-        <div className="status disconnected">Đang kiểm tra…</div>
+        <div className="status disconnected">{t("popup.statusChecking")}</div>
       )}
       {status.state === "disconnected" && (
-        <div className="status disconnected">
-          ✗ Chưa kết nối — nhập API key bên dưới
-        </div>
+        <div className="status disconnected">{t("popup.statusDisconnected")}</div>
       )}
       {status.state === "error" && (
-        <div className="status error">✗ Lỗi: {status.message}</div>
+        <div className="status error">
+          {t("popup.statusError")}: {status.message}
+        </div>
+      )}
+
+      {status.state === "connected" && (
+        <div style={{ marginBottom: 10 }}>
+          <button
+            type="button"
+            className="primary"
+            style={{ width: "100%" }}
+            onClick={onRunPending}
+            disabled={!canRun || pendingCount === 0}
+          >
+            {running
+              ? t("popup.running")
+              : pendingCount === 0
+              ? t("popup.runPendingZero")
+              : t("popup.runPending", { n: pendingCount })}
+          </button>
+          {lastRunMsg && (
+            <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>
+              {lastRunMsg}
+            </div>
+          )}
+          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
+            {t("popup.tipNoPolling")}
+          </div>
+        </div>
       )}
 
       <form onSubmit={onSubmit}>
         <div className="field">
-          <label>Backend URL</label>
+          <label>{t("popup.backendUrl")}</label>
           <input
             type="text"
             required
@@ -100,41 +200,45 @@ export default function App() {
           />
         </div>
         <div className="field">
-          <label>Extension API Key</label>
+          <label>{t("popup.apiKey")}</label>
           <input
             type="password"
             required
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
-            placeholder="dán key từ dashboard workspace…"
+            placeholder={t("popup.apiKeyPlaceholder")}
           />
         </div>
         <div className="row">
-          <button type="submit" className="primary flex-1" disabled={saving}>
-            {saving ? "Đang lưu…" : "Lưu & Kết nối"}
+          <button type="submit" className="secondary flex-1" disabled={saving}>
+            {saving ? t("popup.connecting") : t("popup.connect")}
           </button>
-          {status.state === "connected" && (
-            <button
-              type="button"
-              className="secondary"
-              onClick={onPollNow}
-              title="Poll task ngay (debug)"
-            >
-              Poll
-            </button>
-          )}
           {(status.state === "connected" || status.state === "error") && (
             <button type="button" className="danger" onClick={onDisconnect}>
-              Xoá
+              {t("popup.disconnect")}
             </button>
           )}
         </div>
       </form>
 
       <div className="footer">
-        <span>v0.1.0</span>
-        <span>·</span>
-        <span>Tuần 4 — skeleton</span>
+        <span>{CHANGELOG[0].summary}</span>
+        <span style={{ marginLeft: "auto" }}>
+          <select
+            value={lang}
+            onChange={(e) => setLang(e.target.value as Lang)}
+            style={{
+              fontSize: 11,
+              padding: "1px 2px",
+              border: "1px solid #cbd5e1",
+              borderRadius: 3,
+              background: "white",
+            }}
+          >
+            <option value="vi">VI</option>
+            <option value="zh-CN">中文</option>
+          </select>
+        </span>
       </div>
     </div>
   );

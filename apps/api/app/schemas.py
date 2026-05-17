@@ -79,6 +79,7 @@ class QueueOut(BaseModel):
     status: str
     payload: dict
     result: dict | None
+    progress: dict | None
     error_code: str | None
     error_message: str | None
     workspace_id: UUID | None
@@ -88,22 +89,34 @@ class QueueOut(BaseModel):
     completed_at: datetime | None
 
 
+class QueueProgressUpdate(BaseModel):
+    """Extension báo tiến độ real-time cho task dài (sync 500 members, v.v.)."""
+
+    progress: dict
+
+
 # ---------- Workspace ----------
 WorkspacePlan = Literal["business", "enterprise"]
+
+
+# ChatGPT Business cho phép mua tối đa 999 ghế.
+SEAT_TOTAL_MAX = 999
+
+BillingStatus = Literal["PAID", "UNPAID", "UNKNOWN"]
 
 
 class WorkspaceCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     chatgpt_id: str | None = Field(default=None, max_length=128)
     plan: WorkspacePlan | None = None
-    seat_total: int | None = Field(default=None, ge=0)
+    seat_total: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)
 
 
 class WorkspaceUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     chatgpt_id: str | None = Field(default=None, max_length=128)
     plan: WorkspacePlan | None = None
-    seat_total: int | None = Field(default=None, ge=0)
+    seat_total: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)
 
 
 class WorkspaceOut(BaseModel):
@@ -116,8 +129,34 @@ class WorkspaceOut(BaseModel):
     seat_total: int | None
     seat_used: int | None
     last_synced_at: datetime | None
+    chatgpt_user_email: str | None
+    chatgpt_user_name: str | None
+    last_extension_seen_at: datetime | None
+    billing_status: str | None
+    renewal_date: datetime | None
+    last_billing_synced_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class BillingSyncIn(BaseModel):
+    """Extension báo billing scraped từ chatgpt.com/admin/billing.
+
+    Tất cả field optional — extension chỉ gửi field nào scrape được.
+    """
+
+    plan: str | None = Field(default=None, max_length=32)
+    seat_total: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)
+    seat_used: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)
+    billing_status: BillingStatus | None = None
+    renewal_date: datetime | None = None
+
+
+class ExtensionInfoIn(BaseModel):
+    """Extension report ChatGPT user đang đăng nhập trên browser."""
+
+    email: str | None = None
+    name: str | None = None
 
 
 class WorkspaceWithKey(WorkspaceOut):
@@ -175,6 +214,7 @@ class MemberBulkUpsert(BaseModel):
     """Extension gọi sau khi scrape danh sách member của workspace."""
 
     members: list[MemberUpsert]
+    is_full_sync: bool = True  # nếu True, member không có trong list sẽ bị mark 'removed'
 
 
 class MemberInviteIn(BaseModel):

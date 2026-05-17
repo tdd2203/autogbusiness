@@ -1,9 +1,12 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
-import type { Member } from "../types";
+import { useT } from "../i18n";
+import type { Member, QueueItem } from "../types";
+import { triggerExtensionRun } from "../hooks/useExtensionTrigger";
+import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
 
 type Role = "owner" | "admin" | "member";
 
@@ -20,6 +23,7 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 export default function Members() {
+  const t = useT();
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const { hasPermission, user } = useAuth();
   const qc = useQueryClient();
@@ -36,14 +40,61 @@ export default function Members() {
     enabled: !!workspaceId,
   });
 
+  // Poll recent tasks — bao gồm cả COMPLETED/FAILED để show kết quả sync xong.
+  // Lọc active vs completed ở client.
+  const { data: recentTasks = [] } = useQuery({
+    queryKey: ["recent-tasks", workspaceId],
+    queryFn: () =>
+      api<QueueItem[]>(`/api/v1/queue?workspace_id=${workspaceId}&limit=50`),
+    enabled: !!workspaceId,
+    refetchInterval: 2000,
+  });
+
+  const activeTasks = recentTasks.filter(
+    (t) => t.status === "PENDING" || t.status === "IN_PROGRESS",
+  );
+  const activeSyncTask = activeTasks.find((t) => t.type === "SYNC_DATA");
+  const activeInviteCount = activeTasks.filter(
+    (t) => t.type === "INVITE_MEMBER",
+  ).length;
+
+  // Track task ID của lần sync gần nhất → tìm trong recentTasks để show
+  // completion banner với result data.
+  const [lastSyncTaskId, setLastSyncTaskId] = useState<string | null>(null);
+  const lastSyncTask = lastSyncTaskId
+    ? recentTasks.find((t) => t.id === lastSyncTaskId) ?? null
+    : null;
+  const showSyncCompletion =
+    lastSyncTask?.status === "COMPLETED" || lastSyncTask?.status === "FAILED";
+
+  // Auto-dismiss SUCCESS banner sau 10s. FAILED giữ tới khi user dismiss.
+  useEffect(() => {
+    if (!showSyncCompletion || lastSyncTask?.status !== "COMPLETED") return;
+    const timer = setTimeout(() => setLastSyncTaskId(null), 10000);
+    return () => clearTimeout(timer);
+  }, [showSyncCompletion, lastSyncTask?.status]);
+
+  // Auto-refresh member list khi sync task vừa transition active → done
+  const prevSyncIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    const currentSyncId = activeSyncTask?.id ?? null;
+    if (prevSyncIdRef.current && !currentSyncId) {
+      qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
+    }
+    prevSyncIdRef.current = currentSyncId;
+  }, [activeSyncTask?.id, qc, workspaceId]);
+
   const sync = useMutation({
     mutationFn: () =>
       api<{ queue_item_id: string; status: string }>(
         `/api/v1/workspaces/${workspaceId}/sync`,
         { method: "POST" },
       ),
-    onSuccess: () => {
+    onSuccess: (resp) => {
+      setLastSyncTaskId(resp.queue_item_id);
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      triggerExtensionRun();
     },
   });
 
@@ -57,9 +108,12 @@ export default function Members() {
       setShowInvite(false);
       setInviteEmail("");
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      triggerExtensionRun();
     },
     onError: (e) => {
-      setInviteError(e instanceof ApiError ? String(e.detail) : "Lỗi mời");
+      setInviteError(
+        e instanceof ApiError ? String(e.detail) : t("member.inviteError"),
+      );
     },
   });
 
@@ -68,8 +122,10 @@ export default function Members() {
       api(`/api/v1/workspaces/${workspaceId}/members/${memberId}`, {
         method: "DELETE",
       }),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["members", workspaceId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      triggerExtensionRun();
+    },
   });
 
   const changeRole = useMutation({
@@ -78,8 +134,10 @@ export default function Members() {
         method: "PATCH",
         body: JSON.stringify({ new_role: role }),
       }),
-    onSuccess: () =>
-      qc.invalidateQueries({ queryKey: ["members", workspaceId] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      triggerExtensionRun();
+    },
   });
 
   function onInviteSubmit(e: FormEvent) {
@@ -95,16 +153,20 @@ export default function Members() {
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-lg font-medium">Danh sách thành viên</h2>
+        <h2 className="text-lg font-medium">{t("member.listTitle")}</h2>
         <div className="flex gap-2">
           {hasPermission("WORKSPACE_SYNC_TRIGGER") && (
             <button
               onClick={() => sync.mutate()}
-              disabled={sync.isPending}
+              disabled={sync.isPending || !!activeSyncTask}
               className="bg-white border px-4 py-2 rounded text-sm disabled:opacity-60"
-              title="Tạo task SYNC_DATA — Extension scrape danh sách member từ chatgpt.com/admin về DB"
+              title={t("member.syncTooltip")}
             >
-              {sync.isPending ? "Đang gửi..." : "↻ Đồng bộ từ ChatGPT"}
+              {activeSyncTask
+                ? t("member.syncRunning")
+                : sync.isPending
+                ? t("member.syncBusy")
+                : t("member.syncButton")}
             </button>
           )}
           {canInvite && !showInvite && (
@@ -112,16 +174,26 @@ export default function Members() {
               onClick={() => setShowInvite(true)}
               className="bg-slate-900 text-white px-4 py-2 rounded text-sm"
             >
-              + Mời thành viên
+              {t("member.inviteButton")}
             </button>
           )}
         </div>
       </div>
-      {sync.isSuccess && (
+      {activeSyncTask && <SyncProgressBanner task={activeSyncTask} />}
+      {!activeSyncTask && showSyncCompletion && lastSyncTask && (
+        <TaskCompletionBanner
+          task={lastSyncTask}
+          onDismiss={() => setLastSyncTaskId(null)}
+        />
+      )}
+      {!activeSyncTask && !lastSyncTask && sync.isSuccess && (
         <div className="bg-blue-50 border border-blue-300 rounded p-3 mb-4 text-sm text-blue-900">
-          Đã queue task SYNC. Đảm bảo Extension đang chạy và tab chatgpt.com/admin
-          đang mở → Extension sẽ scrape và bulk-upsert thành viên về DB trong vài
-          giây tới. Refresh trang để xem kết quả.
+          {t("member.syncQueued")}
+        </div>
+      )}
+      {activeInviteCount > 0 && (
+        <div className="bg-amber-50 border border-amber-300 rounded p-3 mb-4 text-sm text-amber-900">
+          {t("member.invitesInFlight", { n: activeInviteCount })}
         </div>
       )}
 
@@ -130,12 +202,12 @@ export default function Members() {
           onSubmit={onInviteSubmit}
           className="bg-white rounded shadow p-5 mb-6 space-y-3"
         >
-          <h2 className="font-medium">Mời thành viên mới</h2>
+          <h2 className="font-medium">{t("member.inviteTitle")}</h2>
           <div className="flex gap-3">
             <input
               required
               type="email"
-              placeholder="email@example.com"
+              placeholder={t("member.inviteEmailPlaceholder")}
               value={inviteEmail}
               onChange={(e) => setInviteEmail(e.target.value)}
               className="flex-1 border rounded px-3 py-2"
@@ -145,8 +217,8 @@ export default function Members() {
               onChange={(e) => setInviteRole(e.target.value as Role)}
               className="border rounded px-3 py-2"
             >
-              <option value="member">Member</option>
-              <option value="admin">Admin</option>
+              <option value="member">{t("member.roleMember")}</option>
+              <option value="admin">{t("member.roleAdmin")}</option>
             </select>
           </div>
           {inviteError && (
@@ -157,7 +229,9 @@ export default function Members() {
               disabled={invite.isPending}
               className="bg-slate-900 text-white px-4 py-2 rounded disabled:opacity-60"
             >
-              {invite.isPending ? "Đang xếp hàng..." : "Mời"}
+              {invite.isPending
+                ? t("member.inviteBusy")
+                : t("member.inviteSubmit")}
             </button>
             <button
               type="button"
@@ -167,7 +241,7 @@ export default function Members() {
               }}
               className="px-4 py-2 rounded border"
             >
-              Huỷ
+              {t("common.cancel")}
             </button>
           </div>
         </form>
@@ -177,18 +251,20 @@ export default function Members() {
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-slate-700">
             <tr>
-              <th className="p-3 font-medium">Email</th>
-              <th className="p-3 font-medium">Tên</th>
-              <th className="p-3 font-medium">Role</th>
-              <th className="p-3 font-medium">Status</th>
-              <th className="p-3 font-medium text-right">Hành động</th>
+              <th className="p-3 font-medium">{t("member.colEmail")}</th>
+              <th className="p-3 font-medium">{t("member.colName")}</th>
+              <th className="p-3 font-medium">{t("member.colRole")}</th>
+              <th className="p-3 font-medium">{t("member.colStatus")}</th>
+              <th className="p-3 font-medium text-right">
+                {t("common.actions")}
+              </th>
             </tr>
           </thead>
           <tbody>
             {isLoading && (
               <tr>
                 <td colSpan={5} className="p-6 text-center text-slate-500">
-                  Đang tải...
+                  {t("common.loading")}
                 </td>
               </tr>
             )}
@@ -196,8 +272,8 @@ export default function Members() {
               <tr>
                 <td colSpan={5} className="p-6 text-center text-slate-500">
                   {user?.is_super_admin
-                    ? "Workspace chưa có thành viên nào — bấm 'Mời' hoặc chờ extension sync."
-                    : "Bạn chưa mời thành viên nào vào workspace này."}
+                    ? t("member.emptySuper")
+                    : t("member.emptySub")}
                 </td>
               </tr>
             )}
@@ -212,7 +288,7 @@ export default function Members() {
                         ROLE_BADGE[m.chatgpt_role] ?? "bg-slate-100"
                       }`}
                     >
-                      {m.chatgpt_role}
+                      {t(`member.role${m.chatgpt_role.charAt(0).toUpperCase()}${m.chatgpt_role.slice(1)}`)}
                     </span>
                   ) : (
                     <span className="text-slate-400">—</span>
@@ -224,7 +300,7 @@ export default function Members() {
                       STATUS_BADGE[m.status] ?? "bg-slate-100"
                     }`}
                   >
-                    {m.status}
+                    {t(`member.status${m.status.charAt(0).toUpperCase()}${m.status.slice(1)}`)}
                   </span>
                 </td>
                 <td className="p-3 text-right space-x-2">
@@ -239,9 +315,9 @@ export default function Members() {
                       }
                       className="border rounded px-2 py-1 text-xs"
                     >
-                      <option value="member">member</option>
-                      <option value="admin">admin</option>
-                      <option value="owner">owner</option>
+                      <option value="member">{t("member.roleMember")}</option>
+                      <option value="admin">{t("member.roleAdmin")}</option>
+                      <option value="owner">{t("member.roleOwner")}</option>
                     </select>
                   )}
                   {canRemove && m.status !== "removed" && (
@@ -249,7 +325,7 @@ export default function Members() {
                       onClick={() => {
                         if (
                           window.confirm(
-                            `Xác nhận xoá ${m.email} khỏi workspace?`,
+                            t("member.confirmRemove", { email: m.email }),
                           )
                         ) {
                           remove.mutate(m.id);
@@ -257,7 +333,7 @@ export default function Members() {
                       }}
                       className="text-rose-600 hover:text-rose-700 text-xs"
                     >
-                      Xoá
+                      {t("member.removeAction")}
                     </button>
                   )}
                 </td>
@@ -266,6 +342,30 @@ export default function Members() {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function SyncProgressBanner({ task }: { task: QueueItem }) {
+  const t = useT();
+  const p = task.progress ?? {};
+  const phase = (p.phase as string | undefined) ?? task.status;
+  const current = p.current as number | undefined;
+  const message = (p.message as string | undefined) ?? t(`progress.${phase}`);
+  const showCount = typeof current === "number";
+
+  return (
+    <div className="bg-blue-50 border border-blue-300 rounded p-4 mb-4">
+      <div className="flex items-center gap-3 mb-2">
+        <div className="w-3 h-3 rounded-full bg-blue-500 animate-pulse" />
+        <div className="font-medium text-blue-900">{t("member.syncRunning")}</div>
+        {showCount && (
+          <div className="text-sm text-blue-700 ml-auto">
+            {t("progress.collected", { n: current ?? 0 })}
+          </div>
+        )}
+      </div>
+      <div className="text-sm text-blue-800">{message}</div>
     </div>
   );
 }

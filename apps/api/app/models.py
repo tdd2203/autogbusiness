@@ -64,6 +64,7 @@ class QueueItem(Base):
     )
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    progress: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -125,6 +126,20 @@ class Workspace(Base):
     seat_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
     extension_api_key: Mapped[str] = mapped_column(String(128), nullable=False)
     last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    chatgpt_user_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    chatgpt_user_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_extension_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Billing fields đồng bộ từ trang chatgpt.com/admin/billing
+    # billing_status: PAID | UNPAID | UNKNOWN
+    billing_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    renewal_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_billing_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_by_id: Mapped[UUID | None] = mapped_column(

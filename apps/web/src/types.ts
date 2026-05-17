@@ -6,9 +6,17 @@ export type Workspace = {
   seat_total: number | null;
   seat_used: number | null;
   last_synced_at: string | null;
+  chatgpt_user_email: string | null;
+  chatgpt_user_name: string | null;
+  last_extension_seen_at: string | null;
+  billing_status: "PAID" | "UNPAID" | "UNKNOWN" | null;
+  renewal_date: string | null;
+  last_billing_synced_at: string | null;
   created_at: string;
   updated_at: string;
 };
+
+export const SEAT_TOTAL_MAX = 999;
 
 export type WorkspaceWithKey = Workspace & { extension_api_key: string };
 
@@ -33,12 +41,21 @@ export type Member = {
   created_at: string;
 };
 
+export type QueueProgress = {
+  phase?: string;
+  current?: number;
+  total?: number;
+  message?: string;
+  [k: string]: unknown;
+};
+
 export type QueueItem = {
   id: string;
   type: string;
   status: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "FAILED";
   payload: Record<string, unknown>;
   result: Record<string, unknown> | null;
+  progress: QueueProgress | null;
   error_code: string | null;
   error_message: string | null;
   workspace_id: string | null;
