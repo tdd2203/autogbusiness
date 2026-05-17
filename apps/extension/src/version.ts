@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.3.17";
+export const VERSION = "0.3.18";
 
 export type ChangelogEntry = {
   version: string;
@@ -28,6 +28,25 @@ export type ChangelogEntry = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.3.18",
+    date: "2026-05-17",
+    kind: "fix",
+    summary: "Multi-language (VI/EN/ZH) cho tab labels + date format + currency parser",
+    details: [
+      "Bug: trên máy khác (ChatGPT account dùng UI tiếng Trung hoặc tiền tệ USD/CNY), scraper VI-only không match được → SYNC_BILLING fail UI_ELEMENT_NOT_FOUND",
+      "Fix selectors.ts TEXT_FALLBACKS: thêm ZH variants (用户/成员, 待处理邀请, 套餐/方案, 账单/发票...) + tabBillingPlan/Invoices",
+      "Fix billing scraper:",
+      "- SEAT_RATIO_PATTERNS: thêm 'X/Y 个席位', '正在使用 X/Y'",
+      "- Currency: hỗ trợ USD ($25.00), CNY (¥25.00, ￥25, RMB 25) ngoài VND (₫)",
+      "- Invoice date: thêm format ZH '2026年5月17日' và EN 'May 17, 2026'",
+      "- Renewal date: thêm format ZH '5月11日 - 6月11日'",
+      "- Billing status: 已付款/未付款 (ZH)",
+      "Fix sync.ts (members):",
+      "- DATE_RE multi-lang regex",
+      "- findJoinedAtInRow parse cả VI/ZH/EN format",
+    ],
+  },
   {
     version: "0.3.17",
     date: "2026-05-17",

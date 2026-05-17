@@ -141,16 +141,45 @@ export const SELECTORS = {
   ],
 };
 
-// Text fallback cho các nút khi không match selector
+// Text fallback cho các nút khi không match selector.
+// Multi-language: vi + en + zh-CN (ChatGPT auto-localize theo user setting).
 export const TEXT_FALLBACKS = {
-  inviteButtonOpen: ["Mời thành viên", "Invite members", "Invite", "Mời"],
-  inviteSubmitButton: ["Gửi lời mời", "Send invite", "Mời thành viên", "Invite", "Mời"],
-  removeMenuItem: ["Remove from workspace", "Remove", "Xoá khỏi workspace", "Xoá"],
-  changeRoleMenuItem: ["Change role", "Đổi vai trò"],
-  confirmRemoveButton: ["Remove", "Xoá", "Confirm", "Xác nhận"],
+  inviteButtonOpen: [
+    "Mời thành viên", "Invite members", "Invite", "Mời",
+    "邀请成员", "邀请",
+  ],
+  inviteSubmitButton: [
+    "Gửi lời mời", "Send invite", "Mời thành viên", "Invite", "Mời",
+    "发送邀请", "邀请",
+  ],
+  removeMenuItem: [
+    "Remove from workspace", "Remove", "Xoá khỏi workspace", "Xoá",
+    "从工作区移除", "移除", "删除",
+  ],
+  changeRoleMenuItem: [
+    "Change role", "Đổi vai trò",
+    "更改角色", "修改角色",
+  ],
+  confirmRemoveButton: [
+    "Remove", "Xoá", "Confirm", "Xác nhận",
+    "移除", "确认", "删除",
+  ],
 
   // Tabs trên trang /admin/members
-  tabActiveMembers: ["Người dùng", "Members", "Users"],
-  tabPendingInvites: ["Lời mời đang chờ xử lý", "Pending invitations", "Pending invites"],
-  tabPendingRequests: ["Yêu cầu đang chờ xử lý", "Pending requests"],
+  tabActiveMembers: [
+    "Người dùng", "Members", "Users",
+    "用户", "成员",
+  ],
+  tabPendingInvites: [
+    "Lời mời đang chờ xử lý", "Pending invitations", "Pending invites",
+    "待处理邀请", "待处理的邀请",
+  ],
+  tabPendingRequests: [
+    "Yêu cầu đang chờ xử lý", "Pending requests",
+    "待处理申请", "待处理的请求",
+  ],
+
+  // Tabs trên trang /admin/billing
+  tabBillingPlan: ["Kế hoạch", "Plan", "套餐", "方案", "计划"],
+  tabBillingInvoices: ["Hoá đơn", "Hóa đơn", "Invoices", "账单", "发票"],
 };

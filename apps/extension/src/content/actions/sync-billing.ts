@@ -7,15 +7,12 @@ import type { ExecuteActionResponse } from "../../shared/messages";
 import { humanClick, queryByText, sleep } from "../human";
 import { reportProgress } from "../progress";
 import { scrapeBillingFromDom } from "../scrapers/billing";
+import { TEXT_FALLBACKS } from "../selectors";
 
 const BILLING_PATH = "/admin/billing";
 
 /** Render delay sau khi navigate / click tab trong SPA. */
 const POST_NAV_RENDER_MS = 2500;
-
-/** Text labels của 2 tab trên trang /admin/billing. */
-const TAB_PLAN_TEXTS = ["Kế hoạch", "Plan"];
-const TAB_INVOICES_TEXTS = ["Hoá đơn", "Hóa đơn", "Invoices"];
 
 /**
  * Click 1 trong các tab buttons theo text. Trả true nếu click được, false nếu
@@ -68,7 +65,7 @@ export async function executeSyncBilling(
     { phase: "scraping", message: "Đang đọc tab Kế hoạch (seat + chu kỳ)..." },
     true,
   );
-  const planTabClicked = await clickBillingTab(TAB_PLAN_TEXTS);
+  const planTabClicked = await clickBillingTab(TEXT_FALLBACKS.tabBillingPlan);
   if (!planTabClicked) {
     console.warn(
       "[autogpt-sync-billing] không tìm thấy tab Kế hoạch — có thể đã active sẵn",
@@ -94,7 +91,9 @@ export async function executeSyncBilling(
     { phase: "scraping", message: "Đang đọc tab Hoá đơn (lịch sử giá)..." },
     true,
   );
-  const invoicesTabClicked = await clickBillingTab(TAB_INVOICES_TEXTS);
+  const invoicesTabClicked = await clickBillingTab(
+    TEXT_FALLBACKS.tabBillingInvoices,
+  );
   if (!invoicesTabClicked) {
     console.warn(
       "[autogpt-sync-billing] không tìm thấy tab Hoá đơn — skip invoices",
