@@ -44,3 +44,7 @@ dashboard/build/
 extension/build/
 extension/dist/
 backend/htmlcov/
+
+# Internal docs & planning (not pushed to GitHub)
+docs/
+PLAN.md
