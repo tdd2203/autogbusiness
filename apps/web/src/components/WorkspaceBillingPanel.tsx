@@ -15,10 +15,7 @@
  * thể có rounding/tax — số hiển thị có thể chênh vài %.
  */
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError } from "../lib/api";
 import { useT } from "../i18n";
-import { confirm, toast } from "./Toast";
 import type { BillingInvoice, Workspace } from "../types";
 
 const VND = new Intl.NumberFormat("vi-VN", {
@@ -71,7 +68,6 @@ function computeTodayPerSlotPrice(
 
 export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
   const t = useT();
-  const qc = useQueryClient();
   const invoices = workspace.billing_invoices ?? [];
   const renewal = workspace.renewal_date;
   const { price: todayPrice, basedOn, note } = computeTodayPerSlotPrice(
@@ -84,67 +80,11 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
   today.setUTCHours(0, 0, 0, 0);
   const daysRemaining = renewalDate ? daysBetween(today, renewalDate) : null;
 
-  const lastSyncedAt = workspace.last_billing_synced_at
-    ? new Date(workspace.last_billing_synced_at)
-    : null;
-  const alreadySynced = lastSyncedAt !== null;
-
-  const syncBilling = useMutation({
-    mutationFn: async () => {
-      // Đã sync rồi → cảnh báo nhưng vẫn cho phép. Giá per-slot và renewal
-      // date là static trong cùng chu kỳ, sync lại không thay đổi gì → user
-      // confirm xong mới gọi API.
-      if (alreadySynced && lastSyncedAt) {
-        const ok = await confirm(
-          t("billing.alreadySyncedWarn", {
-            time: lastSyncedAt.toLocaleString("vi-VN"),
-          }),
-          {
-            title: t("billing.workspaceTitle"),
-            okText: t("billing.syncAgainAnyway"),
-            cancelText: t("common.cancel"),
-          },
-        );
-        if (!ok) throw new Error("__user_cancel__");
-      }
-      return api<{ queue_item_id: string; status: string }>(
-        `/api/v1/workspaces/${workspace.id}/sync-billing`,
-        { method: "POST" },
-      );
-    },
-    onSuccess: () => {
-      toast.success(t("billing.syncQueuedToast"));
-      qc.invalidateQueries({ queryKey: ["workspace", workspace.id] });
-    },
-    onError: (e) => {
-      if (e instanceof Error && e.message === "__user_cancel__") return;
-      const msg =
-        e instanceof ApiError
-          ? String(e.detail)
-          : e instanceof Error
-            ? e.message
-            : String(e);
-      toast.error(t("billing.syncErrorToast", { error: msg }));
-    },
-  });
-
   if (invoices.length === 0 && !workspace.last_billing_synced_at) {
-    // Chưa sync lần nào — hiện 1 nút prompt
+    // Chưa sync lần nào — hiện hint (button sync nằm ở WorkspaceLayout header)
     return (
       <div className="surface-card" style={{ padding: 16, marginBottom: 16 }}>
-        <div className="flex items-baseline justify-between" style={{ gap: 12 }}>
-          <h3 className="display-h3">{t("billing.workspaceTitle")}</h3>
-          <button
-            onClick={() => syncBilling.mutate()}
-            disabled={syncBilling.isPending}
-            className="btn btn-primary btn-sm"
-            title={t("billing.syncTooltip")}
-          >
-            {syncBilling.isPending
-              ? t("billing.syncBusy")
-              : t("billing.syncButton")}
-          </button>
-        </div>
+        <h3 className="display-h3">{t("billing.workspaceTitle")}</h3>
         <p style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 8 }}>
           {t("billing.noInvoicesHint")}
         </p>
@@ -157,28 +97,16 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
       className="surface-card"
       style={{ padding: 16, marginBottom: 16 }}
     >
-      <div className="flex items-center justify-between" style={{ gap: 12 }}>
-        <div className="flex items-baseline" style={{ gap: 12 }}>
-          <h3 className="display-h3">{t("billing.workspaceTitle")}</h3>
-          {renewalDate && daysRemaining !== null && daysRemaining > 0 && (
-            <span
-              className="mono"
-              style={{ fontSize: 12, color: "var(--ink-3)" }}
-            >
-              {t("billing.daysRemaining", { n: daysRemaining })}
-            </span>
-          )}
-        </div>
-        <button
-          onClick={() => syncBilling.mutate()}
-          disabled={syncBilling.isPending}
-          className={`btn btn-sm ${alreadySynced ? "btn-ghost" : "btn-primary"}`}
-          title={t("billing.syncTooltip")}
-        >
-          {syncBilling.isPending
-            ? t("billing.syncBusy")
-            : t("billing.syncButton")}
-        </button>
+      <div className="flex items-baseline" style={{ gap: 12 }}>
+        <h3 className="display-h3">{t("billing.workspaceTitle")}</h3>
+        {renewalDate && daysRemaining !== null && daysRemaining > 0 && (
+          <span
+            className="mono"
+            style={{ fontSize: 12, color: "var(--ink-3)" }}
+          >
+            {t("billing.daysRemaining", { n: daysRemaining })}
+          </span>
+        )}
       </div>
 
       <div

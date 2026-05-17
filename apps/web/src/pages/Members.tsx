@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
@@ -23,11 +23,24 @@ export default function Members() {
   const { hasPermission, user } = useAuth();
   const qc = useQueryClient();
 
-  const [showInvite, setShowInvite] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // ?invite=1 → auto mở form (button trigger nằm ở WorkspaceLayout header)
+  const [showInvite, setShowInvite] = useState(
+    searchParams.get("invite") === "1",
+  );
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<Role>("member");
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+
+  // Reset URL param sau khi xử lý để F5 không auto-open mỗi lần
+  useEffect(() => {
+    if (searchParams.get("invite") === "1") {
+      searchParams.delete("invite");
+      setSearchParams(searchParams, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const { data: members = [], isLoading } = useQuery({
     queryKey: ["members", workspaceId],
@@ -76,18 +89,8 @@ export default function Members() {
     prevSyncIdRef.current = currentSyncId;
   }, [activeSyncTask?.id, qc, workspaceId]);
 
-  const sync = useMutation({
-    mutationFn: (includePending: boolean) =>
-      api<{ queue_item_id: string; status: string }>(
-        `/api/v1/workspaces/${workspaceId}/sync?include_pending=${includePending}`,
-        { method: "POST" },
-      ),
-    onSuccess: (resp) => {
-      setLastSyncTaskId(resp.queue_item_id);
-      qc.invalidateQueries({ queryKey: ["members", workspaceId] });
-      triggerExtensionRun();
-    },
-  });
+  // sync mutation đã được lift lên WorkspaceLayout (button nằm cùng hàng tabs).
+  // Members.tsx vẫn theo dõi activeSyncTask để show banner progress + cancel.
 
   const cancelTask = useMutation({
     mutationFn: async (taskId: string) => {
@@ -218,7 +221,8 @@ export default function Members() {
     invite.mutate();
   }
 
-  const canInvite = hasPermission("MEMBER_INVITE");
+  // Form invite chỉ render khi user có permission MEMBER_INVITE
+  const canInviteForm = hasPermission("MEMBER_INVITE");
   const canRemove = hasPermission("MEMBER_REMOVE");
   const canChangeRole = user?.is_super_admin === true;
 
@@ -258,7 +262,7 @@ export default function Members() {
           />
         </div>
       )}
-      {!activeSyncTask && !lastSyncTask && sync.isSuccess && (
+      {!activeSyncTask && !lastSyncTask && false && (
         <div className="notice" style={{ marginBottom: 16 }}>
           <div className="notice-icon">
             <div className="spinner" />
@@ -308,7 +312,7 @@ export default function Members() {
         />
       </div>
 
-      {showInvite && (
+      {showInvite && canInviteForm && (
         <form
           onSubmit={onInviteSubmit}
           className="surface-card"
@@ -376,40 +380,8 @@ export default function Members() {
               onChange={setSearch}
               placeholder={t("members.searchPlaceholder")}
             />
-            {hasPermission("WORKSPACE_SYNC_TRIGGER") && (
-              <button
-                onClick={async () => {
-                  const includePending = await confirm(
-                    t("member.syncConfirmBody"),
-                    {
-                      title: t("member.syncConfirmTitle"),
-                      okText: t("member.syncConfirmOk"),
-                      cancelText: t("member.syncConfirmCancel"),
-                    },
-                  );
-                  sync.mutate(includePending);
-                }}
-                disabled={sync.isPending || !!activeSyncTask}
-                className="btn btn-ghost"
-                title={t("member.syncTooltip")}
-              >
-                <RefreshIcon />
-                {activeSyncTask
-                  ? t("member.syncRunning")
-                  : sync.isPending
-                  ? t("member.syncBusy")
-                  : t("member.syncButton")}
-              </button>
-            )}
-            {canInvite && !showInvite && (
-              <button
-                onClick={() => setShowInvite(true)}
-                className="btn btn-primary"
-              >
-                <PlusIcon />
-                {t("member.inviteButton")}
-              </button>
-            )}
+            {/* Action buttons (Sync ChatGPT + Mời thành viên) đã được lift
+                lên WorkspaceLayout header để nằm cùng hàng với tabs. */}
           </div>
         </div>
 
@@ -603,36 +575,6 @@ export function SearchInput({
         onChange={(e) => onChange(e.target.value)}
       />
     </div>
-  );
-}
-
-function PlusIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-    >
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  );
-}
-
-function RefreshIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-    >
-      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M3 21v-5h5" />
-    </svg>
   );
 }
 
