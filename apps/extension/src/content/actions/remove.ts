@@ -9,6 +9,7 @@ import {
 import { reportProgress } from "../progress";
 import { SELECTORS, TEXT_FALLBACKS } from "../selectors";
 import { findMemberRow, findRowMenuButton } from "./member-row";
+import { dbLabelsFor, reportLabelMismatch } from "../../shared/ui-labels";
 
 export async function executeRemove(
   taskId: string,
@@ -47,16 +48,25 @@ export async function executeRemove(
   // Đợi menu mở
   let removeItem: HTMLElement | null = null;
   try {
+    const dbRemove = dbLabelsFor("menu_remove_member", "/admin/members");
+    const removeTexts =
+      dbRemove.length > 0
+        ? [...dbRemove, ...TEXT_FALLBACKS.removeMenuItem]
+        : TEXT_FALLBACKS.removeMenuItem;
     removeItem = await waitFor(() => {
       return (
         querySelectorFirst<HTMLElement>(SELECTORS.removeMenuItem) ??
-        TEXT_FALLBACKS.removeMenuItem
+        removeTexts
           .map((t) => queryByText('[role="menuitem"]', t))
           .find((el) => el !== null) ??
         null
       );
     }, 5000);
   } catch {
+    const dbRemove = dbLabelsFor("menu_remove_member", "/admin/members");
+    if (dbRemove.length > 0) {
+      reportLabelMismatch("menu_remove_member", dbRemove[0], "/admin/members");
+    }
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
@@ -70,16 +80,25 @@ export async function executeRemove(
   // Đợi confirm dialog
   let confirmBtn: HTMLElement;
   try {
+    const dbConfirm = dbLabelsFor("confirm_remove_button", "/admin/members");
+    const confirmTexts =
+      dbConfirm.length > 0
+        ? [...dbConfirm, ...TEXT_FALLBACKS.confirmRemoveButton]
+        : TEXT_FALLBACKS.confirmRemoveButton;
     confirmBtn = await waitFor(() => {
       return (
         querySelectorFirst<HTMLElement>(SELECTORS.confirmRemoveButton) ??
-        TEXT_FALLBACKS.confirmRemoveButton
+        confirmTexts
           .map((t) => queryByText("button", t))
           .find((el) => el !== null) ??
         null
       );
     }, 5000);
   } catch {
+    const dbConfirm = dbLabelsFor("confirm_remove_button", "/admin/members");
+    if (dbConfirm.length > 0) {
+      reportLabelMismatch("confirm_remove_button", dbConfirm[0], "/admin/members");
+    }
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",

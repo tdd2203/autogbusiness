@@ -7,7 +7,7 @@ import { CHANGELOG, KIND_COLOR, VERSION } from "../version";
 
 export default function App() {
   const { t, lang, setLang } = useI18n();
-  const [apiBaseUrl, setApiBaseUrl] = useState("http://localhost:8000");
+  const [apiBaseUrl, setApiBaseUrl] = useState("http://localhost:18000");
   const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<ConnectionStatus>({ state: "checking" });
   const [saving, setSaving] = useState(false);
@@ -29,10 +29,25 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const config = await getConfig();
+      let config = await getConfig();
       if (!config) {
         setStatus({ state: "disconnected" });
         return;
+      }
+      // Auto-migrate: backend đã chuyển từ port default 8000 → 18000 ở v0.1.0.
+      // User cũ có thể đã lưu URL :8000 trong storage → fetch fail "Failed to
+      // fetch". Tự rewrite sang :18000 + persist lại, không bắt user click.
+      const migrated = config.apiBaseUrl.replace(
+        /^http:\/\/(localhost|127\.0\.0\.1):8000(\/?.*)$/i,
+        "http://$1:18000$2",
+      );
+      if (migrated !== config.apiBaseUrl) {
+        console.log(
+          "[autogpt-popup] auto-migrate apiBaseUrl:",
+          config.apiBaseUrl, "→", migrated,
+        );
+        config = { ...config, apiBaseUrl: migrated };
+        await setConfig(config);
       }
       setApiBaseUrl(config.apiBaseUrl);
       setApiKey(config.apiKey);
@@ -196,7 +211,7 @@ export default function App() {
             required
             value={apiBaseUrl}
             onChange={(e) => setApiBaseUrl(e.target.value)}
-            placeholder="http://localhost:8000"
+            placeholder="http://localhost:18000"
           />
         </div>
         <div className="field">

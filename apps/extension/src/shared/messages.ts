@@ -6,7 +6,7 @@
 export type ChatGPTRole = "owner" | "admin" | "member";
 
 export type ExecuteActionRequest =
-  | { kind: "INVITE_MEMBER"; taskId: string; email: string; role: ChatGPTRole }
+  | { kind: "INVITE_MEMBER"; taskId: string; emails: string[]; role: ChatGPTRole }
   | { kind: "REMOVE_MEMBER"; taskId: string; email: string }
   | {
       kind: "CHANGE_ROLE";
@@ -18,6 +18,7 @@ export type ExecuteActionRequest =
   | { kind: "SYNC_DATA"; taskId: string; includePending?: boolean }
   | { kind: "SYNC_BILLING"; taskId: string }
   | { kind: "REVOKE_INVITES"; taskId: string; emails: string[] }
+  | { kind: "HARVEST_LABELS"; taskId: string; locale: "vi" | "en" | "zh" }
   | { kind: "PING"; taskId?: string };
 
 export type ScrapedBilling = {

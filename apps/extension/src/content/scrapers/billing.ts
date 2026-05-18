@@ -75,9 +75,9 @@ function parseSeatRatio(text: string): { used: number; total: number } | null {
 }
 
 const PLAN_KEYWORDS: Array<{ re: RegExp; plan: string }> = [
-  { re: /\bgói\s*enterprise\b|\benterprise\s*plan\b|\benterprise\b/i, plan: "enterprise" },
-  { re: /\bgói\s*business\b|\bbusiness\s*plan\b|\bbusiness\b/i, plan: "business" },
-  { re: /\bgói\s*team\b|\bteam\s*plan\b|\bteam\b/i, plan: "team" },
+  { re: /\bgói\s*enterprise\b|\benterprise\s*plan\b|\benterprise\b|企业版|企业/i, plan: "enterprise" },
+  { re: /\bgói\s*business\b|\bbusiness\s*plan\b|\bbusiness\b|商业版|商务/i, plan: "business" },
+  { re: /\bgói\s*team\b|\bteam\s*plan\b|\bteam\b|团队版|团队/i, plan: "team" },
 ];
 
 function parsePlan(text: string): string | null {
@@ -246,9 +246,9 @@ function scrapeInvoices(): ScrapedInvoice[] {
         const d = parseInvoiceDate(innerText);
         if (d) {
           date = d;
-        } else if (/đã\s*thanh\s*toán|paid/i.test(innerText)) {
+        } else if (/đã\s*thanh\s*toán|paid|已\s*付款|已支付/i.test(innerText)) {
           status = "paid";
-        } else if (/chưa\s*thanh\s*toán|unpaid|past\s*due/i.test(innerText)) {
+        } else if (/chưa\s*thanh\s*toán|unpaid|past\s*due|未\s*付款|未支付|逾期/i.test(innerText)) {
           status = "unpaid";
         }
       }

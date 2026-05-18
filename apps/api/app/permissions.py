@@ -15,6 +15,7 @@ class Permission(StrEnum):
     BILLING_VIEW = "BILLING_VIEW"
     BILLING_PAY = "BILLING_PAY"
     MEMBER_CHANGE_ROLE = "MEMBER_CHANGE_ROLE"
+    UI_LABEL_MANAGE = "UI_LABEL_MANAGE"
 
     MEMBER_VIEW = "MEMBER_VIEW"
     MEMBER_INVITE = "MEMBER_INVITE"
@@ -31,6 +32,7 @@ SUPER_ADMIN_ONLY: frozenset[Permission] = frozenset(
         Permission.BILLING_VIEW,
         Permission.BILLING_PAY,
         Permission.MEMBER_CHANGE_ROLE,
+        Permission.UI_LABEL_MANAGE,
     }
 )
 

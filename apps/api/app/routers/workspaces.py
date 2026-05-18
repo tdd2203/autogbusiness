@@ -384,6 +384,59 @@ def trigger_revoke_invites(
     }
 
 
+@router.post("/{workspace_id}/harvest-labels", status_code=status.HTTP_202_ACCEPTED)
+def trigger_harvest_labels(
+    workspace_id: UUID,
+    body: dict,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_super_admin),
+) -> dict:
+    """Dashboard yêu cầu extension auto-quét label ChatGPT cho 1 locale.
+
+    Body: {"locale": "vi" | "en" | "zh"}
+    Extension navigate /admin/members → /admin/billing → /admin/identity, đọc
+    text 18 control_key rồi POST /ui-labels/harvest. Admin chỉ cần đặt ChatGPT
+    sang locale này trước khi bấm — không phải nhập tay.
+    """
+    locale = str(body.get("locale", "")).lower()
+    if locale not in ("vi", "en", "zh"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="locale phải là 'vi', 'en' hoặc 'zh'",
+        )
+    _get_workspace_or_404(db, workspace_id)
+    queue_item = QueueItem(
+        type="HARVEST_LABELS",
+        status="PENDING",
+        workspace_id=workspace_id,
+        payload={"locale": locale},
+        created_by_id=user.id,
+    )
+    db.add(queue_item)
+    db.flush()
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.email,
+        action="UI_LABELS_HARVEST_QUEUED",
+        result="PENDING",
+        target_type="UI_LABEL",
+        data={"queue_item_id": str(queue_item.id), "locale": locale},
+        commit=False,
+    )
+    db.commit()
+    publish_task_event(
+        workspace_id,
+        {
+            "type": "task-available",
+            "task_id": str(queue_item.id),
+            "task_type": "HARVEST_LABELS",
+        },
+    )
+    return {"queue_item_id": str(queue_item.id), "status": "queued", "locale": locale}
+
+
 @router.post("/{workspace_id}/sync-billing", status_code=status.HTTP_202_ACCEPTED)
 def trigger_sync_billing(
     workspace_id: UUID,

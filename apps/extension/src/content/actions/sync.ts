@@ -1,32 +1,18 @@
 import type {
-  ChatGPTRole,
   ExecuteActionResponse,
   ScrapedMember,
 } from "../../shared/messages";
-import { humanClick, queryByText, sleep } from "../human";
+import { humanClick, sleep } from "../human";
+import { findControlByKey, parseChatGPTRole } from "../i18n-ui";
 import { reportProgress } from "../progress";
 import { getChatGPTUserInfo } from "../scrapers/user";
 import { SELECTORS, TEXT_FALLBACKS } from "../selectors";
 
-function parseRole(raw: string | null | undefined): ChatGPTRole | null {
-  if (!raw) return null;
-  const t = raw.trim().toLowerCase();
-  if (t.includes("owner") || t.includes("chủ sở hữu")) return "owner";
-  if (t.includes("admin") || t.includes("quản trị")) return "admin";
-  if (t.includes("member") || t.includes("thành viên")) return "member";
-  return null;
-}
-
-/**
- * Tìm tab button theo text (Tailwind class chứ không phải role="tab" thực sự).
- * Match cả khi tab đang active (border-b) lẫn inactive (text-token-text-tertiary).
- */
-function findTabButton(texts: string[]): HTMLElement | null {
-  for (const text of texts) {
-    const btn = queryByText("button", text);
-    if (btn) return btn;
-  }
-  return null;
+function findTabButton(
+  controlKey: string,
+  texts: readonly string[],
+): HTMLElement | null {
+  return findControlByKey(controlKey, texts, { page: "/admin/members" });
 }
 
 /**
@@ -42,10 +28,11 @@ function findTabButton(texts: string[]): HTMLElement | null {
  *   nhất là cứ click rồi đợi.
  */
 async function clickTabAndWait(
-  tabTexts: string[],
+  controlKey: string,
+  tabTexts: readonly string[],
   postClickWaitMs = 1500,
 ): Promise<boolean> {
-  const btn = findTabButton(tabTexts);
+  const btn = findTabButton(controlKey, tabTexts);
   if (!btn) {
     console.warn(`[autogpt-sync] tab not found: ${tabTexts[0]}`);
     return false;
@@ -158,7 +145,7 @@ function findNameInRow(row: HTMLElement, email: string): string | null {
     if (!text || text.length > 80) continue;
     if (EMAIL_FULL_RE.test(text)) continue;
     if (DATE_RE.test(text)) continue;
-    if (parseRole(text)) continue;
+    if (parseChatGPTRole(text)) continue;
     const lower = text.toLowerCase();
     if (lower === "chatgpt") continue;
     // Avatar initial thường ≤ 3 ký tự (vd "D", "hai", "HP")
@@ -186,7 +173,7 @@ function scrapeAllRows(): ScrapedMember[] {
       members.push({
         email: found.email,
         name: findNameInRow(row, found.email),
-        chatgpt_role: parseRole(row.textContent ?? null),
+        chatgpt_role: parseChatGPTRole(row.textContent ?? null),
         status: "active",
         joined_at: findJoinedAtInRow(row),
       });
@@ -219,7 +206,7 @@ function scrapeAllRows(): ScrapedMember[] {
     members.push({
       email,
       name: findNameInRow(row, email),
-      chatgpt_role: parseRole(row.textContent ?? null),
+      chatgpt_role: parseChatGPTRole(row.textContent ?? null),
       status: "active",
       joined_at: findJoinedAtInRow(row),
     });
@@ -378,7 +365,7 @@ export async function executeSync(
     let tabReady = false;
     for (let i = 0; i < 20; i++) {
       await sleep(500);
-      if (findTabButton(TEXT_FALLBACKS.tabActiveMembers)) {
+      if (findTabButton("tab_active_members", TEXT_FALLBACKS.tabActiveMembers)) {
         tabReady = true;
         break;
       }
@@ -403,7 +390,7 @@ export async function executeSync(
 
   if (includePending) {
     // ----- Tab 1: Lời mời đang chờ xử lý (pending invites) -----
-    if (await clickTabAndWait(TEXT_FALLBACKS.tabPendingInvites)) {
+    if (await clickTabAndWait("tab_pending_invites", TEXT_FALLBACKS.tabPendingInvites)) {
       const { members } = await scrapeCurrentTab(
         taskId,
         "pending",
@@ -415,7 +402,7 @@ export async function executeSync(
     }
 
     // ----- Tab 2: Yêu cầu đang chờ xử lý (pending requests) -----
-    if (await clickTabAndWait(TEXT_FALLBACKS.tabPendingRequests)) {
+    if (await clickTabAndWait("tab_pending_requests", TEXT_FALLBACKS.tabPendingRequests)) {
       const { members } = await scrapeCurrentTab(
         taskId,
         "pending",
@@ -434,7 +421,7 @@ export async function executeSync(
   // ----- Tab 3: Người dùng (active members) — scrape CUỐI để status active
   //         thắng nếu trùng email với 2 tab trên (race condition giữa các sync).
   let tab1Found = false;
-  if (await clickTabAndWait(TEXT_FALLBACKS.tabActiveMembers)) {
+  if (await clickTabAndWait("tab_active_members", TEXT_FALLBACKS.tabActiveMembers)) {
     tab1Found = true;
     const { members } = await scrapeCurrentTab(
       taskId,

@@ -2,21 +2,30 @@
  * Hiển thị thông tin billing per-workspace:
  *   1. Seat usage (used/total)
  *   2. Chu kỳ hoá đơn (renewal_date)
- *   3. Giá ước tính cho 1 slot HÔM NAY — prorated theo days_remaining
- *   4. Lịch sử hoá đơn từ /admin/billing scrape
+ *   3. Giá ước tính cho 1 slot HÔM NAY — smart inference từ history
+ *   4. Lịch sử hoá đơn từ /admin/billing scrape (kèm số slot suy diễn mỗi invoice)
  *
- * Logic giá hôm nay:
- *   - Lấy invoice gần nhất {date, amount_vnd, quantity=1 implied}
- *   - days_remaining_at_that_invoice = renewal - invoice_date
- *   - days_remaining_today = renewal - today
- *   - today_price ≈ recent_amount × (days_remaining_today / days_remaining_at_invoice)
+ * Smart inference (v2 — 2026-05-18):
+ *   - Chu kỳ ChatGPT Business = 30 ngày, giá chuẩn ≈ 286k VND/slot/month.
+ *   - Với mỗi invoice: thử slot count 1..10, công thức
+ *       implied_per_slot = amount / (slots × days_remaining_at_invoice / 30)
+ *     chọn slot count cho implied_per_slot rơi vào range [200k, 400k] và gần
+ *     mức kỳ vọng 286k nhất.
+ *   - Lấy median per_slot của tất cả invoice match được → fullMonthPerSlot.
+ *   - Today's price = fullMonthPerSlot × (days_today / 30).
  *
- * Đây là ước tính tuyến tính. ChatGPT thực tế dùng công thức gần đúng nhưng có
- * thể có rounding/tax — số hiển thị có thể chênh vài %.
+ * Logic cũ (first_invoice / 2) đã bỏ vì assumption "2-slot lần đầu" SAI khi
+ * workspace mua nhiều slot khác nhau trong cycle.
  */
 
 import { useT } from "../i18n";
 import type { BillingInvoice, Workspace } from "../types";
+
+const CYCLE_DAYS = 30;
+const EXPECTED_PER_SLOT_MIN = 200_000;
+const EXPECTED_PER_SLOT_MAX = 400_000;
+const EXPECTED_PER_SLOT_MID = 286_000;
+const MAX_SLOT_GUESS = 10;
 
 const VND = new Intl.NumberFormat("vi-VN", {
   style: "currency",
@@ -29,67 +38,121 @@ function daysBetween(from: Date, to: Date): number {
   return Math.round(ms / (1000 * 60 * 60 * 24));
 }
 
+export type InvoiceBreakdown = {
+  date: string;
+  amount_vnd: number;
+  inferred_slots: number | null;
+  implied_per_slot: number | null;
+  days_remaining_at_invoice: number;
+};
+
+function inferInvoiceBreakdown(
+  inv: BillingInvoice,
+  renewal: Date,
+): InvoiceBreakdown {
+  const invDate = new Date(inv.date);
+  invDate.setUTCHours(0, 0, 0, 0);
+  const daysAtInv = daysBetween(invDate, renewal);
+  if (daysAtInv <= 0 || daysAtInv > CYCLE_DAYS + 2) {
+    return {
+      date: inv.date,
+      amount_vnd: inv.amount_vnd,
+      inferred_slots: null,
+      implied_per_slot: null,
+      days_remaining_at_invoice: daysAtInv,
+    };
+  }
+
+  // Thử slot count 1..MAX, chọn cái cho implied_per_slot gần mức kỳ vọng nhất
+  // và rơi vào range hợp lý.
+  let bestSlots: number | null = null;
+  let bestPerSlot: number | null = null;
+  let bestDist = Infinity;
+  for (let n = 1; n <= MAX_SLOT_GUESS; n++) {
+    const perSlot = inv.amount_vnd / ((n * daysAtInv) / CYCLE_DAYS);
+    if (perSlot < EXPECTED_PER_SLOT_MIN || perSlot > EXPECTED_PER_SLOT_MAX) {
+      continue;
+    }
+    const dist = Math.abs(perSlot - EXPECTED_PER_SLOT_MID);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestSlots = n;
+      bestPerSlot = perSlot;
+    }
+  }
+  return {
+    date: inv.date,
+    amount_vnd: inv.amount_vnd,
+    inferred_slots: bestSlots,
+    implied_per_slot: bestPerSlot !== null ? Math.round(bestPerSlot) : null,
+    days_remaining_at_invoice: daysAtInv,
+  };
+}
+
 function computeTodayPerSlotPrice(
   invoices: BillingInvoice[] | null,
   renewalIso: string | null,
 ): {
   price: number | null;
   fullMonthPerSlot: number | null;
-  basedOn: BillingInvoice | null;
+  breakdown: InvoiceBreakdown[];
+  matched: number;
+  total: number;
   note: string;
 } {
+  const empty = {
+    price: null,
+    fullMonthPerSlot: null,
+    breakdown: [],
+    matched: 0,
+    total: 0,
+  };
   if (!invoices || invoices.length === 0) {
-    return { price: null, fullMonthPerSlot: null, basedOn: null, note: "no_invoices" };
+    return { ...empty, note: "no_invoices" };
   }
   if (!renewalIso) {
-    return { price: null, fullMonthPerSlot: null, basedOn: null, note: "no_renewal_date" };
+    return { ...empty, total: invoices.length, note: "no_renewal_date" };
   }
   const renewal = new Date(renewalIso);
+  renewal.setUTCHours(0, 0, 0, 0);
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
   const daysToday = daysBetween(today, renewal);
   if (daysToday <= 0) {
-    return { price: null, fullMonthPerSlot: null, basedOn: null, note: "cycle_ended" };
+    return { ...empty, total: invoices.length, note: "cycle_ended" };
   }
 
-  // Logic mới (theo user clarify 2026-05-17):
-  // - ChatGPT Business yêu cầu mua TỐI THIỂU 2 slot lần đầu → invoice oldest
-  //   (ngày đầu chu kỳ) = giá 2 slot full month → chia 2 = giá 1 slot full month
-  // - Today's per-slot price = (full_month_per_slot / cycle_length) × days_today
-  //   = full_month_per_slot × (days_today / cycle_length)
-  //
-  // Cycle length tự suy từ first_invoice.date → renewal_date (thường ≈ 30 ngày).
-  const sortedAsc = [...invoices].sort(
-    (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
-  );
-  const firstInvoice = sortedAsc[0];
-  const firstDate = new Date(firstInvoice.date);
-  firstDate.setUTCHours(0, 0, 0, 0);
-  const cycleLength = daysBetween(firstDate, renewal);
-  if (cycleLength <= 0) {
+  const breakdown = invoices.map((inv) => inferInvoiceBreakdown(inv, renewal));
+  const matched = breakdown.filter((b) => b.implied_per_slot !== null);
+
+  if (matched.length === 0) {
     return {
-      price: null,
-      fullMonthPerSlot: null,
-      basedOn: firstInvoice,
-      note: "invalid_cycle",
+      ...empty,
+      breakdown,
+      total: invoices.length,
+      note: "inference_failed",
     };
   }
 
-  // Hoá đơn đầu = 2 slot → chia 2 = giá 1 slot cho full chu kỳ
-  const fullMonthPerSlot = Math.round(firstInvoice.amount_vnd / 2);
-  const price = Math.round(fullMonthPerSlot * (daysToday / cycleLength));
+  // Median per_slot của các invoice match được
+  const sorted = matched
+    .map((b) => b.implied_per_slot as number)
+    .sort((a, b) => a - b);
+  const mid =
+    sorted.length % 2 === 1
+      ? sorted[Math.floor(sorted.length / 2)]
+      : Math.round((sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2);
 
-  // Sanity check: full month per slot phải hợp lý cho ChatGPT Business
-  // (~286k VND theo user clarify). Nếu lệch quá nhiều (vd <100k hoặc >500k)
-  // có thể first invoice không phải 2-slot purchase → cảnh báo admin.
-  const out_of_range =
-    fullMonthPerSlot < 100_000 || fullMonthPerSlot > 500_000;
+  const fullMonthPerSlot = mid;
+  const price = Math.round(fullMonthPerSlot * (daysToday / CYCLE_DAYS));
 
   return {
     price,
     fullMonthPerSlot,
-    basedOn: firstInvoice,
-    note: out_of_range ? "price_out_of_range" : "ok",
+    breakdown,
+    matched: matched.length,
+    total: invoices.length,
+    note: "ok",
   };
 }
 
@@ -97,8 +160,18 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
   const t = useT();
   const invoices = workspace.billing_invoices ?? [];
   const renewal = workspace.renewal_date;
-  const { price: todayPrice, fullMonthPerSlot, basedOn, note } =
-    computeTodayPerSlotPrice(invoices, renewal);
+  const {
+    price: todayPrice,
+    fullMonthPerSlot,
+    breakdown,
+    matched,
+    total,
+    note,
+  } = computeTodayPerSlotPrice(invoices, renewal);
+  const breakdownByDateAmt = new Map<string, InvoiceBreakdown>();
+  for (const b of breakdown) {
+    breakdownByDateAmt.set(`${b.date}|${b.amount_vnd}`, b);
+  }
 
   const renewalDate = renewal ? new Date(renewal) : null;
   const today = new Date();
@@ -152,18 +225,9 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
                 ? t("billing.noRenewalHint")
                 : note === "cycle_ended"
                   ? t("billing.cycleEndedHint")
-                  : note === "invalid_cycle"
-                    ? t("billing.invalidCycleHint")
-                    : note === "price_out_of_range"
-                      ? t("billing.priceOutOfRangeHint", {
-                          value: VND.format(fullMonthPerSlot ?? 0),
-                        })
-                      : basedOn
-                        ? t("billing.basedOnInvoice", {
-                            date: new Date(basedOn.date).toLocaleDateString(),
-                            amount: VND.format(basedOn.amount_vnd),
-                          })
-                        : ""
+                  : note === "inference_failed"
+                    ? t("billing.inferenceFailedHint", { total })
+                    : t("billing.inferredFromN", { matched, total })
           }
         />
         <Metric
@@ -171,7 +235,7 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
           value={
             fullMonthPerSlot !== null ? VND.format(fullMonthPerSlot) : "—"
           }
-          hint={t("billing.fullMonthPerSlotHint")}
+          hint={t("billing.fullMonthPerSlotHintV2")}
         />
         <Metric
           label={t("billing.renewalDate")}
@@ -213,6 +277,8 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
               <tr>
                 <th style={{ textAlign: "left" }}>{t("billing.colDate")}</th>
                 <th style={{ textAlign: "right" }}>{t("billing.colAmount")}</th>
+                <th style={{ textAlign: "center" }}>{t("billing.colSlots")}</th>
+                <th style={{ textAlign: "right" }}>{t("billing.colPerSlot")}</th>
                 <th style={{ textAlign: "left" }}>{t("billing.colStatus")}</th>
               </tr>
             </thead>
@@ -222,29 +288,64 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
                   (a, b) =>
                     new Date(b.date).getTime() - new Date(a.date).getTime(),
                 )
-                .map((inv, i) => (
-                  <tr key={`${inv.date}-${inv.amount_vnd}-${i}`}>
-                    <td>{new Date(inv.date).toLocaleDateString("vi-VN")}</td>
-                    <td
-                      style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}
-                    >
-                      {VND.format(inv.amount_vnd)}
-                    </td>
-                    <td>
-                      <span
-                        className={`badge ${
-                          inv.status === "paid"
-                            ? "badge-success"
-                            : inv.status === "unpaid"
-                              ? "badge-danger"
-                              : "badge-neutral"
-                        }`}
+                .map((inv, i) => {
+                  const br = breakdownByDateAmt.get(
+                    `${inv.date}|${inv.amount_vnd}`,
+                  );
+                  return (
+                    <tr key={`${inv.date}-${inv.amount_vnd}-${i}`}>
+                      <td>{new Date(inv.date).toLocaleDateString("vi-VN")}</td>
+                      <td
+                        style={{
+                          textAlign: "right",
+                          fontFamily: "var(--font-mono)",
+                        }}
                       >
-                        {inv.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                        {VND.format(inv.amount_vnd)}
+                      </td>
+                      <td style={{ textAlign: "center" }}>
+                        {br?.inferred_slots ? (
+                          <span
+                            className="mono"
+                            title={t("billing.slotsInferTooltip", {
+                              days: br.days_remaining_at_invoice,
+                            })}
+                          >
+                            {br.inferred_slots}
+                          </span>
+                        ) : (
+                          <span style={{ color: "var(--ink-3)" }}>—</span>
+                        )}
+                      </td>
+                      <td
+                        style={{
+                          textAlign: "right",
+                          fontFamily: "var(--font-mono)",
+                          color: br?.implied_per_slot
+                            ? "var(--ink-2)"
+                            : "var(--ink-3)",
+                        }}
+                      >
+                        {br?.implied_per_slot
+                          ? VND.format(br.implied_per_slot)
+                          : "—"}
+                      </td>
+                      <td>
+                        <span
+                          className={`badge ${
+                            inv.status === "paid"
+                              ? "badge-success"
+                              : inv.status === "unpaid"
+                                ? "badge-danger"
+                                : "badge-neutral"
+                          }`}
+                        >
+                          {inv.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
             </tbody>
           </table>
         </details>

@@ -1,12 +1,16 @@
-import { Link, NavLink, Outlet, useNavigate, useParams } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, NavLink, Outlet, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useExtensionStatus } from "../hooks/useExtensionTrigger";
 import { useT } from "../i18n";
-import type { Workspace } from "../types";
+import type { QueueItem, Workspace } from "../types";
 import { WorkspaceBillingPanel } from "./WorkspaceBillingPanel";
+import { TaskCompletionBanner } from "./TaskCompletionBanner";
+import { TaskProgressBanner } from "./TaskProgressBanner";
 import { confirm, toast } from "./Toast";
+import { InviteMemberModal } from "./InviteMemberModal";
 
 type Tab = { to: string; labelKey: string; superAdminOnly?: boolean };
 
@@ -21,13 +25,79 @@ export default function WorkspaceLayout() {
   const t = useT();
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const { user, hasPermission } = useAuth();
-  const navigate = useNavigate();
   const qc = useQueryClient();
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [lastBillingTaskId, setLastBillingTaskId] = useState<string | null>(null);
 
   const { data: workspace } = useQuery({
     queryKey: ["workspace", workspaceId],
     queryFn: () => api<Workspace>(`/api/v1/workspaces/${workspaceId}`),
     enabled: !!workspaceId,
+  });
+
+  // Poll recent-tasks để theo dõi tiến trình SYNC_BILLING (extension report
+  // phase navigate→scraping→uploading). Cùng queryKey với Members.tsx nên
+  // react-query auto-dedupe.
+  const { data: recentTasks = [] } = useQuery({
+    queryKey: ["recent-tasks", workspaceId],
+    queryFn: () =>
+      api<QueueItem[]>(`/api/v1/queue?workspace_id=${workspaceId}&limit=50`),
+    enabled: !!workspaceId,
+    refetchInterval: 2000,
+  });
+
+  const activeBillingTask = recentTasks.find(
+    (t) =>
+      t.type === "SYNC_BILLING" &&
+      (t.status === "PENDING" || t.status === "IN_PROGRESS"),
+  );
+  const lastBillingTask = lastBillingTaskId
+    ? recentTasks.find((t) => t.id === lastBillingTaskId) ?? null
+    : null;
+  const showBillingCompletion =
+    lastBillingTask?.status === "COMPLETED" ||
+    lastBillingTask?.status === "FAILED";
+
+  // Khi billing task COMPLETED → refresh workspace để bảng billing show data mới
+  useEffect(() => {
+    if (lastBillingTask?.status === "COMPLETED") {
+      qc.invalidateQueries({ queryKey: ["workspace", workspaceId] });
+    }
+  }, [lastBillingTask?.status, qc, workspaceId]);
+
+  // Auto-dismiss completion banner sau 10s khi COMPLETED (giữ lại FAILED để user đọc)
+  useEffect(() => {
+    if (!showBillingCompletion || lastBillingTask?.status !== "COMPLETED") return;
+    const timer = setTimeout(() => setLastBillingTaskId(null), 10_000);
+    return () => clearTimeout(timer);
+  }, [showBillingCompletion, lastBillingTask?.status]);
+
+  const cancelBillingTask = useMutation({
+    mutationFn: async (taskId: string) => {
+      const ok = await confirm(t("queue.cancelConfirm", { type: "SYNC_BILLING" }), {
+        title: t("queue.cancelConfirmTitle"),
+        okText: t("queue.cancelOk"),
+        cancelText: t("common.cancel"),
+        danger: true,
+      });
+      if (!ok) throw new Error("__user_cancel__");
+      return api<{ id: string; status: string }>(
+        `/api/v1/queue/${taskId}/cancel`,
+        { method: "POST" },
+      );
+    },
+    onSuccess: () => {
+      toast.success(t("queue.cancelOkToast"));
+      qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
+    },
+    onError: (e) => {
+      if (e instanceof Error && e.message === "__user_cancel__") return;
+      toast.error(
+        t("queue.cancelError", {
+          error: e instanceof Error ? e.message : String(e),
+        }),
+      );
+    },
   });
 
   const tabs = TABS.filter((tab) => !tab.superAdminOnly || user?.is_super_admin);
@@ -76,9 +146,11 @@ export default function WorkspaceLayout() {
         { method: "POST" },
       );
     },
-    onSuccess: () => {
+    onSuccess: (resp) => {
       toast.success(t("billing.syncQueuedToast"));
+      setLastBillingTaskId(resp.queue_item_id);
       qc.invalidateQueries({ queryKey: ["workspace", workspaceId] });
+      qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
     },
     onError: (e) => {
       if (e instanceof Error && e.message === "__user_cancel__") return;
@@ -88,8 +160,7 @@ export default function WorkspaceLayout() {
   });
 
   function openInviteForm() {
-    // Members.tsx đọc URL param ?invite=1 để auto-mở form
-    navigate(`/workspaces/${workspaceId}/members?invite=1`);
+    setShowInviteModal(true);
   }
 
   const canSync = hasPermission("WORKSPACE_SYNC_TRIGGER");
@@ -171,8 +242,37 @@ export default function WorkspaceLayout() {
         </div>
       </div>
 
+      {activeBillingTask && (
+        <div style={{ marginBottom: 16 }}>
+          <TaskProgressBanner
+            task={activeBillingTask}
+            onCancel={() => cancelBillingTask.mutate(activeBillingTask.id)}
+            canceling={cancelBillingTask.isPending}
+          />
+        </div>
+      )}
+      {!activeBillingTask && showBillingCompletion && lastBillingTask && (
+        <div style={{ marginBottom: 16 }}>
+          <TaskCompletionBanner
+            task={lastBillingTask}
+            onDismiss={() => setLastBillingTaskId(null)}
+          />
+        </div>
+      )}
+
       {workspace && <WorkspaceBillingPanel workspace={workspace} />}
       <Outlet />
+
+      {showInviteModal && workspaceId && (
+        <InviteMemberModal
+          workspaceId={workspaceId}
+          onClose={() => setShowInviteModal(false)}
+          onDone={() => {
+            qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+            qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -236,3 +336,4 @@ function ConnectionInfo({ workspace }: { workspace: Workspace }) {
     </div>
   );
 }
+

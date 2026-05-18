@@ -215,6 +215,69 @@ class Member(Base):
     invited_by = relationship("User")
 
 
+class UiLabel(Base):
+    """Label UI ChatGPT đã calibrate cho 1 (locale, page, control_key).
+
+    Khi extension thực thi action, đọc label_text từ đây để match DOM —
+    KHÔNG hardcode trong code. Khi ChatGPT đổi UI, chỉ cần harvest lại đúng
+    page/locale bị lỗi qua trang Settings → UI Labels.
+    """
+
+    __tablename__ = "ui_labels"
+    __table_args__ = (
+        UniqueConstraint(
+            "locale", "page", "control_key", name="uq_ui_labels_locale_page_key"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    locale: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    page: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    control_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    label_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    aria_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    stale_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stale_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=_utcnow
+    )
+
+    updated_by = relationship("User")
+
+
+class UiLabelHistory(Base):
+    """Snapshot mỗi version trước đó của 1 UiLabel — rollback khi harvest sai."""
+
+    __tablename__ = "ui_label_history"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    label_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("ui_labels.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    label_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    aria_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class Invite(Base):
     """Bản ghi lời mời thành viên (tracking song song với QueueItem INVITE_MEMBER)."""
 

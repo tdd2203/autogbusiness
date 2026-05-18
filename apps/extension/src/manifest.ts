@@ -22,17 +22,25 @@ export const manifest: ManifestV3Export = {
     },
     {
       // Bridge cho dashboard: nhận postMessage "auto-trigger" sau khi user tạo task.
-      matches: ["http://localhost:5173/*", "http://127.0.0.1:5173/*"],
+      // Dashboard chạy port riêng 17173 (xem apps/web/vite.config.ts).
+      matches: ["http://localhost:17173/*", "http://127.0.0.1:17173/*"],
       js: ["src/content/dashboard-bridge.ts"],
       run_at: "document_start",
     },
   ],
   permissions: ["storage", "tabs", "scripting", "alarms"],
   host_permissions: [
-    "http://localhost:8000/*",
-    "http://127.0.0.1:8000/*",
-    "http://localhost:5173/*",
-    "http://127.0.0.1:5173/*",
+    // Backend FastAPI: port riêng 18000.
+    "http://localhost:18000/*",
+    "http://127.0.0.1:18000/*",
+    // Dashboard Vite: port riêng 17173.
+    "http://localhost:17173/*",
+    "http://127.0.0.1:17173/*",
+    // CRXJS dev server cho extension watch: port 17174 (strictPort=true ở
+    // vite.config.ts) — loaders fetch HMR module qua port này, không có
+    // host_permissions thì Chrome chặn → ERR_BLOCKED_BY_CLIENT.
+    "http://localhost:17174/*",
+    "http://127.0.0.1:17174/*",
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
   ],

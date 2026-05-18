@@ -105,6 +105,26 @@ export async function pushBillingSync(
   });
 }
 
+export async function postHarvestLabels(
+  config: ExtensionConfig,
+  body: {
+    locale: "vi" | "en" | "zh";
+    pages: Array<{
+      page: string;
+      labels: Array<{
+        control_key: string;
+        label_text?: string | null;
+        aria_label?: string | null;
+      }>;
+    }>;
+  },
+): Promise<{ locale: string; total: number; pages: Record<string, number> }> {
+  return request(config, "/api/v1/ui-labels/harvest", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export async function bulkUpsertMembers(
   config: ExtensionConfig,
   workspaceId: string,

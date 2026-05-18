@@ -5,6 +5,7 @@
 - [Authentication_and_Authorization](./Authentication_and_Authorization) — Login + Manage Sub-Accounts
 - [Workspace_Management](./Workspace_Management) — Invite / Remove / Change Role / Sync Data / Sync Billing
 - [Queue_and_Audit](./Queue_and_Audit) — Record Action Log / Send Alert
+- [chatgpt-admin-label-harvest](./docs/chatgpt-admin-label-harvest.md) — Kịch bản thu thập label UI (vi/en/zh) từ 4 trang ChatGPT admin
 
 ## Implementation
 - [apps/api](./apps/api) — Backend FastAPI + PostgreSQL
@@ -34,7 +35,7 @@ npm run dev
 
 Super-admin được seed tự động từ `SUPER_ADMIN_EMAIL/USERNAME/PASSWORD` trong `apps/api/.env` lần đầu khởi động.
 
-Mở http://localhost:5173, đăng nhập bằng email hoặc username của super-admin.
+Mở http://localhost:17173, đăng nhập bằng email hoặc username của super-admin.
 
 ## Architecture
 

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError } from "../lib/api";
+import { api } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useT } from "../i18n";
 import type { Member, QueueItem } from "../types";
@@ -23,24 +23,9 @@ export default function Members() {
   const { hasPermission, user } = useAuth();
   const qc = useQueryClient();
 
-  const [searchParams, setSearchParams] = useSearchParams();
-  // ?invite=1 → auto mở form (button trigger nằm ở WorkspaceLayout header)
-  const [showInvite, setShowInvite] = useState(
-    searchParams.get("invite") === "1",
-  );
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<Role>("member");
-  const [inviteError, setInviteError] = useState<string | null>(null);
+  // Invite form đã được lift sang InviteMemberModal (WorkspaceLayout header).
+  // Members.tsx chỉ còn hiển thị danh sách + filter + progress.
   const [search, setSearch] = useState("");
-
-  // Reset URL param sau khi xử lý để F5 không auto-open mỗi lần
-  useEffect(() => {
-    if (searchParams.get("invite") === "1") {
-      searchParams.delete("invite");
-      setSearchParams(searchParams, { replace: true });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const { data: members = [], isLoading } = useQuery({
     queryKey: ["members", workspaceId],
@@ -173,24 +158,8 @@ export default function Members() {
     })();
   }, [activeSyncTask?.id, activeSyncTask?.status]);
 
-  const invite = useMutation({
-    mutationFn: () =>
-      api<Member>(`/api/v1/workspaces/${workspaceId}/members/invite`, {
-        method: "POST",
-        body: JSON.stringify({ email: inviteEmail.trim(), role: inviteRole }),
-      }),
-    onSuccess: () => {
-      setShowInvite(false);
-      setInviteEmail("");
-      qc.invalidateQueries({ queryKey: ["members", workspaceId] });
-      triggerExtensionRun();
-    },
-    onError: (e) => {
-      setInviteError(
-        e instanceof ApiError ? String(e.detail) : t("member.inviteError"),
-      );
-    },
-  });
+  // Invite mutation đã chuyển sang InviteMemberModal (modal popup ở
+  // WorkspaceLayout header). Members.tsx chỉ giữ remove + changeRole.
 
   const remove = useMutation({
     mutationFn: (memberId: string) =>
@@ -215,14 +184,6 @@ export default function Members() {
     },
   });
 
-  function onInviteSubmit(e: FormEvent) {
-    e.preventDefault();
-    setInviteError(null);
-    invite.mutate();
-  }
-
-  // Form invite chỉ render khi user có permission MEMBER_INVITE
-  const canInviteForm = hasPermission("MEMBER_INVITE");
   const canRemove = hasPermission("MEMBER_REMOVE");
   const canChangeRole = user?.is_super_admin === true;
 
@@ -311,60 +272,6 @@ export default function Members() {
           deltaKind={recentFailed > 0 ? "down" : undefined}
         />
       </div>
-
-      {showInvite && canInviteForm && (
-        <form
-          onSubmit={onInviteSubmit}
-          className="surface-card"
-          style={{ padding: 20, marginBottom: 20 }}
-        >
-          <div className="display-h3" style={{ marginBottom: 12 }}>
-            {t("member.inviteTitle")}
-          </div>
-          <div className="flex flex-wrap gap-3" style={{ marginBottom: 12 }}>
-            <input
-              required
-              type="email"
-              placeholder={t("member.inviteEmailPlaceholder")}
-              value={inviteEmail}
-              onChange={(e) => setInviteEmail(e.target.value)}
-              className="form-input"
-              style={{ flex: 1, minWidth: 220 }}
-            />
-            <select
-              value={inviteRole}
-              onChange={(e) => setInviteRole(e.target.value as Role)}
-              className="form-input"
-              style={{ width: 160 }}
-            >
-              <option value="member">{t("member.roleMember")}</option>
-              <option value="admin">{t("member.roleAdmin")}</option>
-            </select>
-          </div>
-          {inviteError && (
-            <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>
-              {inviteError}
-            </div>
-          )}
-          <div className="flex gap-2">
-            <button disabled={invite.isPending} className="btn btn-primary">
-              {invite.isPending
-                ? t("member.inviteBusy")
-                : t("member.inviteSubmit")}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowInvite(false);
-                setInviteError(null);
-              }}
-              className="btn btn-ghost"
-            >
-              {t("common.cancel")}
-            </button>
-          </div>
-        </form>
-      )}
 
       <div className="table-card">
         <div className="table-head">

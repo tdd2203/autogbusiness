@@ -59,6 +59,7 @@ QueueType = Literal[
     "SYNC_DATA",
     "SYNC_BILLING",
     "REVOKE_INVITES",
+    "HARVEST_LABELS",
 ]
 QueueStatus = Literal["PENDING", "IN_PROGRESS", "COMPLETED", "FAILED"]
 
@@ -243,6 +244,13 @@ class MemberInviteIn(BaseModel):
     role: ChatGPTRole = "member"
 
 
+class MemberBulkInviteIn(BaseModel):
+    """Mời nhiều email cùng lúc qua 1 ChatGPT dialog (click 'Thêm nhiều hơn')."""
+
+    emails: list[EmailStr] = Field(min_length=1, max_length=200)
+    role: ChatGPTRole = "member"
+
+
 class MemberChangeRoleIn(BaseModel):
     new_role: ChatGPTRole
 
@@ -263,6 +271,122 @@ class InviteOut(BaseModel):
     invited_by_user_id: UUID | None
     created_at: datetime
     expires_at: datetime | None
+
+
+# ---------- UI Labels ----------
+UiLabelLocale = Literal["vi", "en", "zh"]
+UiLabelPage = Literal[
+    "/admin/members",
+    "/admin/billing",
+    "/admin/billing?tab=invoices",
+    "/admin/identity",
+]
+
+
+class UiLabelOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    locale: str
+    page: str
+    control_key: str
+    label_text: str | None
+    aria_label: str | None
+    notes: dict | None
+    stale: bool
+    stale_reason: str | None
+    stale_count: int
+    version: int
+    updated_by_id: UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class UiLabelItemIn(BaseModel):
+    control_key: str = Field(..., min_length=1, max_length=64)
+    label_text: str | None = Field(default=None, max_length=512)
+    aria_label: str | None = Field(default=None, max_length=512)
+    notes: dict | None = None
+
+
+class UiLabelBulkIn(BaseModel):
+    """Console harvester / Settings page gửi 1 lần cho 1 (locale, page)."""
+
+    locale: UiLabelLocale
+    page: UiLabelPage
+    labels: list[UiLabelItemIn] = Field(min_length=1, max_length=64)
+    scrape_notes: dict | None = None
+
+
+class UiLabelUpdate(BaseModel):
+    label_text: str | None = Field(default=None, max_length=512)
+    aria_label: str | None = Field(default=None, max_length=512)
+    notes: dict | None = None
+
+
+class UiLabelReportIn(BaseModel):
+    """Extension báo: chạy action mà không match được label DB → mark stale."""
+
+    locale: UiLabelLocale
+    page: UiLabelPage
+    control_key: str = Field(..., min_length=1, max_length=64)
+    expected: str | None = Field(default=None, max_length=512)
+    dom_sample: str | None = Field(default=None, max_length=2000)
+
+
+class UiLabelHarvestPageIn(BaseModel):
+    """1 page trong payload auto-harvest từ extension."""
+
+    page: UiLabelPage
+    labels: list[UiLabelItemIn] = Field(default_factory=list)
+
+
+class UiLabelHarvestIn(BaseModel):
+    """Extension auto-quét DOM trên chatgpt.com → bulk upsert nhiều page cùng locale."""
+
+    locale: UiLabelLocale
+    pages: list[UiLabelHarvestPageIn] = Field(min_length=1, max_length=8)
+
+
+class UiLabelHarvestOut(BaseModel):
+    locale: str
+    pages: dict[str, int]  # page → số label upsert
+    total: int
+
+
+class UiLabelHistoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    label_id: UUID
+    version: int
+    label_text: str | None
+    aria_label: str | None
+    notes: dict | None
+    created_by_id: UUID | None
+    created_at: datetime
+
+
+class UiLabelCoverageCell(BaseModel):
+    total: int
+    filled: int
+    stale: int
+
+
+class UiLabelCoverageOut(BaseModel):
+    """Matrix coverage cho UI: page × locale → {total, filled, stale}."""
+
+    pages: list[str]
+    locales: list[str]
+    matrix: dict[str, dict[str, UiLabelCoverageCell]]
+
+
+class UiLabelBundleOut(BaseModel):
+    """Bundle cho extension cache — nested dict locale → page → control_key."""
+
+    version: int
+    generated_at: datetime
+    labels: dict[str, dict[str, dict[str, dict]]]
 
 
 # ---------- Audit Log ----------

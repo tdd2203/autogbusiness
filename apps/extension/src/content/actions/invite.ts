@@ -5,11 +5,17 @@ import type {
 import {
   humanClick,
   humanType,
-  queryByText,
+  queryByAnyText,
   querySelectorFirst,
   randomDelay,
   waitFor,
 } from "../human";
+import {
+  INVITE_ERROR_HINTS,
+  findControlByKey,
+  findRoleOption,
+} from "../i18n-ui";
+import { dbLabelsFor, reportLabelMismatch } from "../../shared/ui-labels";
 import { reportProgress } from "../progress";
 import { SELECTORS, TEXT_FALLBACKS } from "../selectors";
 import { withExternalInvitesEnabled } from "./external-invites";
@@ -20,12 +26,14 @@ function findInviteOpenButton(): HTMLElement | null {
     console.log("[autogpt-invite] open button matched via selector");
     return bySel;
   }
-  for (const text of TEXT_FALLBACKS.inviteButtonOpen) {
-    const el = queryByText("button", text);
-    if (el) {
-      console.log(`[autogpt-invite] open button matched via text: "${text}"`);
-      return el;
-    }
+  const byText = findControlByKey(
+    "invite_button_open",
+    TEXT_FALLBACKS.inviteButtonOpen,
+    { page: "/admin/members" },
+  );
+  if (byText) {
+    console.log("[autogpt-invite] open button matched via text/DB fallback");
+    return byText;
   }
   return null;
 }
@@ -51,12 +59,18 @@ function findInviteSubmitButton(): HTMLElement | null {
   // Text fallback CHỈ tìm trong dialog để tránh click nhầm nút "Mời" mở dialog.
   const dialog = document.querySelector('[role="dialog"]');
   const root: ParentNode = dialog ?? document;
-  for (const text of TEXT_FALLBACKS.inviteSubmitButton) {
-    const el = queryByText("button", text, root);
-    if (el) {
-      console.log(`[autogpt-invite] submit matched via text: "${text}"`);
-      return el;
-    }
+  const dbLabels = dbLabelsFor("invite_submit_button", "/admin/members");
+  const merged =
+    dbLabels.length > 0
+      ? [...dbLabels, ...TEXT_FALLBACKS.inviteSubmitButton]
+      : TEXT_FALLBACKS.inviteSubmitButton;
+  const byText = queryByAnyText("button", merged, root);
+  if (byText) {
+    console.log("[autogpt-invite] submit matched via text/DB fallback");
+    return byText;
+  }
+  if (dbLabels.length > 0) {
+    reportLabelMismatch("invite_submit_button", dbLabels[0], "/admin/members");
   }
   return null;
 }
@@ -89,20 +103,7 @@ async function setRole(role: ChatGPTRole): Promise<void> {
     console.log(`[autogpt-invite] role combobox detected, clicking to open...`);
     await humanClick(selectEl);
     await randomDelay(500, 1200);
-    // Map role tới text hiển thị tiếng Việt.
-    const roleText: Record<ChatGPTRole, string[]> = {
-      owner: ["Chủ sở hữu", "Owner"],
-      admin: ["Quản trị viên", "Admin"],
-      member: ["Thành viên", "Member"],
-    };
-    let opt: HTMLElement | null = null;
-    for (const t of roleText[role]) {
-      opt =
-        queryByText('[role="option"]', t) ??
-        queryByText("li", t) ??
-        queryByText("button", t);
-      if (opt) break;
-    }
+    const opt = findRoleOption(role);
     if (opt) {
       await humanClick(opt);
       console.log(`[autogpt-invite] role option clicked: ${role}`);
@@ -114,10 +115,12 @@ async function setRole(role: ChatGPTRole): Promise<void> {
 
 export async function executeInvite(
   taskId: string,
-  email: string,
+  emails: string[],
   role: ChatGPTRole,
 ): Promise<ExecuteActionResponse> {
-  console.log(`[autogpt-invite] START email=${email} role=${role} pathname=${location.pathname}`);
+  console.log(
+    `[autogpt-invite] START ${emails.length} email(s) role=${role} pathname=${location.pathname}`,
+  );
 
   if (!location.pathname.includes("/admin")) {
     return {
@@ -126,19 +129,55 @@ export async function executeInvite(
       error_message: `Trang hiện tại không phải admin (${location.pathname}). Mở chatgpt.com/admin/members trước.`,
     };
   }
+  if (emails.length === 0) {
+    return {
+      ok: false,
+      error_code: "UI_ELEMENT_NOT_FOUND",
+      error_message: "Danh sách emails rỗng",
+    };
+  }
 
   // Wrap: bật toggle "Cho phép lời mời từ miền bên ngoài" trên /admin/identity
   // trước khi invite (cho phép email ngoài domain) → restore lại trạng thái cũ
   // ngay sau khi invite xong, kể cả khi fail. ChatGPT giữ toggle này nhanh chóng
   // OFF lại sau invite để tránh rủi ro bảo mật.
   return await withExternalInvitesEnabled(() =>
-    executeInviteInner(taskId, email, role),
+    executeInviteInner(taskId, emails, role),
   );
+}
+
+/**
+ * Click nút "Thêm nhiều hơn" trong dialog invite để mở textarea/box độc lập
+ * cho multi-email. Trả về true nếu click được, false nếu không tìm thấy
+ * (dialog có thể đã ở chế độ multi sẵn).
+ */
+async function clickAddMoreIfNeeded(): Promise<boolean> {
+  const dialog = document.querySelector('[role="dialog"]');
+  const root: ParentNode = dialog ?? document;
+  const dbLabels = dbLabelsFor("invite_add_more_button", "/admin/members");
+  const merged =
+    dbLabels.length > 0
+      ? [...dbLabels, ...TEXT_FALLBACKS.inviteAddMoreButton]
+      : TEXT_FALLBACKS.inviteAddMoreButton;
+  const btn =
+    queryByAnyText("button", merged, root) ??
+    queryByAnyText("a", merged, root);
+  if (!btn && dbLabels.length > 0) {
+    reportLabelMismatch("invite_add_more_button", dbLabels[0], "/admin/members");
+  }
+  if (btn) {
+    console.log("[autogpt-invite] click add-more matched via text fallback");
+    await humanClick(btn);
+    await randomDelay(400, 900);
+    return true;
+  }
+  console.log("[autogpt-invite] không tìm thấy nút 'Thêm nhiều hơn' — single mode");
+  return false;
 }
 
 async function executeInviteInner(
   taskId: string,
-  email: string,
+  emails: string[],
   role: ChatGPTRole,
 ): Promise<ExecuteActionResponse> {
 
@@ -150,15 +189,14 @@ async function executeInviteInner(
 
   // 1. Đảm bảo đang ở tab "Người dùng" — nếu user mở /admin/members và tab
   //    đang là "Lời mời" hay "Yêu cầu", nút "Mời thành viên" có thể không có.
-  for (const text of TEXT_FALLBACKS.tabActiveMembers) {
-    const tab = queryByText("button", text);
-    if (tab) {
-      // Chỉ click nếu tab này chưa active (heuristic: tab inactive có
-      // text-token-text-tertiary class). Đơn giản: cứ click — idempotent.
-      await humanClick(tab);
-      await randomDelay(500, 1200);
-      break;
-    }
+  const activeTab = findControlByKey(
+    "tab_active_members",
+    TEXT_FALLBACKS.tabActiveMembers,
+    { page: "/admin/members" },
+  );
+  if (activeTab) {
+    await humanClick(activeTab);
+    await randomDelay(500, 1200);
   }
 
   // 2. Mở dialog Invite
@@ -192,15 +230,40 @@ async function executeInviteInner(
     };
   }
 
-  // 4. Nhập email
+  // 4. Nếu nhiều email → click "Thêm nhiều hơn" để mở multi-email textarea.
+  //    Nếu chỉ 1 email → input mặc định OK.
+  if (emails.length > 1) {
+    await randomDelay(300, 700);
+    await clickAddMoreIfNeeded();
+    // Re-find input (textarea/contenteditable mới xuất hiện sau click)
+    try {
+      emailInput = await waitFor(() => findInviteEmailInput(), 5_000);
+    } catch {
+      // Vẫn dùng input cũ (single-mode) nếu không tìm được multi-textarea
+      console.warn(
+        "[autogpt-invite] sau click 'Thêm nhiều hơn' không tìm được textarea mới — dùng input mặc định + newline join",
+      );
+    }
+  }
+
   await reportProgress(
     taskId,
-    { phase: "typing-email", message: `Đang nhập email ${email}...` },
+    {
+      phase: "typing-email",
+      message:
+        emails.length === 1
+          ? `Đang nhập email ${emails[0]}...`
+          : `Đang nhập ${emails.length} email...`,
+    },
     true,
   );
   await randomDelay();
-  await humanType(emailInput, email);
-  console.log(`[autogpt-invite] typed email: ${email}`);
+  // Multi-email: join bằng newline (ChatGPT auto-tokenize). Single: type trực tiếp.
+  const inputText = emails.join("\n");
+  await humanType(emailInput, inputText);
+  console.log(
+    `[autogpt-invite] typed ${emails.length} email(s): ${emails.slice(0, 3).join(", ")}${emails.length > 3 ? "..." : ""}`,
+  );
 
   // 5. Set role
   await randomDelay(800, 1800);
@@ -240,7 +303,7 @@ async function executeInviteInner(
   } catch {
     // Check xem có error message trong dialog không (vd email đã tồn tại)
     const dialogText = document.querySelector('[role="dialog"]')?.textContent ?? "";
-    const errHints = ["đã tồn tại", "already exists", "đã được mời", "invalid", "không hợp lệ"];
+    const errHints = INVITE_ERROR_HINTS;
     const matchedHint = errHints.find((h) => dialogText.toLowerCase().includes(h.toLowerCase()));
     return {
       ok: false,
@@ -252,6 +315,8 @@ async function executeInviteInner(
     };
   }
 
-  console.log(`[autogpt-invite] SUCCESS: ${email} (${role})`);
-  return { ok: true, data: { email, role } };
+  console.log(
+    `[autogpt-invite] SUCCESS: ${emails.length} email(s) role=${role}`,
+  );
+  return { ok: true, data: { emails, count: emails.length, role } };
 }

@@ -9,10 +9,11 @@ cd apps/web
 npm install     # hoặc pnpm install
 copy .env.example .env
 
-npm run dev     # http://localhost:5173
+npm run dev     # http://localhost:17173
 ```
 
-Vite proxy `/api/*` → `http://localhost:8000` (backend FastAPI), nên FE và BE chạy song song được.
+Port riêng 17173 (không dùng default 5173 của Vite) để tránh đụng project khác.
+Vite proxy `/api/*` → `http://127.0.0.1:18000` (backend FastAPI), nên FE và BE chạy song song được.
 
 ## Routes
 

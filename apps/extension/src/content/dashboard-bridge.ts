@@ -1,5 +1,5 @@
 /**
- * Bridge content script: chạy trên dashboard (localhost:5173 / 127.0.0.1:5173).
+ * Bridge content script: chạy trên dashboard (localhost:17173 / 127.0.0.1:17173).
  *
  * ⚠️ CONTENT SCRIPT CHẠY TRONG ISOLATED WORLD.
  *    Nghĩa là `window.__autogptExtensionInstalled = true` trong file này

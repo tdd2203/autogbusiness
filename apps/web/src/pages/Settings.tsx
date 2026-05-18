@@ -3,8 +3,9 @@ import { useMutation } from "@tanstack/react-query";
 import { api, ApiError, setToken } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useT } from "../i18n";
+import { UiLabelsManager } from "../components/UiLabelsManager";
 
-type SettingsTab = "account" | "security";
+type SettingsTab = "account" | "security" | "uiLabels";
 
 export default function Settings() {
   const t = useT();
@@ -46,6 +47,8 @@ export default function Settings() {
     ? new Date(user.created_at).toLocaleDateString()
     : "—";
 
+  const displayName = user?.username ?? user?.email ?? "—";
+
   return (
     <div className="page-fade">
       <div style={{ marginBottom: 32 }}>
@@ -71,6 +74,14 @@ export default function Settings() {
           >
             {t("settings.sectionSecurity")}
           </button>
+          {user?.is_super_admin && (
+            <button
+              onClick={() => setTab("uiLabels")}
+              className={tab === "uiLabels" ? "settings-link active" : "settings-link"}
+            >
+              {t("settings.sectionUiLabels")}
+            </button>
+          )}
         </nav>
 
         <div>
@@ -88,12 +99,8 @@ export default function Settings() {
                 {t("settings.accountDesc")}
               </p>
               <div className="info-row">
-                <div className="key">{t("settings.email")}</div>
-                <div className="val">{user?.email}</div>
-              </div>
-              <div className="info-row">
                 <div className="key">{t("settings.username")}</div>
-                <div className="val">{user?.username}</div>
+                <div className="val">{displayName}</div>
               </div>
               <div className="info-row">
                 <div className="key">{t("settings.role")}</div>
@@ -111,6 +118,8 @@ export default function Settings() {
               </div>
             </div>
           )}
+
+          {tab === "uiLabels" && user?.is_super_admin && <UiLabelsManager />}
 
           {tab === "security" && (
             <div className="settings-section">

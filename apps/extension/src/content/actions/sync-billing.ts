@@ -4,7 +4,9 @@
  */
 
 import type { ExecuteActionResponse } from "../../shared/messages";
-import { humanClick, queryByText, sleep } from "../human";
+import { humanClick, sleep } from "../human";
+import { findControlByKey } from "../i18n-ui";
+import type { UiLabelPage } from "../../shared/ui-labels";
 import { reportProgress } from "../progress";
 import { scrapeBillingFromDom } from "../scrapers/billing";
 import { TEXT_FALLBACKS } from "../selectors";
@@ -18,17 +20,69 @@ const POST_NAV_RENDER_MS = 2500;
  * Click 1 trong các tab buttons theo text. Trả true nếu click được, false nếu
  * không tìm thấy.
  */
-async function clickBillingTab(texts: string[]): Promise<boolean> {
-  for (const text of texts) {
-    const btn = queryByText("button", text) ?? queryByText("a", text);
-    if (btn) {
-      console.log(`[autogpt-sync-billing] click tab "${text}"`);
-      await humanClick(btn);
-      await sleep(POST_NAV_RENDER_MS);
-      return true;
-    }
+async function clickBillingTab(
+  controlKey: string,
+  texts: readonly string[],
+): Promise<boolean> {
+  const page: UiLabelPage = location.search.includes("tab=invoices")
+    ? "/admin/billing?tab=invoices"
+    : "/admin/billing";
+  const btn = findControlByKey(controlKey, texts, { page });
+  if (btn) {
+    console.log(
+      `[autogpt-sync-billing] click billing tab matched=`,
+      (btn.textContent ?? "").trim().slice(0, 60),
+      "tag=", btn.tagName,
+      "role=", btn.getAttribute("role"),
+    );
+    await humanClick(btn);
+    await sleep(POST_NAV_RENDER_MS);
+    return true;
   }
+  console.warn(
+    `[autogpt-sync-billing] clickBillingTab MISS — texts tried=`,
+    texts,
+    "all button/tab/anchor texts on page=",
+    Array.from(
+      document.querySelectorAll<HTMLElement>('button, [role="tab"], a'),
+    )
+      .map((e) => (e.textContent ?? "").trim().slice(0, 40))
+      .filter((s) => s.length > 0 && s.length < 60)
+      .slice(0, 30),
+  );
   return false;
+}
+
+/**
+ * Diagnostic dump: log mọi field scrape được + 1 snippet text visible.
+ * Gọi khi scrape lần đầu null để biết regex nào miss.
+ */
+function logBillingDiagnostic(label: string, billing: ReturnType<typeof scrapeBillingFromDom>) {
+  const main =
+    document.querySelector("main") ??
+    document.querySelector("[role='main']") ??
+    document.body;
+  const text = (main?.textContent ?? "").replace(/\s+/g, " ").trim();
+  const hasSeatKeyword =
+    /giấy\s*phép|license|seat|ghế|chỗ\s*ngồi|许可证|席位/i.test(text);
+  const hasSeatRatio = /\d{1,3}\s*\/\s*\d{1,3}/.test(text);
+  const hasPlanKeyword = /business|enterprise|team|gói|企业|商业|团队/i.test(text);
+  console.log(
+    `[autogpt-sync-billing] ${label} →`,
+    JSON.stringify({
+      url: location.href,
+      seat: `${billing.seat_used}/${billing.seat_total}`,
+      plan: billing.plan,
+      status: billing.billing_status,
+      renewal: billing.renewal_date,
+      invoices_count: billing.invoices.length,
+      text_length: text.length,
+      has_seat_keyword: hasSeatKeyword,
+      has_seat_ratio_pattern: hasSeatRatio,
+      has_plan_keyword: hasPlanKeyword,
+      text_snippet: text.slice(0, 400),
+    }),
+  );
 }
 
 export async function executeSyncBilling(
@@ -65,7 +119,10 @@ export async function executeSyncBilling(
     { phase: "scraping", message: "Đang đọc tab Kế hoạch (seat + chu kỳ)..." },
     true,
   );
-  const planTabClicked = await clickBillingTab(TEXT_FALLBACKS.tabBillingPlan);
+  const planTabClicked = await clickBillingTab(
+    "tab_billing_plan",
+    TEXT_FALLBACKS.tabBillingPlan,
+  );
   if (!planTabClicked) {
     console.warn(
       "[autogpt-sync-billing] không tìm thấy tab Kế hoạch — có thể đã active sẵn",
@@ -73,9 +130,13 @@ export async function executeSyncBilling(
   }
 
   let billing = scrapeBillingFromDom();
+  logBillingDiagnostic("plan-tab attempt #0", billing);
   for (let i = 0; i < 6 && billing.seat_total === null; i++) {
     await sleep(700);
     billing = scrapeBillingFromDom();
+    if (billing.seat_total === null) {
+      logBillingDiagnostic(`plan-tab attempt #${i + 1}`, billing);
+    }
   }
   const seatFromPlan = {
     plan: billing.plan,
@@ -92,6 +153,7 @@ export async function executeSyncBilling(
     true,
   );
   const invoicesTabClicked = await clickBillingTab(
+    "tab_billing_invoices",
     TEXT_FALLBACKS.tabBillingInvoices,
   );
   if (!invoicesTabClicked) {
@@ -101,6 +163,9 @@ export async function executeSyncBilling(
   } else {
     for (let i = 0; i < 6; i++) {
       const next = scrapeBillingFromDom();
+      if (i === 0 || next.invoices.length === 0) {
+        logBillingDiagnostic(`invoices-tab attempt #${i}`, next);
+      }
       if (next.invoices.length > 0) {
         billing = {
           ...seatFromPlan,

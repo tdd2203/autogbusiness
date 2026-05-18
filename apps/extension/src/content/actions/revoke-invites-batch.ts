@@ -4,7 +4,8 @@
  */
 
 import type { ExecuteActionResponse } from "../../shared/messages";
-import { humanClick, queryByText, sleep } from "../human";
+import { humanClick, sleep } from "../human";
+import { findControlByKey } from "../i18n-ui";
 import { TEXT_FALLBACKS } from "../selectors";
 import { revokeInvites } from "./revoke-invite";
 
@@ -27,14 +28,11 @@ export async function executeRevokeInvites(
   }
 
   // Click tab "Lời mời đang chờ xử lý"
-  let pendingTab: HTMLElement | null = null;
-  for (const text of TEXT_FALLBACKS.tabPendingInvites) {
-    const btn = queryByText("button", text);
-    if (btn) {
-      pendingTab = btn;
-      break;
-    }
-  }
+  const pendingTab = findControlByKey(
+    "tab_pending_invites",
+    TEXT_FALLBACKS.tabPendingInvites,
+    { page: "/admin/members" },
+  );
   if (!pendingTab) {
     return {
       ok: false,

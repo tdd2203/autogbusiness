@@ -91,16 +91,38 @@ export function querySelectorFirst<T extends Element = Element>(
   return null;
 }
 
+/** Chuẩn hóa text trước khi so khớp — bỏ dấu tiếng Việt, gom whitespace. */
+export function normalizeMatchText(s: string): string {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
 export function queryByText(
   selector: string,
   text: string,
   root: ParentNode = document,
 ): HTMLElement | null {
-  const lower = text.toLowerCase();
+  const needle = normalizeMatchText(text);
   const all = root.querySelectorAll<HTMLElement>(selector);
   for (const el of Array.from(all)) {
-    const t = (el.textContent ?? "").trim().toLowerCase();
-    if (t === lower || t.includes(lower)) return el;
+    const hay = normalizeMatchText(el.textContent ?? "");
+    if (hay === needle || hay.includes(needle)) return el;
+  }
+  return null;
+}
+
+export function queryByAnyText(
+  selector: string,
+  texts: readonly string[],
+  root: ParentNode = document,
+): HTMLElement | null {
+  for (const text of texts) {
+    const el = queryByText(selector, text, root);
+    if (el) return el;
   }
   return null;
 }

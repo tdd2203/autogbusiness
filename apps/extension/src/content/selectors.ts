@@ -2,14 +2,10 @@
  * CSS selectors cho ChatGPT Business Admin UI.
  *
  * ⚠️ ChatGPT đổi UI thường xuyên → mỗi selector có nhiều fallback.
- * Khi extension báo `UI_ELEMENT_NOT_FOUND`:
- *   1. Mở DevTools tại chatgpt.com/admin/people
- *   2. Inspect element thật sự (data-testid, aria-label, class)
- *   3. Thêm/sửa entries trong file này
- *   4. Bấm reload extension trong chrome://extensions
- *
- * KHÔNG ĐOÁN selector — verify bằng cách inspect thật trước.
+ * Text fallback (vi/en/zh-CN) nằm ở i18n-ui.ts — import TEXT_FALLBACKS từ đó.
  */
+
+export { TEXT_FALLBACKS } from "./i18n-ui";
 
 export const SELECTORS = {
   // Nút mở dialog "Invite members". Trang vi-VN dùng "Mời thành viên".
@@ -139,47 +135,4 @@ export const SELECTORS = {
     '[data-testid="user-name"]',
     'div[class*="UserMenu"] [class*="name"]',
   ],
-};
-
-// Text fallback cho các nút khi không match selector.
-// Multi-language: vi + en + zh-CN (ChatGPT auto-localize theo user setting).
-export const TEXT_FALLBACKS = {
-  inviteButtonOpen: [
-    "Mời thành viên", "Invite members", "Invite", "Mời",
-    "邀请成员", "邀请",
-  ],
-  inviteSubmitButton: [
-    "Gửi lời mời", "Send invite", "Mời thành viên", "Invite", "Mời",
-    "发送邀请", "邀请",
-  ],
-  removeMenuItem: [
-    "Remove from workspace", "Remove", "Xoá khỏi workspace", "Xoá",
-    "从工作区移除", "移除", "删除",
-  ],
-  changeRoleMenuItem: [
-    "Change role", "Đổi vai trò",
-    "更改角色", "修改角色",
-  ],
-  confirmRemoveButton: [
-    "Remove", "Xoá", "Confirm", "Xác nhận",
-    "移除", "确认", "删除",
-  ],
-
-  // Tabs trên trang /admin/members
-  tabActiveMembers: [
-    "Người dùng", "Members", "Users",
-    "用户", "成员",
-  ],
-  tabPendingInvites: [
-    "Lời mời đang chờ xử lý", "Pending invitations", "Pending invites",
-    "待处理邀请", "待处理的邀请",
-  ],
-  tabPendingRequests: [
-    "Yêu cầu đang chờ xử lý", "Pending requests",
-    "待处理申请", "待处理的请求",
-  ],
-
-  // Tabs trên trang /admin/billing
-  tabBillingPlan: ["Kế hoạch", "Plan", "套餐", "方案", "计划"],
-  tabBillingInvoices: ["Hoá đơn", "Hóa đơn", "Invoices", "账单", "发票"],
 };

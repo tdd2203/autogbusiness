@@ -19,6 +19,7 @@ from app.models import Invite, Member, QueueItem, User, Workspace
 from app.permissions import Permission
 from app.sse import publish_task_event
 from app.schemas import (
+    MemberBulkInviteIn,
     MemberBulkUpsert,
     MemberChangeRoleIn,
     MemberInviteIn,
@@ -159,6 +160,117 @@ def invite_member(
         {"type": "task-available", "task_id": str(queue_item.id), "task_type": "INVITE_MEMBER"},
     )
     return member
+
+
+@router.post("/bulk-invite", status_code=status.HTTP_202_ACCEPTED, response_model=dict)
+def bulk_invite_members(
+    workspace_id: UUID,
+    body: MemberBulkInviteIn,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_permission(Permission.MEMBER_INVITE)),
+) -> dict:
+    """Mời nhiều email cùng lúc — 1 queue task → extension paste all vào 1 dialog
+    ChatGPT (click 'Thêm nhiều hơn' → textarea).
+
+    Tạo:
+      - 1 QueueItem type=INVITE_MEMBER với payload.emails = list (KHÔNG single email)
+      - N Member records status=pending (1 per email)
+      - N Invite records
+      - 1 task-available event tới extension
+    """
+    _get_workspace_or_404(db, workspace_id)
+    # Normalize + dedupe emails lower
+    emails_lower = []
+    seen: set[str] = set()
+    for e in body.emails:
+        lower = str(e).lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        emails_lower.append(lower)
+    if not emails_lower:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Danh sách email rỗng sau dedupe",
+        )
+
+    queue_item = QueueItem(
+        type="INVITE_MEMBER",
+        status="PENDING",
+        workspace_id=workspace_id,
+        payload={"emails": emails_lower, "role": body.role},
+        created_by_id=user.id,
+    )
+    db.add(queue_item)
+    db.flush()
+
+    # Tạo Member + Invite cho mỗi email
+    created_member_ids: list[str] = []
+    for email in emails_lower:
+        existing = db.execute(
+            select(Member).where(
+                Member.workspace_id == workspace_id, Member.email == email
+            )
+        ).scalar_one_or_none()
+        if existing:
+            existing.status = "pending"
+            existing.chatgpt_role = body.role
+            existing.invited_by_user_id = user.id
+            member = existing
+        else:
+            member = Member(
+                workspace_id=workspace_id,
+                email=email,
+                chatgpt_role=body.role,
+                status="pending",
+                invited_by_user_id=user.id,
+            )
+            db.add(member)
+        db.flush()
+        created_member_ids.append(str(member.id))
+
+        db.add(
+            Invite(
+                workspace_id=workspace_id,
+                email=email,
+                role=body.role,
+                status="pending",
+                queue_item_id=queue_item.id,
+                invited_by_user_id=user.id,
+            )
+        )
+
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.email,
+        action="MEMBER_BULK_INVITE_QUEUED",
+        result="PENDING",
+        target_type="QUEUE_ITEM",
+        target_id=str(queue_item.id),
+        data={
+            "workspace_id": str(workspace_id),
+            "emails": emails_lower,
+            "role": body.role,
+            "count": len(emails_lower),
+        },
+        commit=False,
+    )
+    db.commit()
+    publish_task_event(
+        workspace_id,
+        {
+            "type": "task-available",
+            "task_id": str(queue_item.id),
+            "task_type": "INVITE_MEMBER",
+        },
+    )
+    return {
+        "queue_item_id": str(queue_item.id),
+        "count": len(emails_lower),
+        "member_ids": created_member_ids,
+    }
 
 
 @router.delete("/{member_id}", status_code=status.HTTP_202_ACCEPTED)

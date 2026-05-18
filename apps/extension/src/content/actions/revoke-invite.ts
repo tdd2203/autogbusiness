@@ -23,24 +23,15 @@ import {
   sleep,
   waitFor,
 } from "../human";
+import {
+  REVOKE_CONFIRM_TEXTS,
+  REVOKE_MENU_ITEM_TEXTS,
+  findMenuItemByKey,
+} from "../i18n-ui";
+import { dbLabelsFor, reportLabelMismatch } from "../../shared/ui-labels";
 import { findMemberRow, findRowMenuButton } from "./member-row";
 
-const REVOKE_MENU_ITEM_TEXTS = [
-  "Thu hồi lời mời",
-  "Thu hồi",
-  "Revoke invite",
-  "Revoke",
-  "Cancel invite",
-];
-
 /** Có thể có confirm dialog hoặc không — tuỳ ChatGPT. */
-const REVOKE_CONFIRM_TEXTS = [
-  "Thu hồi",
-  "Xác nhận",
-  "Revoke",
-  "Confirm",
-];
-
 export type RevokeResult = {
   email: string;
   ok: boolean;
@@ -79,11 +70,9 @@ export async function revokeInvite(email: string): Promise<RevokeResult> {
   let revokeItem: HTMLElement | null = null;
   try {
     revokeItem = await waitFor(() => {
-      for (const text of REVOKE_MENU_ITEM_TEXTS) {
-        const el = queryByText('[role="menuitem"]', text);
-        if (el) return el;
-      }
-      return null;
+      return findMenuItemByKey("menu_revoke_invite", REVOKE_MENU_ITEM_TEXTS, {
+        page: "/admin/members",
+      });
     }, 4000);
   } catch {
     // Close any opened menu để không kẹt UI
@@ -100,7 +89,11 @@ export async function revokeInvite(email: string): Promise<RevokeResult> {
 
   // Có thể có confirm dialog — đợi 1s rồi check
   await sleep(800);
-  for (const text of REVOKE_CONFIRM_TEXTS) {
+  const dbConfirm = dbLabelsFor("confirm_revoke_button", "/admin/members");
+  const confirmTexts =
+    dbConfirm.length > 0 ? [...dbConfirm, ...REVOKE_CONFIRM_TEXTS] : REVOKE_CONFIRM_TEXTS;
+  let confirmClicked = false;
+  for (const text of confirmTexts) {
     const dialog = document.querySelector('[role="dialog"]');
     if (!dialog) break;
     const btn = queryByText("button", text, dialog);
@@ -108,8 +101,16 @@ export async function revokeInvite(email: string): Promise<RevokeResult> {
       console.log(`[autogpt-revoke] click confirm "${text}"`);
       await randomDelay(200, 500);
       await humanClick(btn);
+      confirmClicked = true;
       break;
     }
+  }
+  if (
+    !confirmClicked &&
+    dbConfirm.length > 0 &&
+    document.querySelector('[role="dialog"]')
+  ) {
+    reportLabelMismatch("confirm_revoke_button", dbConfirm[0], "/admin/members");
   }
 
   // Verify row biến mất (tối đa 5s)

@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     jwt_algorithm: str = Field("HS256", alias="JWT_ALGORITHM")
     jwt_expire_minutes: int = Field(720, alias="JWT_EXPIRE_MINUTES")
 
-    frontend_origin: str = Field("http://localhost:5173", alias="FRONTEND_ORIGIN")
+    frontend_origin: str = Field("http://localhost:17173", alias="FRONTEND_ORIGIN")
 
     super_admin_email: str = Field(..., alias="SUPER_ADMIN_EMAIL")
     super_admin_username: str = Field(..., alias="SUPER_ADMIN_USERNAME")

@@ -8,7 +8,7 @@
  *
  * Giải pháp mới: dashboard poll backend `/extension-status` mỗi 5s. Backend
  * biết extension nào đang subscribe SSE (per-workspace) → trả `online: bool`.
- * Hoạt động ở mọi browser vì chỉ cần HTTP tới localhost:8000.
+ * Hoạt động ở mọi browser vì chỉ cần HTTP tới localhost:18000.
  *
  * Task auto-execute đã được backend SSE handle từ v0.3.0 — KHÔNG cần dashboard
  * gửi tín hiệu "run-now" qua bridge nữa. `triggerExtensionRun` giờ là no-op

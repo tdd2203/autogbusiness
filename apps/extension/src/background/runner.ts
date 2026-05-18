@@ -6,8 +6,10 @@ import {
   ApiError,
   bulkUpsertMembers,
   pickNextTask,
+  postHarvestLabels,
   pushBillingSync,
   updateExtensionInfo,
+  updateProgress,
   updateTask,
 } from "../shared/api";
 import { getConfig } from "../shared/storage";
@@ -195,16 +197,44 @@ async function sendToContent(
   }
 }
 
+/**
+ * Báo progress lifecycle từ background (trước cả khi content script chạy).
+ * Dùng cho task long-op (HARVEST_LABELS, SYNC_DATA) để dashboard không bị
+ * "đứng yên" trong 5-30s mở tab + inject content script + rate-limit.
+ * Best-effort: silent fail.
+ */
+async function reportRunnerProgress(
+  config: ExtensionConfig,
+  taskId: string,
+  progress: { phase: string; message: string; current?: number; total?: number },
+): Promise<void> {
+  try {
+    await updateProgress(config, taskId, progress);
+  } catch (e) {
+    console.warn("[autogpt-runner] reportRunnerProgress failed", e);
+  }
+}
+
 function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
   const p = task.payload;
   switch (task.type) {
-    case "INVITE_MEMBER":
+    case "INVITE_MEMBER": {
+      // Backward-compat: payload.email (single) hoặc payload.emails (batch).
+      // Cả 2 đều convert thành emails: string[] cho extension action.
+      const rawEmails = p.emails;
+      let emails: string[] = [];
+      if (Array.isArray(rawEmails)) {
+        emails = rawEmails.filter((e): e is string => typeof e === "string");
+      } else if (typeof p.email === "string") {
+        emails = [p.email];
+      }
       return {
         kind: "INVITE_MEMBER",
         taskId: task.id,
-        email: String(p.email ?? ""),
+        emails,
         role: (p.role as "owner" | "admin" | "member") ?? "member",
       };
+    }
     case "REMOVE_MEMBER":
       return {
         kind: "REMOVE_MEMBER",
@@ -235,6 +265,12 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
         ? rawEmails.filter((e): e is string => typeof e === "string")
         : [];
       return { kind: "REVOKE_INVITES", taskId: task.id, emails };
+    }
+    case "HARVEST_LABELS": {
+      const rawLocale = String(task.payload?.locale ?? "").toLowerCase();
+      const locale: "vi" | "en" | "zh" =
+        rawLocale === "vi" || rawLocale === "zh" ? rawLocale : "en";
+      return { kind: "HARVEST_LABELS", taskId: task.id, locale };
     }
     default:
       return null;
@@ -292,6 +328,54 @@ async function reportToBackend(
         await updateTask(config, task.id, {
           status: "FAILED",
           error_code: "BILLING_SYNC_FAILED",
+          error_message: msg,
+        });
+      }
+      return;
+    }
+
+    // Special case: HARVEST_LABELS mang theo labels → POST /ui-labels/harvest.
+    if (task.type === "HARVEST_LABELS") {
+      const data = response.data as
+        | {
+            harvest?: {
+              locale: "vi" | "en" | "zh";
+              pages: Array<{
+                page: string;
+                labels: Array<{
+                  control_key: string;
+                  label_text?: string | null;
+                  aria_label?: string | null;
+                }>;
+              }>;
+            };
+            total?: number;
+          }
+        | undefined;
+      const harvest = data?.harvest;
+      if (!harvest) {
+        await updateTask(config, task.id, {
+          status: "FAILED",
+          error_code: "UI_ELEMENT_NOT_FOUND",
+          error_message: "Extension không trả harvest payload",
+        });
+        return;
+      }
+      try {
+        const result = await postHarvestLabels(config, harvest);
+        await updateTask(config, task.id, {
+          status: "COMPLETED",
+          result: {
+            locale: result.locale,
+            total: result.total,
+            pages: result.pages,
+          },
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await updateTask(config, task.id, {
+          status: "FAILED",
+          error_code: "HARVEST_UPSERT_FAILED",
           error_message: msg,
         });
       }
@@ -492,6 +576,19 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
 
   console.log(`[autogpt-runner] picked task ${task.type} ${task.id}`);
 
+  // Long-op task: báo progress lifecycle ngay từ background để dashboard biết
+  // extension đã nhận task (không bị đứng yên trong khi mở tab + inject content).
+  const isLongOp =
+    task.type === "HARVEST_LABELS" || task.type === "SYNC_DATA";
+  if (isLongOp) {
+    await reportRunnerProgress(config, task.id, {
+      phase: "queued",
+      message: "Extension đã nhận task — đang chuẩn bị tab ChatGPT...",
+      current: 0,
+      total: task.type === "HARVEST_LABELS" ? 18 : 100,
+    });
+  }
+
   const request = taskToRequest(task);
   if (!request) {
     console.warn(`[autogpt-runner] task type chưa support: ${task.type}`);
@@ -503,6 +600,14 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
     return { status: "task-not-supported", detail: task.type };
   }
 
+  if (isLongOp) {
+    await reportRunnerProgress(config, task.id, {
+      phase: "opening_tab",
+      message: "Đang tìm/mở tab chatgpt.com/admin...",
+      current: 0,
+      total: task.type === "HARVEST_LABELS" ? 18 : 100,
+    });
+  }
   const tab = await ensureAdminTab();
   if (!tab || tab.id === undefined) {
     console.warn(
@@ -518,6 +623,14 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
   }
   console.log(`[autogpt-runner] using admin tab ${tab.id} ${tab.url}`);
 
+  if (isLongOp) {
+    await reportRunnerProgress(config, task.id, {
+      phase: "rate_limit",
+      message: "Đang chờ rate-limit + inject content script...",
+      current: 0,
+      total: task.type === "HARVEST_LABELS" ? 18 : 100,
+    });
+  }
   await applyRateLimit();
   console.log(`[autogpt-runner] sending ${request.kind} to content script...`);
   const response = await sendToContent(tab.id, request);

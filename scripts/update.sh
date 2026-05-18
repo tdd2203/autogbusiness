@@ -86,21 +86,21 @@ if [ "$SKIP_MIGRATE" -ne 1 ]; then
   (cd apps/api && "../../$VENV_PY" -m alembic upgrade head)
 fi
 
-# ----- 3. Restart backend (kill port 8000) -----
+# ----- 3. Restart backend (kill port 18000) -----
 if [ "$KEEP_BACKEND" -ne 1 ]; then
-  step "Restart backend"
-  PID=$(lsof -ti tcp:8000 || true)
+  step "Restart backend (:18000)"
+  PID=$(lsof -ti tcp:18000 || true)
   if [ -n "$PID" ]; then
-    echo "Killing PID $PID on port 8000..."
+    echo "Killing PID $PID on port 18000..."
     kill -9 $PID || true
     sleep 1
   fi
   # Run uvicorn in background, log to /tmp
-  (cd apps/api && nohup "../../$VENV_PY" -m uvicorn app.main:app --host 127.0.0.1 --port 8000 \
+  (cd apps/api && nohup "../../$VENV_PY" -m uvicorn app.main:app --host 127.0.0.1 --port 18000 \
     >/tmp/autogpt-backend.log 2>&1 &)
   sleep 3
   # Health check
-  if curl -fsS http://127.0.0.1:8000/health >/dev/null 2>&1; then
+  if curl -fsS http://127.0.0.1:18000/health >/dev/null 2>&1; then
     echo "Backend health: ok"
   else
     printf "${C_YELLOW}Backend chưa sẵn sàng, xem log: tail -f /tmp/autogpt-backend.log${C_RESET}\n"
@@ -113,13 +113,14 @@ if [ "$SKIP_EXTENSION" -ne 1 ]; then
   (cd apps/extension && npm run build)
 fi
 
-# ----- 5. Build dashboard (skip nếu Vite dev đang chạy 5173) -----
+# ----- 5. Dashboard (Vite :17173) — auto-spawn nếu chưa chạy -----
 if [ "$SKIP_DASHBOARD" -ne 1 ]; then
-  step "Build dashboard"
-  if lsof -ti tcp:5173 >/dev/null 2>&1; then
-    echo "Vite dev đang chạy ở port 5173 — HMR sẽ tự pick up changes, skip prod build"
+  step "Dashboard (Vite :17173)"
+  if lsof -ti tcp:17173 >/dev/null 2>&1; then
+    echo "Vite dev đang chạy trên 17173 — HMR auto pick up"
   else
-    (cd apps/web && npm run build)
+    echo "Vite chưa chạy trên 17173 — spawn npm run dev ở background"
+    (cd apps/web && nohup npm run dev >/tmp/autogpt-web.log 2>&1 &)
   fi
 fi
 
@@ -127,4 +128,4 @@ printf "\n${C_GREEN}=== DONE ===${C_RESET}\n"
 echo "Bước thủ công sau:"
 echo "  1. chrome://extensions/ -> Reload AutoGPT Admin Extension"
 echo "  2. F5 tab chatgpt.com/admin/*"
-echo "  3. F5 dashboard (localhost:5173)"
+echo "  3. F5 dashboard (localhost:17173)"

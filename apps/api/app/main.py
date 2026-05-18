@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.routers import audit_logs, auth, members, queue, users, workspaces
+from app.routers import audit_logs, auth, members, queue, ui_labels, users, workspaces
 from app.seed import seed_super_admin
 
 
@@ -45,6 +45,7 @@ def create_app() -> FastAPI:
     app.include_router(members.router)
     app.include_router(queue.router)
     app.include_router(audit_logs.router)
+    app.include_router(ui_labels.router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict[str, str]:

@@ -9,9 +9,11 @@ import {
   randomDelay,
   waitFor,
 } from "../human";
+import { findRoleOption } from "../i18n-ui";
 import { reportProgress } from "../progress";
 import { SELECTORS, TEXT_FALLBACKS } from "../selectors";
 import { findMemberRow, findRowMenuButton } from "./member-row";
+import { dbLabelsFor, reportLabelMismatch } from "../../shared/ui-labels";
 
 export async function executeChangeRole(
   taskId: string,
@@ -50,16 +52,25 @@ export async function executeChangeRole(
 
   let changeRoleItem: HTMLElement;
   try {
+    const dbChange = dbLabelsFor("menu_change_role", "/admin/members");
+    const changeTexts =
+      dbChange.length > 0
+        ? [...dbChange, ...TEXT_FALLBACKS.changeRoleMenuItem]
+        : TEXT_FALLBACKS.changeRoleMenuItem;
     changeRoleItem = await waitFor(() => {
       return (
         querySelectorFirst<HTMLElement>(SELECTORS.changeRoleMenuItem) ??
-        TEXT_FALLBACKS.changeRoleMenuItem
+        changeTexts
           .map((t) => queryByText('[role="menuitem"]', t))
           .find((el) => el !== null) ??
         null
       );
     }, 5000);
   } catch {
+    const dbChange = dbLabelsFor("menu_change_role", "/admin/members");
+    if (dbChange.length > 0) {
+      reportLabelMismatch("menu_change_role", dbChange[0], "/admin/members");
+    }
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
@@ -71,10 +82,7 @@ export async function executeChangeRole(
 
   // Sau khi click "Change role", có thể hiện submenu hoặc dialog với options
   await randomDelay(800, 1800);
-  const roleOption =
-    queryByText('[role="menuitem"]', newRole) ??
-    queryByText('[role="option"]', newRole) ??
-    queryByText("button", newRole);
+  const roleOption = findRoleOption(newRole);
   if (!roleOption) {
     return {
       ok: false,

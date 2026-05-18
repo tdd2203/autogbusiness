@@ -22,7 +22,7 @@ copy .env.example .env
 alembic upgrade head
 
 # chạy
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 18000
 ```
 
 Lần đầu khởi động, super-admin được seed tự động từ env. Lần sau bỏ qua nếu đã tồn tại.
@@ -45,4 +45,4 @@ Lần đầu khởi động, super-admin được seed tự động từ env. L�
 | GET | `/api/v1/audit-logs` | `AUDIT_LOG_VIEW` | List audit logs |
 | GET | `/health` | – | Liveness |
 
-Swagger UI: http://localhost:8000/docs
+Swagger UI: http://localhost:18000/docs

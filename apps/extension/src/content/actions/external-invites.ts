@@ -23,17 +23,11 @@
  */
 
 import { humanClick, sleep } from "../human";
+import { EXTERNAL_INVITE_LABEL_PATTERNS } from "../i18n-ui";
+import { dbLabelsFor, reportLabelMismatch } from "../../shared/ui-labels";
 
 const IDENTITY_PATH = "/admin/identity";
 const MEMBERS_PATH = "/admin/members";
-
-const LABEL_PATTERNS = [
-  "cho phép lời mời từ miền bên ngoài",
-  "cho phép lời mời từ miền",
-  "external domain",
-  "allow invites from external",
-  "allow external",
-];
 
 /**
  * Tìm toggle "external invites" bằng heuristic:
@@ -42,6 +36,13 @@ const LABEL_PATTERNS = [
  *   3. Tìm button[role="switch"] hoặc input[type="checkbox"] trong container
  */
 function findExternalInvitesToggle(): HTMLElement | null {
+  const dbLabels = dbLabelsFor("toggle_external_invites", "/admin/identity").map((s) =>
+    s.toLowerCase(),
+  );
+  const patterns =
+    dbLabels.length > 0
+      ? [...dbLabels, ...EXTERNAL_INVITE_LABEL_PATTERNS]
+      : EXTERNAL_INVITE_LABEL_PATTERNS;
   // Strategy 1: tìm tất cả switches/checkboxes, check label gần đó
   const candidates = Array.from(
     document.querySelectorAll<HTMLElement>(
@@ -54,7 +55,7 @@ function findExternalInvitesToggle(): HTMLElement | null {
     let p: HTMLElement | null = el;
     for (let depth = 0; depth < 5 && p; depth++, p = p.parentElement) {
       const t = (p.textContent ?? "").toLowerCase();
-      for (const pattern of LABEL_PATTERNS) {
+      for (const pattern of patterns) {
         if (t.includes(pattern)) {
           console.log(
             `[autogpt-external-invites] toggle matched via "${pattern}" (depth ${depth})`,
@@ -65,9 +66,12 @@ function findExternalInvitesToggle(): HTMLElement | null {
     }
   }
 
+  if (dbLabels.length > 0) {
+    reportLabelMismatch("toggle_external_invites", dbLabels[0], "/admin/identity");
+  }
   console.warn(
     "[autogpt-external-invites] không tìm thấy toggle — DOM ChatGPT có thể đã đổi. Patterns:",
-    LABEL_PATTERNS,
+    patterns,
   );
   return null;
 }
@@ -193,7 +197,9 @@ export async function withExternalInvitesEnabled<T>(
   try {
     return await taskFn();
   } finally {
-    // Restore state cũ (thường là OFF) — chạy KỂ CẢ khi taskFn throw
+    // Restore state cũ (thường là OFF) — chạy KỂ CẢ khi taskFn throw.
+    // Sau khi tắt xong, navigate về /admin/members để extension idle ở trang
+    // quen thuộc (dashboard poll member list / extension status từ đây).
     if (setResult.changed && setResult.prev !== null) {
       console.log(
         `[autogpt-external-invites] restore toggle về ${setResult.prev}`,
@@ -206,6 +212,21 @@ export async function withExternalInvitesEnabled<T>(
           e,
         );
       }
+    }
+    // Luôn navigate về /admin/members khi kết thúc invite (dù toggle có đổi
+    // hay không, dù invite success/fail) — UX nhất quán cho user và để task
+    // sau (SYNC_DATA, REMOVE_MEMBER, ...) khởi động ở đúng trang.
+    try {
+      await navigateTo(
+        MEMBERS_PATH,
+        () => location.pathname.includes(MEMBERS_PATH),
+        5_000,
+      );
+    } catch (e) {
+      console.warn(
+        "[autogpt-external-invites] navigate về /admin/members fail",
+        e,
+      );
     }
   }
 }

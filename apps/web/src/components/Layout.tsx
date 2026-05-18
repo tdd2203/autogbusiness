@@ -71,7 +71,8 @@ export default function Layout() {
     navigate("/login");
   }
 
-  const initial = (user?.email ?? user?.username ?? "?").charAt(0).toUpperCase();
+  const initial = (user?.username ?? user?.email ?? "?").charAt(0).toUpperCase();
+  const sidebarLabel = user?.username ?? user?.email ?? "";
   const manageItems = NAV.filter(
     (n) => n.section === "manage" && (!n.perm || hasPermission(n.perm)),
   );
@@ -176,9 +177,9 @@ export default function Layout() {
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
                 }}
-                title={user?.email}
+                title={sidebarLabel}
               >
-                {user?.email}
+                {sidebarLabel}
               </div>
               <div
                 style={{

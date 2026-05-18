@@ -26,7 +26,8 @@ export type QueueItem = {
     | "CHANGE_ROLE"
     | "SYNC_DATA"
     | "SYNC_BILLING"
-    | "REVOKE_INVITES";
+    | "REVOKE_INVITES"
+    | "HARVEST_LABELS";
   status: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "FAILED";
   payload: Record<string, unknown>;
   workspace_id: string | null;

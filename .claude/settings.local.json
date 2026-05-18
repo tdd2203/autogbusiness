@@ -3,8 +3,9 @@
     "allow": [
       "PowerShell(Get-ChildItem apps\\\\api -Recurse -Force | Where-Object { -not $_.PSIsContainer } | Select-Object FullName | Format-Table -AutoSize -Wrap)",
       "PowerShell(docker version --format '{{.Server.Version}}')",
-      "PowerShell(Invoke-RestMethod -Uri \"http://127.0.0.1:8000/health\" -Method Get)",
-      "PowerShell(Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object OwningProcess, @{Name='Name';Expression={\\(Get-Process -Id $_.OwningProcess\\).ProcessName}})"
+      "PowerShell(Invoke-RestMethod -Uri \"http://127.0.0.1:18000/health\" -Method Get)",
+      "PowerShell(Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object OwningProcess, @{Name='Name';Expression={\\(Get-Process -Id $_.OwningProcess\\).ProcessName}})",
+      "Bash(./.venv/Scripts/python.exe -c \"from app.main import app; routes=[r for r in app.routes if hasattr\\(r,'methods'\\) and '/ui-labels' in r.path]; [print\\(sorted\\(r.methods\\), r.path\\) for r in routes]\")"
     ]
   }
 }

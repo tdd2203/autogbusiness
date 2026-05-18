@@ -57,25 +57,25 @@ if (-not $SkipMigrate) {
     }
 }
 
-# 3. Restart backend
+# 3. Restart backend — port riêng 18000
 if (-not $KeepBackend) {
-    Step "Restart backend" {
-        $netstat = netstat -ano | findstr ":8000 " | findstr LISTEN
+    Step "Restart backend (:18000)" {
+        $netstat = netstat -ano | findstr ":18000 " | findstr LISTEN
         if ($netstat) {
             $pidLine = ($netstat -split '\s+')[-1]
-            Write-Host "Killing process $pidLine on port 8000..."
+            Write-Host "Killing process $pidLine on port 18000..."
             Stop-Process -Id $pidLine -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 1
         }
         Push-Location apps\api
         try {
             Start-Process -FilePath ".\.venv\Scripts\python.exe" `
-                -ArgumentList "-m","uvicorn","app.main:app","--host","127.0.0.1","--port","8000" `
+                -ArgumentList "-m","uvicorn","app.main:app","--host","127.0.0.1","--port","18000" `
                 -WindowStyle Hidden
         } finally { Pop-Location }
         Start-Sleep -Seconds 3
         try {
-            $h = Invoke-RestMethod -Uri "http://127.0.0.1:8000/health" -TimeoutSec 5
+            $h = Invoke-RestMethod -Uri "http://127.0.0.1:18000/health" -TimeoutSec 5
             Write-Host "Backend health: $($h.status)"
         } catch {
             Write-Host "Backend not ready yet, wait or check log" -ForegroundColor Yellow
@@ -93,17 +93,20 @@ if (-not $SkipExtension) {
     }
 }
 
-# 5. Build dashboard (only if Vite dev is NOT running)
+# 5. Dashboard — auto-spawn Vite dev nếu 17173 chưa chạy, ngược lại để HMR
+# tự pick up. update.ps1 KHÔNG dùng `npm run build` nữa (production build chỉ
+# tạo file tĩnh, không có server) — ưu tiên Vite dev cho dev loop nhanh.
 if (-not $SkipDashboard) {
-    Step "Build dashboard" {
-        $vite = netstat -ano | findstr ":5173 " | findstr LISTEN
+    Step "Dashboard (Vite :17173)" {
+        $vite = Get-NetTCPConnection -LocalPort 17173 -State Listen -ErrorAction SilentlyContinue
         if ($vite) {
-            Write-Host "Vite dev is running on port 5173 - HMR will pick up changes, skipping production build"
+            Write-Host "Vite dev đang chạy trên 17173 (PID $($vite[0].OwningProcess)) - HMR auto pick up"
         } else {
-            Push-Location apps\web
-            try {
-                & npm run build
-            } finally { Pop-Location }
+            Write-Host "Vite chưa chạy trên 17173 — spawn cửa sổ mới npm run dev..."
+            $webDir = Join-Path $root "apps\web"
+            Start-Process -FilePath "powershell.exe" -ArgumentList @(
+                "-NoExit", "-Command", "cd '$webDir'; npm run dev"
+            ) -WindowStyle Normal
         }
     }
 }

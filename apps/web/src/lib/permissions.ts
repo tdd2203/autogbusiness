@@ -4,6 +4,7 @@ export const PERMISSIONS = {
   BILLING_VIEW: "BILLING_VIEW",
   BILLING_PAY: "BILLING_PAY",
   MEMBER_CHANGE_ROLE: "MEMBER_CHANGE_ROLE",
+  UI_LABEL_MANAGE: "UI_LABEL_MANAGE",
   MEMBER_VIEW: "MEMBER_VIEW",
   MEMBER_INVITE: "MEMBER_INVITE",
   MEMBER_REMOVE: "MEMBER_REMOVE",
@@ -20,6 +21,7 @@ export const SUPER_ADMIN_ONLY: PermissionKey[] = [
   "BILLING_VIEW",
   "BILLING_PAY",
   "MEMBER_CHANGE_ROLE",
+  "UI_LABEL_MANAGE",
 ];
 
 export const GRANTABLE: PermissionKey[] = [
@@ -37,6 +39,7 @@ export const PERMISSION_LABEL: Record<PermissionKey, string> = {
   BILLING_VIEW: "Xem Billing",
   BILLING_PAY: "Thực hiện thanh toán",
   MEMBER_CHANGE_ROLE: "Đổi vai trò thành viên ChatGPT",
+  UI_LABEL_MANAGE: "Quản lý label UI ChatGPT",
   MEMBER_VIEW: "Xem danh sách thành viên",
   MEMBER_INVITE: "Mời thành viên mới",
   MEMBER_REMOVE: "Xoá thành viên",

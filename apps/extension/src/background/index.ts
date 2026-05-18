@@ -1,5 +1,11 @@
 import { runUntilIdle } from "./runner";
 import { connectSSE, disconnectSSE } from "./sse";
+import {
+  handleLabelMismatchReport,
+  isLabelsAlarm,
+  refreshLabelBundle,
+  setupLabelsRefreshAlarm,
+} from "./labels-sync";
 import { updateProgress } from "../shared/api";
 import { getConfig } from "../shared/storage";
 
@@ -11,8 +17,8 @@ import { getConfig } from "../shared/storage";
 const BACKUP_POLL_ALARM = "autogpt-backup-poll";
 
 const DASHBOARD_MATCHES = [
-  "http://localhost:5173/*",
-  "http://127.0.0.1:5173/*",
+  "http://localhost:17173/*",
+  "http://127.0.0.1:17173/*",
 ];
 
 /**
@@ -40,7 +46,7 @@ function getDashboardBridgeFiles(): string[] {
     js?: string[];
   }>;
   const entry = scripts.find((cs) =>
-    (cs.matches ?? []).some((m) => m.includes(":5173/")),
+    (cs.matches ?? []).some((m) => m.includes(":17173/")),
   );
   return entry?.js ?? [];
 }
@@ -89,6 +95,10 @@ function setupBackupPoll(): void {
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  if (isLabelsAlarm(alarm.name)) {
+    void refreshLabelBundle();
+    return;
+  }
   if (alarm.name !== BACKUP_POLL_ALARM) return;
   console.log("[autogpt-poll] backup tick — checking pending tasks");
   runUntilIdle()
@@ -108,6 +118,8 @@ chrome.runtime.onInstalled.addListener((details) => {
   console.log(`[autogpt] onInstalled reason=${details.reason}`);
   void reinjectDashboardBridge();
   setupBackupPoll();
+  setupLabelsRefreshAlarm();
+  void refreshLabelBundle();
   // Auto-connect SSE — backend sẽ push task event tới đây, KHÔNG cần user
   // thao tác gì trên extension.
   void connectSSE();
@@ -117,6 +129,8 @@ chrome.runtime.onStartup.addListener(() => {
   console.log("[autogpt] onStartup");
   void reinjectDashboardBridge();
   setupBackupPoll();
+  setupLabelsRefreshAlarm();
+  void refreshLabelBundle();
   void connectSSE();
 });
 
@@ -128,6 +142,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   console.log("[autogpt] config changed, reconnecting SSE");
   if (newConfig) {
     void connectSSE();
+    void refreshLabelBundle();
   } else {
     disconnectSSE();
   }
@@ -137,6 +152,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // (chrome.runtime.onStartup chỉ fire 1 lần khi browser khởi động.)
 void connectSSE();
 setupBackupPoll();
+setupLabelsRefreshAlarm();
+void refreshLabelBundle();
 // Manual reload từ chrome://extensions/ KHÔNG fire onInstalled/onStartup,
 // chỉ SW restart và chạy top-level code. Phải re-inject bridge ở đây nữa để
 // các tab dashboard đang mở không cần F5 sau mỗi lần reload extension.
@@ -171,6 +188,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         console.warn("[autogpt-progress] failed", e);
       }
     })();
+    return false;
+  }
+  if (msg?.type === "report-label-mismatch" && msg.body) {
+    void handleLabelMismatchReport(msg.body);
     return false;
   }
   return undefined;

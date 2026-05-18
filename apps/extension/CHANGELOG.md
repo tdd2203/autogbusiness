@@ -18,159 +18,76 @@ Mọi thay đổi đáng kể của extension được ghi tại đây. File nà
 
 ---
 
-## v0.3.9 — 2026-05-17 — feature
+## v0.4.1 — 2026-05-18 — fix
 
-**INVITE_MEMBER tự bật/tắt "Cho phép lời mời từ miền bên ngoài"**
+**Invite flow: luôn navigate về /admin/members sau khi tắt toggle**
 
-- **Vấn đề bảo mật:** toggle "Cho phép lời mời từ miền bên ngoài" trên `chatgpt.com/admin/identity` nếu để ON lâu dài → mọi member workspace có thể tự mời email từ bất kỳ domain → ảnh hưởng nghiêm trọng.
-- **Yêu cầu:** dashboard mời email ngoài domain được, nhưng toggle phải về OFF ngay sau invite.
-- **Fix:** helper [`withExternalInvitesEnabled()`](src/content/actions/external-invites.ts):
-  1. Navigate `/admin/identity`, đọc state toggle (qua `aria-checked` / `data-state`)
-  2. Bật ON nếu đang OFF, nhớ `prev`
-  3. Navigate về `/admin/members`, chạy invite
-  4. `try/finally`: nếu `prev === false` → navigate lại `/admin/identity` tắt toggle. Chạy cả khi invite throw/fail.
-- Selectors heuristic: `button[role="switch"]` hoặc `input[type="checkbox"]` có label text chứa "Cho phép lời mời từ miền bên ngoài" / "external". Fallback Radix UI: `data-state="checked"` / `"unchecked"`.
-- Nếu không tìm thấy toggle (ChatGPT đổi UI) → log warn + chạy invite KHÔNG bật toggle, không phá flow. Email ngoài domain có thể fail trong trường hợp này.
+- `withExternalInvitesEnabled()` trong `finally`: sau khi restore toggle external invites về OFF (nếu trước đó OFF), navigate về `/admin/members` thay vì kẹt ở `/admin/identity`.
+- Áp dụng cho cả invite success và invite fail — UX nhất quán + task sau (SYNC_DATA, REMOVE_MEMBER…) khởi động ở đúng trang.
 
-## v0.3.8 — 2026-05-17 — feature
+---
 
-**Auto-mở admin tab khi nhận task mà không có tab `chatgpt.com/admin/*`**
+## v0.4.0 — 2026-05-18 — feature
 
-- **Trước:** nếu user không mở sẵn `chatgpt.com/admin/members` → mọi task FAILED với `NOT_LOGGED_IN_CHATGPT`, message bắt user mở tab thủ công.
-- **Sau:** runner gọi `ensureAdminTab()`:
-  1. Tìm tab khớp `https://chatgpt.com/admin/*` → dùng ngay
-  2. Không có → tự `chrome.tabs.create({url: 'chatgpt.com/admin/members', active: false})` (background tab, không steal focus của user)
-  3. Đợi `tabs.onUpdated.status='complete'` tối đa 30s
-  4. Verify URL vẫn ở `/admin` (nếu bị redirect tới login = chưa đăng nhập ChatGPT trong browser này)
-- Chỉ trả `NOT_LOGGED_IN_CHATGPT` khi tab tự mở bị redirect — error message rõ hơn: "Hãy login ChatGPT trong browser này rồi thử lại".
-- Helper `waitForTabComplete(tabId, timeoutMs)` dùng `chrome.tabs.onUpdated`.
+**HARVEST_LABELS: probe-invite mode (auto 100% locale coverage)**
 
-## v0.3.7 — 2026-05-17 — fix
+- Khi tab "Pending Invites" trống, harvest tự tạo invite probe (`autogpt-probe-{ts}@example.com`) → harvest menu Revoke + confirm Revoke → tự thu hồi probe để workspace sạch.
+- Bỏ `member_row_menu_button` khỏi expected list (icon-only, không có text — CSS selector handle).
+- Coverage giờ 14 control_key/page Members (thay vì 15) → 18 tổng → đạt 100% nếu probe-invite chạy được.
 
-**SYNC auto-navigate sang `/admin/members` — fix "tab not found" khi admin tab đang ở `/admin/billing`**
+---
 
-- **Bug:** [`executeSync`](src/content/actions/sync.ts) chỉ check `location.pathname.includes("/admin")` — pass luôn cho `/admin/billing`, `/admin/settings`, v.v. Nhưng các tab "Người dùng / Lời mời đang chờ xử lý / Yêu cầu đang chờ xử lý" CHỈ tồn tại trên `/admin/members`.
-- **Triệu chứng:** `[autogpt-sync] tab not found` cho cả 3 tab; fallback scrape DOM hiện tại (vd billing page) và đánh nhãn `active` → DB chứa dữ liệu sai. Ví dụ: user `dhealth.220@gmail.com` đã bị xoá khỏi pending invites trên ChatGPT nhưng vẫn còn ở dashboard với status `pending` từ sync trước đó, sync mới không sửa được vì không vào được tab "Lời mời".
-- **Fix:** nếu pathname không phải `/admin/members` → `history.pushState` + `dispatchEvent("popstate")` để SPA Router điều hướng → poll tối đa 10s đợi tab "Người dùng" xuất hiện. Nếu sau 10s vẫn không thấy → trả `PAGE_NOT_ADMIN` với hint mở `/admin/members` thủ công.
+## v0.3.2 — 2026-05-18 — fix
 
-## v0.3.6 — 2026-05-17 — fix
+**HARVEST_LABELS: progress lifecycle (background) + initial signal**
 
-**Re-inject dashboard bridge ở top-level SW — không cần F5 sau khi Reload extension**
+- Background runner báo progress sớm: `queued` → `opening_tab` → `rate_limit` **trước** cả khi gửi tới content script. Trước đây dashboard im lặng 5–30s khi extension tự mở tab `chatgpt.com/admin` + inject content script.
+- Content script báo signal `starting` ngay tại `0/18` trước locale check — dashboard có gì hiện ngay khi inject.
+- Dashboard hiển thị status badge (`PENDING`/`IN_PROGRESS`), elapsed timer cục bộ ticking 1s, watchdog cảnh báo sau 20s nếu không thấy signal nào.
+- Áp dụng cùng pattern progress lifecycle cho `SYNC_DATA`.
 
-- **Bug:** `reinjectDashboardBridge()` chỉ gọi trong `chrome.runtime.onInstalled` và `onStartup`. Khi user click "Reload" trên `chrome://extensions/`, Chromium chỉ restart SW và chạy top-level code — **không fire** 2 event đó. Hậu quả: bridge ở các tab dashboard đang mở vẫn là bản cũ (hoặc không có nếu vừa mới load extension lần đầu) → dashboard popup `Extension chưa được nhận diện` bắt user F5 thủ công.
-- **Fix:** gọi `reinjectDashboardBridge()` ở top-level SW (alongside `connectSSE()` + `setupBackupPoll()`) để chạy mỗi lần SW restart bất kể nguyên nhân (install / update / browser startup / manual reload / SW wake từ idle).
+---
 
-## v0.3.5 — 2026-05-17 — fix
+## v0.3.1 — 2026-05-18 — fix
 
-**Thêm permission `alarms` — SW crash khiến không register được**
+**HARVEST_LABELS: progress real-time + nav verify + 3 phút timeout**
 
-- **Bug:** v0.3.2 thêm `chrome.alarms.create` + `chrome.alarms.onAlarm.addListener` (Layer 3 backup poll 60s) nhưng manifest `permissions` không khai báo `"alarms"`.
-- **Hậu quả:** `chrome.alarms` là `undefined` → [`background/index.ts:58`](src/background/index.ts#L58) throw `TypeError: Cannot read properties of undefined (reading 'onAlarm')` → Service worker registration failed (status code 15) → SW không bao giờ start → không có SSE, không có fast-poll, không có alarm, dashboard tạo task không ai nghe.
-- **Đây là root cause thực sự** của triệu chứng "extension treo task" mà v0.3.4 chưa fix được (v0.3.4 chỉ sửa host permission cho 127.0.0.1:8000, đáng làm nhưng không phải nguyên nhân chính).
-- **Fix:** thêm `"alarms"` vào `permissions` array trong [`src/manifest.ts`](src/manifest.ts).
+- Per-step progress (`current/total/scanned/elapsed_sec`) — dashboard hiện progress bar + step counter.
+- `navigateSpaVerified`: kiểm tra `location.pathname` đổi thật sự sau pushState; skip page nếu nav fail thay vì hang.
+- Global 3 phút timeout — harvest tự thoát nếu kẹt.
+- Trả error "không lấy được label nào" nếu `total=0` sau crawl (thường do user chưa F5 hoặc selector lệch).
+- JSON.parse hardening — backend 5xx không crash extension cache refresh nữa.
 
-## v0.3.4 — 2026-05-17 — fix
+---
 
-**Thêm host permission cho `127.0.0.1:8000` — SSE không kết nối được nếu apiBaseUrl dùng IP**
+## v0.3.0 — 2026-05-18 — feature
 
-- **Bug:** manifest `host_permissions` chỉ có `http://localhost:8000/*`. Nếu user nhập `apiBaseUrl=http://127.0.0.1:8000` trong popup → extension fetch SSE bị Chromium block (localhost và 127.0.0.1 là 2 origin khác nhau).
-- **Triệu chứng:** service worker idle → "Không hoạt động", dashboard tạo task → extension không phản ứng, console rỗng vì SW không khởi động được.
-- **Fix:** thêm `http://127.0.0.1:8000/*` vào `host_permissions`; giữ luôn `localhost` variant để backward-compatible với config cũ.
+**HARVEST_LABELS — auto-crawl ChatGPT UI label**
 
-## v0.3.3 — 2026-05-16 — feature
+- Action `HARVEST_LABELS`: extension tự navigate 4 page (`/admin/members`, `/admin/billing`, `/admin/billing?tab=invoices`, `/admin/identity`), mở invite dialog + click `...` menu + đọc confirm dialog rồi ESC để hủy → đọc 18 control_key cho 1 locale.
+- Dashboard Settings → UI Labels: nút "Harvest VI/EN/ZH" thay thế Console snippet thủ công.
+- Endpoint mới `POST /api/v1/ui-labels/harvest` (X-API-KEY) cho extension bulk-upsert đa page.
+- `POST /api/v1/workspaces/{id}/harvest-labels` (super-admin) tạo task qua SSE.
 
-**Scrape cả 3 tab + fix invite**
+---
 
-- **SYNC_DATA** giờ click qua 3 tab `/admin/members`:
-  - "Người dùng" → status `active`
-  - "Lời mời đang chờ xử lý" → status `pending`
-  - "Yêu cầu đang chờ xử lý" → status `pending`
-- Merge dedup theo email; tab "Người dùng" scrape cuối cùng nên status `active` thắng nếu trùng.
-- Backend DB giờ có đủ data → invite trùng email pending sẽ bị 409 (existing check `Member.status != removed`).
-- **Invite action fix:**
-  - Ưu tiên click tab "Người dùng" trước khi tìm nút "Mời thành viên" (nút chỉ hiện ở tab này).
-  - Selectors fallback: `[role='dialog'] input/textarea` (ChatGPT có thể dùng textarea cho multi-email).
-  - Role combobox Radix UI: map `Quản trị viên` / `Thành viên` / `Chủ sở hữu`.
-  - Verify fail giờ parse dialog text → detect lỗi cụ thể ("đã tồn tại", "đã được mời") thay vì VERIFY_FAILED generic.
-  - Mọi step log `[autogpt-invite]` để debug.
+## v0.2.0 — 2026-05-18 — feature
 
-## v0.3.2 — 2026-05-16 — fix
+**UI Label calibration + self-heal stale labels**
 
-**Triple-layer auto-execute — SSE + fast poll 5s + alarms 60s backup**
+- Fetch `/api/v1/ui-labels/bundle` định kỳ (15 phút) — cache label calibrate vào chrome.storage.
+- Actions ưu tiên label đã harvest cho (locale × page) hiện tại; fallback hardcoded text patterns nếu DB rỗng.
+- Tự động POST `/report-mismatch` khi tìm element fail dù DB có label → dashboard banner stale.
+- Wire DB lookup: invite open/submit/add-more, tabs (active/pending/requests/billing-plan/billing-invoices), role options, menu remove/change-role, confirm remove/revoke, toggle external invites.
 
-- **Vấn đề v0.3.1:** task vẫn không tự chạy dù SSE supposedly hoạt động — root cause khó xác định không debug được realtime.
-- **Fix:** 3 layer guarantee task chạy, không cần ấn popup:
-  - **Layer 1 — SSE (<1s):** backend `publish_task_event` → extension fire-and-forget `runUntilIdle`
-  - **Layer 2 — fast poll (5s):** setTimeout chain khi SW còn alive (SSE giữ SW alive) → mỗi 5s drain queue
-  - **Layer 3 — alarms (60s):** `chrome.alarms` 1 phút — wake SW dù đã chết, đồng thời reconnect SSE
-- **Boot drain:** `runUntilIdle` ngay khi SW load (covers case extension vừa reload sau khi user queue task).
-- **Worst case latency:** 60s. **Best case:** <1s. **Trung bình:** <5s.
+---
 
-## v0.3.1 — 2026-05-16 — fix
+## v0.1.0 — 2026-05-18 — feature
 
-**SSE event nhận được nhưng task không chạy — fire-and-forget fix**
+**Initial release**
 
-- **Bug v0.3.0:** `handleEvent` `await runUntilIdle()` block stream reader loop. Hậu quả: SSE event đến → SW bắt đầu `runUntilIdle` (có thể dài 30s–5min) → reader không read được heartbeat → server tưởng client chết → SW có thể bị MV3 kill ở 30s timeout → task không chạy xong.
-- **Fix:** `handleEvent` fire-and-forget — return ngay, `runUntilIdle` chạy độc lập trong background. Reader loop tiếp tục read heartbeat 25s/lần → SSE stream alive → SW alive.
-- Thêm log chi tiết từng bước trong `runOnce` (`pickNextTask`, `findAdminTab`, `sendToContent`) để debug.
-- Check log: `chrome://extensions/` → AutoGPT Admin Extension → "Inspect views: service worker" → Console:
-  - `[autogpt-sse] task-available SYNC_DATA <id> → triggering runUntilIdle`
-  - `[autogpt-runner] picked task SYNC_DATA <id>`
-  - `[autogpt-runner] found admin tab <id> https://chatgpt.com/admin/...`
-  - `[autogpt-runner] sending SYNC_DATA to content script...`
-  - `[autogpt-runner] content script response: ok=true`
-
-## v0.3.0 — 2026-05-16 — feature
-
-**REAL-TIME auto-execute qua SSE — KHÔNG CẦN USER THAO TÁC GÌ**
-
-- Backend mở endpoint `/api/v1/queue/stream` (Server-Sent Events) push task event tới extension.
-- Extension SW giữ SSE connection persistent (fetch streaming + `X-API-KEY` header).
-- Khi dashboard tạo task (sync/sync-billing/invite/remove/role) → backend `publish_task_event` → extension nhận event trong **<1s** → tự động chạy `runUntilIdle`.
-- **BỎ HOÀN TOÀN phụ thuộc bridge postMessage** cho auto-trigger (bridge vẫn còn dùng cho extension status badge).
-- Reconnect exponential backoff 1s→2s→4s→8s→16s→30s khi connection drop (server restart, network glitch, SW kill).
-- `chrome.storage.onChanged` → khi user đổi API key trong popup, SSE tự reconnect với credentials mới.
-- MV3 SW lifecycle: SSE fetch giữ SW alive; `onStartup`/`onInstalled` trigger reconnect khi SW restart.
-
-## v0.2.2 — 2026-05-16 — fix
-
-**Bridge detection REAL fix — isolated world bug + auto-reinject**
-
-- **Root cause v0.2.1:** content scripts chạy trong **ISOLATED WORLD** nên `window.__autogptExtensionInstalled = true` trong bridge KHÔNG truyền sang page's window → dashboard không bao giờ thấy bridge dù bridge đã inject. v0.2.1 fix nhầm chỗ.
-- **Fix v0.2.2:** bridge announce qua `window.postMessage` thay vì set global flag (postMessage là cross-world).
-- Dashboard listen postMessage indefinitely + ping bridge khi mount + heartbeat 3s.
-- Background SW tự gọi `chrome.scripting.executeScript` inject bridge vào dashboard tab đang mở khi extension reload → **user KHÔNG cần F5 trang**.
-- `triggerExtensionRun` giờ `async` — probe bridge bằng ping/pong (timeout 300ms) trước khi gửi `run-pending`; alert rõ nếu bridge missing.
-- Bridge auto re-announce `bridge-ready` sau 500ms để cover dashboard mount muộn.
-
-## v0.2.1 — 2026-05-16 — fix
-
-**Bridge detection bền hơn + alert rõ khi bridge missing**
-
-- Bridge dispatch `autogpt-extension-ready` event **KÈM version** (CustomEvent.detail).
-- Bridge expose `window.__autogptExtensionVersion` để dashboard verify build.
-- Dashboard listen ready event **indefinitely** (trước đây poll 5s rồi tắt) → bắt được bridge inject muộn.
-- `triggerExtensionRun`: nếu bridge missing → hiển thị alert hướng dẫn "Reload extension + F5 trang".
-- Sidebar hiển thị extension version (vd `✓ Extension v0.2.1: connected`) + nút reload trang khi not detected.
-- Bridge thêm handler `ping` → `pong` cho dashboard chủ động verify bridge còn sống.
-
-## v0.2.0 — 2026-05-16 — feature
-
-**SYNC_BILLING + auto-trigger từ dashboard**
-
-- Action `SYNC_BILLING`: scrape "Đang dùng X/Y giấy phép" từ `/admin/billing`.
-- Parse thêm `plan` (business/enterprise/team), `billing_status` (PAID/UNPAID), `renewal_date`.
-- Dashboard có nút "↻ Sync billing" — auto-trigger extension drain queue, không cần mở popup.
-- Hiển thị badge UNPAID đỏ trên Dashboard khi billing chưa thanh toán.
-- `seat_total` validated tối đa **999** (hard cap ChatGPT Business).
-- Bridge content script (`localhost:5173`) — dashboard mutation tự đẩy task xuống extension.
-
-## v0.1.0 — 2026-05-15 — feature
-
-**MVP — invite / remove / change-role / sync members**
-
-- Actions: `INVITE_MEMBER`, `REMOVE_MEMBER`, `CHANGE_ROLE`, `SYNC_DATA`.
-- Anti-detection: random delay 1.5–4s, `mousedown → mouseup → click`, per-char typing.
-- Per-workspace API key (`X-API-KEY` header).
-- Popup: kết nối backend, hiển thị workspace info, run pending tasks.
-- i18n: `vi` + `zh-CN`.
+- Cầu nối Dashboard nội bộ ↔ ChatGPT Business admin.
+- Action: INVITE_MEMBER, REMOVE_MEMBER, CHANGE_ROLE, SYNC_DATA, SYNC_BILLING, REVOKE_INVITES.
+- Auto-execute task qua SSE (real-time, không poll ChatGPT).
+- Multi-language scraper (VI/EN/ZH).
+- Port riêng: backend 18000, dashboard 17173, ext dev 17174.
