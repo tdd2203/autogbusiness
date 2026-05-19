@@ -5,14 +5,14 @@
  *   3. Giá ước tính cho 1 slot HÔM NAY — base từ hoá đơn ĐẦU CHU KỲ
  *   4. Lịch sử hoá đơn từ /admin/billing scrape (kèm số slot suy diễn mỗi invoice)
  *
- * Logic giá (v4 — 2026-05-19):
- *   - Chỉ dùng hoá đơn TRONG chu kỳ hiện tại (renewal − 30 ngày … renewal).
- *     Tránh lấy hoá đơn tháng trước làm base → giá lệch mạnh.
- *   - Base = hoá đơn gần ĐẦU CHU KỲ nhất (max days_remaining), không phải
- *     chỉ "oldest date" trong list (list ChatGPT có thể lẫn nhiều chu kỳ).
- *   - **fullMonthPerSlot = implied_per_slot** của base (chuẩn hoá prorate về
- *     cả tháng). KHÔNG dùng amount_per_slot — số đó là giá thực trả đã prorate
- *     theo ngày còn lại, dùng làm base sẽ làm giá hôm nay thấp sai.
+ * Logic giá (v6 — 2026-05-20):
+ *   - ChatGPT: ngày **renewal** = kết thúc chu kỳ hiện tại = bắt đầu chu kỳ kế.
+ *   - **cycle_start** = cùng ngày/tháng, lùi 1 tháng (vd renew 11/6 → start 11/5).
+ *   - Hoá đơn chu kỳ: cycle_start ≤ ngày HĐ < renewal (HĐ đúng ngày renew thuộc chu kỳ mới).
+ *   - Base = hoá đơn **ngày đầu chu kỳ** (ưu tiên đúng cycle_start), không HĐ add-seat sau.
+ *   - **fullMonthPerSlot = số tiền thanh toán ÷ số slot mua** (slot = min hợp lệ, có seat_total).
+ *     KHÔNG back-calc implied_per_slot = amount/(slots×days/30) — công thức đó
+ *     phóng đại giá khi hoá đơn không rơi đúng ngày đầu chu kỳ (vd 228k → 274k).
  *   - **Today's price = fullMonthPerSlot × (days_today / 30)**.
  */
 
@@ -22,7 +22,6 @@ import type { BillingInvoice, Workspace } from "../types";
 const CYCLE_DAYS = 30;
 const EXPECTED_PER_SLOT_MIN = 200_000;
 const EXPECTED_PER_SLOT_MAX = 400_000;
-const EXPECTED_PER_SLOT_MID = 286_000;
 const MAX_SLOT_GUESS = 10;
 
 const VND = new Intl.NumberFormat("vi-VN", {
@@ -36,19 +35,81 @@ function daysBetween(from: Date, to: Date): number {
   return Math.round(ms / (1000 * 60 * 60 * 24));
 }
 
-/** Hoá đơn thuộc chu kỳ billing hiện tại (không lấy tháng trước trên UI ChatGPT). */
+/**
+ * Ngày bắt đầu chu kỳ hiện tại: cùng ngày trong tháng trước ngày renew.
+ * (renewal vừa là cuối chu kỳ này vừa là đầu chu kỳ tiếp theo.)
+ */
+export function cycleStartFromRenewal(renewal: Date): Date {
+  const y = renewal.getUTCFullYear();
+  const m = renewal.getUTCMonth();
+  const d = renewal.getUTCDate();
+  const start = new Date(Date.UTC(y, m - 1, d));
+  start.setUTCHours(0, 0, 0, 0);
+  return start;
+}
+
+/** Hoá đơn thuộc chu kỳ billing hiện tại (không lấy tháng trước / chu kỳ kế). */
 function filterInvoicesInCurrentCycle(
   invoices: BillingInvoice[],
   renewal: Date,
 ): BillingInvoice[] {
-  const cycleStart = new Date(renewal);
-  cycleStart.setUTCDate(cycleStart.getUTCDate() - CYCLE_DAYS);
-  cycleStart.setUTCHours(0, 0, 0, 0);
+  const cycleStart = cycleStartFromRenewal(renewal);
   return invoices.filter((inv) => {
     const d = new Date(inv.date);
     d.setUTCHours(0, 0, 0, 0);
-    return d >= cycleStart && d <= renewal;
+    return d >= cycleStart && d < renewal;
   });
+}
+
+/** Số slot mua trên hoá đơn: amount ÷ n hợp lệ; ưu tiên n nhỏ nhất (vd 1 slot, không chia 2 khi cả hai đều khớp). */
+function inferSlotsPurchased(
+  amountVnd: number,
+  seatTotalHint: number | null,
+): number {
+  const maxN = Math.min(
+    MAX_SLOT_GUESS,
+    seatTotalHint && seatTotalHint > 0 ? seatTotalHint : MAX_SLOT_GUESS,
+  );
+  const valid: number[] = [];
+  for (let n = 1; n <= maxN; n++) {
+    const perSlot = amountVnd / n;
+    if (perSlot >= EXPECTED_PER_SLOT_MIN && perSlot <= EXPECTED_PER_SLOT_MAX) {
+      valid.push(n);
+    }
+  }
+  return valid.length > 0 ? Math.min(...valid) : 1;
+}
+
+/**
+ * Hoá đơn dùng làm base giá full month: ưu tiên đúng ngày bắt đầu chu kỳ,
+ * không thì hoá đơn gần cycle_start nhất (trừ kỳ đầu tiên thực tế).
+ */
+function pickFirstCycleInvoice(
+  cycleInvoices: BillingInvoice[],
+  cycleStart: Date,
+): BillingInvoice | null {
+  if (cycleInvoices.length === 0) return null;
+  const startMs = cycleStart.getTime();
+  const onCycleStart = cycleInvoices.filter((inv) => {
+    const d = new Date(inv.date);
+    d.setUTCHours(0, 0, 0, 0);
+    return d.getTime() === startMs;
+  });
+  if (onCycleStart.length > 0) {
+    return [...onCycleStart].sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+    )[0];
+  }
+  return [...cycleInvoices].sort((a, b) => {
+    const da = new Date(a.date);
+    da.setUTCHours(0, 0, 0, 0);
+    const db = new Date(b.date);
+    db.setUTCHours(0, 0, 0, 0);
+    const distA = Math.abs(da.getTime() - startMs);
+    const distB = Math.abs(db.getTime() - startMs);
+    if (distA !== distB) return distA - distB;
+    return da.getTime() - db.getTime();
+  })[0];
 }
 
 export type InvoiceBreakdown = {
@@ -59,10 +120,7 @@ export type InvoiceBreakdown = {
    * gần ngày renew vì ChatGPT prorate theo days_remaining/30. Đây là số hiển
    * thị ở cột "Giá/slot" — user-intuitive (mua hôm nay rẻ hơn mua đầu chu kỳ). */
   amount_per_slot: number | null;
-  /** Giá suy diễn cho 1 slot CẢ THÁNG = amount / (slots × days_remaining/30).
-   * Lý thuyết constant ≈ 286k VND/slot/month. Dùng nội bộ để chọn slot count
-   * và tính median fullMonthPerSlot. KHÔNG hiển thị ở cột invoice nữa (gây
-   * fluctuation khó hiểu — đã có metric "Giá full month/slot" ở card trên). */
+  /** Ước tính nếu coi invoice là prorate (chỉ tooltip). Không dùng cho giá card. */
   implied_per_slot: number | null;
   days_remaining_at_invoice: number;
 };
@@ -70,45 +128,25 @@ export type InvoiceBreakdown = {
 function inferInvoiceBreakdown(
   inv: BillingInvoice,
   renewal: Date,
+  seatTotalHint: number | null,
 ): InvoiceBreakdown {
   const invDate = new Date(inv.date);
   invDate.setUTCHours(0, 0, 0, 0);
   const daysAtInv = daysBetween(invDate, renewal);
-  if (daysAtInv <= 0 || daysAtInv > CYCLE_DAYS + 2) {
-    return {
-      date: inv.date,
-      amount_vnd: inv.amount_vnd,
-      inferred_slots: null,
-      amount_per_slot: null,
-      implied_per_slot: null,
-      days_remaining_at_invoice: daysAtInv,
-    };
-  }
-
-  // Thử slot count 1..MAX, chọn cái cho implied_per_slot (back-calc full-month
-  // rate) gần mức kỳ vọng 286k nhất và rơi vào range hợp lý.
-  let bestSlots: number | null = null;
-  let bestPerSlot: number | null = null;
-  let bestDist = Infinity;
-  for (let n = 1; n <= MAX_SLOT_GUESS; n++) {
-    const perSlot = inv.amount_vnd / ((n * daysAtInv) / CYCLE_DAYS);
-    if (perSlot < EXPECTED_PER_SLOT_MIN || perSlot > EXPECTED_PER_SLOT_MAX) {
-      continue;
-    }
-    const dist = Math.abs(perSlot - EXPECTED_PER_SLOT_MID);
-    if (dist < bestDist) {
-      bestDist = dist;
-      bestSlots = n;
-      bestPerSlot = perSlot;
-    }
-  }
+  const slots = inferSlotsPurchased(inv.amount_vnd, seatTotalHint);
+  const perSlot = Math.round(inv.amount_vnd / slots);
+  const inRange =
+    perSlot >= EXPECTED_PER_SLOT_MIN && perSlot <= EXPECTED_PER_SLOT_MAX;
+  const impliedPerSlot =
+    inRange && daysAtInv > 0 && daysAtInv <= CYCLE_DAYS + 5
+      ? Math.round(inv.amount_vnd / ((slots * daysAtInv) / CYCLE_DAYS))
+      : null;
   return {
     date: inv.date,
     amount_vnd: inv.amount_vnd,
-    inferred_slots: bestSlots,
-    amount_per_slot:
-      bestSlots !== null ? Math.round(inv.amount_vnd / bestSlots) : null,
-    implied_per_slot: bestPerSlot !== null ? Math.round(bestPerSlot) : null,
+    inferred_slots: inRange ? slots : null,
+    amount_per_slot: inRange ? perSlot : null,
+    implied_per_slot: impliedPerSlot,
     days_remaining_at_invoice: daysAtInv,
   };
 }
@@ -116,6 +154,7 @@ function inferInvoiceBreakdown(
 function computeTodayPerSlotPrice(
   invoices: BillingInvoice[] | null,
   renewalIso: string | null,
+  seatTotalHint: number | null,
 ): {
   price: number | null;
   fullMonthPerSlot: number | null;
@@ -142,6 +181,7 @@ function computeTodayPerSlotPrice(
   }
   const renewal = new Date(renewalIso);
   renewal.setUTCHours(0, 0, 0, 0);
+  const cycleStart = cycleStartFromRenewal(renewal);
   const cycleInvoices = filterInvoicesInCurrentCycle(invoices, renewal);
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
@@ -155,29 +195,47 @@ function computeTodayPerSlotPrice(
   }
 
   const breakdown = cycleInvoices.map((inv) =>
-    inferInvoiceBreakdown(inv, renewal),
+    inferInvoiceBreakdown(inv, renewal, seatTotalHint),
   );
-  const matched = breakdown.filter((b) => b.implied_per_slot !== null);
 
-  if (matched.length === 0) {
+  const firstInv = pickFirstCycleInvoice(cycleInvoices, cycleStart);
+  if (!firstInv) {
+    return {
+      ...empty,
+      breakdown,
+      total: 0,
+      note: "no_cycle_invoices",
+    };
+  }
+
+  const baseSlots = inferSlotsPurchased(firstInv.amount_vnd, seatTotalHint);
+  const fullMonthPerSlot = Math.round(firstInv.amount_vnd / baseSlots);
+  if (
+    fullMonthPerSlot < EXPECTED_PER_SLOT_MIN ||
+    fullMonthPerSlot > EXPECTED_PER_SLOT_MAX
+  ) {
     return {
       ...empty,
       breakdown,
       total: cycleInvoices.length,
-      note: cycleInvoices.length === 0 ? "no_cycle_invoices" : "inference_failed",
+      note: "inference_failed",
     };
   }
 
-  // Base = hoá đơn gần đầu chu kỳ nhất (nhiều ngày còn lại nhất), rồi cũ nhất.
-  const sortedForBase = [...matched].sort((a, b) => {
-    if (b.days_remaining_at_invoice !== a.days_remaining_at_invoice) {
-      return b.days_remaining_at_invoice - a.days_remaining_at_invoice;
-    }
-    return new Date(a.date).getTime() - new Date(b.date).getTime();
-  });
-  const baseInvoice = sortedForBase[0];
-  const fullMonthPerSlot = baseInvoice.implied_per_slot as number;
+  const baseInvoice: InvoiceBreakdown = {
+    date: firstInv.date,
+    amount_vnd: firstInv.amount_vnd,
+    inferred_slots: baseSlots,
+    amount_per_slot: fullMonthPerSlot,
+    implied_per_slot: null,
+    days_remaining_at_invoice: (() => {
+      const d = new Date(firstInv.date);
+      d.setUTCHours(0, 0, 0, 0);
+      return daysBetween(d, renewal);
+    })(),
+  };
   const price = Math.round(fullMonthPerSlot * (daysToday / CYCLE_DAYS));
+  const matched = breakdown.filter((b) => b.amount_per_slot !== null);
 
   return {
     price,
@@ -202,13 +260,17 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
     total,
     note,
     baseInvoice,
-  } = computeTodayPerSlotPrice(invoices, renewal);
+  } = computeTodayPerSlotPrice(invoices, renewal, workspace.seat_total);
   const breakdownByDateAmt = new Map<string, InvoiceBreakdown>();
   for (const b of breakdown) {
     breakdownByDateAmt.set(`${b.date}|${b.amount_vnd}`, b);
   }
 
   const renewalDate = renewal ? new Date(renewal) : null;
+  if (renewalDate) renewalDate.setUTCHours(0, 0, 0, 0);
+  const cycleStartDate = renewalDate
+    ? cycleStartFromRenewal(renewalDate)
+    : null;
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
   const daysRemaining = renewalDate ? daysBetween(today, renewalDate) : null;
@@ -300,7 +362,21 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
                 })
               : "—"
           }
-          hint={t("billing.renewalCycle")}
+          hint={
+            cycleStartDate && renewalDate
+              ? t("billing.renewalCycleRange", {
+                  start: cycleStartDate.toLocaleDateString("vi-VN", {
+                    day: "numeric",
+                    month: "short",
+                  }),
+                  end: renewalDate.toLocaleDateString("vi-VN", {
+                    day: "numeric",
+                    month: "short",
+                    year: "numeric",
+                  }),
+                })
+              : t("billing.renewalCycle")
+          }
         />
         <Metric
           label={t("billing.invoiceCount")}
