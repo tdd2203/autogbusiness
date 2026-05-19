@@ -10,24 +10,42 @@ export { TEXT_FALLBACKS } from "./i18n-ui";
 export const SELECTORS = {
   // Nút mở dialog "Invite members". Trang vi-VN dùng "Mời thành viên".
   // ChatGPT hiện không có data-testid → phải fallback text (xem TEXT_FALLBACKS).
+  //
+  // QUAN TRỌNG: KHÔNG dùng selector `button[aria-label*="Mời" i]` — quá greedy,
+  // match toggle "Cho phép lời mời từ miền bên ngoài" trên /admin/identity. Phải
+  // match cụm 2-3 từ (member/thành viên/成员) để loại trừ toggles.
   inviteButtonOpen: [
     'button[data-testid="invite-members-button"]',
-    'button[aria-label*="Invite" i]',
-    'button[aria-label*="Mời" i]',
-    // ChatGPT hiện dùng Tailwind class btn-primary cho nút action chính
-    'button.btn-primary',
+    'button[data-testid="invite-button"]',
+    // Aria-label SPECIFIC (cả 2 từ "invite + member" / "mời + thành viên")
+    'button[aria-label*="Invite member" i]',
+    'button[aria-label*="Invite members" i]',
+    'button[aria-label*="Mời thành viên" i]',
+    'button[aria-label*="邀请成员" i]',
   ],
 
-  // Input email/textarea trong dialog Invite. ChatGPT 2026 thường dùng textarea
-  // cho multi-email hoặc input contenteditable.
+  // Input email/textarea trong dialog Invite. ChatGPT 2026 dùng Radix UI →
+  // dialog có thể có `role="alertdialog"`, `aria-modal="true"`, hoặc
+  // `[data-state="open"]` thay vì `role="dialog"`. List multi-selector phủ
+  // tất cả pattern + fallback page-wide.
   inviteEmailInput: [
     'input[data-testid="invite-email-input"]',
     'textarea[data-testid="invite-email-input"]',
+    // Dialog scoped — đa pattern Radix UI
     '[role="dialog"] input[type="email"]',
     '[role="dialog"] textarea',
     '[role="dialog"] input[type="text"]',
+    '[role="alertdialog"] input[type="email"]',
+    '[role="alertdialog"] input[type="text"]',
+    '[aria-modal="true"] input[type="email"]',
+    '[aria-modal="true"] input[type="text"]',
+    '[aria-modal="true"] textarea',
+    '[data-state="open"] input[type="email"]',
+    '[data-state="open"] input[type="text"]',
+    // Page-wide fallback (last resort) — vẫn ưu tiên email type
     'input[type="email"]',
     'input[placeholder*="email" i]',
+    'input[name*="email" i]',
     'textarea[placeholder*="email" i]',
   ],
 

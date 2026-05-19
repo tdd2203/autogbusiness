@@ -3,7 +3,7 @@
  * Background gửi: ExecuteActionRequest. Content trả: ExecuteActionResponse.
  */
 
-export type ChatGPTRole = "owner" | "admin" | "member";
+export type ChatGPTRole = "owner" | "admin" | "member" | "analytics_viewer";
 
 export type ExecuteActionRequest =
   | { kind: "INVITE_MEMBER"; taskId: string; emails: string[]; role: ChatGPTRole }
@@ -15,7 +15,14 @@ export type ExecuteActionRequest =
       new_role: ChatGPTRole;
       old_role: ChatGPTRole | null;
     }
-  | { kind: "SYNC_DATA"; taskId: string; includePending?: boolean }
+  | {
+      kind: "SYNC_DATA";
+      taskId: string;
+      includePending?: boolean;
+      /** Dashboard locale ('vi' | 'en' | 'zh') — extension dùng để check ChatGPT
+       * locale, surface lỗi rõ ràng nếu mismatch. Null = không check. */
+      expectedLocale?: "vi" | "en" | "zh" | null;
+    }
   | { kind: "SYNC_BILLING"; taskId: string }
   | { kind: "REVOKE_INVITES"; taskId: string; emails: string[] }
   | { kind: "HARVEST_LABELS"; taskId: string; locale: "vi" | "en" | "zh" }
@@ -48,6 +55,8 @@ export type ExecuteActionResponse =
         | "TIMEOUT"
         | "VERIFY_FAILED"
         | "PAGE_NOT_ADMIN"
+        | "LANGUAGE_MISMATCH"
+        | "CONTENT_NOT_INJECTED"
         | "UNKNOWN";
       error_message: string;
     };

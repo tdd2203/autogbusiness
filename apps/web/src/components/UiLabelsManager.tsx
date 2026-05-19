@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useT } from "../i18n";
 import { toast } from "./Toast";
+import { requestExtensionRefreshLabels } from "../hooks/useExtensionTrigger";
 
 type Locale = "vi" | "en" | "zh";
 type PagePath =
@@ -133,6 +134,8 @@ export function UiLabelsManager() {
       qc.invalidateQueries({ queryKey: ["ui-labels"] });
       qc.invalidateQueries({ queryKey: ["ui-labels-coverage"] });
       qc.invalidateQueries({ queryKey: ["ui-labels-stale"] });
+      // Báo extension reload bundle ngay — không chờ alarm 2 phút.
+      requestExtensionRefreshLabels();
       toast.success(t("uiLabels.savedToast"));
     },
     onError: (e) => {
@@ -151,6 +154,7 @@ export function UiLabelsManager() {
       qc.invalidateQueries({ queryKey: ["ui-labels"] });
       qc.invalidateQueries({ queryKey: ["ui-labels-coverage"] });
       qc.invalidateQueries({ queryKey: ["ui-labels-stale"] });
+      requestExtensionRefreshLabels();
     },
   });
 
@@ -226,6 +230,7 @@ export function UiLabelsManager() {
       qc.invalidateQueries({ queryKey: ["ui-labels"] });
       qc.invalidateQueries({ queryKey: ["ui-labels-coverage"] });
       qc.invalidateQueries({ queryKey: ["ui-labels-stale"] });
+      requestExtensionRefreshLabels();
       setHarvestTaskId(null);
       setHarvestStartedAt(null);
     } else if (status === "FAILED") {

@@ -138,4 +138,4 @@ Write-Host "`n=== ALL UP ===" -ForegroundColor Green
 Write-Host "  Backend : http://127.0.0.1:18000  (docs: /docs)" -ForegroundColor White
 Write-Host "  Web     : http://127.0.0.1:17173" -ForegroundColor White
 Write-Host "  Postgres: localhost:5432 (docker)" -ForegroundColor White
-Write-Host "  Logs    : xem 3 cửa sổ PowerShell vừa mở" -ForegroundColor Gray
+Write-Host "  Logs    : Open 3 PowerShell windows" -ForegroundColor Gray

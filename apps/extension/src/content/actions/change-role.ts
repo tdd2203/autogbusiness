@@ -2,25 +2,33 @@ import type {
   ChatGPTRole,
   ExecuteActionResponse,
 } from "../../shared/messages";
-import {
-  humanClick,
-  queryByText,
-  querySelectorFirst,
-  randomDelay,
-  waitFor,
-} from "../human";
+import { humanClick, randomDelay, sleep } from "../human";
 import { findRoleOption } from "../i18n-ui";
 import { reportProgress } from "../progress";
-import { SELECTORS, TEXT_FALLBACKS } from "../selectors";
-import { findMemberRow, findRowMenuButton } from "./member-row";
-import { dbLabelsFor, reportLabelMismatch } from "../../shared/ui-labels";
+import { findMemberRow, findRowRoleDropdown } from "./member-row";
 
+/**
+ * UI 2026 đổi role qua INLINE dropdown trên row:
+ *   1. Tìm row member theo email
+ *   2. Click dropdown "Thành viên ▼" (hoặc "Member ▼" / "成员 ▼") trong cột Vai trò
+ *   3. Menu hiện 4 option: Thành viên / Trình xem dữ liệu phân tích /
+ *      Quản trị viên / Chủ sở hữu
+ *   4. Click target role option
+ *
+ * Trước v0.4.14 code dùng flow CŨ (click "..." menu → "Change role" item) đã bị
+ * ChatGPT loại bỏ — flow này khiến CHANGE_ROLE treo IN_PROGRESS vĩnh viễn.
+ */
 export async function executeChangeRole(
   taskId: string,
   email: string,
   newRole: ChatGPTRole,
+  oldRole: ChatGPTRole | null = null,
 ): Promise<ExecuteActionResponse> {
-  await reportProgress(taskId, { phase: "locating", message: `Tìm row của ${email}...` }, true);
+  await reportProgress(
+    taskId,
+    { phase: "locating", message: `Tìm row của ${email}...` },
+    true,
+  );
 
   if (!location.pathname.includes("/admin")) {
     return {
@@ -39,62 +47,60 @@ export async function executeChangeRole(
     };
   }
 
-  const menuBtn = findRowMenuButton(row);
-  if (!menuBtn) {
+  await reportProgress(
+    taskId,
+    { phase: "opening-dropdown", message: `Mở dropdown vai trò...` },
+    true,
+  );
+  const dropdown = findRowRoleDropdown(row, oldRole);
+  if (!dropdown) {
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
-      error_message: "Không tìm thấy nút menu '...' trong row member.",
+      error_message:
+        `Không tìm thấy dropdown vai trò trong row của ${email}. ` +
+        `UI 2026 có dropdown 'Thành viên ▼' hiển thị inline — kiểm tra DOM cột Vai trò.`,
     };
   }
   await randomDelay();
-  await humanClick(menuBtn);
+  await humanClick(dropdown);
 
-  let changeRoleItem: HTMLElement;
-  try {
-    const dbChange = dbLabelsFor("menu_change_role", "/admin/members");
-    const changeTexts =
-      dbChange.length > 0
-        ? [...dbChange, ...TEXT_FALLBACKS.changeRoleMenuItem]
-        : TEXT_FALLBACKS.changeRoleMenuItem;
-    changeRoleItem = await waitFor(() => {
-      return (
-        querySelectorFirst<HTMLElement>(SELECTORS.changeRoleMenuItem) ??
-        changeTexts
-          .map((t) => queryByText('[role="menuitem"]', t))
-          .find((el) => el !== null) ??
-        null
-      );
-    }, 5000);
-  } catch {
-    const dbChange = dbLabelsFor("menu_change_role", "/admin/members");
-    if (dbChange.length > 0) {
-      reportLabelMismatch("menu_change_role", dbChange[0], "/admin/members");
-    }
-    return {
-      ok: false,
-      error_code: "UI_ELEMENT_NOT_FOUND",
-      error_message: "Menu mở nhưng không có item 'Change role'.",
-    };
-  }
-  await randomDelay();
-  await humanClick(changeRoleItem);
+  // Wait for menu to open
+  await sleep(400);
 
-  // Sau khi click "Change role", có thể hiện submenu hoặc dialog với options
-  await randomDelay(800, 1800);
+  await reportProgress(
+    taskId,
+    { phase: "selecting", message: `Chọn role mới: ${newRole}...` },
+    true,
+  );
   const roleOption = findRoleOption(newRole);
   if (!roleOption) {
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
-      error_message: `Không tìm thấy option role '${newRole}' trong UI.`,
+      error_message:
+        `Menu dropdown role mở nhưng KHÔNG tìm thấy option '${newRole}'. ` +
+        `Cần thêm role label vào ROLE_LABELS hoặc DB ui_labels.`,
     };
   }
-  await reportProgress(taskId, { phase: "applying", message: `Đang đổi role sang ${newRole}...` }, true);
   await humanClick(roleOption);
+  await randomDelay(800, 1500);
 
-  // Verify — đợi role text trong row đổi (best-effort; tuỳ theo UI có refresh ngay không)
-  await randomDelay(1500, 3000);
+  // Verify: dropdown text đổi sang role mới (best-effort)
+  // Re-query dropdown vì DOM có thể re-render
+  const verifyRow = findMemberRow(email);
+  if (verifyRow) {
+    const newDropdown = findRowRoleDropdown(verifyRow, newRole);
+    if (newDropdown) {
+      console.log(
+        `[autogpt-change-role] verified: dropdown giờ có role label '${newRole}'`,
+      );
+    } else {
+      console.warn(
+        `[autogpt-change-role] không verify được dropdown sau đổi role — UI có thể chưa render`,
+      );
+    }
+  }
 
-  return { ok: true, data: { email, new_role: newRole } };
+  return { ok: true, data: { email, new_role: newRole, old_role: oldRole } };
 }

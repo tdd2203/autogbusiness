@@ -1,26 +1,46 @@
 /**
  * Anti-detection helpers — simulate human input.
  *
- * Spec yêu cầu:
- * - Delay random 1.5-4s giữa các thao tác (theo Invite_Member.md)
+ * Spec gốc: delay 1.5-4s giữa thao tác. Tuy nhiên user 2026-05-19 yêu cầu giảm
+ * 70% delay vì extension chạy quá chậm → DELAY_MULTIPLIER = 0.30. Tất cả
+ * `randomDelay`, `microDelay`, và per-character typing đều scale qua hằng số
+ * này — đổi 1 chỗ áp dụng toàn bộ.
+ *
  * - KHÔNG dùng .click() trực tiếp, phải mousedown → mouseup → click
- * - Nhập liệu gõ từng ký tự (keypress events)
+ * - Nhập liệu gõ từng ký tự (keypress events) — vẫn realistic nhưng nhanh hơn
  */
+
+const DELAY_MULTIPLIER = 0.30;
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function randomDelay(minMs = 1500, maxMs = 4000): Promise<void> {
-  const delay = Math.floor(Math.random() * (maxMs - minMs + 1)) + minMs;
+  const min = Math.max(50, Math.floor(minMs * DELAY_MULTIPLIER));
+  const max = Math.max(min + 50, Math.floor(maxMs * DELAY_MULTIPLIER));
+  const delay = Math.floor(Math.random() * (max - min + 1)) + min;
   return sleep(delay);
 }
 
 export function microDelay(): Promise<void> {
-  return sleep(60 + Math.floor(Math.random() * 80));
+  const base = Math.floor(60 * DELAY_MULTIPLIER);
+  const span = Math.floor(80 * DELAY_MULTIPLIER);
+  return sleep(base + Math.floor(Math.random() * span));
 }
 
 export async function humanClick(el: HTMLElement): Promise<void> {
+  // QUAN TRỌNG: scroll element vào viewport TRƯỚC khi click. Khi danh sách
+  // member dài, nút action có thể bị scroll out, gây click không trigger
+  // được handler. scrollIntoView({ block: 'center' }) cho cả element + tránh
+  // header sticky che mất. behavior: "instant" để click ngay không chờ animation.
+  try {
+    el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" as ScrollBehavior });
+  } catch {
+    el.scrollIntoView();
+  }
+  await microDelay();
+
   const rect = el.getBoundingClientRect();
   const x = rect.left + rect.width / 2;
   const y = rect.top + rect.height / 2;
@@ -31,14 +51,43 @@ export async function humanClick(el: HTMLElement): Promise<void> {
     clientX: x,
     clientY: y,
     button: 0,
+    composed: true,
   };
+  const pointerOpts = { ...opts, pointerType: "mouse", isPrimary: true };
 
+  // ChatGPT 2026 dùng Radix UI — một số component (DialogTrigger, Select)
+  // lắng nghe POINTER events thay vì mouse events. Dispatch cả 2 set.
+  try {
+    el.dispatchEvent(new PointerEvent("pointerover", pointerOpts));
+    el.dispatchEvent(new PointerEvent("pointerenter", pointerOpts));
+  } catch {
+    // Older browser without PointerEvent constructor
+  }
   el.dispatchEvent(new MouseEvent("mouseover", opts));
+  el.dispatchEvent(new MouseEvent("mouseenter", opts));
   await microDelay();
+  try {
+    el.dispatchEvent(new PointerEvent("pointerdown", pointerOpts));
+  } catch {}
   el.dispatchEvent(new MouseEvent("mousedown", opts));
   await microDelay();
+  try {
+    el.dispatchEvent(new PointerEvent("pointerup", pointerOpts));
+  } catch {}
   el.dispatchEvent(new MouseEvent("mouseup", opts));
   el.dispatchEvent(new MouseEvent("click", opts));
+
+  // FALLBACK CUỐI CÙNG: gọi el.click() native — đảm bảo onClick handler
+  // được trigger ngay cả khi synthetic event không match React tracking.
+  // Là cách reliable nhất để click programmatically; nhiều framework
+  // ưu tiên detect element.click() over manually dispatched click events.
+  if (typeof el.click === "function") {
+    try {
+      el.click();
+    } catch (e) {
+      console.warn("[autogpt-human] el.click() throw:", e);
+    }
+  }
 }
 
 export async function humanType(input: HTMLInputElement | HTMLTextAreaElement, text: string): Promise<void> {
@@ -55,13 +104,15 @@ export async function humanType(input: HTMLInputElement | HTMLTextAreaElement, t
   nativeSetter?.call(input, "");
   input.dispatchEvent(new Event("input", { bubbles: true }));
 
+  const typeBase = Math.max(8, Math.floor(40 * DELAY_MULTIPLIER));
+  const typeSpan = Math.max(12, Math.floor(80 * DELAY_MULTIPLIER));
   for (const ch of text) {
     nativeSetter?.call(input, input.value + ch);
     input.dispatchEvent(new KeyboardEvent("keydown", { key: ch, bubbles: true }));
     input.dispatchEvent(new KeyboardEvent("keypress", { key: ch, bubbles: true }));
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new KeyboardEvent("keyup", { key: ch, bubbles: true }));
-    await sleep(40 + Math.floor(Math.random() * 80));
+    await sleep(typeBase + Math.floor(Math.random() * typeSpan));
   }
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }

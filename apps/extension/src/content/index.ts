@@ -73,9 +73,13 @@ async function dispatch(
     case "REMOVE_MEMBER":
       return executeRemove(msg.taskId, msg.email);
     case "CHANGE_ROLE":
-      return executeChangeRole(msg.taskId, msg.email, msg.new_role);
+      return executeChangeRole(msg.taskId, msg.email, msg.new_role, msg.old_role ?? null);
     case "SYNC_DATA":
-      return executeSync(msg.taskId, msg.includePending !== false);
+      return executeSync(
+        msg.taskId,
+        msg.includePending !== false,
+        msg.expectedLocale ?? null,
+      );
     case "SYNC_BILLING":
       return executeSyncBilling(msg.taskId);
     case "REVOKE_INVITES":

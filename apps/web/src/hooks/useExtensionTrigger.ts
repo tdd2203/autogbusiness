@@ -33,6 +33,34 @@ export async function triggerExtensionRun(): Promise<boolean> {
 }
 
 /**
+ * Báo extension refresh ngay UI labels bundle (chrome.storage.local cache).
+ *
+ * Bối cảnh: sau khi save 1 row UI label qua Settings, DB đã update nhưng
+ * extension cache 2 phút mới refresh tự động → action vẫn dùng label cũ.
+ * Hàm này post message qua dashboard-bridge content script (cùng browser) →
+ * background SW gọi `refreshLabelBundle()` → fetch /ui-labels/bundle mới →
+ * content script listen `storage.onChanged` → reload cache. Thường <500ms.
+ *
+ * Cross-browser caveat: nếu extension chạy ở browser khác dashboard (vd
+ * MoreLogin chứa extension), bridge không tồn tại trên page → message bị
+ * drop, fallback alarm 2 phút sau extension sẽ tự refresh.
+ *
+ * Best-effort: KHÔNG await response, KHÔNG throw. Caller chỉ cần fire sau
+ * save thành công.
+ */
+export function requestExtensionRefreshLabels(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.postMessage(
+      { source: "autogpt-dashboard", type: "refresh-labels" },
+      window.origin,
+    );
+  } catch (e) {
+    console.warn("[autogpt-dashboard] refresh-labels post failed", e);
+  }
+}
+
+/**
  * Hook trả về extension status cho một workspace cụ thể.
  * Poll backend mỗi 5s — extension subscribe SSE thì online=true.
  *

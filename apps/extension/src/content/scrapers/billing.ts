@@ -44,10 +44,15 @@ const SEAT_TOTAL_MAX = 999;
  *
  * Pattern phải tránh false-match từ "5/16/2026" (date). Vì vậy ta yêu cầu
  * từ khoá xung quanh: dùng|using|seat|license|ghế|giấy phép|chỗ ngồi.
+ *
+ * QUAN TRỌNG: KHÔNG reject case `used > total` (over-limit). ChatGPT cho phép
+ * dùng vượt seat plan (vd 14/13) — đó là state hợp lệ cần dashboard biết.
+ * Trước v0.4.19 reject case này → scraper bỏ qua "14/13" → pick nhầm ratio
+ * khác trên page (vd 11/12 từ invoice / plan section).
  */
 const SEAT_RATIO_PATTERNS: RegExp[] = [
   // "Đang dùng 6/8 giấy phép" / "Using 6/8 seats" / "正在使用 6/8"
-  /(?:dùng|sử\s*dụng|using|正在使用|使用中|使用)\s*[:：]?\s*(\d{1,3})\s*\/\s*(\d{1,3})/i,
+  /(?:đang\s*dùng|đang\s*sử\s*dụng|sử\s*dụng|using|正在使用|使用中|已\s*使用|使用)\s*[:：]?\s*(\d{1,3})\s*\/\s*(\d{1,3})/i,
   // "6/8 giấy phép" / "6/8 seats" / "6/8 个席位" / "6/8 个许可证"
   /(\d{1,3})\s*\/\s*(\d{1,3})\s*(?:giấy\s*phép|chỗ\s*ngồi|seats?|licenses?|个\s*席位|个\s*许可证|席位|许可证)/i,
   // "6 of 8 seats" / "6 trên 8 giấy phép"
@@ -66,7 +71,8 @@ function parseSeatRatio(text: string): { used: number; total: number } | null {
       used >= 0 &&
       total >= 0 &&
       total <= SEAT_TOTAL_MAX &&
-      used <= total
+      used <= SEAT_TOTAL_MAX
+      // KHÔNG còn check used <= total — over-limit là state hợp lệ
     ) {
       return { used, total };
     }
@@ -162,28 +168,15 @@ const CURRENCY_RE_LIST: Array<{ re: RegExp; kind: "vnd" | "usd" | "cny" }> = [
   { re: /^rmb\s+([\d,.]+)$/i, kind: "cny" },
 ];
 
-function parseCurrencyAmount(text: string): number | null {
+/** Chỉ parse VND — field DB là `amount_vnd`. USD/CNY parse nhầm scale (×100 cents). */
+function parseVndAmount(text: string): number | null {
   const trimmed = text.trim();
-  for (const { re, kind } of CURRENCY_RE_LIST) {
-    const m = trimmed.match(re);
-    if (!m) continue;
-    if (kind === "vnd") {
-      const digits = m[1].replace(/[.,\s]/g, "");
-      const n = parseInt(digits, 10);
-      if (!Number.isFinite(n) || n < 0 || n > 1_000_000_000) return null;
-      return n;
-    }
-    // USD / CNY: chấm là decimal, phẩy là thousands. Bỏ decimal (round).
-    // Convert sang VND equivalent? Không — giữ giá trị nguyên, lưu kèm currency
-    // không cần thiết cho display admin. Multiply USD/CNY ×1 để admin tự
-    // hiểu đơn vị qua context. Round to int.
-    const cleaned = m[1].replace(/,/g, "");
-    const n = parseFloat(cleaned);
-    if (!Number.isFinite(n) || n < 0 || n > 1_000_000_000) return null;
-    // Multiply by 100 nếu USD/CNY để tránh mất decimal (lưu cents/fen)
-    return Math.round(n * 100);
-  }
-  return null;
+  const m = trimmed.match(CURRENCY_RE_LIST[0].re);
+  if (!m) return null;
+  const digits = m[1].replace(/[.,\s]/g, "");
+  const n = parseInt(digits, 10);
+  if (!Number.isFinite(n) || n < 10_000 || n > 1_000_000_000) return null;
+  return n;
 }
 
 function parseInvoiceDate(text: string): string | null {
@@ -225,11 +218,15 @@ function scrapeInvoices(): ScrapedInvoice[] {
   const out: ScrapedInvoice[] = [];
   const seen = new Set<string>(); // dedup theo date+amount
 
-  const leaves = document.querySelectorAll<HTMLElement>("*");
+  const root =
+    document.querySelector("main") ??
+    document.querySelector("[role='main']") ??
+    document.body;
+  const leaves = root.querySelectorAll<HTMLElement>("*");
   for (const el of Array.from(leaves)) {
     if (el.children.length > 0) continue;
     const text = (el.textContent ?? "").trim();
-    const amount = parseCurrencyAmount(text);
+    const amount = parseVndAmount(text);
     if (amount === null) continue;
 
     // Walk up tìm row chứa cả date
@@ -265,7 +262,7 @@ function scrapeInvoices(): ScrapedInvoice[] {
   return out;
 }
 
-export function scrapeBillingFromDom(): ScrapedBilling {
+export function scrapeBillingFromDom(options?: { includeInvoices?: boolean }): ScrapedBilling {
   // Toàn bộ text visible của main content. Đơn giản nhưng đủ cho regex.
   const main =
     document.querySelector("main") ??
@@ -277,7 +274,8 @@ export function scrapeBillingFromDom(): ScrapedBilling {
   const plan = parsePlan(text);
   const billing_status = parseBillingStatus(text);
   const renewal_date = parseRenewalDateVi(text);
-  const invoices = scrapeInvoices();
+  const includeInvoices = options?.includeInvoices !== false;
+  const invoices = includeInvoices ? scrapeInvoices() : [];
 
   return {
     plan,

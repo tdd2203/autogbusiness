@@ -210,6 +210,14 @@ class Member(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # Subscription tracking (Dashboard-only, ChatGPT không có khái niệm này).
+    # subscription_months: số tháng admin commit cho member (mặc định 1, NULL = unlimited).
+    # subscription_end_at: derived = created_at + subscription_months × 30 days; store
+    # explicit để query/index nhanh + cho phép extend riêng end_at mà không đổi months.
+    subscription_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    subscription_end_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     workspace = relationship("Workspace")
     invited_by = relationship("User")

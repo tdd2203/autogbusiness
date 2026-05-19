@@ -1,6 +1,8 @@
 import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { useI18n, type Lang } from "../i18n";
+import { dashboardLangToChatGPTLocale } from "../lib/chatgpt-locale";
+import { toast } from "./Toast";
 import type { ReactNode } from "react";
 
 type NavEntry = {
@@ -65,6 +67,23 @@ export default function Layout() {
   const { user, logout, hasPermission } = useAuth();
   const { lang, setLang, t } = useI18n();
   const navigate = useNavigate();
+
+  function onDashboardLangChange(next: Lang) {
+    if (next === lang) return;
+    setLang(next);
+    const chatgptLangKey =
+      dashboardLangToChatGPTLocale(next) === "zh"
+        ? "lang.chatgptLangZh"
+        : "lang.chatgptLangVi";
+    const dashboardLangKey = next === "zh-CN" ? "lang.zh-CN" : "lang.vi";
+    toast.info(
+      t("lang.switchNotify", {
+        dashboardLang: t(dashboardLangKey),
+        chatgptLang: t(chatgptLangKey),
+      }),
+      { durationMs: 12_000 },
+    );
+  }
 
   function onLogout() {
     logout();
@@ -194,7 +213,7 @@ export default function Layout() {
           </div>
           <select
             value={lang}
-            onChange={(e) => setLang(e.target.value as Lang)}
+            onChange={(e) => onDashboardLangChange(e.target.value as Lang)}
             style={{
               marginTop: 12,
               width: "100%",
@@ -211,6 +230,16 @@ export default function Layout() {
             <option value="vi">{t("lang.vi")}</option>
             <option value="zh-CN">{t("lang.zh-CN")}</option>
           </select>
+          <p
+            style={{
+              marginTop: 6,
+              fontSize: 10.5,
+              color: "var(--ink-3)",
+              lineHeight: 1.45,
+            }}
+          >
+            {t("lang.dashboardOnlyHint")}
+          </p>
           <button
             onClick={onLogout}
             style={{

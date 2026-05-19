@@ -199,7 +199,7 @@ class WorkspaceSettingsUpdate(BaseModel):
 
 
 # ---------- Member ----------
-ChatGPTRole = Literal["owner", "admin", "member"]
+ChatGPTRole = Literal["owner", "admin", "member", "analytics_viewer"]
 MemberStatus = Literal["active", "pending", "removed"]
 
 
@@ -216,6 +216,8 @@ class MemberOut(BaseModel):
     joined_at: datetime | None
     last_synced_at: datetime | None
     created_at: datetime
+    subscription_months: int | None = None
+    subscription_end_at: datetime | None = None
 
 
 class MemberUpsert(BaseModel):
@@ -242,13 +244,61 @@ class MemberBulkUpsert(BaseModel):
 class MemberInviteIn(BaseModel):
     email: EmailStr
     role: ChatGPTRole = "member"
+    # Subscription tracking — Dashboard-only. Default 1 tháng = 30 ngày.
+    # None = không giới hạn (admin tự quản lý). Range 1-60 để tránh nhập nhầm.
+    subscription_months: int | None = Field(default=1, ge=1, le=60)
+
+
+class MemberInviteEntry(BaseModel):
+    """1 entry trong bulk-invite: email + subscription_months riêng cho email đó."""
+
+    email: EmailStr
+    subscription_months: int | None = Field(default=1, ge=1, le=60)
 
 
 class MemberBulkInviteIn(BaseModel):
-    """Mời nhiều email cùng lúc qua 1 ChatGPT dialog (click 'Thêm nhiều hơn')."""
+    """Mời nhiều email cùng lúc qua 1 ChatGPT dialog (click 'Thêm nhiều hơn').
 
-    emails: list[EmailStr] = Field(min_length=1, max_length=200)
+    Hai paths:
+      - `invites` (preferred, mới 2026-05-19): per-email subscription_months.
+        Dashboard form mời gửi shape này.
+      - `emails` + `subscription_months` (legacy): tất cả emails dùng chung 1
+        subscription_months. Giữ cho backward-compat client cũ.
+
+    Nếu cả 2 đều provided → `invites` thắng.
+    """
+
+    emails: list[EmailStr] = Field(default_factory=list, max_length=200)
+    invites: list[MemberInviteEntry] | None = Field(default=None, max_length=200)
     role: ChatGPTRole = "member"
+    subscription_months: int | None = Field(default=1, ge=1, le=60)
+
+    def resolved_entries(self) -> list[MemberInviteEntry]:
+        """Trả list entry chuẩn hóa, bất kể caller dùng path nào.
+
+        Dedupe theo email (lowercase). Nếu cả 2 path đều có cùng email, ưu tiên
+        `invites` entry.
+        """
+        out: dict[str, MemberInviteEntry] = {}
+        if self.invites:
+            for entry in self.invites:
+                key = str(entry.email).lower()
+                out[key] = entry
+        for email in self.emails:
+            key = str(email).lower()
+            if key in out:
+                continue
+            out[key] = MemberInviteEntry(
+                email=email,
+                subscription_months=self.subscription_months,
+            )
+        return list(out.values())
+
+
+class MemberUpdateSubscriptionIn(BaseModel):
+    """PATCH subscription_months — extend hoặc đổi vô thời hạn."""
+
+    subscription_months: int | None = Field(default=None, ge=1, le=60)
 
 
 class MemberChangeRoleIn(BaseModel):

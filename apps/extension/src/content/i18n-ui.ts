@@ -25,27 +25,39 @@ export const TEXT_FALLBACKS = {
     "添加成员",
   ],
   inviteSubmitButton: [
+    // Explicit plural variants — UI 2026 ChatGPT dùng "Send invites" / "Gửi lời mời"
+    "Send invites",
     "Gửi lời mời",
-    "Gửi",
+    "Send invitations",
+    "Gửi các lời mời",
+    "发送邀请",
     "Send invite",
     "Send invitation",
+    "Gửi",
     "Invite",
     "Mời thành viên",
     "Mời",
-    "发送邀请",
     "邀请",
     "提交",
   ],
   inviteAddMoreButton: [
+    "Add more",
+    "Add another",
+    "Add another member",
+    "Add a member",
+    "Add row",
     "Thêm nhiều hơn",
     "Thêm nhiều",
     "Thêm email",
-    "Add more",
-    "Add another",
+    "Thêm thành viên",
+    "Thêm dòng",
+    "Thêm",
     "Add many",
     "添加更多",
     "添加多个",
+    "添加成员",
     "添加邮箱",
+    "添加一行",
     "更多",
   ],
   removeMenuItem: [
@@ -67,11 +79,21 @@ export const TEXT_FALLBACKS = {
     "Change role",
     "Edit role",
     "Manage role",
+    // UI 2026: row menu chỉ còn "Change seat type" (mở submenu chọn ChatGPT/Codex/…).
+    // Đổi role thực hiện qua dropdown "Member ▼" ngay trên row, không qua menu.
+    // Ta vẫn liệt kê text này phòng trường hợp ChatGPT đổi lại UI hoặc workspace
+    // có entry "Change role" riêng.
+    "Change seat type",
+    "Edit seat type",
     "Đổi vai trò",
     "Thay đổi vai trò",
+    "Đổi loại ghế",
+    "Thay đổi loại ghế",
     "更改角色",
     "修改角色",
     "变更角色",
+    "更改席位类型",
+    "修改席位类型",
   ],
   confirmRemoveButton: [
     "Remove",
@@ -169,6 +191,14 @@ export const ROLE_LABELS: Record<ChatGPTRole, string[]> = {
     "成员",
     "普通成员",
   ],
+  analytics_viewer: [
+    "Trình xem dữ liệu phân tích",
+    "Analytics viewer",
+    "Analytics Viewer",
+    "Data analytics viewer",
+    "分析查看器",
+    "数据分析查看器",
+  ],
 };
 
 /** Keyword nhận diện role khi scrape row (substring match, đã normalize). */
@@ -184,6 +214,16 @@ const ROLE_KEYWORDS: Array<{ role: ChatGPTRole; patterns: string[] }> = [
   {
     role: "member",
     patterns: ["member", "thanh vien", "成员", "普通成员"],
+  },
+  {
+    role: "analytics_viewer",
+    patterns: [
+      "analytics viewer",
+      "data analytics",
+      "trinh xem du lieu",
+      "分析查看器",
+      "数据分析",
+    ],
   },
 ];
 
@@ -258,6 +298,61 @@ export function findControlByKey(
   return el;
 }
 
+/**
+ * Phát hiện ngôn ngữ hiện tại của ChatGPT từ `document.documentElement.lang`.
+ * Trả về normalized 'vi' | 'en' | 'zh' hoặc null nếu không xác định được.
+ */
+export type ChatGPTLocale = "vi" | "en" | "zh";
+
+export function detectChatGPTLocale(): ChatGPTLocale | null {
+  const raw = (document.documentElement.lang ?? "").toLowerCase().trim();
+  if (!raw) return null;
+  if (raw.startsWith("vi")) return "vi";
+  if (raw.startsWith("zh")) return "zh";
+  if (raw.startsWith("en") || raw === "c" || raw === "us") return "en";
+  return null;
+}
+
+/**
+ * So sánh ChatGPT locale với expected locale (truyền vào từ payload task).
+ * Trả về { match, current, expected, hint } — `hint` là gợi ý hiển thị cho user
+ * khi mismatch, có instructions để đổi ChatGPT về đúng locale.
+ */
+export function checkLocaleMatch(expected: ChatGPTLocale | null): {
+  match: boolean;
+  current: ChatGPTLocale | null;
+  expected: ChatGPTLocale | null;
+  hint: string;
+} {
+  const current = detectChatGPTLocale();
+  if (!expected) return { match: true, current, expected, hint: "" };
+  if (!current) {
+    return {
+      match: false,
+      current,
+      expected,
+      hint:
+        `Không phát hiện được ngôn ngữ ChatGPT (document.documentElement.lang rỗng). ` +
+        `Dashboard cấu hình '${expected}'. Vui lòng đổi ngôn ngữ ChatGPT về '${expected}' tại profile menu → Settings → Locale.`,
+    };
+  }
+  if (current === expected) return { match: true, current, expected, hint: "" };
+  const nameMap: Record<ChatGPTLocale, string> = {
+    vi: "Tiếng Việt",
+    en: "English",
+    zh: "中文 (Simplified Chinese)",
+  };
+  return {
+    match: false,
+    current,
+    expected,
+    hint:
+      `ChatGPT đang dùng ${nameMap[current]} (${current}) nhưng dashboard cấu hình ${nameMap[expected]} (${expected}). ` +
+      `Vui lòng đổi ngôn ngữ ChatGPT về ${nameMap[expected]} qua: avatar (góc phải trên) → Settings → Locale → chọn ${nameMap[expected]} → reload trang. ` +
+      `Sau đó retry task này từ dashboard.`,
+  };
+}
+
 /** Variant cho menuitem / option (dialog dropdown menu). */
 export function findMenuItemByKey(
   controlKey: string,
@@ -314,6 +409,32 @@ export const INVITE_ERROR_HINTS = [
   "invalid",
   "không hợp lệ",
   "not valid",
+  // Seat limit / cần mua thêm ghế
+  "not enough seats",
+  "insufficient seats",
+  "seat limit",
+  "buy more seats",
+  "add more seats",
+  "out of seats",
+  "no seats available",
+  "exceeds your seat",
+  "reached your seat",
+  "không đủ chỗ",
+  "không đủ ghế",
+  "hết ghế",
+  "vượt quá số ghế",
+  "mua thêm ghế",
+  "thêm ghế",
+  "席位不足",
+  "席位已用完",
+  "已达席位上限",
+  "需要更多席位",
+  "购买更多席位",
+  // External domain blocked
+  "external domain",
+  "outside your organization",
+  "miền bên ngoài",
+  "外部域",
   "已存在",
   "已是成员",
   "已邀请",
@@ -321,18 +442,51 @@ export const INVITE_ERROR_HINTS = [
   "不合法",
 ];
 
-/** Label toggle "Cho phép lời mời từ miền bên ngoài" — lowercase, dùng includes(). */
+/**
+ * Label toggle "Allow External Domain Invites" / "Cho phép lời mời từ miền
+ * bên ngoài" — lowercase, dùng includes(). Patterns sort theo độ đặc trưng:
+ * pattern dài (match nhiều token) ưu tiên hơn pattern ngắn để chống false-match
+ * với các toggle khác trên cùng /admin/identity (vd "Automatic Account Creation").
+ */
 export const EXTERNAL_INVITE_LABEL_PATTERNS = [
-  "cho phép lời mời từ miền bên ngoài",
-  "cho phép lời mời từ miền",
-  "lời mời từ miền bên ngoài",
-  "external domain",
-  "external domains",
+  "allow external domain invites",
+  "allow external domain invite",
+  "external domain invites",
+  "external domain invite",
   "allow invites from external",
-  "allow external",
+  "invites from external domain",
   "invites from outside",
+  "cho phép lời mời từ miền bên ngoài",
+  "lời mời từ miền bên ngoài",
+  "cho phép lời mời từ miền",
+  "lời mời từ miền",
+  "miền bên ngoài",
+  "允许来自外部域的邀请",
   "允许来自外部的邀请",
-  "允许外部域",
+  "允许外部域邀请",
+  "允许外部邀请",
   "外部域邀请",
   "外部邀请",
+];
+
+/**
+ * Patterns dùng để LOẠI TRỪ — nếu row text của một switch chứa pattern này,
+ * switch đó KHÔNG phải "External Domain Invites" dù có match pattern trên.
+ *
+ * /admin/identity của ChatGPT có nhiều toggle gần nhau (Automatic Account
+ * Creation, SSO required, ...). Trước đây walk-up ancestor đụng phải container
+ * chứa cả 2 toggle → grab nhầm. Exclude list này là lớp bảo vệ thứ 2 sau khi
+ * đã scope về row đơn-switch.
+ */
+export const EXTERNAL_INVITE_EXCLUDE_PATTERNS = [
+  "automatic account creation",
+  "auto account creation",
+  "automatically create accounts",
+  "tự động tạo tài khoản",
+  "tự động tạo account",
+  "tạo tài khoản tự động",
+  "自动创建账户",
+  "自动创建账号",
+  "自动账户创建",
+  "自动帐号创建",
 ];

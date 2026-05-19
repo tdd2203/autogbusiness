@@ -1,4 +1,4 @@
-# Update the whole codebase after pulling new code or fixing bugs.
+﻿# Update the whole codebase after pulling new code or fixing bugs.
 # Run from project root: .\scripts\update.ps1
 # Optional flags:
 #   .\scripts\update.ps1 -SkipMigrate    : skip alembic upgrade

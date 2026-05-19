@@ -4,7 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useExtensionStatus } from "../hooks/useExtensionTrigger";
-import { useT } from "../i18n";
+import { useI18n, useT } from "../i18n";
+import { dashboardLangToChatGPTLocale } from "../lib/chatgpt-locale";
 import type { QueueItem, Workspace } from "../types";
 import { WorkspaceBillingPanel } from "./WorkspaceBillingPanel";
 import { TaskCompletionBanner } from "./TaskCompletionBanner";
@@ -23,6 +24,7 @@ const TABS: Tab[] = [
 
 export default function WorkspaceLayout() {
   const t = useT();
+  const { lang } = useI18n();
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const { user, hasPermission } = useAuth();
   const qc = useQueryClient();
@@ -110,8 +112,11 @@ export default function WorkspaceLayout() {
         okText: t("member.syncConfirmOk"),
         cancelText: t("member.syncConfirmCancel"),
       });
+      // expected_locale chỉ để extension BÁO LỖI / hướng dẫn nếu ChatGPT lệch ngôn ngữ —
+      // KHÔNG tự đổi Settings giúp user.
+      const expectedLocale = dashboardLangToChatGPTLocale(lang);
       return api<{ queue_item_id: string }>(
-        `/api/v1/workspaces/${workspaceId}/sync?include_pending=${includePending}`,
+        `/api/v1/workspaces/${workspaceId}/sync?include_pending=${includePending}&expected_locale=${expectedLocale}`,
         { method: "POST" },
       );
     },

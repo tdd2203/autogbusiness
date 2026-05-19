@@ -1,5 +1,11 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { ApiError, countPendingTasks, whoami } from "../shared/api";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  ApiError,
+  fetchActiveTask,
+  triggerSyncBilling,
+  whoami,
+  type ActiveTaskInfo,
+} from "../shared/api";
 import { getConfig, setConfig } from "../shared/storage";
 import type { ConnectionStatus, ExtensionConfig } from "../shared/types";
 import { useI18n, type Lang } from "../i18n";
@@ -11,17 +17,16 @@ export default function App() {
   const [apiKey, setApiKey] = useState("");
   const [status, setStatus] = useState<ConnectionStatus>({ state: "checking" });
   const [saving, setSaving] = useState(false);
-  const [pendingCount, setPendingCount] = useState<number>(0);
-  const [running, setRunning] = useState(false);
-  const [lastRunMsg, setLastRunMsg] = useState<string | null>(null);
+  const [activeInfo, setActiveInfo] = useState<ActiveTaskInfo | null>(null);
   const [showChangelog, setShowChangelog] = useState(false);
+  const [syncingBilling, setSyncingBilling] = useState(false);
 
-  const refreshPendingCount = useCallback(async () => {
+  const refreshActiveTask = useCallback(async () => {
     const config = await getConfig();
     if (!config) return;
     try {
-      const n = await countPendingTasks(config);
-      setPendingCount(n);
+      const info = await fetchActiveTask(config);
+      setActiveInfo(info);
     } catch {
       // ignore
     }
@@ -52,9 +57,48 @@ export default function App() {
       setApiBaseUrl(config.apiBaseUrl);
       setApiKey(config.apiKey);
       await verify(config);
-      await refreshPendingCount();
+      await refreshActiveTask();
     })();
-  }, [refreshPendingCount]);
+  }, [refreshActiveTask]);
+
+  // Poll active task mỗi 1.5s khi popup mở để hiển thị tiến trình real-time.
+  // Popup close → effect cleanup → ngừng poll → không tốn quota khi popup ẩn.
+  useEffect(() => {
+    if (status.state !== "connected") return;
+    const id = window.setInterval(() => {
+      void refreshActiveTask();
+    }, 1500);
+    return () => window.clearInterval(id);
+  }, [status.state, refreshActiveTask]);
+
+  // AUTO-REFRESH whoami: khi SYNC_BILLING vừa chuyển sang terminal
+  // (COMPLETED/FAILED) → re-fetch whoami để hiển thị seat mới. Track bằng
+  // ref: lưu lại ID task IN_PROGRESS đã thấy, khi recent_completed có ID
+  // trùng + type SYNC_BILLING → trigger refetch.
+  const lastInProgressIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeInfo) return;
+    // Lưu ID task IN_PROGRESS hiện tại
+    if (activeInfo.in_progress) {
+      lastInProgressIdRef.current = activeInfo.in_progress.id;
+      return;
+    }
+    // Không có IN_PROGRESS. Check recent_completed — nếu match ID đã track
+    // và type SYNC_BILLING → seat có thể vừa update → re-fetch whoami.
+    const recent = activeInfo.recent_completed;
+    if (
+      recent &&
+      recent.type === "SYNC_BILLING" &&
+      recent.id === lastInProgressIdRef.current &&
+      recent.status === "COMPLETED"
+    ) {
+      lastInProgressIdRef.current = null; // reset để không re-fetch lặp
+      void (async () => {
+        const cfg = await getConfig();
+        if (cfg) await verify(cfg);
+      })();
+    }
+  }, [activeInfo]);
 
   async function verify(config: ExtensionConfig): Promise<void> {
     setStatus({ state: "checking" });
@@ -81,8 +125,24 @@ export default function App() {
     };
     await setConfig(config);
     await verify(config);
-    await refreshPendingCount();
+    await refreshActiveTask();
     setSaving(false);
+  }
+
+  async function onSyncBilling(): Promise<void> {
+    const config = await getConfig();
+    if (!config) return;
+    setSyncingBilling(true);
+    try {
+      await triggerSyncBilling(config);
+      // KHÔNG dùng setTimeout 6s nữa — useEffect ở trên auto re-fetch whoami
+      // khi SYNC_BILLING terminal (COMPLETED). Reset flag sau 2s để UI button
+      // trở lại bình thường (visual feedback "đã trigger").
+      setTimeout(() => setSyncingBilling(false), 2000);
+    } catch (e) {
+      console.warn("[autogpt-popup] sync billing failed:", e);
+      setSyncingBilling(false);
+    }
   }
 
   async function onDisconnect(): Promise<void> {
@@ -90,31 +150,8 @@ export default function App() {
     await setConfig(null);
     setApiKey("");
     setStatus({ state: "disconnected" });
-    setPendingCount(0);
+    setActiveInfo(null);
   }
-
-  async function onRunPending(): Promise<void> {
-    setRunning(true);
-    setLastRunMsg(null);
-    try {
-      const resp = (await chrome.runtime.sendMessage({ type: "run-pending" })) as
-        | { ok: boolean; processed?: number; lastStatus?: string; lastDetail?: string }
-        | undefined;
-      if (resp?.ok) {
-        setLastRunMsg(
-          t("popup.runDone", { n: resp.processed ?? 0 }) +
-            (resp.lastStatus && resp.lastStatus !== "idle"
-              ? ` · ${resp.lastStatus}${resp.lastDetail ? `: ${resp.lastDetail}` : ""}`
-              : ""),
-        );
-      }
-    } finally {
-      setRunning(false);
-      await refreshPendingCount();
-    }
-  }
-
-  const canRun = status.state === "connected" && !running;
 
   return (
     <div>
@@ -159,9 +196,32 @@ export default function App() {
           <div>
             <strong>{t("popup.statusConnected")}</strong>: {status.workspace.name}
           </div>
-          <div className="workspace-info">
-            {t("popup.plan")}: {status.workspace.plan ?? "—"} · {t("popup.seat")}:{" "}
-            {status.workspace.seat_used ?? 0}/{status.workspace.seat_total ?? "—"}
+          <div
+            className="workspace-info"
+            style={{ display: "flex", alignItems: "center", gap: 6 }}
+          >
+            <span style={{ flex: 1 }}>
+              {t("popup.plan")}: {status.workspace.plan ?? "—"} · {t("popup.seat")}:{" "}
+              {status.workspace.seat_used ?? 0}/
+              {status.workspace.seat_total ?? "—"}
+            </span>
+            <button
+              type="button"
+              onClick={onSyncBilling}
+              disabled={syncingBilling}
+              title={t("popup.syncBillingTooltip")}
+              style={{
+                fontSize: 11,
+                padding: "1px 6px",
+                border: "1px solid #cbd5e1",
+                borderRadius: 3,
+                background: "white",
+                cursor: syncingBilling ? "wait" : "pointer",
+                opacity: syncingBilling ? 0.5 : 1,
+              }}
+            >
+              {syncingBilling ? "↻..." : "↻"}
+            </button>
           </div>
         </div>
       )}
@@ -177,30 +237,8 @@ export default function App() {
         </div>
       )}
 
-      {status.state === "connected" && (
-        <div style={{ marginBottom: 10 }}>
-          <button
-            type="button"
-            className="primary"
-            style={{ width: "100%" }}
-            onClick={onRunPending}
-            disabled={!canRun || pendingCount === 0}
-          >
-            {running
-              ? t("popup.running")
-              : pendingCount === 0
-              ? t("popup.runPendingZero")
-              : t("popup.runPending", { n: pendingCount })}
-          </button>
-          {lastRunMsg && (
-            <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>
-              {lastRunMsg}
-            </div>
-          )}
-          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
-            {t("popup.tipNoPolling")}
-          </div>
-        </div>
+      {status.state === "connected" && activeInfo && (
+        <ActiveTaskPanel info={activeInfo} t={t} />
       )}
 
       <form onSubmit={onSubmit}>
@@ -236,8 +274,8 @@ export default function App() {
         </div>
       </form>
 
-      <div className="footer">
-        <span>{CHANGELOG[0].summary}</span>
+      <div className="footer" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{CHANGELOG[0].summary}</span>
         <span style={{ marginLeft: "auto" }}>
           <select
             value={lang}
@@ -257,4 +295,164 @@ export default function App() {
       </div>
     </div>
   );
+}
+
+/**
+ * Panel "task đang chạy" — replace cho block "Không có task chờ" cũ.
+ *
+ * Hiển thị (ưu tiên giảm dần):
+ *   1. in_progress: badge "Đang chạy", task type + message + thanh progress
+ *   2. pending_count > 0: "N task đang chờ" (gray, ngắn)
+ *   3. recent_completed: "Vừa xong: {type}" với status badge (60s gần đây)
+ *   4. Nếu tất cả null/0: KHÔNG render gì (popup gọn)
+ */
+function ActiveTaskPanel({
+  info,
+  t,
+}: {
+  info: ActiveTaskInfo;
+  t: (k: string, p?: Record<string, string | number>) => string;
+}): React.ReactElement | null {
+  const ip = info.in_progress;
+  const recent = info.recent_completed;
+  const pending = info.pending_count;
+
+  if (!ip && pending === 0 && !recent) return null;
+
+  if (ip) {
+    const progress = (ip.progress ?? {}) as {
+      phase?: string;
+      message?: string;
+      current?: number;
+      total?: number;
+      scanned?: number;
+      elapsed_sec?: number;
+    };
+    const cur = progress.current ?? 0;
+    const tot = progress.total ?? 0;
+    const pct =
+      tot > 0 ? Math.min(100, Math.round((cur / tot) * 100)) : null;
+    return (
+      <div
+        style={{
+          marginBottom: 10,
+          padding: "8px 10px",
+          background: "#eff6ff",
+          border: "1px solid #bfdbfe",
+          borderRadius: 6,
+          fontSize: 12,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+          <span
+            style={{
+              fontSize: 10,
+              padding: "1px 6px",
+              borderRadius: 3,
+              background: "#2563eb",
+              color: "white",
+              fontWeight: 600,
+              letterSpacing: "0.04em",
+            }}
+          >
+            {t("popup.running")}
+          </span>
+          <span style={{ fontWeight: 600, color: "#1e3a8a" }}>{ip.type}</span>
+          {progress.elapsed_sec !== undefined && (
+            <span style={{ marginLeft: "auto", fontSize: 10, color: "#64748b" }}>
+              {progress.elapsed_sec}s
+            </span>
+          )}
+        </div>
+        {progress.message && (
+          <div style={{ fontSize: 11, color: "#1e40af", marginBottom: 4 }}>
+            {progress.message}
+          </div>
+        )}
+        {pct !== null && (
+          <div style={{ marginTop: 4 }}>
+            <div
+              style={{
+                height: 6,
+                background: "#dbeafe",
+                borderRadius: 3,
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${pct}%`,
+                  height: "100%",
+                  background: "#2563eb",
+                  transition: "width 0.3s ease",
+                }}
+              />
+            </div>
+            <div style={{ fontSize: 10, color: "#475569", marginTop: 2, textAlign: "right" }}>
+              {cur}/{tot} ({pct}%)
+            </div>
+          </div>
+        )}
+        {pending > 0 && (
+          <div style={{ fontSize: 10, color: "#64748b", marginTop: 4 }}>
+            + {t("popup.activePending", { n: pending })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (pending > 0) {
+    return (
+      <div
+        style={{
+          marginBottom: 10,
+          padding: "6px 10px",
+          background: "#f1f5f9",
+          borderRadius: 6,
+          fontSize: 11,
+          color: "#64748b",
+        }}
+      >
+        ⧗ {t("popup.activePending", { n: pending })}
+      </div>
+    );
+  }
+
+  if (recent) {
+    // Bỏ hoàn toàn hiển thị CONTENT_NOT_INJECTED — đây là lỗi infrastructure
+    // được background runner tự recovery (executeScript → reload tab → recreate
+    // tab). User KHÔNG cần thấy/thao tác. Cũng bỏ NOT_LOGGED_IN_CHATGPT vì
+    // tương tự (background tự mở tab login nếu cần).
+    const isInfraError =
+      recent.error_code === "CONTENT_NOT_INJECTED" ||
+      recent.error_code === "NOT_LOGGED_IN_CHATGPT";
+    if (isInfraError) return null;
+
+    const isOk = recent.status === "COMPLETED";
+    return (
+      <div
+        style={{
+          marginBottom: 10,
+          padding: "6px 10px",
+          background: isOk ? "#f0fdf4" : "#fef2f2",
+          border: `1px solid ${isOk ? "#bbf7d0" : "#fecaca"}`,
+          borderRadius: 6,
+          fontSize: 11,
+          color: isOk ? "#166534" : "#991b1b",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+        }}
+      >
+        <span>{isOk ? "✓" : "✗"}</span>
+        <span style={{ fontWeight: 600 }}>{recent.type}</span>
+        <span style={{ opacity: 0.7 }}>
+          {isOk ? t("popup.recentDone") : recent.error_code ?? t("popup.recentFailed")}
+        </span>
+      </div>
+    );
+  }
+
+  return null;
 }

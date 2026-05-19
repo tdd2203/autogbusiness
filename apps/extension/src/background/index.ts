@@ -194,6 +194,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     void handleLabelMismatchReport(msg.body);
     return false;
   }
+  if (msg?.type === "refresh-labels") {
+    // Dashboard vừa save/clear-stale UI labels → bundle DB đã đổi nhưng
+    // chrome.storage.local cache vẫn cũ (15 phút mới refresh tự động). Gọi
+    // ngay để content script nhận đúng label kế tiếp.
+    (async () => {
+      try {
+        await refreshLabelBundle();
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    })();
+    return true;
+  }
   return undefined;
 });
 

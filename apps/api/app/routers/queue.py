@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -16,7 +16,7 @@ from app.deps import (
     require_extension_workspace,
     require_permission,
 )
-from app.models import Member, QueueItem, User, Workspace
+from app.models import Invite, Member, QueueItem, User, Workspace
 from app.permissions import Permission
 from app.schemas import QueueCreate, QueueOut, QueueProgressUpdate, QueueUpdate
 from app.sse import subscribe, unsubscribe
@@ -115,6 +115,155 @@ def pending_count(
     return {"count": int(count), "workspace_id": str(workspace.id)}
 
 
+@router.post("/sync-billing", status_code=status.HTTP_202_ACCEPTED, response_model=dict)
+def extension_trigger_sync_billing(
+    db: Session = Depends(get_session),
+    workspace: Workspace = Depends(require_extension_workspace),
+) -> dict:
+    """Extension popup trigger SYNC_BILLING task để refresh seat_used/seat_total.
+
+    Dùng X-API-KEY auth (workspace key) thay vì admin session — cho phép popup
+    extension chủ động enqueue khi user thấy seat hiển thị stale.
+
+    Dedup: nếu đã có SYNC_BILLING PENDING/IN_PROGRESS trong workspace này thì
+    trả về task hiện tại, KHÔNG tạo trùng (tránh stack).
+    """
+    from app.sse import publish_task_event
+
+    existing = (
+        db.execute(
+            select(QueueItem).where(
+                QueueItem.workspace_id == workspace.id,
+                QueueItem.type == "SYNC_BILLING",
+                QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if existing:
+        return {
+            "queue_item_id": str(existing.id),
+            "status": existing.status,
+            "deduplicated": True,
+        }
+    task = QueueItem(
+        type="SYNC_BILLING",
+        status="PENDING",
+        workspace_id=workspace.id,
+        payload={"triggered_by": "extension-popup"},
+        created_by_id=None,
+    )
+    db.add(task)
+    db.flush()
+    log_event(
+        db,
+        actor_type="EXTENSION",
+        actor_label=f"workspace:{workspace.name}",
+        action="WORKSPACE_BILLING_SYNC_QUEUED",
+        result="PENDING",
+        target_type="WORKSPACE",
+        target_id=str(workspace.id),
+        data={"queue_item_id": str(task.id), "trigger": "popup"},
+        commit=False,
+    )
+    db.commit()
+    publish_task_event(
+        workspace.id,
+        {
+            "type": "task-available",
+            "task_id": str(task.id),
+            "task_type": "SYNC_BILLING",
+        },
+    )
+    return {
+        "queue_item_id": str(task.id),
+        "status": "PENDING",
+        "deduplicated": False,
+    }
+
+
+@router.get("/active", response_model=dict)
+def active_task(
+    db: Session = Depends(get_session),
+    workspace: Workspace = Depends(require_extension_workspace),
+) -> dict:
+    """Popup extension lấy task đang chạy + tiến trình + đếm pending.
+
+    Trả về:
+        in_progress: 1 task IN_PROGRESS gần nhất (hoặc null) — kèm progress JSON
+        pending_count: số task PENDING đang chờ pick
+        recent_completed: 1 task COMPLETED/FAILED gần nhất trong 60s qua (cho
+                          popup hiện "Vừa xong: …") — nullable
+    """
+    from datetime import timedelta
+    from sqlalchemy import func as sa_func
+
+    in_progress = (
+        db.execute(
+            select(QueueItem)
+            .where(
+                QueueItem.workspace_id == workspace.id,
+                QueueItem.status == "IN_PROGRESS",
+            )
+            .order_by(QueueItem.picked_at.desc().nullslast())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+    pending = (
+        db.execute(
+            select(sa_func.count(QueueItem.id)).where(
+                QueueItem.workspace_id == workspace.id,
+                QueueItem.status == "PENDING",
+            )
+        ).scalar()
+        or 0
+    )
+
+    # Recent terminal task trong 60s gần đây
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
+    recent = (
+        db.execute(
+            select(QueueItem)
+            .where(
+                QueueItem.workspace_id == workspace.id,
+                QueueItem.status.in_(("COMPLETED", "FAILED")),
+                QueueItem.completed_at >= cutoff,
+            )
+            .order_by(QueueItem.completed_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+    def task_to_dict(t: QueueItem | None) -> dict | None:
+        if not t:
+            return None
+        return {
+            "id": str(t.id),
+            "type": t.type,
+            "status": t.status,
+            "progress": t.progress,
+            "result": t.result,
+            "error_code": t.error_code,
+            "error_message": t.error_message,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "picked_at": t.picked_at.isoformat() if t.picked_at else None,
+            "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+        }
+
+    return {
+        "in_progress": task_to_dict(in_progress),
+        "pending_count": int(pending),
+        "recent_completed": task_to_dict(recent),
+        "workspace_id": str(workspace.id),
+    }
+
+
 
 @router.get("/stream")
 async def stream_queue_events(
@@ -170,7 +319,53 @@ def pick_next(
     db: Session = Depends(get_session),
     workspace: Workspace = Depends(require_extension_workspace),
 ) -> QueueItem | None:
-    """Extension polling: lấy 1 task PENDING FIFO trong workspace của API key, đánh dấu IN_PROGRESS."""
+    """Extension polling: lấy 1 task PENDING FIFO trong workspace của API key, đánh dấu IN_PROGRESS.
+
+    Trước khi pick task mới, AUTO-FAIL task IN_PROGRESS bị treo > 5 phút trong
+    cùng workspace — extension picked nhưng không trả kết quả (content script
+    crash, tab close, DOM treo, …). Lazy cleanup tránh popup hiển thị 'ĐANG
+    CHẠY' mãi mãi + cho phép task tiếp theo chạy.
+    """
+    from datetime import timedelta
+
+    STUCK_THRESHOLD = timedelta(minutes=5)
+    now = datetime.now(timezone.utc)
+    cutoff = now - STUCK_THRESHOLD
+    stuck_tasks = (
+        db.execute(
+            select(QueueItem).where(
+                QueueItem.workspace_id == workspace.id,
+                QueueItem.status == "IN_PROGRESS",
+                QueueItem.picked_at < cutoff,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for stuck in stuck_tasks:
+        age_sec = int((now - stuck.picked_at).total_seconds()) if stuck.picked_at else None
+        stuck.status = "FAILED"
+        stuck.error_code = "TIMEOUT"
+        stuck.error_message = (
+            f"Task IN_PROGRESS quá 5 phút ({age_sec}s) — extension không trả "
+            f"kết quả. Auto-cleanup lúc pick task tiếp theo."
+        )
+        stuck.completed_at = now
+        db.add(stuck)
+        log_event(
+            db,
+            actor_type="SYSTEM",
+            actor_label="lazy-cleanup",
+            action=f"QUEUE_TIMEOUT:{stuck.type}",
+            result="FAILED",
+            target_type="QUEUE_ITEM",
+            target_id=str(stuck.id),
+            data={"age_sec": age_sec, "workspace_id": str(workspace.id)},
+            commit=False,
+        )
+    if stuck_tasks:
+        db.commit()
+
     item = (
         db.execute(
             select(QueueItem)
@@ -290,6 +485,126 @@ def update_task(
     if effective_status in ("COMPLETED", "FAILED"):
         item.completed_at = datetime.now(timezone.utc)
     db.add(item)
+
+    # CHANGE_ROLE COMPLETED → sync Member.chatgpt_role trong DB.
+    # Trước đây extension click đổi role trên ChatGPT thành công nhưng DB
+    # không update → dashboard vẫn hiển thị role cũ cho tới khi SYNC_DATA chạy.
+    # Lookup member theo email từ payload + đổi chatgpt_role = new_role.
+    if (
+        item.type == "CHANGE_ROLE"
+        and effective_status == "COMPLETED"
+    ):
+        payload = item.payload or {}
+        target_email = (payload.get("email") or "").lower()
+        new_role = payload.get("new_role")
+        if target_email and new_role:
+            member = db.execute(
+                select(Member).where(
+                    Member.workspace_id == workspace.id,
+                    Member.email == target_email,
+                )
+            ).scalar_one_or_none()
+            if member:
+                member.chatgpt_role = new_role
+                db.add(member)
+                log_event(
+                    db,
+                    actor_type="EXTENSION",
+                    actor_label=f"workspace:{workspace.name}",
+                    action="MEMBER_ROLE_SYNCED",
+                    result="COMPLETED",
+                    target_type="MEMBER",
+                    target_id=str(member.id),
+                    data={"email": target_email, "new_role": new_role},
+                    commit=False,
+                )
+
+    # REMOVE_MEMBER COMPLETED → sync Member.status='removed' trong DB.
+    if (
+        item.type == "REMOVE_MEMBER"
+        and effective_status == "COMPLETED"
+    ):
+        payload = item.payload or {}
+        target_email = (payload.get("email") or "").lower()
+        if target_email:
+            member = db.execute(
+                select(Member).where(
+                    Member.workspace_id == workspace.id,
+                    Member.email == target_email,
+                )
+            ).scalar_one_or_none()
+            if member and member.status != "removed":
+                member.status = "removed"
+                db.add(member)
+                log_event(
+                    db,
+                    actor_type="EXTENSION",
+                    actor_label=f"workspace:{workspace.name}",
+                    action="MEMBER_REMOVED_SYNCED",
+                    result="COMPLETED",
+                    target_type="MEMBER",
+                    target_id=str(member.id),
+                    data={"email": target_email},
+                    commit=False,
+                )
+
+    # PHANTOM CLEANUP cho INVITE_MEMBER: xoá Member + Invite records mà ChatGPT
+    # KHÔNG thực sự nhận → dashboard chỉ hiển thị email đã được mời thật.
+    #
+    # Case 1 — FAILED (extension không chạy được, content script lỗi, dialog
+    # không mở, etc.): xoá toàn bộ Member + Invite records của queue task này.
+    #
+    # Case 2 — COMPLETED với verify info: chỉ xoá emails trong unverified_emails
+    # (ChatGPT từ chối thầm / email đã active sẵn). Verified emails giữ lại.
+    #
+    # Case 3 — COMPLETED nhưng verify_scrape_failed=true (extension không
+    # scrape được tab pending): GIỮ LẠI tất cả records (không có thông tin để
+    # quyết định → safe default), admin tự kiểm tra manual.
+    #
+    # Chỉ xoá Member records `status='pending'` + `joined_at IS NULL` —
+    # đảm bảo không xoá nhầm record đã được sync sang active.
+    if item.type == "INVITE_MEMBER":
+        emails_to_delete: list[str] = []
+        if effective_status == "FAILED":
+            invites = (
+                db.execute(
+                    select(Invite).where(Invite.queue_item_id == item.id)
+                )
+                .scalars()
+                .all()
+            )
+            emails_to_delete = [inv.email.lower() for inv in invites]
+        elif effective_status == "COMPLETED":
+            result_dict = body.result or {}
+            verify_failed = bool(result_dict.get("verify_scrape_failed"))
+            if not verify_failed:
+                unverified = result_dict.get("unverified_emails") or []
+                if isinstance(unverified, list):
+                    emails_to_delete = [
+                        str(e).lower()
+                        for e in unverified
+                        if isinstance(e, str) and "@" in e
+                    ]
+
+        if emails_to_delete:
+            db.execute(
+                delete(Member).where(
+                    Member.workspace_id == workspace.id,
+                    Member.email.in_(emails_to_delete),
+                    Member.status == "pending",
+                    Member.joined_at.is_(None),
+                )
+            )
+            db.execute(
+                delete(Invite).where(
+                    Invite.queue_item_id == item.id,
+                    Invite.email.in_(emails_to_delete),
+                )
+            )
+
+    # SYNC_BILLING chỉ chạy khi user chủ động trigger từ dashboard (WorkspaceLayout /
+    # Workspaces "Sync billing") hoặc extension popup (POST /queue/sync-billing).
+    # Không auto-chain sau INVITE_MEMBER / REMOVE_MEMBER / REVOKE_INVITES.
     log_event(
         db,
         actor_type="EXTENSION",

@@ -125,7 +125,4 @@ if [ "$SKIP_DASHBOARD" -ne 1 ]; then
 fi
 
 printf "\n${C_GREEN}=== DONE ===${C_RESET}\n"
-echo "Bước thủ công sau:"
-echo "  1. chrome://extensions/ -> Reload AutoGPT Admin Extension"
-echo "  2. F5 tab chatgpt.com/admin/*"
-echo "  3. F5 dashboard (localhost:17173)"
+

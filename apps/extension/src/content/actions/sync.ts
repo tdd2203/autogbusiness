@@ -3,7 +3,13 @@ import type {
   ScrapedMember,
 } from "../../shared/messages";
 import { humanClick, sleep } from "../human";
-import { findControlByKey, parseChatGPTRole } from "../i18n-ui";
+import {
+  checkLocaleMatch,
+  detectChatGPTLocale,
+  findControlByKey,
+  parseChatGPTRole,
+  type ChatGPTLocale,
+} from "../i18n-ui";
 import { reportProgress } from "../progress";
 import { getChatGPTUserInfo } from "../scrapers/user";
 import { SELECTORS, TEXT_FALLBACKS } from "../selectors";
@@ -44,11 +50,28 @@ async function clickTabAndWait(
 }
 
 /**
- * Email FULL match regex — toàn bộ string phải là email, không có ký tự thừa.
- * Dùng để identify leaf element chứa CHỈ email (chính xác hơn extractEmail
- * vì không bị nuốt ký tự name avatar phía trước).
+ * Email FULL match regex — toàn bộ string phải là email. Dùng cho text node
+ * đứng riêng (best case: ChatGPT render email vào <span> riêng).
  */
 const EMAIL_FULL_RE = /^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i;
+
+/**
+ * Email EXTRACT regex — substring match. Dùng fallback khi ChatGPT render
+ * email cùng text node với tên/avatar (vd "B b yaakovajax0054@outlook.com").
+ * Phải tránh false-match từ "x@y.x" trong URLs hay attribute name.
+ *
+ * Chỉ extract khi:
+ *   - Có đúng 1 match trong text (để không nuốt nhiều email vào 1 row)
+ *   - text.length < 200 (tránh nuốt cả paragraph)
+ */
+const EMAIL_EXTRACT_RE_G = /[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/gi;
+
+function extractSingleEmail(text: string): string | null {
+  if (text.length > 200) return null;
+  const matches = text.match(EMAIL_EXTRACT_RE_G);
+  if (!matches || matches.length !== 1) return null;
+  return matches[0].toLowerCase();
+}
 
 /**
  * Date keyword match — đa ngôn ngữ:
@@ -160,6 +183,9 @@ function findNameInRow(row: HTMLElement, email: string): string | null {
 function scrapeAllRows(): ScrapedMember[] {
   const members: ScrapedMember[] = [];
   const seen = new Set<string>();
+  let textNodesScanned = 0;
+  let fullMatchHits = 0;
+  let extractMatchHits = 0;
 
   // 1) Thử selectors có cấu trúc (data-testid v.v.) — hiện ChatGPT KHÔNG có,
   // sẽ fall qua bước 2. Giữ làm fallback nếu có Future ChatGPT release.
@@ -178,23 +204,46 @@ function scrapeAllRows(): ScrapedMember[] {
         joined_at: findJoinedAtInRow(row),
       });
     }
-    if (members.length > 0) return members;
+    if (members.length > 0) {
+      console.log(
+        `[autogpt-sync] scrapeAllRows: ${members.length} rows via selector "${sel}"`,
+      );
+      return members;
+    }
   }
 
-  // 2) Fallback: TreeWalker SHOW_TEXT toàn DOM, mỗi text node trim đúng email
-  // format = 1 row. Walk up tìm container hợp lý.
+  // 2) Fallback: TreeWalker SHOW_TEXT toàn DOM. Hai chiến lược song song:
+  //    a) EMAIL_FULL_RE — text node CHỈ chứa email (best case, chính xác).
+  //    b) EMAIL_EXTRACT_RE_G — text node chứa email cùng tên/avatar
+  //       (vd "B b yaakovajax0054@outlook.com" — UI ChatGPT 2026 đôi khi
+  //       concat avatar initial + name + email vào 1 text node).
+  //
+  // Chiến lược (a) ưu tiên — nếu cùng email match cả 2, dedupe qua `seen`.
+  const allCandidates: Array<{ email: string; node: Node }> = [];
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   let node: Node | null;
   while ((node = walker.nextNode())) {
+    textNodesScanned += 1;
     const text = (node.nodeValue ?? "").trim();
-    if (!text || text.length > 100) continue;
-    if (!EMAIL_FULL_RE.test(text)) continue;
-    const email = text.toLowerCase();
+    if (!text) continue;
+    if (text.length <= 100 && EMAIL_FULL_RE.test(text)) {
+      fullMatchHits += 1;
+      allCandidates.push({ email: text.toLowerCase(), node });
+      continue;
+    }
+    const extracted = extractSingleEmail(text);
+    if (extracted) {
+      extractMatchHits += 1;
+      allCandidates.push({ email: extracted, node });
+    }
+  }
+
+  for (const { email, node: textNode } of allCandidates) {
     if (seen.has(email)) continue;
     seen.add(email);
 
     // Walk up tìm row chứa email; stop khi parent chứa >1 email
-    let row: HTMLElement | null = node.parentElement;
+    let row: HTMLElement | null = textNode.parentElement;
     for (let i = 0; i < 6 && row?.parentElement; i++) {
       const parent = row.parentElement;
       const emailCountInParent = countEmailsInSubtree(parent);
@@ -211,6 +260,12 @@ function scrapeAllRows(): ScrapedMember[] {
       joined_at: findJoinedAtInRow(row),
     });
   }
+
+  console.log(
+    `[autogpt-sync] scrapeAllRows scanned ${textNodesScanned} text nodes → ` +
+      `${fullMatchHits} full-match + ${extractMatchHits} extract-match → ` +
+      `${members.length} unique rows`,
+  );
 
   return members;
 }
@@ -335,9 +390,51 @@ async function scrapeCurrentTab(
   return { members: Array.from(collected.values()), timedOut };
 }
 
+/**
+ * Quick scrape của tab "Lời mời đang chờ xử lý" — dùng sau khi invite xong để
+ * map dữ liệu lên dashboard. KHÔNG navigate (caller phải đảm bảo đã ở
+ * /admin/members), KHÔNG scrape các tab khác → ngắn gọn, không đụng tới
+ * `status='active'` của dashboard.
+ *
+ * Trả empty array (không throw) nếu tab không tìm thấy / page sai — caller
+ * không nên fail invite nếu mapping thất bại.
+ *
+ * Hard cap 60s — dài hơn dialog typing nhưng đảm bảo không treo task quá lâu.
+ */
+export async function scrapePendingInvitesAfterInvite(
+  taskId: string,
+): Promise<ScrapedMember[]> {
+  if (!location.pathname.includes("/admin/members")) {
+    console.warn(
+      `[autogpt-invite-mapping] không ở /admin/members (${location.pathname}) — skip pending scrape`,
+    );
+    return [];
+  }
+  const clicked = await clickTabAndWait(
+    "tab_pending_invites",
+    TEXT_FALLBACKS.tabPendingInvites,
+  );
+  if (!clicked) {
+    console.warn("[autogpt-invite-mapping] tab 'Lời mời' không tìm thấy → skip");
+    return [];
+  }
+  const startedAt = Date.now();
+  const isOverTime = () => Date.now() - startedAt > 60_000;
+  const { members } = await scrapeCurrentTab(
+    taskId,
+    "pending",
+    "Map lời mời",
+    isOverTime,
+  );
+  // Click lại tab "Người dùng" để admin/extension idle ở trang quen thuộc
+  await clickTabAndWait("tab_active_members", TEXT_FALLBACKS.tabActiveMembers);
+  return members;
+}
+
 export async function executeSync(
   taskId: string,
   includePending: boolean = true,
+  expectedLocale: ChatGPTLocale | null = null,
 ): Promise<ExecuteActionResponse> {
   if (!location.pathname.includes("/admin")) {
     return {
@@ -347,9 +444,24 @@ export async function executeSync(
     };
   }
 
-  // Tab "Người dùng / Lời mời / Yêu cầu" chỉ tồn tại trên /admin/members.
+  // Phát hiện ngôn ngữ ChatGPT — log để dashboard FAILED banner show context.
+  // Nếu dashboard truyền `expectedLocale` (vd 'vi') và ChatGPT đang locale khác
+  // (vd 'en'), TEXT_FALLBACKS multi-pattern thường vẫn match được nên KHÔNG
+  // fail-fast. Chỉ log warning. Nếu cuối cùng scrape 0 row → trả error có
+  // include locale hint để user biết hướng fix.
+  const detectedLocale = detectChatGPTLocale();
+  const localeCheck = checkLocaleMatch(expectedLocale);
+  console.log(
+    `[autogpt-sync] locale check: detected='${detectedLocale}' expected='${expectedLocale ?? "any"}' match=${localeCheck.match}`,
+  );
+  if (!localeCheck.match) {
+    console.warn("[autogpt-sync] LOCALE_MISMATCH:", localeCheck.hint);
+  }
+
+  // Tab "Users/Pending invites/Pending requests" chỉ tồn tại trên /admin/members.
   // Nếu admin tab đang ở /admin/billing hay /admin/something-else thì điều
-  // hướng tới /admin/members và đợi SPA render xong trước khi scrape.
+  // hướng tới /admin/members. Ưu tiên click <a href> trong sidebar (Next.js
+  // router catches reliably) → fallback pushState nếu không có anchor.
   if (!location.pathname.includes("/admin/members")) {
     console.log(
       `[autogpt-sync] đang ở ${location.pathname}, điều hướng sang /admin/members`,
@@ -359,8 +471,25 @@ export async function executeSync(
       { phase: "discover", message: "Điều hướng sang /admin/members..." },
       true,
     );
-    history.pushState({}, "", "/admin/members");
-    window.dispatchEvent(new PopStateEvent("popstate"));
+    const sidebarLink = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>("a[href]"),
+    ).find((a) => {
+      const href = a.getAttribute("href") ?? "";
+      return (
+        href === "/admin/members" ||
+        href === "/admin/members/" ||
+        a.pathname === "/admin/members" ||
+        a.pathname === "/admin/members/"
+      );
+    });
+    if (sidebarLink) {
+      console.log(`[autogpt-sync] click <a href="${sidebarLink.getAttribute("href")}">`);
+      sidebarLink.click();
+    } else {
+      console.log("[autogpt-sync] không tìm thấy sidebar link, pushState fallback");
+      history.pushState({}, "", "/admin/members");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
     // Đợi SPA route + render tab buttons (best-effort polling)
     let tabReady = false;
     for (let i = 0; i < 20; i++) {
@@ -374,7 +503,10 @@ export async function executeSync(
       return {
         ok: false,
         error_code: "PAGE_NOT_ADMIN",
-        error_message: `Không điều hướng được sang /admin/members sau 10s (path hiện tại: ${location.pathname}). Mở tab chatgpt.com/admin/members thủ công và thử lại.`,
+        error_message:
+          `Không điều hướng được sang /admin/members sau 10s (path hiện tại: ${location.pathname}, ChatGPT locale='${detectedLocale ?? "unknown"}'). ` +
+          `Mở tab chatgpt.com/admin/members thủ công và thử lại.` +
+          (localeCheck.match ? "" : ` ${localeCheck.hint}`),
       };
     }
   }
@@ -462,12 +594,15 @@ export async function executeSync(
   );
 
   if (members.length === 0) {
+    const localeHint = localeCheck.match
+      ? ""
+      : ` LANGUAGE_MISMATCH: ${localeCheck.hint}`;
     return {
       ok: false,
-      error_code: "UI_ELEMENT_NOT_FOUND",
+      error_code: localeCheck.match ? "UI_ELEMENT_NOT_FOUND" : "LANGUAGE_MISMATCH",
       error_message:
-        `Không tìm được row member nào (tab1=${tab1Found}, ${elapsedMs}ms). ` +
-        `Kiểm tra selectors.memberRow hoặc URL hiện tại: ${location.pathname}`,
+        `Không tìm được row member nào (tab1=${tab1Found}, ${elapsedMs}ms, ChatGPT locale='${detectedLocale ?? "unknown"}'). ` +
+        `URL hiện tại: ${location.pathname}.${localeHint}`,
     };
   }
 

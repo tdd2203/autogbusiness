@@ -51,9 +51,48 @@ function renderDetail(task: QueueItem, t: Translator): string {
       });
     }
     case "INVITE_MEMBER": {
-      const email = (task.payload?.email as string | undefined) ?? "";
+      // Bulk-invite payload có `emails: string[]`. Single-invite có `email`.
+      const emails = (task.payload?.emails as string[] | undefined) ?? [];
+      const singleEmail = (task.payload?.email as string | undefined) ?? "";
       const role = (task.payload?.role as string | undefined) ?? "";
-      return t("sync.completedInvite", { email, role });
+      const r = (task.result ?? {}) as {
+        verified_count?: number;
+        unverified_count?: number;
+        unverified_emails?: string[];
+        verify_scrape_failed?: boolean;
+      };
+      const total = emails.length || (singleEmail ? 1 : 0);
+      const emailLabel = emails.length > 0 ? `${emails.length} email` : singleEmail;
+      // Verify: nếu có thông tin verify thì show "verified X/Y"; nếu không thì
+      // fallback message cũ.
+      if (typeof r.verified_count === "number" && total > 0) {
+        if (r.verify_scrape_failed) {
+          return t("sync.completedInviteVerifyFailed", {
+            email: emailLabel,
+            role,
+            total,
+          });
+        }
+        const unverifiedList =
+          (r.unverified_emails ?? []).slice(0, 3).join(", ") +
+          ((r.unverified_emails ?? []).length > 3
+            ? ` +${(r.unverified_emails ?? []).length - 3}`
+            : "");
+        if (r.unverified_count && r.unverified_count > 0) {
+          return t("sync.completedInvitePartial", {
+            verified: r.verified_count,
+            total,
+            role,
+            unverified: unverifiedList,
+          });
+        }
+        return t("sync.completedInviteVerified", {
+          verified: r.verified_count,
+          total,
+          role,
+        });
+      }
+      return t("sync.completedInvite", { email: emailLabel, role });
     }
     case "REMOVE_MEMBER": {
       const email = (task.payload?.email as string | undefined) ?? "";

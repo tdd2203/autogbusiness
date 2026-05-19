@@ -18,7 +18,10 @@ import {
 import { getConfig } from "../shared/storage";
 
 const ALARM = "autogpt-labels-refresh";
-const REFRESH_INTERVAL_MIN = 15;
+// Defensive: 2 phút thay vì 15 phút cũ — admin sửa DB qua Settings phải thấy
+// thay đổi nhanh ngay cả khi dashboard tab không mở (không gọi được message
+// "refresh-labels" tức thì). 2 phút vẫn an toàn về quota API (1 GET nhẹ).
+const REFRESH_INTERVAL_MIN = 2;
 
 export async function refreshLabelBundle(): Promise<void> {
   const config = await getConfig();

@@ -46,6 +46,10 @@ export type Member = {
   joined_at: string | null;
   last_synced_at: string | null;
   created_at: string;
+  /** Số tháng subscription admin set khi invite. NULL = không giới hạn. */
+  subscription_months: number | null;
+  /** Ngày hết hạn = created_at + months × 30. NULL nếu unlimited. */
+  subscription_end_at: string | null;
 };
 
 export type QueueProgress = {

@@ -40,6 +40,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<Lang>(() => detectInitialLang());
 
   const setLang = useCallback((next: Lang) => {
+    // Chỉ lưu UI dashboard. Thông báo đổi ChatGPT thủ công do Layout.tsx (toast).
     localStorage.setItem(STORAGE_KEY, next);
     setLangState(next);
   }, []);

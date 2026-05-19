@@ -275,6 +275,7 @@ def reveal_api_key(
 def trigger_sync(
     workspace_id: UUID,
     include_pending: bool = True,
+    expected_locale: str | None = None,
     db: Session = Depends(get_session),
     user: User = Depends(require_permission(Permission.WORKSPACE_SYNC_TRIGGER)),
 ) -> dict:
@@ -284,13 +285,24 @@ def trigger_sync(
         include_pending: nếu True (default) → scrape cả 3 tab (Người dùng + Lời
         mời + Yêu cầu); nếu False → chỉ scrape Người dùng (nhanh hơn ~3 lần
         nhưng không cập nhật trạng thái pending invites).
+        expected_locale: tùy chọn ('vi' | 'en' | 'zh') — chỉ dùng khi client
+        chủ động truyền (debug). Dashboard web KHÔNG gửi field này; ngôn ngữ
+        sidebar dashboard độc lập với ChatGPT. Null = không check (mặc định).
     """
     _get_workspace_or_404(db, workspace_id)
+    normalized_locale: str | None = None
+    if expected_locale in ("vi", "en", "zh"):
+        normalized_locale = expected_locale
+    elif expected_locale and expected_locale.lower().startswith("zh"):
+        normalized_locale = "zh"
+    payload: dict = {"include_pending": include_pending}
+    if normalized_locale:
+        payload["expected_locale"] = normalized_locale
     queue_item = QueueItem(
         type="SYNC_DATA",
         status="PENDING",
         workspace_id=workspace_id,
-        payload={"include_pending": include_pending},
+        payload=payload,
         created_by_id=user.id,
     )
     db.add(queue_item)
@@ -307,6 +319,7 @@ def trigger_sync(
         data={
             "queue_item_id": str(queue_item.id),
             "include_pending": include_pending,
+            "expected_locale": normalized_locale,
         },
         commit=False,
     )

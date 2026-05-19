@@ -148,28 +148,77 @@ function getChatGPTContentScriptFiles(): string[] {
   return entry?.js ?? [];
 }
 
-async function ensureContentInjected(tabId: number): Promise<boolean> {
-  if (await pingContent(tabId)) return true;
-  // Content script chưa có (extension reload sau khi tab đã load).
-  // Thử inject manual qua chrome.scripting với bundled path từ manifest.
+/**
+ * Đảm bảo content script đã inject ở tab `tabId`. KHÔNG bao giờ yêu cầu user
+ * thao tác — tự động qua 3 step fallback:
+ *
+ *   Step 1: chrome.scripting.executeScript inject loader → retry ping ~3s
+ *   Step 2: chrome.tabs.reload (F5 tab) → wait → retry ping ~5s
+ *   Step 3: chrome.tabs.remove + chrome.tabs.create (NUCLEAR — tab mới hoàn toàn)
+ *           → wait → retry ping ~5s
+ *
+ * Trả về:
+ *   - { ok: true, tabId: N } — content script ready, có thể là tab khác nếu
+ *     step 3 recreate. Caller phải dùng tabId mới.
+ *   - { ok: false } — cả 3 step thất bại (rất hiếm: ChatGPT không login, hoặc
+ *     extension permission bị block).
+ */
+async function ensureContentInjected(
+  tabId: number,
+): Promise<{ ok: boolean; tabId: number }> {
+  if (await pingContent(tabId)) return { ok: true, tabId };
+
+  // Step 1: executeScript inject loader
   const files = getChatGPTContentScriptFiles();
   if (files.length === 0) {
     console.warn(
       "[autogpt] không tìm thấy content_script chatgpt.com/admin trong manifest",
     );
-    return false;
+    return { ok: false, tabId };
   }
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files,
-    });
+    await chrome.scripting.executeScript({ target: { tabId }, files });
   } catch (e) {
     console.warn("[autogpt] executeScript failed:", e);
   }
-  // Đợi script init
-  await new Promise((r) => setTimeout(r, 300));
-  return pingContent(tabId);
+  const RETRY_DELAYS_MS = [250, 500, 700, 800, 800];
+  for (const delay of RETRY_DELAYS_MS) {
+    await new Promise((r) => setTimeout(r, delay));
+    if (await pingContent(tabId)) {
+      console.log(`[autogpt] content script ready sau executeScript`);
+      return { ok: true, tabId };
+    }
+  }
+
+  // Step 2: AUTO-RELOAD tab
+  console.warn("[autogpt] executeScript fail → AUTO-RELOAD tab...");
+  try {
+    await chrome.tabs.reload(tabId);
+    const reloaded = await waitForTabComplete(tabId, 15_000);
+    if (reloaded?.url?.includes("/admin")) {
+      const POST_RELOAD_DELAYS_MS = [500, 800, 1000, 1200, 1500];
+      for (const delay of POST_RELOAD_DELAYS_MS) {
+        await new Promise((r) => setTimeout(r, delay));
+        if (await pingContent(tabId)) {
+          console.log(`[autogpt] ✓ content script ready sau AUTO-RELOAD`);
+          return { ok: true, tabId };
+        }
+      }
+    } else {
+      console.warn(`[autogpt] sau reload tab không ở /admin (url=${reloaded?.url})`);
+    }
+  } catch (e) {
+    console.warn("[autogpt] tabs.reload failed:", e);
+  }
+
+  // Step 3 NUCLEAR đã bị LOẠI BỎ trong v0.4.20 — đóng tab user rồi tạo lại
+  // làm hỏng SPA state, gây regression INVITE (dialog không mở sau F5 + recreate).
+  // Step 1 + Step 2 đã cover 99% case. Trường hợp còn lại (rất hiếm) sẽ trả
+  // CONTENT_NOT_INJECTED → user F5 thủ công (rất hiếm sau v0.4.17 retry timing).
+  console.warn(
+    "[autogpt] Step 1 + Step 2 đều fail — give up. Tab user giữ nguyên.",
+  );
+  return { ok: false, tabId };
 }
 
 async function sendToContent(
@@ -177,22 +226,27 @@ async function sendToContent(
   request: ExecuteActionRequest,
 ): Promise<ExecuteActionResponse> {
   const ready = await ensureContentInjected(tabId);
-  if (!ready) {
+  // QUAN TRỌNG: nếu Step 3 NUCLEAR recreate đổi tabId, dùng tabId MỚI để gửi
+  // message — không gửi tabId cũ đã bị remove.
+  const effectiveTabId = ready.tabId;
+  if (!ready.ok) {
     return {
       ok: false,
-      error_code: "UNKNOWN",
+      error_code: "CONTENT_NOT_INJECTED",
       error_message:
-        "Content script chưa inject. Hãy REFRESH (F5) tab chatgpt.com/admin và thử lại.",
+        "Tab chatgpt.com/admin không thể inject content script sau 3 bước fallback (executeScript / reload / recreate tab). " +
+        "Có thể: (a) ChatGPT chưa login trong browser, (b) extension permission bị block. " +
+        "Dashboard sẽ tự xoá record vừa tạo.",
     };
   }
   try {
-    return await chrome.tabs.sendMessage(tabId, request);
+    return await chrome.tabs.sendMessage(effectiveTabId, request);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return {
       ok: false,
       error_code: "UNKNOWN",
-      error_message: `Lỗi gửi message tới content script: ${msg}. Thử refresh tab chatgpt.com.`,
+      error_message: `Lỗi gửi message tới content script: ${msg}.`,
     };
   }
 }
@@ -249,14 +303,21 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
         new_role: (p.new_role as "owner" | "admin" | "member") ?? "member",
         old_role: (p.old_role as "owner" | "admin" | "member" | null) ?? null,
       };
-    case "SYNC_DATA":
+    case "SYNC_DATA": {
+      // Dashboard có thể truyền expected_locale ('vi' | 'en' | 'zh') trong
+      // payload để extension check locale ChatGPT khớp chưa. Null = không check.
+      const rawLocale = p.expected_locale;
+      const expectedLocale: "vi" | "en" | "zh" | null =
+        rawLocale === "vi" || rawLocale === "en" || rawLocale === "zh"
+          ? rawLocale
+          : null;
       return {
         kind: "SYNC_DATA",
         taskId: task.id,
-        // Backend default include_pending=true (3-tab scrape); chỉ false khi
-        // dashboard chủ động chọn "Chỉ thành viên" để chạy nhanh.
         includePending: (p.include_pending as boolean | undefined) !== false,
+        expectedLocale,
       };
+    }
     case "SYNC_BILLING":
       return { kind: "SYNC_BILLING", taskId: task.id };
     case "REVOKE_INVITES": {
@@ -470,6 +531,69 @@ async function reportToBackend(
           updated: totalUpdated,
           chunks: Math.ceil(members.length / CHUNK_SIZE),
           rogue_pending_emails: rogueEmailsAggregated,
+        },
+      });
+      return;
+    }
+
+    // Special case: INVITE_MEMBER. Sau khi click invite + verify dialog success,
+    // extension đã scrape tab "Lời mời đang chờ xử lý" + tách verified vs
+    // unverified emails. Chỉ verified members được bulk-upsert (scope='pending')
+    // → dashboard không update records cho email mà ChatGPT KHÔNG nhận.
+    if (task.type === "INVITE_MEMBER" && task.workspace_id) {
+      const data = response.data as
+        | {
+            pending_members?: Array<Record<string, unknown>>;
+            verified_emails?: string[];
+            unverified_emails?: string[];
+            verify_scrape_failed?: boolean;
+          }
+        | undefined;
+      const pending = (data?.pending_members ?? []) as Array<{
+        email: string;
+        name?: string | null;
+        chatgpt_role?: "owner" | "admin" | "member" | null;
+        status?: "active" | "pending" | "removed";
+      }>;
+      const verifiedEmails = data?.verified_emails ?? [];
+      const unverifiedEmails = data?.unverified_emails ?? [];
+      const verifyScrapeFailed = data?.verify_scrape_failed === true;
+
+      let mappedCount = 0;
+      if (pending.length > 0) {
+        try {
+          for (let i = 0; i < pending.length; i += CHUNK_SIZE) {
+            const chunk = pending.slice(i, i + CHUNK_SIZE);
+            await bulkUpsertMembers(config, task.workspace_id, chunk, {
+              scrapedStatuses: ["pending"],
+            });
+            mappedCount += chunk.length;
+          }
+          console.log(
+            `[autogpt-invite] verify+map: ${mappedCount} verified email được upsert`,
+          );
+        } catch (e) {
+          console.warn(
+            "[autogpt-invite] bulk-upsert verified pending FAILED — task vẫn COMPLETED:",
+            e,
+          );
+        }
+      }
+      if (unverifiedEmails.length > 0) {
+        console.warn(
+          `[autogpt-invite] ${unverifiedEmails.length} email UNVERIFIED (KHÔNG tìm thấy trong tab Lời mời):`,
+          unverifiedEmails,
+        );
+      }
+      await updateTask(config, task.id, {
+        status: "COMPLETED",
+        result: {
+          data: response.data ?? null,
+          mapped_pending: mappedCount,
+          verified_count: verifiedEmails.length,
+          unverified_count: unverifiedEmails.length,
+          unverified_emails: unverifiedEmails,
+          verify_scrape_failed: verifyScrapeFailed,
         },
       });
       return;

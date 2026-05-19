@@ -16,8 +16,13 @@
  *   Bridge → dashboard:  { source: "autogpt-extension", type: "bridge-ready", version }
  *                        { source: "autogpt-extension", type: "pong",         version }
  *                        { source: "autogpt-extension", type: "run-pending-result", payload }
+ *                        { source: "autogpt-extension", type: "refresh-labels-result", payload }
  *   Dashboard → bridge:  { source: "autogpt-dashboard", type: "ping" }
  *                        { source: "autogpt-dashboard", type: "run-pending" }
+ *                        { source: "autogpt-dashboard", type: "refresh-labels" }
+ *
+ *   KHÔNG hỗ trợ (cố ý): align-locale / set-chatgpt-locale — đổi ngôn ngữ
+ *   sidebar dashboard không được ép extension mở ChatGPT hay đổi Settings.
  */
 
 import { VERSION } from "../version";
@@ -64,6 +69,37 @@ window.addEventListener("message", (event) => {
       })
       .catch((e) => {
         console.warn("[autogpt-bridge] forward failed", e);
+      });
+    return;
+  }
+
+  if (
+    data.type === "align-locale" ||
+    data.type === "set-chatgpt-locale" ||
+    data.type === "sync-chatgpt-locale"
+  ) {
+    console.warn(
+      "[autogpt-bridge] bỏ qua message đổi locale ChatGPT — dashboard lang chỉ đổi UI web:",
+      data.type,
+    );
+    return;
+  }
+
+  if (data.type === "refresh-labels") {
+    chrome.runtime
+      .sendMessage({ type: "refresh-labels" })
+      .then((resp) => {
+        window.postMessage(
+          {
+            source: "autogpt-extension",
+            type: "refresh-labels-result",
+            payload: resp,
+          },
+          window.origin,
+        );
+      })
+      .catch((e) => {
+        console.warn("[autogpt-bridge] refresh-labels forward failed", e);
       });
   }
 });

@@ -129,11 +129,11 @@ export async function executeSyncBilling(
     );
   }
 
-  let billing = scrapeBillingFromDom();
+  let billing = scrapeBillingFromDom({ includeInvoices: false });
   logBillingDiagnostic("plan-tab attempt #0", billing);
   for (let i = 0; i < 6 && billing.seat_total === null; i++) {
     await sleep(700);
-    billing = scrapeBillingFromDom();
+    billing = scrapeBillingFromDom({ includeInvoices: false });
     if (billing.seat_total === null) {
       logBillingDiagnostic(`plan-tab attempt #${i + 1}`, billing);
     }
@@ -144,6 +144,9 @@ export async function executeSyncBilling(
     seat_used: billing.seat_used,
     billing_status: billing.billing_status,
     renewal_date: billing.renewal_date,
+    // Tab Kế hoạch không có bảng hoá đơn — scrapeInvoices() trên DOM này hay
+    // bắt nhầm số khác (seat ratio, giá mẫu) → đừng giữ invoices từ step 1.
+    invoices: [] as typeof billing.invoices,
   };
 
   // Step 2: click tab "Hoá đơn" → scrape list invoices (giá per-slot prorated)
