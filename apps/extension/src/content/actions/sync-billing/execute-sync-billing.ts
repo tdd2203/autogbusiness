@@ -3,87 +3,15 @@
  * trang /admin/billing và trả về để background gửi PATCH lên backend.
  */
 
-import type { ExecuteActionResponse } from "../../shared/messages";
-import { humanClick, sleep } from "../human";
-import { findControlByKey } from "../i18n-ui";
-import type { UiLabelPage } from "../../shared/ui-labels";
-import { reportProgress } from "../progress";
-import { scrapeBillingFromDom } from "../scrapers/billing";
-import { TEXT_FALLBACKS } from "../selectors";
+import type { ExecuteActionResponse } from "../../../shared/messages";
+import { sleep } from "../../human";
+import { reportProgress } from "../../progress";
+import { scrapeBillingFromDom } from "../../scrapers/billing";
+import { TEXT_FALLBACKS } from "../../selectors";
+import { POST_NAV_RENDER_MS, clickBillingTab } from "./click-billing-tab";
+import { logBillingDiagnostic } from "./log-diagnostic";
 
 const BILLING_PATH = "/admin/billing";
-
-/** Render delay sau khi navigate / click tab trong SPA. */
-const POST_NAV_RENDER_MS = 2500;
-
-/**
- * Click 1 trong các tab buttons theo text. Trả true nếu click được, false nếu
- * không tìm thấy.
- */
-async function clickBillingTab(
-  controlKey: string,
-  texts: readonly string[],
-): Promise<boolean> {
-  const page: UiLabelPage = location.search.includes("tab=invoices")
-    ? "/admin/billing?tab=invoices"
-    : "/admin/billing";
-  const btn = findControlByKey(controlKey, texts, { page });
-  if (btn) {
-    console.log(
-      `[autogpt-sync-billing] click billing tab matched=`,
-      (btn.textContent ?? "").trim().slice(0, 60),
-      "tag=", btn.tagName,
-      "role=", btn.getAttribute("role"),
-    );
-    await humanClick(btn);
-    await sleep(POST_NAV_RENDER_MS);
-    return true;
-  }
-  console.warn(
-    `[autogpt-sync-billing] clickBillingTab MISS — texts tried=`,
-    texts,
-    "all button/tab/anchor texts on page=",
-    Array.from(
-      document.querySelectorAll<HTMLElement>('button, [role="tab"], a'),
-    )
-      .map((e) => (e.textContent ?? "").trim().slice(0, 40))
-      .filter((s) => s.length > 0 && s.length < 60)
-      .slice(0, 30),
-  );
-  return false;
-}
-
-/**
- * Diagnostic dump: log mọi field scrape được + 1 snippet text visible.
- * Gọi khi scrape lần đầu null để biết regex nào miss.
- */
-function logBillingDiagnostic(label: string, billing: ReturnType<typeof scrapeBillingFromDom>) {
-  const main =
-    document.querySelector("main") ??
-    document.querySelector("[role='main']") ??
-    document.body;
-  const text = (main?.textContent ?? "").replace(/\s+/g, " ").trim();
-  const hasSeatKeyword =
-    /giấy\s*phép|license|seat|ghế|chỗ\s*ngồi|许可证|席位/i.test(text);
-  const hasSeatRatio = /\d{1,3}\s*\/\s*\d{1,3}/.test(text);
-  const hasPlanKeyword = /business|enterprise|team|gói|企业|商业|团队/i.test(text);
-  console.log(
-    `[autogpt-sync-billing] ${label} →`,
-    JSON.stringify({
-      url: location.href,
-      seat: `${billing.seat_used}/${billing.seat_total}`,
-      plan: billing.plan,
-      status: billing.billing_status,
-      renewal: billing.renewal_date,
-      invoices_count: billing.invoices.length,
-      text_length: text.length,
-      has_seat_keyword: hasSeatKeyword,
-      has_seat_ratio_pattern: hasSeatRatio,
-      has_plan_keyword: hasPlanKeyword,
-      text_snippet: text.slice(0, 400),
-    }),
-  );
-}
 
 export async function executeSyncBilling(
   taskId: string,
