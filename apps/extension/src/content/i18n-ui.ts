@@ -164,6 +164,55 @@ export const TEXT_FALLBACKS = {
     "发票",
     "账单历史",
   ],
+  // Link/button mở modal review để mua thêm seat trên /admin/billing?tab=plan.
+  billingManageLicenses: [
+    "Quản lý giấy phép",
+    "Quản lý suất",
+    "Quản lý chỗ ngồi",
+    "Manage licenses",
+    "Manage seats",
+    "Manage license",
+    "管理许可证",
+    "管理席位",
+    "管理许可",
+  ],
+  // Nút submit modal review (chuyển sang trang xác nhận thanh toán).
+  billingContinueButton: [
+    "Tiếp tục",
+    "Continue",
+    "Next",
+    "Proceed",
+    "继续",
+    "下一步",
+  ],
+  // Nút tăng số người dùng trong modal review.
+  billingIncrementButton: [
+    "Tăng",
+    "Thêm",
+    "Increase",
+    "Increment",
+    "Add",
+    "Plus",
+    "增加",
+    "加",
+  ],
+  // Nút FINAL CHARGE của modal review THỨ 2 ("Quản lý chỗ ngồi") — sau khi
+  // bấm "Tiếp tục" ở modal đầu. Click nút này = THẬT SỰ CHARGE TIỀN qua
+  // Stripe payment method đã lưu. Extension PHẢI verify trước khi click.
+  billingAddUserButton: [
+    "Thêm người dùng",
+    "Thêm thành viên",
+    "Xác nhận thanh toán",
+    "Add user",
+    "Add users",
+    "Add member",
+    "Confirm payment",
+    "Confirm and pay",
+    "添加用户",
+    "添加成员",
+    "确认付款",
+    "确认并付款",
+  ],
 } as const;
 
 /** Label hiển thị khi chọn role trong combobox / submenu. */

@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.4.20";
+export const VERSION = "0.6.2";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,79 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.6.2",
+    date: "2026-05-20",
+    kind: "fix",
+    summary: "F5 thật trang admin sau khi submit invite — ép ChatGPT load lại pending list từ server (không dùng cache stale)",
+    details: [
+      "Tách INVITE_MEMBER thành 2 phase: Phase 1 (content) chỉ submit invite + verify toast/dialog đóng → return ok=true với awaiting_reload_verify=true. Phase 2 do background orchestrate: chrome.tabs.reload(tab) hard F5 → wait tab complete → ensureContentInjected re-inject → gửi VERIFY_PENDING_INVITE message mới → content's new instance scrape pending list (đã load fresh từ server) → return verify result.",
+      "Trước v0.6.2: dù click 'forceReload' bounce tab nhưng ChatGPT React Query có thể serve cache stale (cache key dựa workspace, không invalidate khi click tab). Sau v0.6.2: chrome.tabs.reload là F5 thật ở level browser → toàn bộ JS context destroy + reload → React Query cache cũng bị xoá → fetch fresh từ /api/.../invites.",
+      "Message protocol mới: VERIFY_PENDING_INVITE { taskId, emails, role } — dùng riêng cho Phase 2, không submit lại invite. Content dispatcher [content/index.ts](apps/extension/src/content/index.ts) route → executeVerifyPendingInvite trong invite.ts.",
+      "Runner [background/runner.ts](apps/extension/src/background/runner.ts) detect response.data.awaiting_reload_verify=true → vào branch F5+verify. Nếu F5 fail / inject fail / verify message throw → fallback ok=true với verify_scrape_failed=true (user-facing: 'mở tab Lời mời thủ công để check'), KHÔNG fail invite (vì submit đã OK).",
+      "Phase 'f5-verify' mới trong reportRunnerProgress → dashboard banner show 'Submit invite OK — F5 trang admin để ChatGPT load lại pending list...' giữa submit và verify.",
+      "Retry trong Phase 2 vẫn giữ (3 attempts với delay 0/3/5s) — phòng ChatGPT backend chậm index invite vừa POST. Tổng thời gian Phase 2 tối đa ~25s (F5 ~3-5s + 3 attempts ~10-15s + final navigate ~2s).",
+    ],
+  },
+  {
+    version: "0.6.1",
+    date: "2026-05-20",
+    kind: "fix",
+    summary: "Fix humanClick double-fire (2 toast ChatGPT/click toggle 2 lần) + verify pending: delay 2s + retry 3 lần đến ~10s tổng",
+    details: [
+      "BUG #1 (DOUBLE-CLICK): [humanClick](apps/extension/src/content/human.ts) trước v0.6.1 dispatch synthetic MouseEvent('click') RỒI gọi LUÔN el.click() native → mỗi 'click' thực ra fire 2 lần. Hậu quả: (a) toggle 'Cho phép lời mời từ miền bên ngoài' click 1 lần → ChatGPT nhận 2 toggle event → 2 toast 'Đã cập nhật'; (b) submit invite click 1 lần → ChatGPT submit 2 lần → 2 toast 'Đã gửi lời mời'. Sau v0.6.1: chỉ gọi el.click() native (Radix/React onClick đều catch được); dispatch synthetic chỉ làm FALLBACK khi el.click không tồn tại hoặc throw.",
+      "BUG #2 (VERIFY QUÁ NHANH → false-negative VERIFY_FAILED): sau khi submit invite + toast OK, code v0.6.0 click ngay tab 'Lời mời đang chờ xử lý' + chờ 1.5s rồi scrape. ChatGPT backend cần 1-5s để invite mới xuất hiện trong pending list → scrape thấy 0 email vừa mời → strict v0.4.14 trả VERIFY_FAILED → phantom cleanup xoá record dashboard, NHƯNG thực tế ChatGPT đã nhận invite OK.",
+      "FIX BUG #2: sau khi xác nhận toast/dialog đóng, đợi thêm 2s rồi mới gọi scrapePendingInvitesAfterInvite. Nếu attempt đầu KHÔNG verify được hết list email vừa mời → retry tới 3 lần (sleep 0s, 2.5s, 4s giữa các attempt), TỔNG ~10s. Mỗi retry > attempt #1 dùng forceReload=true: bounce qua tab 'Người dùng' rồi click lại 'Lời mời' → ép ChatGPT re-mount component + re-fetch pending list (fix luôn cache stale).",
+      "scrapePendingInvitesAfterInvite mới có param forceReload: false → click tab 'Lời mời' trực tiếp (như cũ); true → click 'Người dùng' 800ms trước, rồi click 'Lời mời' với postClickWait 2.5s. Dùng riêng cho retry attempts để cache không che mắt.",
+      "Progress message mới khi retry: 'Pending list chưa có N email — đợi ChatGPT cập nhật (retry K/3)...' → dashboard banner show ngay user biết extension đang đợi (không phải treo).",
+      "BUG #3 (F5 thấy email trong tab Lời mời ChatGPT): trước v0.6.1 sau verify xong extension click lại tab 'Người dùng' để idle ở trang quen thuộc. Hậu quả: user mở tab admin lên + click 'Lời mời' → ChatGPT re-mount component + có thể serve từ React Query cache stale → KHÔNG thấy email vừa mời, phải F5. Fix: extension giờ DỪNG TẠI tab 'Lời mời đang chờ xử lý' sau verify cuối cùng — DOM đã render data tươi (extension vừa scrape) nên user mở browser tab admin lên là thấy ngay. Task sau (REMOVE/CHANGE_ROLE) tự click tab 'Người dùng' qua findControlByKey, không lệ thuộc end-state.",
+    ],
+  },
+  {
+    version: "0.6.0",
+    date: "2026-05-20",
+    kind: "feature",
+    summary: "PURCHASE_SEAT full payment chain — mở rộng cross-origin tới Stripe + Link checkout, charge thật qua thẻ Mastercard",
+    details: [
+      "Phase 1+2 (chatgpt.com modal): giữ nguyên v0.5.1 — Quản lý giấy phép → +qty → Tiếp tục → Thêm người dùng (tạo invoice 'Đến hạn').",
+      "Phase 2.5 (NEW): sau khi modal #2 đóng + có chargeAmount, content script navigate /admin/billing?tab=invoices, tìm row 'Đến hạn' (regex vi/en/zh), extract Stripe URL từ anchor 'Xem', gửi background.",
+      "Phase 3 (NEW): background orchestrator [payment-chain.ts](apps/extension/src/background/payment-chain.ts) mở Stripe invoice URL ở tab mới, đợi load + content/stripe-invoice.ts ready, gửi STRIPE_CLICK_LINK → click button 'Link' (xanh có last4 thẻ).",
+      "Phase 4 (NEW): background đợi popup checkout.link.com mở (window mới do Stripe spawn), inject content/link-checkout.ts, gửi LINK_CONFIRM_PAYMENT với expectedAmountText → content verify số tiền popup match (tolerance ±50đ) → click 'Thanh toán {amount}' (FINAL CHARGE thẻ).",
+      "Manifest: thêm 2 content_scripts cho invoice.stripe.com + checkout.link.com, 2 host_permissions tương ứng.",
+      "Safety guards: (1) Sanity check số tiền popup vs expected từ ChatGPT modal — mismatch > 50đ → STOP với VERIFY_FAILED; (2) Detect text 'OTP/3DS/xác minh' trong Link popup TRƯỚC click → trả otp_detected=true, KHÔNG click submit; (3) Sau click 'Thanh toán', monitor 15s: dismissed (success) / otp_after (Link mở 3DS step) / timeout (admin verify).",
+      "Task.result mở rộng: stripe_invoice_url, payment_chain_started/stage/ok, payment_chain_stripe (Link button info + amount visible), payment_chain_link (popup amount + clicked + outcome). Audit log đầy đủ chain.",
+      "Cross-origin orchestration: background SW dùng chrome.tabs.onCreated/onUpdated để theo dõi Stripe tab → Link popup. Mỗi stage có timeout riêng (Stripe 15s tab open + 12s content ready; Link 12s popup open + 12s content ready).",
+    ],
+  },
+  {
+    version: "0.5.1",
+    date: "2026-05-20",
+    kind: "feature",
+    summary: "PURCHASE_SEAT step 2: extension click luôn 'Thêm người dùng' (final charge) sau 'Tiếp tục' — kèm sanity check qty + scrape charge amount",
+    details: [
+      "Update flow PURCHASE_SEAT: sau khi click 'Tiếp tục' ở modal #1 ('Xem xét'), extension đợi modal #2 ('Quản lý chỗ ngồi') xuất hiện rồi click 'Thêm người dùng' để CHARGE TIỀN THẬT qua Stripe payment method đã lưu trên ChatGPT.",
+      "Trước v0.5.1 extension DỪNG sau 'Tiếp tục' (admin tự confirm). Sau v0.5.1 tự động click luôn — flow trọn vẹn nhưng RỦI RO TIỀN nếu task tạo nhầm. Mitigation đã có: hard cap qty=20/task, dedup PENDING/IN_PROGRESS, audit log, sanity check.",
+      "SANITY CHECK #1 (qty match): modal #2 phải nói đúng '{qty} suất bổ sung' / '{qty} additional seat'. Nếu modal nói số khác (seat đã đổi giữa chừng do task khác chạy) → STOP với VERIFY_FAILED, KHÔNG click charge.",
+      "SCRAPE charge amount: extension đọc 'Tổng đến hạn hôm nay' (vd đ2080.24) vào task.result.charge_amount_text để admin trace + audit. Best-effort, không bắt buộc.",
+      "After click 'Thêm người dùng': đợi modal đóng (data-state=closed / removed) tới 10s. Nếu modal vẫn mở → có thể ChatGPT mở 3D Secure / OTP popup, task vẫn COMPLETED ok=true nhưng note ghi 'admin hoàn tất xác minh thủ công'.",
+      "Task result mở rộng: thêm `confirm_charge_clicked: bool`, `charge_modal_dismissed: bool`, `charge_amount_text: string|null` ngoài 4 field cũ.",
+      "i18n: thêm control_key `billingAddUserButton` (Thêm người dùng / Add user / 添加用户) — VI/EN/ZH (12 variants total).",
+    ],
+  },
+  {
+    version: "0.5.0",
+    date: "2026-05-20",
+    kind: "feature",
+    summary: "PURCHASE_SEAT — extension tự mua thêm seat (+N) trên /admin/billing, dừng trước nút payment cuối",
+    details: [
+      "Action PURCHASE_SEAT mới: dashboard POST /api/v1/workspaces/{id}/purchase-seat {quantity:1..20} → backend tạo QueueItem type=PURCHASE_SEAT → SSE → extension execute.",
+      "Flow extension (apps/extension/src/content/actions/purchase-seat.ts): (1) navigate /admin/billing?tab=plan; (2) click 'Quản lý giấy phép' để mở modal 'Xem xét'; (3) đọc input 'Người dùng' giá trị hiện tại N; (4) click nút '+' đúng quantity lần với verify sau mỗi click; (5) click 'Tiếp tục'. DỪNG. Admin tự xác nhận thanh toán cuối trên ChatGPT — extension KHÔNG bao giờ tự confirm payment (an toàn về tiền bạc).",
+      "Permission BILLING_PAY (super-admin only) gate endpoint backend. Dedup: nếu workspace đã có PURCHASE_SEAT PENDING/IN_PROGRESS → trả task cũ thay vì double-charge.",
+      "Hard cap 20 seat/task để chống fat-finger overcharge (mirror schemas.PURCHASE_SEAT_MAX_PER_TASK). Audit log PURCHASE_SEAT_QUEUED cho mọi lần trigger.",
+      "i18n: thêm 3 control_key billingManageLicenses / billingContinueButton / billingIncrementButton (vi/en/zh) vào TEXT_FALLBACKS — harvester /admin/billing có thể quét.",
+      "Backend: schemas.PurchaseSeatIn + endpoint POST /workspaces/{id}/purchase-seat + queue._TYPE_TO_PERMISSION['PURCHASE_SEAT']=BILLING_PAY.",
+    ],
+  },
   {
     version: "0.4.20",
     date: "2026-05-19",

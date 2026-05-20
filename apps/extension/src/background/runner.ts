@@ -14,6 +14,7 @@ import {
 } from "../shared/api";
 import { getConfig } from "../shared/storage";
 import type { ExtensionConfig, QueueItem } from "../shared/types";
+import { runPaymentChain } from "./payment-chain";
 
 const RATE_LIMIT = {
   /** Min delay giữa 2 task bất kỳ (anti-detection). */
@@ -332,6 +333,12 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
       const locale: "vi" | "en" | "zh" =
         rawLocale === "vi" || rawLocale === "zh" ? rawLocale : "en";
       return { kind: "HARVEST_LABELS", taskId: task.id, locale };
+    }
+    case "PURCHASE_SEAT": {
+      const rawQty = Number(p.quantity);
+      const quantity = Number.isFinite(rawQty) && rawQty > 0 ? Math.floor(rawQty) : 1;
+      const skipToPayment = p.skip_to_payment === true;
+      return { kind: "PURCHASE_SEAT", taskId: task.id, quantity, skipToPayment };
     }
     default:
       return null;
@@ -674,6 +681,158 @@ async function doRunUntilIdle(): Promise<{
   return { processed, lastStatus: "max-iterations" };
 }
 
+/**
+ * Skip Phase 1+2 (modal chatgpt.com) — chỉ chạy Phase 3 (tab Hóa đơn scrape) +
+ * Phase 4 (Stripe + Link payment chain). Background execute inline qua
+ * chrome.scripting.executeScript thay vì depend on content script — tránh hẳn
+ * vấn đề CRXJS loader fail sau extension reload.
+ */
+async function handlePurchaseSeatSkipMode(
+  config: ExtensionConfig,
+  task: QueueItem,
+): Promise<{ status: string; detail?: string }> {
+  const taskId = task.id;
+  const reportPhase = async (phase: string, message: string) => {
+    try {
+      await updateProgress(config, taskId, { phase, message });
+    } catch {}
+  };
+
+  await reportPhase("opening_tab", "Đang mở tab chatgpt.com/admin/billing?tab=invoices...");
+
+  const tab = await ensureAdminTab();
+  if (!tab || tab.id === undefined) {
+    await updateTask(config, taskId, {
+      status: "FAILED",
+      error_code: "NOT_LOGGED_IN_CHATGPT",
+      error_message:
+        "Không mở được tab chatgpt.com/admin — user chưa đăng nhập ChatGPT trong browser này.",
+    });
+    return { status: "no-admin-tab" };
+  }
+  const tabId = tab.id;
+
+  // Navigate tab tới /admin/billing?tab=invoices nếu chưa
+  if (!tab.url?.includes("billing") || !tab.url?.includes("tab=invoices")) {
+    await chrome.tabs.update(tabId, {
+      url: "https://chatgpt.com/admin/billing?tab=invoices",
+      active: false,
+    });
+    await waitForTabComplete(tabId, 20_000);
+    await sleep(2500);
+  }
+
+  await reportPhase("scrape_invoice", "Đang scrape invoice 'Đến hạn'...");
+
+  // executeScript inline scrape — KHÔNG depend on content script
+  let scraped: { url?: string; amount?: string; error?: string } | undefined;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: async () => {
+        // Đợi anchor invoice.stripe.com xuất hiện (SPA mất 1-2s render)
+        const deadline = Date.now() + 18_000;
+        while (Date.now() < deadline) {
+          const anchors = Array.from(
+            document.querySelectorAll<HTMLAnchorElement>(
+              'a[href*="invoice.stripe.com"]',
+            ),
+          );
+          for (const a of anchors) {
+            let row: HTMLElement | null = a;
+            for (let i = 0; i < 6 && row; i++) {
+              const rowText = (row.textContent ?? "").toLowerCase();
+              const isDue =
+                /đến\s*hạn|đến\s*ngày|due|unpaid|past\s*due|chưa\s*thanh\s*toán|未\s*付款|未支付|逾期/i.test(
+                  rowText,
+                );
+              const isPaid = /đã\s*thanh\s*toán|paid|已\s*付款|已支付/i.test(rowText);
+              if (isDue && !isPaid) {
+                const amountMatch = (row.textContent ?? "").match(
+                  /(\d{1,3}(?:[.,]\d{3}){1,3}(?:[.,]\d{1,2})?)\s*[₫đ]/i,
+                );
+                return {
+                  url: a.href,
+                  amount: amountMatch ? amountMatch[0].trim() : undefined,
+                };
+              }
+              row = row.parentElement;
+            }
+          }
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        return { error: "Timeout 18s — không tìm thấy invoice 'Đến hạn'" };
+      },
+    });
+    scraped = results[0]?.result as typeof scraped;
+  } catch (e) {
+    await updateTask(config, taskId, {
+      status: "FAILED",
+      error_code: "UNKNOWN",
+      error_message: `executeScript scrape failed: ${e instanceof Error ? e.message : String(e)}`,
+    });
+    return { status: "task-failed", detail: "scrape-exec-fail" };
+  }
+
+  if (!scraped?.url) {
+    await updateTask(config, taskId, {
+      status: "FAILED",
+      error_code: "UI_ELEMENT_NOT_FOUND",
+      error_message:
+        scraped?.error ?? "Không scrape được invoice 'Đến hạn' từ tab Hóa đơn.",
+    });
+    return { status: "task-failed", detail: "no-invoice" };
+  }
+  if (!scraped.amount) {
+    await updateTask(config, taskId, {
+      status: "FAILED",
+      error_code: "VERIFY_FAILED",
+      error_message: `Tìm thấy URL Stripe ${scraped.url} nhưng KHÔNG scrape được amount → không chain để tránh charge sai.`,
+    });
+    return { status: "task-failed", detail: "no-amount" };
+  }
+
+  console.log(
+    `[autogpt-runner-skip] scraped: url=${scraped.url}, amount=${scraped.amount}`,
+  );
+  await reportPhase(
+    "payment_chain",
+    `Mở Stripe + Link checkout cho invoice ${scraped.amount}...`,
+  );
+
+  const chain = await runPaymentChain({
+    taskId,
+    stripeInvoiceUrl: scraped.url,
+    expectedAmountText: scraped.amount,
+  });
+
+  await updateTask(config, taskId, {
+    status: chain.ok ? "COMPLETED" : "FAILED",
+    error_code: chain.ok ? undefined : chain.error_code,
+    error_message: chain.ok ? undefined : chain.error_message,
+    result: {
+      data: {
+        mode: "skip_to_payment_background",
+        stripe_invoice_url: scraped.url,
+        charge_amount_text: scraped.amount,
+        payment_chain_stage: chain.stage,
+        payment_chain_ok: chain.ok,
+        payment_chain_stripe: chain.stripe_result?.ok ? chain.stripe_result.data ?? null : null,
+        payment_chain_link: chain.link_result?.ok ? chain.link_result.data ?? null : null,
+        payment_chain_stripe_error:
+          chain.stripe_result && !chain.stripe_result.ok ? chain.stripe_result.error_message : null,
+        payment_chain_link_error:
+          chain.link_result && !chain.link_result.ok ? chain.link_result.error_message : null,
+      },
+    },
+  });
+  return {
+    status: chain.ok ? "done" : "task-failed",
+    detail: chain.ok ? undefined : chain.error_code,
+  };
+}
+
 export async function runOnce(): Promise<{ status: string; detail?: string }> {
   console.log("[autogpt-runner] runOnce: starting");
   const config = await getConfig();
@@ -699,6 +858,17 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
   }
 
   console.log(`[autogpt-runner] picked task ${task.type} ${task.id}`);
+
+  // ─── SHORT-CIRCUIT: PURCHASE_SEAT skip_to_payment mode ─────────────────
+  // Mode này bypass content script chatgpt.com (vốn không reliable với CRXJS
+  // loader sau khi extension reload). Background tự executeScript inline để
+  // scrape invoice URL + amount → rồi chain Stripe + Link như bình thường.
+  if (
+    task.type === "PURCHASE_SEAT" &&
+    (task.payload?.skip_to_payment as boolean | undefined) === true
+  ) {
+    return await handlePurchaseSeatSkipMode(config, task);
+  }
 
   // Long-op task: báo progress lifecycle ngay từ background để dashboard biết
   // extension đã nhận task (không bị đứng yên trong khi mở tab + inject content).
@@ -757,7 +927,7 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
   }
   await applyRateLimit();
   console.log(`[autogpt-runner] sending ${request.kind} to content script...`);
-  const response = await sendToContent(tab.id, request);
+  let response = await sendToContent(tab.id, request);
   console.log(
     `[autogpt-runner] content script response: ok=${response.ok}`,
     response.ok ? "" : `err=${response.error_code}: ${response.error_message}`,
@@ -765,9 +935,89 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
   state.lastTaskAt = Date.now();
   state.tasksInBatch += 1;
 
+  // ─── PHASE 2 INVITE: F5 + VERIFY ──────────────────────────────────────────
+  // Content's Phase 1 (submit) trả `awaiting_reload_verify: true` → background
+  // chrome.tabs.reload(tab) để ChatGPT BUỘC fetch lại pending list từ server
+  // (KHÔNG cache React Query). Sau khi load xong + content re-inject, gửi
+  // VERIFY_PENDING_INVITE → content scrape pending → trả về verify result.
+  // Merge result → reportToBackend như invite COMPLETED bình thường.
+  if (
+    response.ok &&
+    task.type === "INVITE_MEMBER" &&
+    (response.data as { awaiting_reload_verify?: boolean } | undefined)?.awaiting_reload_verify === true &&
+    request.kind === "INVITE_MEMBER"
+  ) {
+    console.log(`[autogpt-runner] invite submit OK — F5 tab ${tab.id} để verify pending list`);
+    await reportRunnerProgress(config, task.id, {
+      phase: "f5-verify",
+      message: "Submit invite OK — F5 trang admin để ChatGPT load lại pending list...",
+    });
+    try {
+      await chrome.tabs.reload(tab.id);
+      const reloaded = await waitForTabComplete(tab.id, 20_000);
+      if (!reloaded?.url?.includes("/admin")) {
+        console.warn(
+          `[autogpt-runner] F5 sau invite: tab redirect khỏi /admin (url=${reloaded?.url}) — verify skipped`,
+        );
+        // Vẫn coi như invite OK (submit thành công), nhưng đánh dấu scrape failed
+        response = {
+          ok: true,
+          data: {
+            ...((response as { ok: true; data?: Record<string, unknown> }).data ?? {}),
+            verified_emails: [],
+            unverified_emails: request.emails,
+            pending_members: [],
+            verify_scrape_failed: true,
+          },
+        };
+      } else {
+        // Re-inject content script vào tab vừa load
+        const ready = await ensureContentInjected(tab.id);
+        if (!ready.ok) {
+          console.warn("[autogpt-runner] sau F5: content inject failed → verify skipped");
+          response = {
+            ok: true,
+            data: {
+              ...((response as { ok: true; data?: Record<string, unknown> }).data ?? {}),
+              verified_emails: [],
+              unverified_emails: request.emails,
+              pending_members: [],
+              verify_scrape_failed: true,
+            },
+          };
+        } else {
+          const verifyResp = await chrome.tabs.sendMessage(ready.tabId, {
+            kind: "VERIFY_PENDING_INVITE",
+            taskId: task.id,
+            emails: request.emails,
+            role: request.role,
+          } satisfies ExecuteActionRequest);
+          console.log(
+            `[autogpt-runner] verify response: ok=${verifyResp?.ok}`,
+            verifyResp?.ok ? "" : `err=${verifyResp?.error_code}: ${verifyResp?.error_message}`,
+          );
+          // Verify response thay thế response submit (đã merge emails/count/role)
+          response = verifyResp as ExecuteActionResponse;
+        }
+      }
+    } catch (e) {
+      console.warn("[autogpt-runner] F5+verify FAILED — fallback ok với scrape failed:", e);
+      response = {
+        ok: true,
+        data: {
+          ...((response as { ok: true; data?: Record<string, unknown> }).data ?? {}),
+          verified_emails: [],
+          unverified_emails: request.emails,
+          pending_members: [],
+          verify_scrape_failed: true,
+        },
+      };
+    }
+  }
+
   await reportToBackend(config, task, response);
   return {
     status: response.ok ? "done" : "task-failed",
-    detail: response.ok ? undefined : response.error_code,
+    detail: response.ok ? undefined : (response as { error_code?: string }).error_code,
   };
 }

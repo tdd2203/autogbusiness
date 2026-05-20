@@ -6,6 +6,7 @@ import {
   refreshLabelBundle,
   setupLabelsRefreshAlarm,
 } from "./labels-sync";
+import { runPaymentChain, type PaymentChainOptions } from "./payment-chain";
 import { updateProgress } from "../shared/api";
 import { getConfig } from "../shared/storage";
 
@@ -193,6 +194,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "report-label-mismatch" && msg.body) {
     void handleLabelMismatchReport(msg.body);
     return false;
+  }
+  if (msg?.type === "run-payment-chain" && msg.options) {
+    // purchase-seat.ts content script (chatgpt.com) gọi sau khi extract Stripe
+    // URL từ tab invoice. Background mở Stripe tab + chain qua Link checkout.
+    (async () => {
+      try {
+        const result = await runPaymentChain(msg.options as PaymentChainOptions);
+        sendResponse(result);
+      } catch (e) {
+        sendResponse({
+          ok: false,
+          stage: "stripe_open",
+          error_code: "UNKNOWN",
+          error_message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    })();
+    return true;
   }
   if (msg?.type === "refresh-labels") {
     // Dashboard vừa save/clear-stale UI labels → bundle DB đã đổi nhưng

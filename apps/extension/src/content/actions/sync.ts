@@ -400,9 +400,14 @@ async function scrapeCurrentTab(
  * không nên fail invite nếu mapping thất bại.
  *
  * Hard cap 60s — dài hơn dialog typing nhưng đảm bảo không treo task quá lâu.
+ *
+ * @param forceReload Khi true, click tab "Người dùng" trước rồi mới click lại
+ * tab "Lời mời" để ép ChatGPT re-fetch pending list (dùng cho retry attempt
+ * khi attempt đầu thấy 0 email vừa mời — list có thể đang cache stale).
  */
 export async function scrapePendingInvitesAfterInvite(
   taskId: string,
+  forceReload: boolean = false,
 ): Promise<ScrapedMember[]> {
   if (!location.pathname.includes("/admin/members")) {
     console.warn(
@@ -410,9 +415,16 @@ export async function scrapePendingInvitesAfterInvite(
     );
     return [];
   }
+  // Force re-fetch: click "Người dùng" rồi quay lại "Lời mời" → ChatGPT mount
+  // lại component → useEffect / SWR re-trigger → list mới nhất.
+  if (forceReload) {
+    console.log("[autogpt-invite-mapping] forceReload: bounce qua tab Người dùng để ép re-fetch");
+    await clickTabAndWait("tab_active_members", TEXT_FALLBACKS.tabActiveMembers, 800);
+  }
   const clicked = await clickTabAndWait(
     "tab_pending_invites",
     TEXT_FALLBACKS.tabPendingInvites,
+    forceReload ? 2500 : 1500,
   );
   if (!clicked) {
     console.warn("[autogpt-invite-mapping] tab 'Lời mời' không tìm thấy → skip");
@@ -426,8 +438,14 @@ export async function scrapePendingInvitesAfterInvite(
     "Map lời mời",
     isOverTime,
   );
-  // Click lại tab "Người dùng" để admin/extension idle ở trang quen thuộc
-  await clickTabAndWait("tab_active_members", TEXT_FALLBACKS.tabActiveMembers);
+  // CHỦ Ý KHÔNG click lại "Người dùng" — extension dừng ở tab "Lời mời đang chờ
+  // xử lý" để user mở tab admin lên là thấy ngay email vừa mời (không cần F5).
+  // Lý do bỏ bounce-back (v0.6.2): ChatGPT cache pending list qua React Query;
+  // nếu extension click qua "Người dùng" rồi user click lại "Lời mời", ChatGPT
+  // re-mount component và có thể serve từ cache stale (chưa thấy invite mới).
+  // Để extension idle TẠI tab "Lời mời" thì DOM đã render data mới (extension
+  // vừa scrape) — user nhìn thấy ngay. Task sau (REMOVE/CHANGE_ROLE) tự click
+  // tab "Người dùng" qua findControlByKey nên không lệ thuộc end-state này.
   return members;
 }
 

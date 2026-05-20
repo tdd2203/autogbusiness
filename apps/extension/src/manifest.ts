@@ -27,6 +27,22 @@ export const manifest: ManifestV3Export = {
       js: ["src/content/dashboard-bridge.ts"],
       run_at: "document_start",
     },
+    {
+      // Stripe invoice page: tự click button "Link" sau khi PURCHASE_SEAT Phase 1
+      // (chatgpt.com modal #1+#2) tạo invoice "Đến hạn" + Phase 2 (chatgpt.com
+      // tab=invoices) mở URL invoice.stripe.com/i/<account>/<token>/...
+      matches: ["https://invoice.stripe.com/*"],
+      js: ["src/content/stripe-invoice.ts"],
+      run_at: "document_idle",
+    },
+    {
+      // Link checkout popup (cửa sổ riêng do invoice.stripe.com mở qua
+      // window.open). Hiển thị thẻ đã lưu + nút "Thanh toán {amount}".
+      // Content script verify amount + click confirm.
+      matches: ["https://checkout.link.com/*"],
+      js: ["src/content/link-checkout.ts"],
+      run_at: "document_idle",
+    },
   ],
   permissions: ["storage", "tabs", "scripting", "alarms"],
   host_permissions: [
@@ -43,5 +59,9 @@ export const manifest: ManifestV3Export = {
     "http://127.0.0.1:17174/*",
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
+    // PURCHASE_SEAT payment chain — cần permission để inject content script
+    // qua chrome.scripting.executeScript khi auto-injection chậm (fallback).
+    "https://invoice.stripe.com/*",
+    "https://checkout.link.com/*",
   ],
 };

@@ -60,6 +60,7 @@ QueueType = Literal[
     "SYNC_BILLING",
     "REVOKE_INVITES",
     "HARVEST_LABELS",
+    "PURCHASE_SEAT",
 ]
 QueueStatus = Literal["PENDING", "IN_PROGRESS", "COMPLETED", "FAILED"]
 
@@ -173,6 +174,22 @@ class ExtensionInfoIn(BaseModel):
 
     email: str | None = None
     name: str | None = None
+
+
+# Mua thêm seat: cap 20/lần để chống fat-finger gây overcharge (1 click 100 seat).
+# Admin muốn nhiều hơn → chia nhiều task.
+PURCHASE_SEAT_MAX_PER_TASK = 20
+
+
+class PurchaseSeatIn(BaseModel):
+    """Dashboard yêu cầu extension mua thêm `quantity` seat trên /admin/billing.
+
+    Extension flow: click "Quản lý giấy phép" → tăng input số người dùng lên
+    +quantity → click "Tiếp tục". DỪNG trước nút confirm payment cuối — admin
+    tự xác nhận thanh toán thật trên ChatGPT (an toàn về tiền bạc).
+    """
+
+    quantity: int = Field(default=1, ge=1, le=PURCHASE_SEAT_MAX_PER_TASK)
 
 
 class WorkspaceWithKey(WorkspaceOut):

@@ -488,59 +488,151 @@ async function executeInviteInner(
   }
 
   console.log(
-    `[autogpt-invite] SUCCESS: ${emails.length} email(s) role=${role}`,
+    `[autogpt-invite] SUBMIT SUCCESS: ${emails.length} email(s) role=${role}`,
   );
 
-  // Bước 8 (verify + map): scrape tab "Lời mời đang chờ xử lý" để VERIFY từng
-  // email có thực sự đã được mời (xuất hiện trong pending tab). Chỉ những email
-  // verified mới được map về dashboard. Unverified emails (mời nhưng KHÔNG xuất
-  // hiện trong pending — vd ChatGPT từ chối thầm, đã active từ trước, đã removed
-  // bị block invite lại) sẽ được report tách riêng → admin biết để xử lý.
+  // Phase 1 (submit) HOÀN TẤT. Verify pending list được tách thành Phase 2 —
+  // background sẽ chrome.tabs.reload (F5 thật) tab admin để ChatGPT BUỘC PHẢI
+  // load lại pending list từ server (KHÔNG dùng React Query cache stale), rồi
+  // gửi message VERIFY_PENDING_INVITE cho content script mới → scrape.
   //
-  // Best-effort: nếu scrape FAIL toàn bộ thì coi tất cả là unverified và return
-  // success (invite click ChatGPT đã OK, nhưng không verify được).
+  // Trả `awaiting_reload_verify: true` để runner biết cần F5 + verify riêng.
   await reportProgress(
     taskId,
     {
-      phase: "mapping",
-      message: `Đang verify ${emails.length} email trong tab Lời mời đang chờ xử lý...`,
+      phase: "submit-done",
+      message: `Submit ${emails.length} email OK — chờ background F5 trang để verify pending list...`,
       current: emails.length,
       total: emails.length,
     },
     true,
   );
-  type ScrapedPending = Awaited<ReturnType<typeof scrapePendingInvitesAfterInvite>>;
-  let scrapedPending: ScrapedPending = [];
-  let scrapeFailed = false;
-  try {
-    scrapedPending = await scrapePendingInvitesAfterInvite(taskId);
+
+  return {
+    ok: true,
+    data: {
+      emails,
+      count: emails.length,
+      role,
+      awaiting_reload_verify: true,
+    },
+  };
+}
+
+/**
+ * Phase 2 của INVITE_MEMBER — chạy SAU khi background đã F5 tab admin.
+ * Page hiện tại đã fresh (không cache React Query), pending list chắc chắn
+ * load từ server. Chỉ cần navigate tới /admin/members?tab=invites + scrape.
+ *
+ * Retry tới 3 lần với forceReload (bounce tab) để cover trường hợp ChatGPT
+ * backend chưa kịp index invite vừa POST (1-5s).
+ */
+export async function executeVerifyPendingInvite(
+  taskId: string,
+  emails: string[],
+  role: ChatGPTRole,
+): Promise<ExecuteActionResponse> {
+  console.log(
+    `[autogpt-invite-verify] START: ${emails.length} email(s) role=${role} pathname=${location.pathname}`,
+  );
+
+  // Page có thể vừa load xong sau F5 — đợi DOM ready + sidebar render.
+  await sleep(1500);
+
+  // Nếu sau F5 không ở /admin/members thì navigate qua sidebar / pushState.
+  if (!location.pathname.includes("/admin/members")) {
     console.log(
-      `[autogpt-invite] verify: scraped ${scrapedPending.length} pending invite(s) total`,
+      `[autogpt-invite-verify] sau F5 đang ở ${location.pathname}, navigate /admin/members`,
     );
-  } catch (e) {
-    scrapeFailed = true;
-    console.warn(
-      "[autogpt-invite] verify scrape pending FAILED — coi như chưa verify, dashboard giữ records cũ:",
-      e,
-    );
+    const sidebarLink = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>("a[href]"),
+    ).find((a) => {
+      const href = a.getAttribute("href") ?? "";
+      return (
+        href === "/admin/members" ||
+        href === "/admin/members/" ||
+        a.pathname === "/admin/members" ||
+        a.pathname === "/admin/members/"
+      );
+    });
+    if (sidebarLink) {
+      sidebarLink.click();
+    } else {
+      history.pushState({}, "", "/admin/members");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
+    await sleep(2000);
   }
 
-  // Tính giao: chỉ email vừa mời ∩ scraped pending = verified.
-  // Lowercase 2 phía để khớp bất kể case input.
-  const invitedLower = emails.map((e) => e.toLowerCase());
-  const scrapedEmailSet = new Set(
-    scrapedPending.map((m) => m.email.toLowerCase()),
+  await reportProgress(
+    taskId,
+    {
+      phase: "mapping",
+      message: `Page đã F5 — đang scrape pending list để verify ${emails.length} email...`,
+      current: 0,
+      total: emails.length,
+    },
+    true,
   );
-  const verifiedEmails = invitedLower.filter((e) => scrapedEmailSet.has(e));
-  const unverifiedEmails = invitedLower.filter((e) => !scrapedEmailSet.has(e));
-  // Pending members chỉ giữ entries có email trong list vừa mời → backend upsert
-  // chính xác các record dashboard đã tạo ra ở bước bulk-invite.
+
+  type ScrapedPending = Awaited<ReturnType<typeof scrapePendingInvitesAfterInvite>>;
+  const invitedLower = emails.map((e) => e.toLowerCase());
+  let scrapedPending: ScrapedPending = [];
+  let scrapeFailed = false;
+  let verifiedEmails: string[] = [];
+  let unverifiedEmails: string[] = invitedLower.slice();
+  let scrapedEmailSet = new Set<string>();
+
+  // Sau F5, attempt 1 chỉ cần delay nhỏ vì cache đã sạch. Retry với delay dài
+  // dần phòng case ChatGPT backend index chậm.
+  const RETRY_DELAYS_MS = [0, 3000, 5000];
+  for (let attempt = 0; attempt < RETRY_DELAYS_MS.length; attempt++) {
+    if (RETRY_DELAYS_MS[attempt] > 0) {
+      await reportProgress(
+        taskId,
+        {
+          phase: "mapping",
+          message: `Pending list chưa có ${unverifiedEmails.length} email — đợi ChatGPT index (retry ${attempt + 1}/${RETRY_DELAYS_MS.length})...`,
+          current: verifiedEmails.length,
+          total: emails.length,
+        },
+        true,
+      );
+      await sleep(RETRY_DELAYS_MS[attempt]);
+    }
+    try {
+      scrapedPending = await scrapePendingInvitesAfterInvite(taskId, attempt > 0);
+      scrapeFailed = false;
+      console.log(
+        `[autogpt-invite-verify] attempt ${attempt + 1}: scraped ${scrapedPending.length} pending invite(s)`,
+      );
+    } catch (e) {
+      scrapeFailed = true;
+      console.warn(
+        `[autogpt-invite-verify] attempt ${attempt + 1} scrape FAILED:`,
+        e,
+      );
+      continue;
+    }
+    scrapedEmailSet = new Set(
+      scrapedPending.map((m) => m.email.toLowerCase()),
+    );
+    verifiedEmails = invitedLower.filter((e) => scrapedEmailSet.has(e));
+    unverifiedEmails = invitedLower.filter((e) => !scrapedEmailSet.has(e));
+    if (unverifiedEmails.length === 0) {
+      console.log(
+        `[autogpt-invite-verify] tất cả ${verifiedEmails.length} email đã xuất hiện trong pending tab (attempt ${attempt + 1})`,
+      );
+      break;
+    }
+  }
+
   const pendingMembersForUpsert = scrapedPending.filter((m) =>
     invitedLower.includes(m.email.toLowerCase()),
   );
 
   console.log(
-    `[autogpt-invite] verify result: ${verifiedEmails.length}/${emails.length} email confirmed in pending tab`,
+    `[autogpt-invite-verify] RESULT: ${verifiedEmails.length}/${emails.length} email confirmed in pending tab`,
     { verified: verifiedEmails, unverified: unverifiedEmails, scrapeFailed },
   );
 
@@ -557,17 +649,12 @@ async function executeInviteInner(
     true,
   );
 
-  // Strict mode (v0.4.14): nếu scrape pending OK và 0 email verified
-  // → toàn bộ invite này phải coi là FAIL. Lý do: ChatGPT submit thành công
-  // (toast OK) nhưng tab pending không có email nào → có thể email đã active,
-  // đã removed, domain không verify được, hoặc ChatGPT từ chối thầm.
-  // Dashboard records sẽ bị xoá bởi backend update_task FAILED handler.
   if (!scrapeFailed && verifiedEmails.length === 0 && emails.length > 0) {
     return {
       ok: false,
       error_code: "VERIFY_FAILED",
       error_message:
-        `Đã submit ${emails.length} email lên ChatGPT (toast success) nhưng KHÔNG email nào ` +
+        `Đã submit ${emails.length} email lên ChatGPT (toast success) + F5 verify nhưng KHÔNG email nào ` +
         `xuất hiện trong tab 'Lời mời đang chờ xử lý'. Có thể: (a) email đã active sẵn, ` +
         `(b) domain không verify, (c) ChatGPT từ chối silently. Unverified: ` +
         unverifiedEmails.slice(0, 5).join(", ") +

@@ -22,6 +22,7 @@ from app.sse import publish_task_event, subscriber_count
 from app.schemas import (
     BillingSyncIn,
     ExtensionInfoIn,
+    PurchaseSeatIn,
     WorkspaceCreate,
     WorkspaceOut,
     WorkspaceSettingsOut,
@@ -485,6 +486,83 @@ def trigger_sync_billing(
         {"type": "task-available", "task_id": str(queue_item.id), "task_type": "SYNC_BILLING"},
     )
     return {"queue_item_id": str(queue_item.id), "status": "queued"}
+
+
+@router.post("/{workspace_id}/purchase-seat", status_code=status.HTTP_202_ACCEPTED)
+def trigger_purchase_seat(
+    workspace_id: UUID,
+    body: PurchaseSeatIn,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_permission(Permission.BILLING_PAY)),
+) -> dict:
+    """Tạo task PURCHASE_SEAT để Extension mua thêm `quantity` seat trên ChatGPT.
+
+    Flow extension (xem `docs/Workspace_Management/Purchase_Seat.md`):
+      1. Navigate /admin/billing?tab=plan
+      2. Click "Quản lý giấy phép"
+      3. Tăng input "Người dùng" lên +quantity (vd 13 → 14)
+      4. Click "Tiếp tục"
+      → DỪNG. Admin tự bấm nút payment cuối trên ChatGPT.
+
+    Dedup: nếu workspace đã có PURCHASE_SEAT PENDING/IN_PROGRESS → trả về task
+    cũ (tránh double-charge khi user double-click). Audit log để admin trace
+    được mọi lần thực hiện.
+    """
+    _get_workspace_or_404(db, workspace_id)
+    existing = (
+        db.execute(
+            select(QueueItem).where(
+                QueueItem.workspace_id == workspace_id,
+                QueueItem.type == "PURCHASE_SEAT",
+                QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if existing:
+        return {
+            "queue_item_id": str(existing.id),
+            "status": existing.status,
+            "deduplicated": True,
+        }
+
+    queue_item = QueueItem(
+        type="PURCHASE_SEAT",
+        status="PENDING",
+        workspace_id=workspace_id,
+        payload={"quantity": body.quantity},
+        created_by_id=user.id,
+    )
+    db.add(queue_item)
+    db.flush()
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.email,
+        action="PURCHASE_SEAT_QUEUED",
+        result="PENDING",
+        target_type="WORKSPACE",
+        target_id=str(workspace_id),
+        data={"queue_item_id": str(queue_item.id), "quantity": body.quantity},
+        commit=False,
+    )
+    db.commit()
+    publish_task_event(
+        workspace_id,
+        {
+            "type": "task-available",
+            "task_id": str(queue_item.id),
+            "task_type": "PURCHASE_SEAT",
+        },
+    )
+    return {
+        "queue_item_id": str(queue_item.id),
+        "status": "queued",
+        "quantity": body.quantity,
+        "deduplicated": False,
+    }
 
 
 @router.post("/{workspace_id}/regenerate-key", response_model=WorkspaceWithKey)

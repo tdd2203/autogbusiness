@@ -27,7 +27,8 @@ export type QueueItem = {
     | "SYNC_DATA"
     | "SYNC_BILLING"
     | "REVOKE_INVITES"
-    | "HARVEST_LABELS";
+    | "HARVEST_LABELS"
+    | "PURCHASE_SEAT";
   status: "PENDING" | "IN_PROGRESS" | "COMPLETED" | "FAILED";
   payload: Record<string, unknown>;
   workspace_id: string | null;

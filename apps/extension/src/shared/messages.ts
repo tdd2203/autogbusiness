@@ -26,6 +26,36 @@ export type ExecuteActionRequest =
   | { kind: "SYNC_BILLING"; taskId: string }
   | { kind: "REVOKE_INVITES"; taskId: string; emails: string[] }
   | { kind: "HARVEST_LABELS"; taskId: string; locale: "vi" | "en" | "zh" }
+  | {
+      kind: "PURCHASE_SEAT";
+      taskId: string;
+      quantity: number;
+      /** Skip Phase 1+2 (modal mở slot) → nhảy thẳng tới tab Hóa đơn + payment
+       * chain. Dùng khi invoice 'Đến hạn' đã tồn tại từ trước (vd task v0.5.1
+       * tạo invoice nhưng chưa thanh toán → retry thanh toán). */
+      skipToPayment?: boolean;
+    }
+  | {
+      kind: "STRIPE_CLICK_LINK";
+      taskId: string;
+      /** Số tiền expected (đọc từ ChatGPT modal #2), best-effort verify Stripe page. */
+      expectedAmountText?: string | null;
+    }
+  | {
+      kind: "LINK_CONFIRM_PAYMENT";
+      taskId: string;
+      /** Số tiền expected để sanity check trước khi click "Thanh toán". */
+      expectedAmountText: string;
+    }
+  | {
+      /** Phase 2 của INVITE_MEMBER sau khi background F5 tab → content fresh.
+       * Chỉ scrape pending list để verify email vừa mời có xuất hiện không.
+       * Không submit lại invite. */
+      kind: "VERIFY_PENDING_INVITE";
+      taskId: string;
+      emails: string[];
+      role: ChatGPTRole;
+    }
   | { kind: "PING"; taskId?: string };
 
 export type ScrapedBilling = {

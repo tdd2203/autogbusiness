@@ -18,6 +18,39 @@ Mọi thay đổi đáng kể của extension được ghi tại đây. File nà
 
 ---
 
+## v0.6.2 — 2026-05-20 — fix
+
+**F5 thật trang admin sau khi submit invite — ép ChatGPT load lại pending list từ server (không dùng cache stale)**
+
+- Tách `INVITE_MEMBER` thành 2 phase:
+  - **Phase 1** (content): chỉ submit invite + verify toast/dialog đóng → return `ok=true` với `awaiting_reload_verify=true`.
+  - **Phase 2** (background orchestrate): `chrome.tabs.reload(tab)` hard F5 → wait tab complete → `ensureContentInjected` re-inject → gửi `VERIFY_PENDING_INVITE` message mới → content's new instance scrape pending list (đã load fresh từ server) → return verify result.
+- **Vì sao F5 chrome.tabs.reload chứ không phải click tab + force fetch?** ChatGPT React Query cache pending list theo workspace_id — click tab không invalidate cache, chỉ trigger refetch nếu staleTime expire. `chrome.tabs.reload` là F5 thật ở level browser → toàn bộ JS context destroy + reload → React Query cache xoá sạch → fetch fresh từ `/api/.../invites`.
+- Message protocol mới: `VERIFY_PENDING_INVITE { taskId, emails, role }` — dùng riêng cho Phase 2, không submit lại invite. Content dispatcher [content/index.ts](src/content/index.ts) route → `executeVerifyPendingInvite` trong [invite.ts](src/content/actions/invite.ts).
+- Runner [background/runner.ts](src/background/runner.ts) detect `response.data.awaiting_reload_verify=true` → vào branch F5+verify. Nếu F5 fail / inject fail / verify message throw → fallback `ok=true` với `verify_scrape_failed=true` (user-facing: "mở tab Lời mời thủ công để check"), KHÔNG fail invite (vì submit đã OK).
+- Phase `f5-verify` mới trong `reportRunnerProgress` → dashboard banner show "Submit invite OK — F5 trang admin để ChatGPT load lại pending list..." giữa submit và verify.
+- Retry trong Phase 2 vẫn giữ (3 attempts với delay 0/3/5s) — phòng ChatGPT backend chậm index invite vừa POST. Tổng thời gian Phase 2 tối đa ~25s (F5 ~3-5s + 3 attempts ~10-15s + final navigate ~2s).
+
+---
+
+## v0.6.1 — 2026-05-20 — fix
+
+**Fix `humanClick` double-fire (2 toast ChatGPT / click toggle 2 lần) + verify pending: delay 2s + retry 3 lần đến ~10s tổng**
+
+- **BUG #1 (DOUBLE-CLICK)**: [`humanClick`](src/content/human.ts) trước v0.6.1 dispatch synthetic `MouseEvent('click')` RỒI gọi LUÔN `el.click()` native → mỗi lần "click" thực ra fire **2 lần**. Hậu quả user-reported:
+  - (a) Toggle "Cho phép lời mời từ miền bên ngoài" click 1 lần → ChatGPT nhận 2 toggle event → **2 toast "Đã cập nhật"**.
+  - (b) Submit invite click 1 lần → ChatGPT submit 2 lần → **2 toast "Đã gửi lời mời"**.
+- **Fix**: chỉ gọi `el.click()` native (Radix/React `onClick` đều catch được). Dispatch synthetic `MouseEvent('click')` chỉ là **fallback** khi `el.click` không phải function hoặc throw. Các pointer/mouse `down`+`up` phía trên vẫn được dispatch để giữ hover/active state (UX cũ).
+- **BUG #2 (VERIFY QUÁ NHANH → false-negative VERIFY_FAILED)**: sau khi submit invite + toast OK, code v0.6.0 click ngay tab "Lời mời đang chờ xử lý" + chờ 1.5s rồi scrape. ChatGPT backend cần 1-5s để invite mới xuất hiện trong pending list → scrape thấy **0 email** vừa mời → strict v0.4.14 trả `VERIFY_FAILED` → phantom cleanup xoá record dashboard, NHƯNG thực tế ChatGPT đã nhận invite OK.
+- **Fix #2A**: sau khi xác nhận toast/dialog đóng, đợi thêm **2s** rồi mới gọi `scrapePendingInvitesAfterInvite`.
+- **Fix #2B**: nếu attempt đầu KHÔNG verify được hết list email vừa mời → retry tới **3 lần** (sleep `0s, 2.5s, 4s` giữa các attempt), tổng tối đa ~10s. Sleep ngắn cho attempt đầu, dài cho attempt sau (giảm thiểu cho case hiếm).
+- **Fix #2C**: mỗi retry > attempt #1 dùng `forceReload=true`: bounce qua tab "Người dùng" 800ms rồi click lại "Lời mời" với postClickWait 2.5s → ép ChatGPT re-mount component + re-fetch pending list (fix luôn cache stale).
+- Progress message mới khi retry: "Pending list chưa có N email — đợi ChatGPT cập nhật (retry K/3)..." → dashboard banner show ngay, user biết extension đang đợi (không phải treo).
+- **BUG #3 (phải F5 thấy email trong tab "Lời mời" trên ChatGPT)**: trước v0.6.1 sau verify xong extension click lại tab "Người dùng" để idle ở trang quen thuộc. Hậu quả: user mở browser tab admin lên + click "Lời mời" → ChatGPT re-mount component + có thể serve từ React Query cache stale → **KHÔNG thấy email vừa mời, phải F5**.
+- **Fix #3**: extension giờ DỪNG TẠI tab "Lời mời đang chờ xử lý" sau verify cuối cùng — DOM đã render data tươi (extension vừa scrape) nên user mở browser tab admin lên là thấy ngay. Task sau (REMOVE/CHANGE_ROLE) tự click tab "Người dùng" qua `findControlByKey`, không lệ thuộc end-state.
+
+---
+
 ## v0.4.20 — 2026-05-19 — fix
 
 **Bỏ Step 3 NUCLEAR (regression INVITE) + tăng waitFor dialog 20s + DOM diagnostic + DB sync CHANGE_ROLE/REMOVE**

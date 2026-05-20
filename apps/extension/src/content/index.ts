@@ -3,13 +3,14 @@ import type {
   ExecuteActionResponse,
 } from "../shared/messages";
 import { loadBundleFromStorage } from "../shared/ui-labels";
-import { executeInvite } from "./actions/invite";
+import { executeInvite, executeVerifyPendingInvite } from "./actions/invite";
 import { executeRemove } from "./actions/remove";
 import { executeChangeRole } from "./actions/change-role";
 import { executeSync } from "./actions/sync";
 import { executeSyncBilling } from "./actions/sync-billing";
 import { executeRevokeInvites } from "./actions/revoke-invites-batch";
 import { executeHarvestLabels } from "./actions/harvest-labels";
+import { executePurchaseSeat } from "./actions/purchase-seat";
 
 console.log("[autogpt-content] injected vào", location.href);
 
@@ -70,6 +71,8 @@ async function dispatch(
       return { ok: true, data: { url: location.href } };
     case "INVITE_MEMBER":
       return executeInvite(msg.taskId, msg.emails, msg.role);
+    case "VERIFY_PENDING_INVITE":
+      return executeVerifyPendingInvite(msg.taskId, msg.emails, msg.role);
     case "REMOVE_MEMBER":
       return executeRemove(msg.taskId, msg.email);
     case "CHANGE_ROLE":
@@ -86,6 +89,18 @@ async function dispatch(
       return executeRevokeInvites(msg.taskId, msg.emails);
     case "HARVEST_LABELS":
       return executeHarvestLabels(msg.taskId, msg.locale);
+    case "PURCHASE_SEAT":
+      return executePurchaseSeat(msg.taskId, msg.quantity, msg.skipToPayment === true);
+    case "STRIPE_CLICK_LINK":
+    case "LINK_CONFIRM_PAYMENT":
+      // Các message này dành cho content/stripe-invoice.ts + content/link-checkout.ts
+      // (matches invoice.stripe.com / checkout.link.com). Nếu gửi nhầm vào
+      // chatgpt.com content script → trả error rõ ràng.
+      return {
+        ok: false,
+        error_code: "PAGE_NOT_ADMIN",
+        error_message: `Message ${msg.kind} dành cho Stripe/Link content script, không phải chatgpt.com.`,
+      };
     default: {
       const exhaustive: never = msg;
       return {

@@ -75,19 +75,23 @@ export async function humanClick(el: HTMLElement): Promise<void> {
     el.dispatchEvent(new PointerEvent("pointerup", pointerOpts));
   } catch {}
   el.dispatchEvent(new MouseEvent("mouseup", opts));
-  el.dispatchEvent(new MouseEvent("click", opts));
 
-  // FALLBACK CUỐI CÙNG: gọi el.click() native — đảm bảo onClick handler
-  // được trigger ngay cả khi synthetic event không match React tracking.
-  // Là cách reliable nhất để click programmatically; nhiều framework
-  // ưu tiên detect element.click() over manually dispatched click events.
+  // CLICK: chỉ dùng MỘT cơ chế để tránh double-fire.
+  // Trước v0.6.1: dispatch synthetic 'click' + gọi el.click() → ChatGPT nhận
+  // 2 click event cho mỗi humanClick → 2 toast (toggle external domain, invite
+  // submit), 2 lần thực thi handler. Bug user-reported 2026-05-20.
+  // Sau v0.6.1: chỉ gọi el.click() native — Radix UI / React onClick đều catch
+  // được; các pointer/mouse down+up phía trên đã handle hover/active state.
   if (typeof el.click === "function") {
     try {
       el.click();
+      return;
     } catch (e) {
-      console.warn("[autogpt-human] el.click() throw:", e);
+      console.warn("[autogpt-human] el.click() throw, fallback synthetic:", e);
     }
   }
+  // Fallback chỉ khi el.click không tồn tại / throw (rất hiếm)
+  el.dispatchEvent(new MouseEvent("click", opts));
 }
 
 export async function humanType(input: HTMLInputElement | HTMLTextAreaElement, text: string): Promise<void> {
