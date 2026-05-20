@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import {
   ApiError,
   fetchActiveTask,
-  triggerSyncBilling,
   whoami,
   type ActiveTaskInfo,
 } from "../shared/api";
@@ -19,7 +18,6 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [activeInfo, setActiveInfo] = useState<ActiveTaskInfo | null>(null);
   const [showChangelog, setShowChangelog] = useState(false);
-  const [syncingBilling, setSyncingBilling] = useState(false);
 
   const refreshActiveTask = useCallback(async () => {
     const config = await getConfig();
@@ -129,22 +127,6 @@ export default function App() {
     setSaving(false);
   }
 
-  async function onSyncBilling(): Promise<void> {
-    const config = await getConfig();
-    if (!config) return;
-    setSyncingBilling(true);
-    try {
-      await triggerSyncBilling(config);
-      // KHÔNG dùng setTimeout 6s nữa — useEffect ở trên auto re-fetch whoami
-      // khi SYNC_BILLING terminal (COMPLETED). Reset flag sau 2s để UI button
-      // trở lại bình thường (visual feedback "đã trigger").
-      setTimeout(() => setSyncingBilling(false), 2000);
-    } catch (e) {
-      console.warn("[autogpt-popup] sync billing failed:", e);
-      setSyncingBilling(false);
-    }
-  }
-
   async function onDisconnect(): Promise<void> {
     if (!window.confirm(t("popup.disconnectConfirm"))) return;
     await setConfig(null);
@@ -196,32 +178,10 @@ export default function App() {
           <div>
             <strong>{t("popup.statusConnected")}</strong>: {status.workspace.name}
           </div>
-          <div
-            className="workspace-info"
-            style={{ display: "flex", alignItems: "center", gap: 6 }}
-          >
-            <span style={{ flex: 1 }}>
-              {t("popup.plan")}: {status.workspace.plan ?? "—"} · {t("popup.seat")}:{" "}
-              {status.workspace.seat_used ?? 0}/
-              {status.workspace.seat_total ?? "—"}
-            </span>
-            <button
-              type="button"
-              onClick={onSyncBilling}
-              disabled={syncingBilling}
-              title={t("popup.syncBillingTooltip")}
-              style={{
-                fontSize: 11,
-                padding: "1px 6px",
-                border: "1px solid #cbd5e1",
-                borderRadius: 3,
-                background: "white",
-                cursor: syncingBilling ? "wait" : "pointer",
-                opacity: syncingBilling ? 0.5 : 1,
-              }}
-            >
-              {syncingBilling ? "↻..." : "↻"}
-            </button>
+          <div className="workspace-info">
+            {t("popup.plan")}: {status.workspace.plan ?? "—"} · {t("popup.seat")}:{" "}
+            {status.workspace.seat_used ?? 0}/
+            {status.workspace.seat_total ?? "—"}
           </div>
         </div>
       )}

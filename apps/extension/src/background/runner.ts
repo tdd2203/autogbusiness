@@ -171,111 +171,137 @@ function getChatGPTContentScriptFiles(): string[] {
  */
 async function ensureContentInjected(
   tabId: number,
-): Promise<{ ok: boolean; tabId: number }> {
-  if (await pingContent(tabId)) return { ok: true, tabId };
+): Promise<{ ok: boolean; tabId: number; diag: string[] }> {
+  // v0.6.7: thu thập diag chi tiết step-by-step. Trước đây 3 step fail thầm
+  // chỉ in console.warn → user mở DevTools service worker mới biết step nào
+  // hỏng. Giờ collect array → propagate vào error_message của task → dashboard
+  // hiển thị thẳng. KHÔNG thay đổi logic 3 step, chỉ thêm visibility.
+  const diag: string[] = [];
+  const t0 = Date.now();
+  const log = (msg: string): void => {
+    const elapsed = Date.now() - t0;
+    const line = `+${elapsed}ms ${msg}`;
+    console.log(`[autogpt-ensure] ${line}`);
+    diag.push(line);
+  };
+
+  // Snapshot tab state ngay đầu — biết URL/status hiện tại để phân biệt:
+  // (a) tab đã logout về /auth/login, (b) tab đang loading, (c) tab healthy
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    log(`tab ${tabId} state: status=${tab.status} url=${tab.url ?? "?"}`);
+    if (tab.url && !tab.url.includes("/admin")) {
+      log(`⚠ tab URL không chứa /admin — có thể đã logout/redirect`);
+    }
+  } catch (e) {
+    log(`chrome.tabs.get(${tabId}) THREW: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  if (await pingContent(tabId)) {
+    log("initial ping OK — content script đã sẵn sàng");
+    return { ok: true, tabId, diag };
+  }
+  log("initial ping fail — content script chưa response");
 
   // Step 1: executeScript inject loader
   const files = getChatGPTContentScriptFiles();
   if (files.length === 0) {
-    console.warn(
-      "[autogpt] không tìm thấy content_script chatgpt.com/admin trong manifest",
-    );
-    return { ok: false, tabId };
+    log("⚠ manifest KHÔNG có content_script cho chatgpt.com/admin — abort");
+    return { ok: false, tabId, diag };
   }
+  log(`Step 1: executeScript files=[${files.join(", ")}]`);
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files });
+    log("Step 1 executeScript resolved");
   } catch (e) {
-    console.warn("[autogpt] executeScript failed:", e);
+    log(`Step 1 executeScript THREW: ${e instanceof Error ? e.message : String(e)}`);
   }
   const RETRY_DELAYS_MS = [250, 500, 700, 800, 800];
-  for (const delay of RETRY_DELAYS_MS) {
-    await new Promise((r) => setTimeout(r, delay));
+  for (let i = 0; i < RETRY_DELAYS_MS.length; i++) {
+    await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[i]));
     if (await pingContent(tabId)) {
-      console.log(`[autogpt] content script ready sau executeScript`);
-      return { ok: true, tabId };
+      log(`Step 1 ping ${i + 1}/${RETRY_DELAYS_MS.length} OK — ready`);
+      return { ok: true, tabId, diag };
     }
   }
+  log(`Step 1 ping fail toàn bộ ${RETRY_DELAYS_MS.length} retry`);
 
   // Step 2: AUTO-RELOAD tab + executeScript LẦN 2 (belt-and-suspenders)
-  // Sau reload manifest auto-inject content_scripts ở document_idle, nhưng đôi
-  // khi CRXJS loader fail do CSP/timing. executeScript explicit đảm bảo loader
-  // được dispatch ngay cả khi manifest auto-inject gặp vấn đề.
-  console.warn("[autogpt] executeScript fail → AUTO-RELOAD tab...");
+  log("Step 2: tabs.reload + executeScript lại");
   try {
     await chrome.tabs.reload(tabId);
     const reloaded = await waitForTabComplete(tabId, 15_000);
+    log(`Step 2 reload done, url=${reloaded?.url ?? "?"} status=${reloaded?.status ?? "?"}`);
     if (reloaded?.url?.includes("/admin")) {
-      // Inject thủ công sau reload — nếu auto-inject đã ok, ping sẽ thấy ngay
-      // và return trước khi vào executeScript này.
       try {
         await chrome.scripting.executeScript({ target: { tabId }, files });
+        log("Step 2 executeScript resolved");
       } catch (e) {
-        console.warn("[autogpt] executeScript sau reload failed:", e);
+        log(`Step 2 executeScript THREW: ${e instanceof Error ? e.message : String(e)}`);
       }
       const POST_RELOAD_DELAYS_MS = [500, 800, 1000, 1200, 1500, 2000, 2000];
-      for (const delay of POST_RELOAD_DELAYS_MS) {
-        await new Promise((r) => setTimeout(r, delay));
+      for (let i = 0; i < POST_RELOAD_DELAYS_MS.length; i++) {
+        await new Promise((r) => setTimeout(r, POST_RELOAD_DELAYS_MS[i]));
         if (await pingContent(tabId)) {
-          console.log(`[autogpt] ✓ content script ready sau AUTO-RELOAD`);
-          return { ok: true, tabId };
+          log(`Step 2 ping ${i + 1}/${POST_RELOAD_DELAYS_MS.length} OK — ready`);
+          return { ok: true, tabId, diag };
         }
       }
+      log(`Step 2 ping fail toàn bộ ${POST_RELOAD_DELAYS_MS.length} retry`);
     } else {
-      console.warn(`[autogpt] sau reload tab không ở /admin (url=${reloaded?.url})`);
+      log(`⚠ Step 2 ABORT: sau reload tab redirect khỏi /admin (url=${reloaded?.url}) — likely logged out`);
     }
   } catch (e) {
-    console.warn("[autogpt] tabs.reload failed:", e);
+    log(`Step 2 tabs.reload THREW: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // Step 3 NUCLEAR: tab cũ stuck (CSP / extension hot-swap / SW race) — đóng
-  // hoàn toàn rồi tạo tab mới. Tab mới có fresh JS context + manifest auto-inject
-  // sạch sẽ. Caller phải dùng tabId MỚI để gửi message.
-  console.warn("[autogpt] Step 2 vẫn fail → Step 3 NUCLEAR (recreate tab)...");
+  // Step 3 NUCLEAR: tab cũ stuck → tạo tab mới hoàn toàn
+  log("Step 3 NUCLEAR: tabs.remove + tabs.create");
   let newTabId = tabId;
   try {
     try {
       await chrome.tabs.remove(tabId);
+      log("Step 3 tabs.remove resolved");
     } catch (e) {
-      console.warn("[autogpt] remove tab cũ failed (có thể đã đóng):", e);
+      log(`Step 3 tabs.remove THREW (tab có thể đã đóng): ${e instanceof Error ? e.message : String(e)}`);
     }
     const created = await chrome.tabs.create({
       url: CHATGPT_ADMIN_URL,
       active: false,
     });
     if (created.id === undefined) {
-      console.warn("[autogpt] tabs.create không trả id");
-      return { ok: false, tabId };
+      log("⚠ Step 3 tabs.create KHÔNG trả tabId");
+      return { ok: false, tabId, diag };
     }
     newTabId = created.id;
+    log(`Step 3 created tab ${newTabId}, đợi load...`);
     const recreated = await waitForTabComplete(newTabId, 20_000);
+    log(`Step 3 wait load done, url=${recreated?.url ?? "?"} status=${recreated?.status ?? "?"}`);
     if (!recreated?.url?.includes("/admin")) {
-      console.warn(
-        `[autogpt] tab mới redirect khỏi /admin (url=${recreated?.url}) — user chưa login`,
-      );
-      return { ok: false, tabId: newTabId };
+      log(`⚠ Step 3 ABORT: tab mới redirect khỏi /admin → user chưa login ChatGPT trong browser này`);
+      return { ok: false, tabId: newTabId, diag };
     }
-    // Explicit executeScript phòng auto-inject lỗi
     try {
       await chrome.scripting.executeScript({ target: { tabId: newTabId }, files });
+      log("Step 3 executeScript resolved");
     } catch (e) {
-      console.warn("[autogpt] executeScript sau recreate failed:", e);
+      log(`Step 3 executeScript THREW: ${e instanceof Error ? e.message : String(e)}`);
     }
     const POST_RECREATE_DELAYS_MS = [800, 1200, 1500, 2000, 2000];
-    for (const delay of POST_RECREATE_DELAYS_MS) {
-      await new Promise((r) => setTimeout(r, delay));
+    for (let i = 0; i < POST_RECREATE_DELAYS_MS.length; i++) {
+      await new Promise((r) => setTimeout(r, POST_RECREATE_DELAYS_MS[i]));
       if (await pingContent(newTabId)) {
-        console.log(`[autogpt] ✓ content script ready sau Step 3 NUCLEAR (tab ${newTabId})`);
-        return { ok: true, tabId: newTabId };
+        log(`Step 3 ping ${i + 1}/${POST_RECREATE_DELAYS_MS.length} OK — ready (tab ${newTabId})`);
+        return { ok: true, tabId: newTabId, diag };
       }
     }
+    log(`Step 3 ping fail toàn bộ ${POST_RECREATE_DELAYS_MS.length} retry`);
   } catch (e) {
-    console.warn("[autogpt] Step 3 NUCLEAR failed:", e);
+    log(`Step 3 unexpected THREW: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  console.warn(
-    `[autogpt] Cả 3 step fallback đều fail — give up. tab=${newTabId}`,
-  );
-  return { ok: false, tabId: newTabId };
+  log(`Cả 3 step đều fail — give up. tab=${newTabId}`);
+  return { ok: false, tabId: newTabId, diag };
 }
 
 async function sendToContent(
@@ -287,13 +313,19 @@ async function sendToContent(
   // message — không gửi tabId cũ đã bị remove.
   const effectiveTabId = ready.tabId;
   if (!ready.ok) {
+    // v0.6.7: propagate diag step-by-step vào error_message để dashboard hiển
+    // thị thẳng — không bắt user mở DevTools service worker mới biết lỗi gì.
+    const diagText = ready.diag.length > 0
+      ? "\n\nChi tiết từng bước:\n" + ready.diag.join("\n")
+      : "";
     return {
       ok: false,
       error_code: "CONTENT_NOT_INJECTED",
       error_message:
         "Tab chatgpt.com/admin không thể inject content script sau 3 bước fallback (executeScript / reload / recreate tab). " +
-        "Có thể: (a) ChatGPT chưa login trong browser, (b) extension permission bị block. " +
-        "Dashboard sẽ tự xoá record vừa tạo.",
+        "Cách khắc phục thường gặp: (1) F5 ChatGPT tab thủ công, (2) chrome://extensions/ → reload AutoGPT, " +
+        "(3) đảm bảo extension + ChatGPT cùng browser profile + đã login." +
+        diagText,
     };
   }
   try {

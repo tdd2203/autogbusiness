@@ -18,6 +18,153 @@ Mọi thay đổi đáng kể của extension được ghi tại đây. File nà
 
 ---
 
+## v0.6.11 — 2026-05-20 — fix
+
+**REMOVE_MEMBER: search qua ô "Lọc theo tên" trước khi mở menu "..." → "Loại bỏ thành viên" — fix miss row khi list dài**
+
+- **USER REQUEST 2026-05-20** (kèm ảnh ChatGPT `/admin/members` tab Người dùng): "khi thực hiện xóa bất kì user nào thì tìm kiếm người dùng xong rồi thực hiện xóa loại bỏ thành viên". Ảnh tham chiếu thứ 2 cho thấy menu "..." mở ra hiển thị "Thay đổi loại giấy phép" + "Loại bỏ thành viên" (đỏ).
+- **ROOT CAUSE**: [`executeRemove`](src/content/actions/remove.ts) cũ chỉ gọi `findMemberRow(email)` trên DOM hiện tại. Khi workspace > 50 member, row cần xoá có thể chưa scroll vào viewport (ChatGPT virtualize list) → trả `null` → `UI_ELEMENT_NOT_FOUND`. User phải tự cuộn tới row trước khi extension chạy được.
+
+**FIX** ([remove.ts](src/content/actions/remove.ts)): thêm 2 bước trước flow cũ:
+
+1. `clickTabAndWait('tab_active_members')` — đảm bảo đang ở tab Người dùng (REMOVE chỉ làm được trên active list, không phải tab Lời mời/Yêu cầu). Best-effort, không fail nếu tab button không có.
+2. `filterAndFindRow(email)` — type local-part email (phần trước `@`) vào input "Lọc theo tên" → đợi ChatGPT debounce filter (~600ms) → `waitFor` row khớp tới 4s. Filter zoom thẳng vào 1 row duy nhất, KHÔNG cần scroll.
+
+- Sau khi xoá xong verify (member biến mất khỏi list đã filter), **CLEAR filter input** để list về full state (user mở tab admin lên thấy toàn bộ member, không bị stuck ở state filter `yaakovajax0054` chẳng hạn).
+- Selector mới `SELECTORS.memberFilterInput`: `input[type="search"]` + placeholder/aria-label `Lọc`/`Filter`/`筛选`/`过滤` (vi/en/zh). Fallback theo placeholder attribute vì ChatGPT chưa có `data-testid` trên input này.
+- **Tại sao type local-part chứ không full email**: ChatGPT filter match trên cả tên + email; dùng prefix `yaakovajax0054` đủ unique mà tránh case input có maxlength giới hạn ký tự đặc biệt (`@` / `.`).
+- **Fallback** (nếu không tìm được filter input — vd UI mới đổi): rơi về scroll-find cũ (`findMemberRow` trực tiếp). KHÔNG hard-fail vì có thể workspace nhỏ < 10 member thì filter không xuất hiện.
+- File đã đổi: [selectors.ts](src/content/selectors.ts) (thêm `memberFilterInput`), [remove.ts](src/content/actions/remove.ts) (`filterAndFindRow` + `clearMemberFilter` + tab navigate).
+
+---
+
+## v0.6.10 — 2026-05-20 — chore
+
+**Bỏ nút ↻ sync billing trong popup — dashboard "Cập nhật giá & ngày renew" là single source of truth, popup tự refresh khi task xong**
+
+- **USER REQUEST 2026-05-20**: "bỏ cái mũi tên sync billing đi, từ giờ chạy ở dashboard lệnh cập nhật giá thì cũng update cả extension luôn".
+- **Bối cảnh**: popup có 2 chỗ trigger SYNC_BILLING — (a) nút ↻ bên cạnh "Plan/Seat" trong popup (thêm ở v0.4.16), (b) nút "Cập nhật giá & ngày renew" trong dashboard ([WorkspaceLayout](../../web/src/components/WorkspaceLayout.tsx)). Cả 2 đều tạo cùng `QueueItem type=SYNC_BILLING` → trùng UX.
+- **Decision**: xoá nút popup, giữ nút dashboard. Popup ĐÃ có sẵn auto-refresh `useEffect` (v0.4.16, [App.tsx](src/popup/App.tsx) lines 74-101) detect khi `SYNC_BILLING` terminal `COMPLETED` → re-fetch `whoami` → popup hiển thị seat mới. **Logic này hoạt động bất kể task được trigger từ đâu** (popup hay dashboard) — chỉ cần xoá nút popup, không cần đổi logic auto-refresh.
+
+**Files đã xoá:**
+
+- [popup/App.tsx](src/popup/App.tsx): nút ↻ + state `syncingBilling` + handler `onSyncBilling` + import `triggerSyncBilling`
+- [shared/api.ts](src/shared/api.ts): hàm `triggerSyncBilling` (chỉ popup dùng)
+- [i18n vi.json](src/i18n/locales/vi.json) + [zh-CN.json](src/i18n/locales/zh-CN.json): key `popup.syncBillingTooltip`
+- Backend [queue.py](../api/app/routers/queue.py): endpoint `POST /api/v1/queue/sync-billing` (chỉ extension dùng)
+
+**Flow MỚI:**
+
+```
+User click "Cập nhật giá & ngày renew" trên dashboard
+  → POST /workspaces/{id}/sync-billing
+  → QueueItem PENDING
+  → SSE push tới extension
+  → extension scrape /admin/billing → seat_used/seat_total mới
+  → updateTask COMPLETED + DB update
+  → popup polling fetchActiveTask 1.5s thấy recent_completed.type=SYNC_BILLING
+  → re-fetch whoami → popup hiển thị seat mới (≤ 2-3s sau khi task xong)
+```
+
+- Không có functional regression: nếu popup ĐÓNG khi task chạy, lần mở sau `verify(config)` trên mount sẽ fetch whoami → seat mới tự xuất hiện.
+
+---
+
+## v0.6.7 — 2026-05-20 — fix
+
+**CONTENT_NOT_INJECTED: propagate diag step-by-step vào error_message — dashboard hiển thị thẳng step nào fail**
+
+- **USER REPORT**: liên tục 5+ task fail với `CONTENT_NOT_INJECTED` (INVITE/SYNC_DATA/REVOKE_INVITES). Error message generic: "Tab chatgpt.com/admin không thể inject content script sau 3 bước fallback" — KHÔNG nói step nào fail, vì sao fail. User mù → phải mở `chrome://extensions/` → Service Worker → DevTools mới biết.
+- **ROOT CAUSE visibility**: [`ensureContentInjected`](src/background/runner.ts) chỉ `console.warn` từng step nội bộ, không truyền lý do ra ngoài. 3 step thử inject (executeScript / tabs.reload / tabs.remove+create) đều có thể fail vì nhiều lý do khác nhau (tab redirect khỏi `/admin`, executeScript permission, ping timeout, ChatGPT logout giữa chừng, ...) — message generic không phân biệt được.
+- **FIX** ([`runner.ts ensureContentInjected`](src/background/runner.ts)): thêm array `diag: string[]` collect 1 dòng mỗi event (ping attempt, executeScript resolve/throw, tabs.reload result, tab URL sau mỗi bước). Mỗi dòng có prefix `+{elapsed}ms` để thấy timing. Return type đổi `{ok, tabId}` → `{ok, tabId, diag}`. KHÔNG đổi logic 3 step.
+- **FIX** ([`sendToContent`](src/background/runner.ts)): khi `!ready.ok` → append `\n\nChi tiết từng bước:\n{diag.join('\n')}` vào `error_message`. Dashboard hiển thị toàn bộ trace — biết ngay step nào fail.
+- **Diag bao gồm**: tab state snapshot ban đầu (`url` + `status`), kết quả mỗi `executeScript` (resolved / THREW + message), URL sau mỗi `tabs.reload` + `tabs.create`, ping retry count cụ thể, abort reasons.
+
+**Ví dụ output mới (FAILED task):**
+
+```
+Cách khắc phục thường gặp: (1) F5 ChatGPT tab thủ công, (2) chrome://extensions/ → reload AutoGPT, (3) đảm bảo extension + ChatGPT cùng browser profile + đã login.
+
+Chi tiết từng bước:
++0ms tab 123 state: status=complete url=https://chatgpt.com/auth/login
++15ms ⚠ tab URL không chứa /admin — có thể đã logout/redirect
++18ms initial ping fail — content script chưa response
++25ms Step 1: executeScript files=[assets/index.ts-loader-...]
++87ms Step 1 executeScript resolved
++3115ms Step 1 ping fail toàn bộ 5 retry
++3120ms Step 2: tabs.reload + executeScript lại
++5230ms Step 2 reload done, url=https://chatgpt.com/auth/login status=complete
++5235ms ⚠ Step 2 ABORT: sau reload tab redirect khỏi /admin (url=https://chatgpt.com/auth/login) — likely logged out
+...
+```
+
+- **Hành động đề xuất user (sau khi update)**: chạy 1 task SYNC_DATA test, nếu vẫn fail thì copy diag vào issue — sẽ biết chính xác problem để fix dứt điểm (vs guess như 5 lần trước).
+- **Khả năng cao root cause hiện tại**: ChatGPT tab đã logout giữa chừng (session expired) → `tab.url=/auth/login` → 3 step đều redirect → all fail. Diag mới sẽ confirm trong 1 task test.
+
+---
+
+## v0.6.6 — 2026-05-20 — fix
+
+**FORCE tắt toggle external invites sau invite (không restore prev) + Phase 1 đợi DOM list pending stable trước F5 + Phase 2 retry tăng cường**
+
+- **USER REPORT v0.6.5**: (a) sau invite, toggle "Cho phép lời mời ngoài tên miền" không tự tắt. (b) Email trong tab "Lời mời đang chờ xử lý" load thiếu trên dashboard so với ChatGPT thật.
+- **ROOT CAUSE (a)**: `withExternalInvitesEnabled` finally chỉ restore khi `setResult.changed=true` (= extension đã click bật ON). Nếu user manually bật ON từ trước → `prev=ON, changed=false` → finally **SKIP restore** → toggle giữ ON. Vi phạm spec user "sau mời xong phải tắt mời ngoài".
+- **FIX 1 ([external-invites.ts](src/content/actions/external-invites.ts))**: **LUÔN force OFF** sau invite (kể cả `prev` đã ON). Spec mới: "Cho phép lời mời ngoài" là rủi ro bảo mật — sau mỗi invite extension phải tắt OFF, user có thể bật lại thủ công nếu cần. Bỏ điều kiện `if changed` trong finally.
+- **ROOT CAUSE (b)**: Phase 1 click tab "Lời mời đang chờ xử lý" (v0.6.5) với `postClickWait` 1500ms, sau đó return ngay → background F5. ChatGPT React Query fetch pending list mất 2-5s; nếu F5 ngắt giữa fetch → sau F5 có thể serve cache cũ → Phase 2 scrape miss email vừa mời.
+- **FIX 2 ([invite.ts executeInvite](src/content/actions/invite.ts))**: Sau `clickTabAndWait` (tăng 1500→3000ms), thêm `waitForPendingListStable(emails, 8s)` — poll DOM email-text-node count tới khi: (i) tất cả email vừa mời xuất hiện, HOẶC (ii) count stable 2 tick liên tiếp. Đảm bảo F5 chạy ở state DOM ổn định.
+- **FIX 3 ([invite.ts executeVerifyPendingInvite](src/content/actions/invite.ts))**: Tăng initial sleep sau F5 từ 800ms → 2500ms. Retry chain `[0, 2500]` (v0.6.5) → `[0, 3000, 6000]` (v0.6.6) — 3 attempt với gap dài hơn, xử lý case ChatGPT backend index pending list chậm.
+- **Tradeoff**: invite ~3-7s chậm hơn v0.6.5 nhưng độ chính xác cao hơn nhiều. User "load thiếu" > user "chậm".
+
+**Sequence chính xác (v0.6.6):**
+
+```
+1. withExternalInvitesEnabled — check state toggle
+   ├─ Nếu OFF → bật ON
+   └─ Nếu đã ON → skip click (giữ prev=ON, ghi log)
+2. Nav /admin/members
+3. executeInviteInner — open dialog → type email → set role → submit → wait toast close
+4. finally: FORCE tắt toggle về OFF (LUÔN, không restore prev) ← v0.6.6
+5. Nav /admin/members
+6. clickTabAndWait("tab_pending_invites", 3000ms) — URL = /admin/members?tab=invites
+7. waitForPendingListStable(emails, 8000ms) ← v0.6.6 NEW: đợi DOM render list ổn định
+8. Runner F5 → ChatGPT load pending list từ server
+9. Phase 2 executeVerifyPendingInvite:
+   ├─ sleep 2500ms (đợi DOM render sau F5)
+   ├─ retry chain [0, 3000, 6000] — 3 attempt
+   └─ Mỗi attempt: click tab + scrape pending list (forceReload từ attempt 2)
+10. Runner bulk-upsert (isFullSync=false) → DB → dashboard hiển thị
+```
+
+---
+
+## v0.6.5 — 2026-05-20 — fix
+
+**Fix thứ tự bước trong invite flow: TẮT toggle external invites TRƯỚC khi chuyển tab "Lời mời"**
+
+- **BUG v0.6.4**: thêm `clickTabAndWait("tab_pending_invites")` vào CUỐI `executeInviteInner` — sai thứ tự. Trình tự thực tế: bật toggle → invite → click tab Lời mời (URL có `?tab=invites`) → finally của `withExternalInvitesEnabled` nav `/admin/identity` tắt toggle → nav `/admin/members` (URL MẤT `?tab=invites`) → F5 ở URL không có tab param → ChatGPT load tab "Người dùng" default thay vì "Lời mời" → Phase 2 phải tự click lại tab → vô hiệu hoá tối ưu v0.6.4.
+- **User correct (2026-05-20)**: "bật mời ngoài → mời thành viên → tắt mời ngoài → chuyển tab lời chờ xử lý → F5 → verify → ghi DB". Trình tự đúng: restore toggle PHẢI chạy TRƯỚC khi chuyển tab Lời mời.
+- **FIX**: Move `clickTabAndWait("tab_pending_invites")` từ cuối `executeInviteInner` ra scope ngoài của `executeInvite`, đặt SAU `withExternalInvitesEnabled` return (= sau khi finally đã restore toggle + nav `/admin/members`). URL khi runner F5 sẽ chính xác `/admin/members?tab=invites` → ChatGPT load thẳng pending list.
+- `executeInviteInner` giờ CHỈ làm submit invite + return `awaiting_reload_verify=true` (single responsibility). Tab management là concern của `executeInvite` (scope ngoài).
+
+**Sequence chính xác (v0.6.5):**
+
+```
+1. withExternalInvitesEnabled — nav /admin/identity → check state
+   ├─ Nếu OFF → bật ON (lưu prev=false)
+   └─ Nếu đã ON → skip click (prev=true)
+2. Nav /admin/members
+3. executeInviteInner — open dialog → type email → set role → submit → wait toast/dialog close → return
+4. finally: nếu prev=false → nav /admin/identity tắt OFF → nav /admin/members
+5. (NEW v0.6.5) clickTabAndWait("tab_pending_invites") → URL = /admin/members?tab=invites
+6. Runner F5 → ChatGPT load pending list từ server
+7. Phase 2 executeVerifyPendingInvite scrape → verified emails
+8. Runner bulk-upsert (isFullSync=false) → DB → dashboard hiển thị
+```
+
+- **File đã đổi**: [invite.ts](src/content/actions/invite.ts) (`executeInvite` + `executeInviteInner` refactor).
+
+---
+
 ## v0.6.4 — 2026-05-20 — fix
 
 **Verify pending nhanh hơn (chuyển tab "Lời mời" TRƯỚC F5) + fix bug `a12` bị mark `removed` oan do bulk-upsert reconcile**

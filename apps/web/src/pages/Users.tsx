@@ -2,7 +2,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { GRANTABLE, type PermissionKey } from "../lib/permissions";
-import { useT } from "../i18n";
+import { useFormatDate, useT } from "../i18n";
 import { SearchInput } from "./Members";
 
 type UserItem = {
@@ -47,7 +47,8 @@ export default function Users() {
       >
         <div>
           <div className="breadcrumb">
-            Organization<span className="breadcrumb-sep">/</span>
+            {t("breadcrumb.organization")}
+            <span className="breadcrumb-sep">/</span>
             {t("nav.users")}
           </div>
           <h1 className="display-h1">{t("users.title")}</h1>
@@ -317,6 +318,7 @@ function CreateUserForm({ onCreated }: { onCreated: () => void }) {
 
 function UserRow({ user }: { user: UserItem }) {
   const t = useT();
+  const formatDate = useFormatDate();
   const qc = useQueryClient();
   const toggleActive = useMutation({
     mutationFn: () =>
@@ -342,7 +344,7 @@ function UserRow({ user }: { user: UserItem }) {
   }
 
   const initial = (user.email || user.username || "?").charAt(0).toUpperCase();
-  const sinceDate = new Date(user.created_at).toLocaleDateString();
+  const sinceDate = formatDate(user.created_at);
 
   return (
     <tr>

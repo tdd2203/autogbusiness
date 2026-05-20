@@ -20,7 +20,7 @@
 
 import { useMemo, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { useT } from "../i18n";
+import { useFormatDate, useT } from "../i18n";
 import { api, ApiError } from "../lib/api";
 import { toast } from "./Toast";
 
@@ -69,16 +69,6 @@ function parseEmailsFromText(raw: string): {
   return { validUnique, validRaw, invalid, duplicates };
 }
 
-function formatExpiresDate(months: number): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() + months * DAYS_PER_MONTH);
-  return d.toLocaleDateString("vi-VN", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-}
-
 export function InviteMemberModal({
   workspaceId,
   onClose,
@@ -89,6 +79,16 @@ export function InviteMemberModal({
   onDone: () => void;
 }) {
   const t = useT();
+  const formatDate = useFormatDate();
+  const formatExpiresDate = (months: number) => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + months * DAYS_PER_MONTH);
+    return formatDate(d, {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+  };
   const [emailsText, setEmailsText] = useState("");
   // Per-email months override (default applies when not set).
   const [monthsByEmail, setMonthsByEmail] = useState<Record<string, number>>({});

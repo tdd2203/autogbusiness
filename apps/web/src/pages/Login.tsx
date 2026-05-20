@@ -63,7 +63,7 @@ export default function Login() {
               color: "var(--ink)",
             }}
           >
-            AutoGPT
+            {t("app.name")}
           </span>
           <span
             style={{
@@ -74,7 +74,7 @@ export default function Login() {
               textTransform: "uppercase",
             }}
           >
-            Admin
+            {t("app.adminBadge")}
           </span>
         </div>
         <p

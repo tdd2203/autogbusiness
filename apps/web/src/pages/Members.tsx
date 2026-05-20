@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
-import { useT } from "../i18n";
+import { useFormatDate, useT } from "../i18n";
 import type { Member, QueueItem } from "../types";
 import { triggerExtensionRun } from "../hooks/useExtensionTrigger";
 import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
@@ -23,6 +23,7 @@ const STATUS_BADGE: Record<string, string> = {
 
 export default function Members() {
   const t = useT();
+  const formatDate = useFormatDate();
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const { hasPermission, user } = useAuth();
   const qc = useQueryClient();
@@ -408,7 +409,7 @@ export default function Members() {
               {expiringSoonMembers
                 .slice(0, 5)
                 .map((m) =>
-                  `${m.email} (${m.subscription_end_at ? new Date(m.subscription_end_at).toLocaleDateString("vi-VN") : "?"})`,
+                  `${m.email} (${m.subscription_end_at ? formatDate(m.subscription_end_at) : "?"})`,
                 )
                 .join(", ")}
               {expiringSoonMembers.length > 5 ? ` +${expiringSoonMembers.length - 5}` : ""}
@@ -519,12 +520,10 @@ export default function Members() {
                     </span>
                   </td>
                   <td style={{ fontSize: 12 }}>
-                    <SubscriptionCell member={m} t={t} />
+                    <SubscriptionCell member={m} t={t} formatDate={formatDate} />
                   </td>
                   <td className="cell-muted" style={{ fontSize: 12 }}>
-                    {m.joined_at
-                      ? new Date(m.joined_at).toLocaleDateString()
-                      : "—"}
+                    {m.joined_at ? formatDate(m.joined_at) : "—"}
                   </td>
                   <td style={{ textAlign: "right" }}>
                     <div
@@ -956,9 +955,11 @@ function InviteFailedRow({ task }: { task: QueueItem }) {
 function SubscriptionCell({
   member,
   t,
+  formatDate,
 }: {
   member: Member;
   t: ReturnType<typeof useT>;
+  formatDate: (value: string | Date, options?: Intl.DateTimeFormatOptions) => string;
 }) {
   if (!member.subscription_end_at) {
     return <span className="cell-muted">—</span>;
@@ -966,7 +967,7 @@ function SubscriptionCell({
   const endMs = new Date(member.subscription_end_at).getTime();
   const nowMs = Date.now();
   const diffDays = Math.round((endMs - nowMs) / (24 * 60 * 60 * 1000));
-  const endStr = new Date(member.subscription_end_at).toLocaleDateString("vi-VN", {
+  const endStr = formatDate(member.subscription_end_at, {
     day: "numeric",
     month: "short",
     year: "numeric",

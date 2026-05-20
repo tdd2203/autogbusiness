@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
-import { useT } from "../i18n";
+import { localeTag, useI18n, useT, useTranslateEnum } from "../i18n";
 import type { QueueItem } from "../types";
 import { SearchInput } from "./Members";
 
@@ -18,6 +18,8 @@ const STATUS_BADGE: Record<string, string> = {
 
 export default function Queue() {
   const t = useT();
+  const tStatus = useTranslateEnum("status");
+  const tTaskType = useTranslateEnum("taskType");
   const { hasPermission } = useAuth();
   const qc = useQueryClient();
 
@@ -72,7 +74,9 @@ export default function Queue() {
       >
         <div>
           <div className="breadcrumb">
-            System<span className="breadcrumb-sep">/</span>Queue
+            {t("breadcrumb.system")}
+            <span className="breadcrumb-sep">/</span>
+            {t("nav.queue")}
           </div>
           <h1 className="display-h1">{t("queue.title")}</h1>
           <p className="page-sub">{t("queue.pageSub")}</p>
@@ -198,13 +202,13 @@ export default function Queue() {
                     )}
                   </td>
                   <td>
-                    <span className="action-name">{it.type}</span>
+                    <span className="action-name">{tTaskType(it.type)}</span>
                   </td>
                   <td>
                     <span
                       className={STATUS_BADGE[it.status] ?? "badge badge-neutral"}
                     >
-                      {it.status.toLowerCase()}
+                      {tStatus(it.status)}
                     </span>
                   </td>
                   <td>
@@ -214,17 +218,10 @@ export default function Queue() {
                   </td>
                   <td>
                     {it.error_code ? (
-                      <div
-                        style={{
-                          fontSize: 12.5,
-                          color: "var(--danger)",
-                          lineHeight: 1.45,
-                          maxWidth: 380,
-                        }}
-                      >
-                        <strong className="mono">{it.error_code}:</strong>{" "}
-                        {it.error_message}
-                      </div>
+                      <ErrorCell
+                        code={it.error_code}
+                        message={it.error_message ?? ""}
+                      />
                     ) : it.result ? (
                       <span className="payload payload-success">
                         {JSON.stringify(it.result)}
@@ -246,6 +243,59 @@ export default function Queue() {
           </table>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Hiển thị error_code + error_message dạng có thể expand. Nhiều error message
+ * giờ chứa diag step-by-step nhiều dòng (xem [runner.ts ensureContentInjected])
+ * — collapse 2 dòng đầu, click để xem full.
+ */
+function ErrorCell({ code, message }: { code: string; message: string }) {
+  const t = useT();
+  const [expanded, setExpanded] = useState(false);
+  const hasMultiline = message.includes("\n");
+  return (
+    <div
+      style={{
+        fontSize: 12.5,
+        color: "var(--danger)",
+        lineHeight: 1.45,
+        maxWidth: 380,
+      }}
+    >
+      <strong className="mono">{code}:</strong>{" "}
+      <span
+        style={{
+          whiteSpace: "pre-wrap",
+          display: "inline-block",
+          maxHeight: expanded ? "none" : "3em",
+          overflow: "hidden",
+          verticalAlign: "top",
+        }}
+      >
+        {message}
+      </span>
+      {hasMultiline && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          style={{
+            display: "block",
+            marginTop: 4,
+            background: "none",
+            border: "none",
+            color: "var(--accent)",
+            cursor: "pointer",
+            padding: 0,
+            fontSize: 12,
+            textDecoration: "underline",
+          }}
+        >
+          {expanded ? t("queue.errorCollapse") : t("queue.errorExpand")}
+        </button>
+      )}
     </div>
   );
 }
@@ -273,11 +323,13 @@ export function Chip({
 }
 
 export function TimeCell({ iso }: { iso: string }) {
+  const { lang } = useI18n();
   const d = new Date(iso);
+  const tag = localeTag(lang);
   return (
     <span className="timestamp">
-      {d.toLocaleTimeString()}
-      <span className="date">{d.toLocaleDateString()}</span>
+      {d.toLocaleTimeString(tag)}
+      <span className="date">{d.toLocaleDateString(tag)}</span>
     </span>
   );
 }

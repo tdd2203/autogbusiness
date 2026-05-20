@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { triggerExtensionRun } from "../hooks/useExtensionTrigger";
-import { useT } from "../i18n";
+import { useFormatDate, useT } from "../i18n";
 import {
   SEAT_TOTAL_MAX,
   type QueueItem,
@@ -16,6 +16,7 @@ import { SearchInput } from "./Members";
 
 export default function Workspaces() {
   const t = useT();
+  const formatDate = useFormatDate();
   const { user } = useAuth();
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
@@ -356,7 +357,7 @@ export default function Workspaces() {
                         : t("workspace.lastSyncNever")}
                     </td>
                     <td className="cell-muted" style={{ fontSize: 12.5 }}>
-                      {new Date(ws.created_at).toLocaleDateString()}
+                      {formatDate(ws.created_at)}
                     </td>
                     {user?.is_super_admin && (
                       <td style={{ textAlign: "right" }}>

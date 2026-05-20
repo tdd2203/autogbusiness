@@ -75,20 +75,6 @@ export async function fetchActiveTask(
   return request<ActiveTaskInfo>(config, "/api/v1/queue/active");
 }
 
-/**
- * Popup trigger SYNC_BILLING task để refresh workspace.seat_used từ ChatGPT
- * /admin/billing. Backend dedup nếu đã có SYNC_BILLING PENDING/IN_PROGRESS.
- */
-export async function triggerSyncBilling(
-  config: ExtensionConfig,
-): Promise<{ queue_item_id: string; status: string; deduplicated: boolean }> {
-  return request<{
-    queue_item_id: string;
-    status: string;
-    deduplicated: boolean;
-  }>(config, "/api/v1/queue/sync-billing", { method: "POST" });
-}
-
 export async function pickNextTask(
   config: ExtensionConfig,
 ): Promise<QueueItem | null> {

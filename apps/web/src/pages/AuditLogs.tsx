@@ -72,7 +72,9 @@ export default function AuditLogs() {
       >
         <div>
           <div className="breadcrumb">
-            System<span className="breadcrumb-sep">/</span>Audit Log
+            {t("breadcrumb.system")}
+            <span className="breadcrumb-sep">/</span>
+            {t("nav.auditLog")}
           </div>
           <h1 className="display-h1">{t("audit.title")}</h1>
           <p className="page-sub">{t("audit.pageSub")}</p>

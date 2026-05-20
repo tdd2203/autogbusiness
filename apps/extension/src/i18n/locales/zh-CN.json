@@ -28,7 +28,6 @@
   "popup.errorUnknown": "未知错误",
   "popup.plan": "套餐",
   "popup.seat": "席位",
-  "popup.syncBillingTooltip": "从 ChatGPT 计费页面重新同步席位 (扩展抓取 /admin/billing)",
   "popup.versionTooltip": "点击查看最近更新",
   "popup.changelogKind.feature": "新功能",
   "popup.changelogKind.fix": "修复",

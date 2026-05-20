@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { useT } from "../i18n";
+import { useT, useTranslateEnum } from "../i18n";
 import type { QueueItem } from "../types";
 import { Chip, TimeCell } from "./Queue";
 import { SearchInput } from "./Members";
@@ -18,6 +18,8 @@ const STATUS_BADGE: Record<string, string> = {
 
 export default function WorkspaceQueue() {
   const t = useT();
+  const tStatus = useTranslateEnum("status");
+  const tTaskType = useTranslateEnum("taskType");
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const qc = useQueryClient();
 
@@ -154,13 +156,13 @@ export default function WorkspaceQueue() {
                     <TimeCell iso={task.created_at} />
                   </td>
                   <td>
-                    <span className="action-name">{task.type}</span>
+                    <span className="action-name">{tTaskType(task.type)}</span>
                   </td>
                   <td>
                     <span
                       className={STATUS_BADGE[task.status] ?? "badge badge-neutral"}
                     >
-                      {task.status.toLowerCase()}
+                      {tStatus(task.status)}
                     </span>
                   </td>
                   <td>

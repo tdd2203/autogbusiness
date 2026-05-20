@@ -116,74 +116,6 @@ def pending_count(
     return {"count": int(count), "workspace_id": str(workspace.id)}
 
 
-@router.post("/sync-billing", status_code=status.HTTP_202_ACCEPTED, response_model=dict)
-def extension_trigger_sync_billing(
-    db: Session = Depends(get_session),
-    workspace: Workspace = Depends(require_extension_workspace),
-) -> dict:
-    """Extension popup trigger SYNC_BILLING task để refresh seat_used/seat_total.
-
-    Dùng X-API-KEY auth (workspace key) thay vì admin session — cho phép popup
-    extension chủ động enqueue khi user thấy seat hiển thị stale.
-
-    Dedup: nếu đã có SYNC_BILLING PENDING/IN_PROGRESS trong workspace này thì
-    trả về task hiện tại, KHÔNG tạo trùng (tránh stack).
-    """
-    from app.sse import publish_task_event
-
-    existing = (
-        db.execute(
-            select(QueueItem).where(
-                QueueItem.workspace_id == workspace.id,
-                QueueItem.type == "SYNC_BILLING",
-                QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
-            )
-        )
-        .scalars()
-        .first()
-    )
-    if existing:
-        return {
-            "queue_item_id": str(existing.id),
-            "status": existing.status,
-            "deduplicated": True,
-        }
-    task = QueueItem(
-        type="SYNC_BILLING",
-        status="PENDING",
-        workspace_id=workspace.id,
-        payload={"triggered_by": "extension-popup"},
-        created_by_id=None,
-    )
-    db.add(task)
-    db.flush()
-    log_event(
-        db,
-        actor_type="EXTENSION",
-        actor_label=f"workspace:{workspace.name}",
-        action="WORKSPACE_BILLING_SYNC_QUEUED",
-        result="PENDING",
-        target_type="WORKSPACE",
-        target_id=str(workspace.id),
-        data={"queue_item_id": str(task.id), "trigger": "popup"},
-        commit=False,
-    )
-    db.commit()
-    publish_task_event(
-        workspace.id,
-        {
-            "type": "task-available",
-            "task_id": str(task.id),
-            "task_type": "SYNC_BILLING",
-        },
-    )
-    return {
-        "queue_item_id": str(task.id),
-        "status": "PENDING",
-        "deduplicated": False,
-    }
-
-
 @router.get("/active", response_model=dict)
 def active_task(
     db: Session = Depends(get_session),
@@ -603,9 +535,10 @@ def update_task(
                 )
             )
 
-    # SYNC_BILLING chỉ chạy khi user chủ động trigger từ dashboard (WorkspaceLayout /
-    # Workspaces "Sync billing") hoặc extension popup (POST /queue/sync-billing).
-    # Không auto-chain sau INVITE_MEMBER / REMOVE_MEMBER / REVOKE_INVITES.
+    # SYNC_BILLING chỉ chạy khi user chủ động trigger từ dashboard (WorkspaceLayout
+    # "Cập nhật giá & ngày renew" / Workspaces list "Sync billing"). Extension
+    # popup KHÔNG có button trigger (v0.6.11 — popup tự re-fetch whoami khi
+    # SYNC_BILLING từ dashboard hoàn tất). Không auto-chain sau INVITE/REMOVE.
     log_event(
         db,
         actor_type="EXTENSION",

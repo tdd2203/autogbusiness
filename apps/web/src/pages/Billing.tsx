@@ -6,7 +6,8 @@ export default function Billing() {
     <div className="page-fade">
       <div style={{ marginBottom: 32 }}>
         <div className="breadcrumb">
-          Organization<span className="breadcrumb-sep">/</span>
+          {t("breadcrumb.organization")}
+          <span className="breadcrumb-sep">/</span>
           {t("nav.billing")}
         </div>
         <h1 className="display-h1">{t("billing.title")}</h1>

@@ -82,6 +82,20 @@ export const SELECTORS = {
     '.toast-success',
   ],
 
+  // Input "Lọc theo tên" trên /admin/members (tab Người dùng) — UI 2026 có
+  // ô search filter ngay phía trên list. Dùng để filter row khi cần REMOVE
+  // member trong list dài (tránh phải scroll qua hết 100+ row).
+  memberFilterInput: [
+    'input[data-testid="member-filter-input"]',
+    'input[type="search"]',
+    'input[placeholder*="Lọc" i]',
+    'input[placeholder*="Filter" i]',
+    'input[placeholder*="筛选" i]',
+    'input[placeholder*="过滤" i]',
+    'input[aria-label*="Lọc" i]',
+    'input[aria-label*="Filter" i]',
+  ],
+
   // Member rows — thử nhiều pattern. Scrape fallback theo email regex nếu tất cả fail.
   memberRow: [
     'tr[data-testid^="member-row"]',

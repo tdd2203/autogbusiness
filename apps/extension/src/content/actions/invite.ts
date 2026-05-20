@@ -198,12 +198,131 @@ export async function executeInvite(
     };
   }
 
-  // Wrap: bật toggle "Cho phép lời mời từ miền bên ngoài" trên /admin/identity
-  // trước khi invite (cho phép email ngoài domain) → restore lại trạng thái cũ
-  // ngay sau khi invite xong, kể cả khi fail. ChatGPT giữ toggle này nhanh chóng
-  // OFF lại sau invite để tránh rủi ro bảo mật.
-  return await withExternalInvitesEnabled(() =>
+  // Spec (v0.6.6, theo user 2026-05-20):
+  //   1. Kiểm tra toggle "Cho phép lời mời ngoài tên miền" hiện đang ON/OFF.
+  //      - Nếu OFF → bật ON.
+  //      - Nếu đã ON → skip click (giữ nguyên cho invite).
+  //   2. Navigate /admin/members + mời thành viên (executeInviteInner).
+  //   3. SAU KHI INVITE XONG (finally của withExternalInvitesEnabled):
+  //      LUÔN tắt toggle về OFF — KỂ CẢ prev=ON (user bật vĩnh viễn). Đây
+  //      là spec bảo mật user xác nhận: external invites là rủi ro → sau
+  //      mỗi invite extension phải về OFF, user bật lại thủ công nếu cần.
+  //   4. SAU KHI ĐÃ TẮT TOGGLE, chuyển sang tab "Lời mời đang chờ xử lý" →
+  //      URL = /admin/members?tab=invites. ĐỢI DOM render list pending stable
+  //      (waitForPendingListStable, max 8s) — đảm bảo F5 chạy ở state ổn định,
+  //      không cắt giữa lúc ChatGPT React Query đang fetch.
+  //   5. Background runner F5 + gọi VERIFY_PENDING_INVITE (Phase 2) →
+  //      executeVerifyPendingInvite scrape pending tab → trả verified emails →
+  //      runner bulk-upsert (isFullSync=false) vào DB → dashboard hiển thị.
+  //
+  // QUAN TRỌNG: Trình tự PHẢI là 'tắt toggle TRƯỚC, chuyển tab Lời mời SAU'.
+  // Nếu đảo lại (chuyển tab → restore toggle navigate qua /admin/identity →
+  // navigate về /admin/members) thì URL mất ?tab=invites → F5 load tab "Người
+  // dùng" default → Phase 2 phải click lại tab, chậm hơn + dễ race với cache.
+  const inviteResult = await withExternalInvitesEnabled(() =>
     executeInviteInner(taskId, emails, role),
+  );
+
+  // Bước 4: chuyển tab "Lời mời" SAU khi toggle đã tắt + đã ở /admin/members.
+  // Chỉ chạy khi invite submit thành công — fail thì không cần verify.
+  if (inviteResult.ok) {
+    await sleep(500); // chờ DOM ổn định sau navigate cuối của wrapper
+    const switched = await clickTabAndWait(
+      "tab_pending_invites",
+      TEXT_FALLBACKS.tabPendingInvites,
+      3000, // v0.6.6: tăng 1500 → 3000ms vì ChatGPT cần thời gian fetch +
+            // render pending list lần đầu (lazy load + React Query fetch).
+    );
+    if (switched) {
+      // v0.6.6: Đợi DOM render danh sách pending ỔN ĐỊNH trước khi return.
+      // Lý do: ChatGPT React Query fetch pending list xong vài giây sau khi
+      // tab active. Nếu return ngay → background F5 → ngắt giữa fetch →
+      // sau F5 ChatGPT có thể serve cache cũ → scrape thấy thiếu email
+      // (user report "load thiếu" v0.6.5).
+      //
+      // Strategy: poll DOM row count (text node email pattern) cho tới khi
+      // STABLE 2 ticks liên tiếp HOẶC chứa email vừa mời. Cap 8s.
+      console.log(
+        "[autogpt-invite] click tab 'Lời mời' OK — đợi DOM render list pending stable...",
+      );
+      await waitForPendingListStable(emails, 8_000);
+      console.log(
+        "[autogpt-invite] DOM list pending đã stable — return cho runner F5",
+      );
+    } else {
+      console.warn(
+        "[autogpt-invite] không click được tab 'Lời mời' — Phase 2 sau F5 sẽ tự navigate",
+      );
+    }
+  }
+
+  return inviteResult;
+}
+
+/**
+ * Poll DOM tới khi danh sách pending invite STABLE.
+ *
+ * Stable định nghĩa: row count (đếm text node email pattern) không tăng trong
+ * 2 tick liên tiếp HOẶC tất cả `expectedEmails` đã xuất hiện trong DOM.
+ *
+ * Dùng SAU click tab "Lời mời" + TRƯỚC F5 — để đảm bảo ChatGPT đã fetch +
+ * render xong pending list từ server. Nếu F5 ngắt giữa fetch, sau F5 ChatGPT
+ * có thể serve cache → scrape miss.
+ *
+ * Không throw — chỉ best-effort poll. Hết timeout vẫn return (caller tự F5).
+ */
+async function waitForPendingListStable(
+  expectedEmails: string[],
+  timeoutMs: number,
+): Promise<void> {
+  const expectedLower = expectedEmails.map((e) => e.toLowerCase());
+  const start = Date.now();
+  let lastCount = -1;
+  let stableTicks = 0;
+  // Regex full email — match text node chỉ chứa email
+  const EMAIL_RE = /^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i;
+
+  while (Date.now() - start < timeoutMs) {
+    await sleep(500);
+
+    // Đếm email-format text nodes trong main content
+    const main = document.querySelector("main, [role='main']") ?? document.body;
+    const walker = document.createTreeWalker(main, NodeFilter.SHOW_TEXT);
+    const found = new Set<string>();
+    let node: Node | null;
+    while ((node = walker.nextNode())) {
+      const text = (node.nodeValue ?? "").trim();
+      if (text.length > 0 && text.length <= 100 && EMAIL_RE.test(text)) {
+        found.add(text.toLowerCase());
+      }
+    }
+    const count = found.size;
+
+    // Best case: tất cả email vừa mời đã thấy → return ngay
+    const allExpectedFound = expectedLower.every((e) => found.has(e));
+    if (allExpectedFound) {
+      console.log(
+        `[autogpt-invite-stable] tất cả ${expectedLower.length} email vừa mời đã thấy trong DOM (count=${count}) sau ${Date.now() - start}ms`,
+      );
+      return;
+    }
+
+    // Stable case: row count không tăng 2 tick liên tiếp
+    if (count === lastCount && count > 0) {
+      stableTicks += 1;
+      if (stableTicks >= 2) {
+        console.log(
+          `[autogpt-invite-stable] DOM stable (count=${count}, ${stableTicks} ticks) sau ${Date.now() - start}ms — chưa thấy đủ email vừa mời nhưng list đã render xong`,
+        );
+        return;
+      }
+    } else {
+      stableTicks = 0;
+      lastCount = count;
+    }
+  }
+  console.warn(
+    `[autogpt-invite-stable] timeout ${timeoutMs}ms — list pending chưa stable (last count=${lastCount}). F5 vẫn tiến hành.`,
   );
 }
 
@@ -491,35 +610,16 @@ async function executeInviteInner(
     `[autogpt-invite] SUBMIT SUCCESS: ${emails.length} email(s) role=${role}`,
   );
 
-  // v0.6.4: Sau submit, CHUYỂN SANG tab "Lời mời đang chờ xử lý" NGAY (trước
-  // khi runner F5). Khi F5 xảy ra ở URL `/admin/members?tab=invites`, ChatGPT
-  // load thẳng pending list từ server vào view — không cần navigation phụ sau
-  // F5, scrape thấy data tươi ngay. Approach này (gợi ý user 2026-05-20):
-  //   - Tránh race condition của verify scrape (a12 vô tình mất khỏi DB do
-  //     bulk-upsert reconcile khi DOM chưa render).
-  //   - Bỏ 1.5s delay + retry chain trong Phase 2 → invite nhanh hơn rõ rệt.
-  await sleep(500); // chờ dialog đóng + state ổn định
-  const switched = await clickTabAndWait(
-    "tab_pending_invites",
-    TEXT_FALLBACKS.tabPendingInvites,
-    1500,
-  );
-  if (switched) {
-    console.log("[autogpt-invite] đã chuyển sang tab 'Lời mời' trước F5 verify");
-  } else {
-    console.warn(
-      "[autogpt-invite] không click được tab 'Lời mời' — Phase 2 sau F5 sẽ tự navigate",
-    );
-  }
-
-  // Phase 1 (submit + chuyển tab) HOÀN TẤT. Background runner sẽ chrome.tabs.reload
-  // (F5 thật) tại URL hiện tại — vì đã ở /admin/members?tab=invites, ChatGPT
-  // load thẳng pending list. Phase 2 scrape ngay.
+  // executeInviteInner CHỈ chịu trách nhiệm submit invite. Bước "chuyển tab
+  // Lời mời" được làm ở scope ngoài (executeInvite) SAU khi
+  // withExternalInvitesEnabled finally restore xong toggle — đảm bảo URL không
+  // bị mất ?tab=invites do navigation /admin/identity → /admin/members của
+  // wrapper. (v0.6.4 từng đặt click tab ở đây là SAI thứ tự — fixed ở v0.6.5.)
   await reportProgress(
     taskId,
     {
       phase: "submit-done",
-      message: `Submit ${emails.length} email OK — đã mở tab Lời mời, chờ F5 verify...`,
+      message: `Submit ${emails.length} email OK — chờ restore toggle + chuyển tab Lời mời...`,
       current: emails.length,
       total: emails.length,
     },
@@ -554,10 +654,10 @@ export async function executeVerifyPendingInvite(
     `[autogpt-invite-verify] START: ${emails.length} email(s) role=${role} pathname=${location.pathname}${location.search}`,
   );
 
-  // v0.6.4: Phase 1 đã chuyển sang tab "Lời mời" → URL hiện tại thường là
-  // /admin/members?tab=invites → F5 load thẳng pending list. Chỉ cần đợi DOM
-  // render xong (~800ms thay vì 1500ms).
-  await sleep(800);
+  // v0.6.6: sau F5 ở URL /admin/members?tab=invites, ChatGPT cần thời gian
+  // re-fetch + render pending list. Tăng wait 800 → 2500ms để giảm trường
+  // hợp scrape miss email vừa mời (user report v0.6.5 "load thiếu").
+  await sleep(2500);
 
   // Defensive: nếu vì lý do gì đó (Step 3 NUCLEAR recreate tab) URL không
   // ở /admin/members → navigate qua sidebar / pushState.
@@ -604,10 +704,12 @@ export async function executeVerifyPendingInvite(
   let unverifiedEmails: string[] = invitedLower.slice();
   let scrapedEmailSet = new Set<string>();
 
-  // v0.6.4: Sau F5 trên đúng URL /admin/members?tab=invites, pending list load
-  // tươi ngay → attempt 1 thường đủ. Giảm retry chain để invite kết thúc nhanh
-  // hơn; nếu attempt 1 đã verify hết thì break sớm.
-  const RETRY_DELAYS_MS = [0, 2500];
+  // v0.6.6: 3 attempt với delay tăng dần. Sau F5 + Phase 1 đã đợi list stable,
+  // attempt 1 thường đủ; attempt 2-3 phòng case ChatGPT index pending list
+  // chậm (~5s) hoặc React Query cache warm-up. Break sớm khi tất cả verified.
+  // Tăng từ [0, 2500] (v0.6.4-0.6.5) lên [0, 3000, 6000] để xử lý "load
+  // thiếu" — user thấy email trên ChatGPT nhưng dashboard miss.
+  const RETRY_DELAYS_MS = [0, 3000, 6000];
   for (let attempt = 0; attempt < RETRY_DELAYS_MS.length; attempt++) {
     if (RETRY_DELAYS_MS[attempt] > 0) {
       await reportProgress(

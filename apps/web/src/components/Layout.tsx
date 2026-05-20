@@ -130,7 +130,7 @@ export default function Layout() {
                 color: "var(--ink)",
               }}
             >
-              AutoGPT
+              {t("app.name")}
             </div>
             <div
               style={{
@@ -142,7 +142,7 @@ export default function Layout() {
                 textTransform: "uppercase",
               }}
             >
-              Admin
+              {t("app.adminBadge")}
             </div>
           </Link>
         </div>
@@ -211,11 +211,24 @@ export default function Layout() {
               </div>
             </div>
           </div>
+          <label
+            style={{
+              display: "block",
+              marginTop: 12,
+              fontSize: 10.5,
+              fontWeight: 500,
+              color: "var(--ink-3)",
+              textTransform: "uppercase",
+              letterSpacing: "0.06em",
+            }}
+          >
+            {t("lang.switch")}
+          </label>
           <select
             value={lang}
             onChange={(e) => onDashboardLangChange(e.target.value as Lang)}
             style={{
-              marginTop: 12,
+              marginTop: 6,
               width: "100%",
               padding: "7px 10px",
               border: "1px solid var(--border)",
@@ -227,8 +240,8 @@ export default function Layout() {
               cursor: "pointer",
             }}
           >
-            <option value="vi">{t("lang.vi")}</option>
-            <option value="zh-CN">{t("lang.zh-CN")}</option>
+            <option value="vi">{t("lang.viOption")}</option>
+            <option value="zh-CN">{t("lang.zhOption")}</option>
           </select>
           <p
             style={{

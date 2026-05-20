@@ -19,9 +19,14 @@
 
   "toast.confirmTypeLabel": "输入 {text} 进行确认",
 
+  "app.name": "AutoGPT",
+  "app.adminBadge": "管理端",
+
   "lang.vi": "Tiếng Việt",
   "lang.zh-CN": "中文 (简体)",
-  "lang.switch": "语言",
+  "lang.viOption": "🇻🇳 Tiếng Việt",
+  "lang.zhOption": "🇨🇳 中文 (简体)",
+  "lang.switch": "界面语言",
   "lang.dashboardOnlyHint": "仅更改控制台界面。ChatGPT 需手动设置：头像 → 设置 → 通用 → 语言。",
   "lang.switchNotify": "控制台已切换为 {dashboardLang}。若使用 ChatGPT 扩展自动化，请手动将 ChatGPT 语言设为 {chatgptLang}（设置 → 通用 → 语言）。扩展不会自动修改。",
   "lang.chatgptLangVi": "Tiếng Việt",
@@ -45,6 +50,10 @@
 
   "role.super": "超级管理员",
   "role.sub": "子管理员",
+
+  "breadcrumb.system": "系统",
+  "breadcrumb.organization": "组织",
+  "breadcrumb.account": "账户",
 
   "nav.workspaces": "工作区",
   "nav.queue": "队列",
@@ -81,6 +90,8 @@
   "queue.filterInProgress": "处理中",
   "queue.filterPending": "等待中",
   "queue.recentTitle": "最近任务",
+  "queue.errorExpand": "↓ 查看逐步详情",
+  "queue.errorCollapse": "↑ 收起",
 
   "audit.filterAll": "全部",
   "audit.filterAdmin": "管理员操作",
@@ -130,7 +141,7 @@
   "billing.fullMonthPerSlot": "整月单席位价",
   "billing.fullMonthPerSlotHint": "周期首张账单 ÷ 2 席位 (首次至少购买 2 个)",
   "billing.fullMonthPerSlotHintV2": "需当前周期首张扣款账单（同步 billing）。整月单价 = 账单金额 ÷ 席位数。",
-  "billing.fullMonthFromFirstInvoice": "周期首次扣款 {date}：{amount} ÷ {slots} 席位 = 单席位整月价",
+  "billing.fullMonthFromFirstInvoice": "周期首日 {date}：{amount} ÷ {slots} 席位 = 单席位整月价",
   "billing.todayFromBase": "{base} × {days}/30 — 按周期首张账单单席位价比例折算",
   "billing.inferenceFailedHint": "⚠ 无法从当前周期内 {total} 张账单推断单席位价 (金额未落入 200k-400k/席位 区间)。请核对抓取数据。",
   "billing.noCycleInvoicesHint": "⚠ 共 {total} 张账单但均不在当前计费周期内 — 请在续费日后同步账单或检查 renewal_date。",
@@ -428,6 +439,30 @@
   "perm.AUDIT_LOG_VIEW": "查看审计日志",
 
   "billing.title": "账单",
+
+  "status.PENDING": "等待中",
+  "status.IN_PROGRESS": "处理中",
+  "status.COMPLETED": "已完成",
+  "status.FAILED": "失败",
+  "status.active": "活跃",
+  "status.pending": "待处理",
+  "status.removed": "已移除",
+
+  "invoice.paid": "已付款",
+  "invoice.unpaid": "未付款",
+  "invoice.unknown": "未知",
+
+  "billingStatus.PAID": "已付款",
+  "billingStatus.UNPAID": "未付款",
+  "billingStatus.UNKNOWN": "未知",
+
+  "taskType.SYNC_DATA": "同步成员",
+  "taskType.SYNC_BILLING": "同步账单",
+  "taskType.INVITE_MEMBER": "邀请成员",
+  "taskType.REMOVE_MEMBER": "移除成员",
+  "taskType.CHANGE_ROLE": "修改角色",
+  "taskType.REVOKE_INVITES": "撤销邀请",
+  "taskType.HARVEST_UI_LABELS": "采集 UI 标签",
 
   "settings.sectionUiLabels": "ChatGPT UI 标签",
   "uiLabels.sectionHeader": "校准 ChatGPT UI 标签 (3 语言 × 4 页面)",

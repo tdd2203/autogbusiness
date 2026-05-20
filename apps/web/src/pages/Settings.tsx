@@ -2,13 +2,14 @@ import { useState, type FormEvent } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { api, ApiError, setToken } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
-import { useT } from "../i18n";
+import { useFormatDate, useT } from "../i18n";
 import { UiLabelsManager } from "../components/UiLabelsManager";
 
 type SettingsTab = "account" | "security" | "uiLabels";
 
 export default function Settings() {
   const t = useT();
+  const formatDate = useFormatDate();
   const { user, refresh } = useAuth();
   const [tab, setTab] = useState<SettingsTab>("account");
   const [oldPw, setOldPw] = useState("");
@@ -44,7 +45,7 @@ export default function Settings() {
   }
 
   const joinedAt = user?.created_at
-    ? new Date(user.created_at).toLocaleDateString()
+    ? formatDate(user.created_at)
     : "—";
 
   const displayName = user?.username ?? user?.email ?? "—";
@@ -53,7 +54,8 @@ export default function Settings() {
     <div className="page-fade">
       <div style={{ marginBottom: 32 }}>
         <div className="breadcrumb">
-          Account<span className="breadcrumb-sep">/</span>
+          {t("breadcrumb.account")}
+          <span className="breadcrumb-sep">/</span>
           {t("nav.settings")}
         </div>
         <h1 className="display-h1">{t("settings.title")}</h1>

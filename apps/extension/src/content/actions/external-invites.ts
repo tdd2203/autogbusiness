@@ -301,11 +301,18 @@ async function setExternalInvites(
 }
 
 /**
- * Wrapper: tạm bật external invites → chạy taskFn → restore state cũ.
+ * Wrapper: tạm bật external invites → chạy taskFn → LUÔN tắt OFF sau invite.
  *
- * GUARANTEE: nếu taskFn throw hoặc trả ok=false, vẫn restore state trong
- * finally để không để ChatGPT ở trạng thái "external invites = ON" sau khi
- * extension làm xong.
+ * Spec (v0.6.6, user 2026-05-20):
+ *   1. Kiểm tra toggle hiện tại (read prev state).
+ *   2. Nếu OFF → bật ON. Nếu đã ON → skip click, dùng nguyên.
+ *   3. Chạy taskFn (invite).
+ *   4. SAU INVITE (finally): LUÔN tắt OFF, KỂ CẢ user đã bật ON từ trước.
+ *      Lý do: "Cho phép lời mời từ miền bên ngoài" là rủi ro bảo mật — sau
+ *      mỗi invite phải về OFF để không leave workspace ở trạng thái mở. User
+ *      có thể bật lại thủ công nếu cần invite tiếp.
+ *
+ * GUARANTEE: finally luôn chạy kể cả taskFn throw → toggle luôn về OFF.
  *
  * Nếu không tìm thấy toggle (DOM đổi, prev=null) → skip toàn bộ wrap, chạy
  * taskFn trực tiếp (không phá invite flow).
@@ -328,6 +335,10 @@ export async function withExternalInvitesEnabled<T>(
     return await taskFn();
   }
 
+  console.log(
+    `[autogpt-external-invites] state trước invite: ${setResult.prev ? "ON" : "OFF"}${setResult.changed ? " → đã bật ON cho invite" : " (đã ON sẵn, không click)"}`,
+  );
+
   // Navigate về /admin/members để taskFn chạy invite. Đợi predicate:
   //   - URL đổi sang /admin/members
   //   - VÀ có ít nhất 1 element h1/main render (page content visible)
@@ -349,21 +360,20 @@ export async function withExternalInvitesEnabled<T>(
   try {
     return await taskFn();
   } finally {
-    // Restore state cũ (thường là OFF) — chạy KỂ CẢ khi taskFn throw.
-    // Sau khi tắt xong, navigate về /admin/members để extension idle ở trang
-    // quen thuộc (dashboard poll member list / extension status từ đây).
-    if (setResult.changed && setResult.prev !== null) {
-      console.log(
-        `[autogpt-external-invites] restore toggle về ${setResult.prev}`,
+    // v0.6.6: LUÔN tắt toggle về OFF sau invite — KHÔNG restore prev nữa.
+    // Trước đây (v0.6.5): chỉ restore khi `changed=true` → nếu prev đã ON
+    // (user bật vĩnh viễn) thì finally bỏ qua → toggle giữ ON → vi phạm spec
+    // bảo mật của user ("sau mời xong phải tắt mời ngoài"). v0.6.6 force OFF.
+    console.log(
+      "[autogpt-external-invites] SAU INVITE: LUÔN tắt toggle về OFF (force OFF, không restore prev)",
+    );
+    try {
+      await setExternalInvites(false);
+    } catch (e) {
+      console.warn(
+        "[autogpt-external-invites] force OFF FAILED — ChatGPT có thể vẫn ở trạng thái external invites = ON. Tắt thủ công nếu cần.",
+        e,
       );
-      try {
-        await setExternalInvites(setResult.prev);
-      } catch (e) {
-        console.warn(
-          "[autogpt-external-invites] restore FAILED — ChatGPT vẫn ở trạng thái external invites = ON. Tắt thủ công nếu cần.",
-          e,
-        );
-      }
     }
     // Luôn navigate về /admin/members khi kết thúc invite (dù toggle có đổi
     // hay không, dù invite success/fail) — UX nhất quán cho user và để task
@@ -371,8 +381,13 @@ export async function withExternalInvitesEnabled<T>(
     try {
       await navigateTo(
         MEMBERS_PATH,
-        () => location.pathname.includes(MEMBERS_PATH),
-        5_000,
+        () => {
+          if (!location.pathname.includes(MEMBERS_PATH)) return false;
+          const main = document.querySelector("main, [role='main']");
+          const hasButtons = document.querySelectorAll("button").length > 2;
+          return !!main && hasButtons;
+        },
+        10_000,
       );
     } catch (e) {
       console.warn(

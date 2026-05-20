@@ -28,7 +28,6 @@
   "popup.errorUnknown": "Lỗi không xác định",
   "popup.plan": "Plan",
   "popup.seat": "Seat",
-  "popup.syncBillingTooltip": "Đồng bộ lại seat từ trang ChatGPT billing (extension scrape /admin/billing)",
   "popup.versionTooltip": "Bấm để xem thay đổi gần đây",
   "popup.changelogKind.feature": "Mới",
   "popup.changelogKind.fix": "Sửa lỗi",

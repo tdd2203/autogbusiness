@@ -16,7 +16,7 @@
  *   - **Today's price = fullMonthPerSlot × (days_today / 30)**.
  */
 
-import { useT } from "../i18n";
+import { useFormatDate, useT, useTranslateEnum } from "../i18n";
 import type { BillingInvoice, Workspace } from "../types";
 
 const CYCLE_DAYS = 30;
@@ -250,6 +250,8 @@ function computeTodayPerSlotPrice(
 
 export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
   const t = useT();
+  const formatDate = useFormatDate();
+  const tInvoiceStatus = useTranslateEnum("invoice");
   const invoices = workspace.billing_invoices ?? [];
   const renewal = workspace.renewal_date;
   const {
@@ -344,7 +346,7 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
           hint={
             baseInvoice
               ? t("billing.fullMonthFromFirstInvoice", {
-                  date: new Date(baseInvoice.date).toLocaleDateString("vi-VN"),
+                  date: formatDate(baseInvoice.date),
                   slots: baseInvoice.inferred_slots ?? "?",
                   amount: VND.format(baseInvoice.amount_vnd),
                 })
@@ -355,7 +357,7 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
           label={t("billing.renewalDate")}
           value={
             renewalDate
-              ? renewalDate.toLocaleDateString("vi-VN", {
+              ? formatDate(renewalDate, {
                   day: "numeric",
                   month: "short",
                   year: "numeric",
@@ -365,11 +367,11 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
           hint={
             cycleStartDate && renewalDate
               ? t("billing.renewalCycleRange", {
-                  start: cycleStartDate.toLocaleDateString("vi-VN", {
+                  start: formatDate(cycleStartDate, {
                     day: "numeric",
                     month: "short",
                   }),
-                  end: renewalDate.toLocaleDateString("vi-VN", {
+                  end: formatDate(renewalDate, {
                     day: "numeric",
                     month: "short",
                     year: "numeric",
@@ -422,7 +424,7 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
                   );
                   return (
                     <tr key={`${inv.date}-${inv.amount_vnd}-${i}`}>
-                      <td>{new Date(inv.date).toLocaleDateString("vi-VN")}</td>
+                      <td>{formatDate(inv.date)}</td>
                       <td
                         style={{
                           textAlign: "right",
@@ -476,7 +478,7 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
                                 : "badge-neutral"
                           }`}
                         >
-                          {inv.status}
+                          {tInvoiceStatus(inv.status)}
                         </span>
                       </td>
                     </tr>

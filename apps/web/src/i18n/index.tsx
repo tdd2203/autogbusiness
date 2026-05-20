@@ -6,6 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { formatDateForLang, localeTag } from "../lib/locale-format";
 import vi from "./locales/vi.json";
 import zhCN from "./locales/zh-CN.json";
 
@@ -37,11 +38,16 @@ type I18nContextValue = {
 const I18nContext = createContext<I18nContextValue | null>(null);
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [lang, setLangState] = useState<Lang>(() => detectInitialLang());
+  const [lang, setLangState] = useState<Lang>(() => {
+    const initial = detectInitialLang();
+    document.documentElement.lang = initial === "zh-CN" ? "zh-CN" : "vi";
+    return initial;
+  });
 
   const setLang = useCallback((next: Lang) => {
     // Chỉ lưu UI dashboard. Thông báo đổi ChatGPT thủ công do Layout.tsx (toast).
     localStorage.setItem(STORAGE_KEY, next);
+    document.documentElement.lang = next === "zh-CN" ? "zh-CN" : "vi";
     setLangState(next);
   }, []);
 
@@ -87,3 +93,22 @@ export function useI18n(): I18nContextValue {
 export function useT(): I18nContextValue["t"] {
   return useI18n().t;
 }
+
+/** Định dạng ngày theo ngôn ngữ dashboard (vi-VN / zh-CN). */
+export function useFormatDate() {
+  const { lang } = useI18n();
+  return (value: string | Date, options?: Intl.DateTimeFormatOptions) =>
+    formatDateForLang(lang, value, options);
+}
+
+/** Dịch mã enum (status, task type, …) — key dạng `prefix.VALUE`. */
+export function useTranslateEnum(prefix: string) {
+  const { t } = useI18n();
+  return (value: string) => {
+    const key = `${prefix}.${value}`;
+    const out = t(key);
+    return out === key ? value : out;
+  };
+}
+
+export { localeTag, formatDateForLang };
