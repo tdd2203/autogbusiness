@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.6.11";
+export const VERSION = "0.6.12";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,21 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.6.12",
+    date: "2026-05-20",
+    kind: "chore",
+    summary: "Refactor (Pha 0): chuẩn bị tách action mỗi hàm 1 file riêng — chưa đổi behavior",
+    details: [
+      "Tạo branch refactor/extension-actions-split để chia nhỏ các file actions/*.ts đang quá fat (invite 802 dòng, purchase-seat 894 dòng, harvest-labels 738 dòng, sync 648 dòng).",
+      "Kế hoạch chi tiết tại docs/Extension_Refactor/Plan_Split_Actions_Per_File.md (gitignored, local-only).",
+      "Mục tiêu: mỗi action thành 1 folder, mỗi hàm public 1 file riêng, helper theo concern (finders/, pages/, modal1/, modal2/, row-extractors/). Tổng ~58 file mới thay cho 10 file fat.",
+      "QUY TẮC PHA REFACTOR: PURE FILE-SPLIT, KHÔNG đổi logic/behavior. JSDoc copy nguyên si để giữ context lịch sử (v0.6.4 vì sao bỏ scrapedStatuses, v0.6.6 vì sao force OFF, ...).",
+      "Public API contract giữ nguyên qua barrel index.ts mỗi folder — content/index.ts dispatcher chỉ đổi 1 import (./actions/revoke-invites-batch → ./actions/revoke).",
+      "9 pha tiếp theo (1 commit/pha): change-role+revoke → external-invites → remove+sync-billing → sync → invite → purchase-seat → harvest-labels → smoke test.",
+      "Pha 0 này CHƯA tách file nào — chỉ bump version + ghi entry CHANGELOG để các pha sau có baseline rõ ràng.",
+    ],
+  },
   {
     version: "0.6.11",
     date: "2026-05-20",
