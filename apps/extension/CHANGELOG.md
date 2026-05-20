@@ -18,6 +18,17 @@ Mọi thay đổi đáng kể của extension được ghi tại đây. File nà
 
 ---
 
+## v0.6.3 — 2026-05-20 — fix
+
+**Re-thêm Step 3 NUCLEAR (recreate tab) + Step 2 inject thêm lần 2 — fix `CONTENT_NOT_INJECTED` hiếm gặp**
+
+- User report: invite `tamnm@ibcgroup.vn` FAILED với `CONTENT_NOT_INJECTED` dù tab ChatGPT đang ở `/admin` và đã login. v0.4.20 bỏ Step 3 NUCLEAR vì gây regression INVITE (tab recreate phá dialog state). Sau v0.6.2 invite đã tách thành Phase 1 (submit) + Phase 2 (F5 + verify), regression cũ KHÔNG còn áp dụng → an toàn re-thêm Step 3.
+- **Step 3 NUCLEAR mới**: `chrome.tabs.remove` tab cũ → `chrome.tabs.create` tab mới hoàn toàn (URL = `/admin/members`) → `waitForTabComplete` 20s → `chrome.scripting.executeScript` explicit phòng auto-inject lỗi → 5 retry ping (800/1200/1500/2000/2000ms). `sendToContent` đã có sẵn logic dùng `tabId` mới nếu Step 3 đổi tab.
+- **Step 2 strengthen**: sau khi `chrome.tabs.reload` + tab load complete, GỌI THÊM `chrome.scripting.executeScript` một lần nữa (belt-and-suspenders). Manifest auto-inject ở `document_idle` thường ok nhưng đôi khi CRXJS loader fail do CSP/timing — `executeScript` explicit là backup. Cộng thêm 2 retry delay (2000ms x2) nâng tổng wait sau reload từ ~5.8s → ~9.8s.
+- Sửa **error message** `CONTENT_NOT_INJECTED`: text cũ nói "sau 3 bước fallback" nhưng v0.4.20 chỉ còn 2 bước → vô lý. Giờ code có thật 3 bước, text đúng sự thật.
+
+---
+
 ## v0.6.2 — 2026-05-20 — fix
 
 **F5 thật trang admin sau khi submit invite — ép ChatGPT load lại pending list từ server (không dùng cache stale)**

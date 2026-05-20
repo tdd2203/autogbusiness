@@ -154,13 +154,18 @@ function getChatGPTContentScriptFiles(): string[] {
  * thao tác — tự động qua 3 step fallback:
  *
  *   Step 1: chrome.scripting.executeScript inject loader → retry ping ~3s
- *   Step 2: chrome.tabs.reload (F5 tab) → wait → retry ping ~5s
- *   Step 3: chrome.tabs.remove + chrome.tabs.create (NUCLEAR — tab mới hoàn toàn)
- *           → wait → retry ping ~5s
+ *   Step 2: chrome.tabs.reload (F5 tab) → executeScript lần 2 → retry ping ~9s
+ *   Step 3 NUCLEAR: chrome.tabs.remove + chrome.tabs.create tab mới hoàn toàn
+ *           → wait load → executeScript → retry ping ~6s
+ *
+ * v0.6.3 re-thêm Step 3 NUCLEAR (đã bị bỏ ở v0.4.20). Lý do an toàn lại: sau
+ * v0.6.2, INVITE_MEMBER tách thành Phase 1 (submit) + Phase 2 (F5 + verify).
+ * Step 3 NUCLEAR ở Phase 1 không phá dialog vì dialog chưa mở; nếu cần ở
+ * Phase 2 thì verify scrape là idempotent.
  *
  * Trả về:
  *   - { ok: true, tabId: N } — content script ready, có thể là tab khác nếu
- *     step 3 recreate. Caller phải dùng tabId mới.
+ *     Step 3 recreate. Caller phải dùng tabId mới.
  *   - { ok: false } — cả 3 step thất bại (rất hiếm: ChatGPT không login, hoặc
  *     extension permission bị block).
  */
@@ -191,13 +196,23 @@ async function ensureContentInjected(
     }
   }
 
-  // Step 2: AUTO-RELOAD tab
+  // Step 2: AUTO-RELOAD tab + executeScript LẦN 2 (belt-and-suspenders)
+  // Sau reload manifest auto-inject content_scripts ở document_idle, nhưng đôi
+  // khi CRXJS loader fail do CSP/timing. executeScript explicit đảm bảo loader
+  // được dispatch ngay cả khi manifest auto-inject gặp vấn đề.
   console.warn("[autogpt] executeScript fail → AUTO-RELOAD tab...");
   try {
     await chrome.tabs.reload(tabId);
     const reloaded = await waitForTabComplete(tabId, 15_000);
     if (reloaded?.url?.includes("/admin")) {
-      const POST_RELOAD_DELAYS_MS = [500, 800, 1000, 1200, 1500];
+      // Inject thủ công sau reload — nếu auto-inject đã ok, ping sẽ thấy ngay
+      // và return trước khi vào executeScript này.
+      try {
+        await chrome.scripting.executeScript({ target: { tabId }, files });
+      } catch (e) {
+        console.warn("[autogpt] executeScript sau reload failed:", e);
+      }
+      const POST_RELOAD_DELAYS_MS = [500, 800, 1000, 1200, 1500, 2000, 2000];
       for (const delay of POST_RELOAD_DELAYS_MS) {
         await new Promise((r) => setTimeout(r, delay));
         if (await pingContent(tabId)) {
@@ -212,14 +227,55 @@ async function ensureContentInjected(
     console.warn("[autogpt] tabs.reload failed:", e);
   }
 
-  // Step 3 NUCLEAR đã bị LOẠI BỎ trong v0.4.20 — đóng tab user rồi tạo lại
-  // làm hỏng SPA state, gây regression INVITE (dialog không mở sau F5 + recreate).
-  // Step 1 + Step 2 đã cover 99% case. Trường hợp còn lại (rất hiếm) sẽ trả
-  // CONTENT_NOT_INJECTED → user F5 thủ công (rất hiếm sau v0.4.17 retry timing).
+  // Step 3 NUCLEAR: tab cũ stuck (CSP / extension hot-swap / SW race) — đóng
+  // hoàn toàn rồi tạo tab mới. Tab mới có fresh JS context + manifest auto-inject
+  // sạch sẽ. Caller phải dùng tabId MỚI để gửi message.
+  console.warn("[autogpt] Step 2 vẫn fail → Step 3 NUCLEAR (recreate tab)...");
+  let newTabId = tabId;
+  try {
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch (e) {
+      console.warn("[autogpt] remove tab cũ failed (có thể đã đóng):", e);
+    }
+    const created = await chrome.tabs.create({
+      url: CHATGPT_ADMIN_URL,
+      active: false,
+    });
+    if (created.id === undefined) {
+      console.warn("[autogpt] tabs.create không trả id");
+      return { ok: false, tabId };
+    }
+    newTabId = created.id;
+    const recreated = await waitForTabComplete(newTabId, 20_000);
+    if (!recreated?.url?.includes("/admin")) {
+      console.warn(
+        `[autogpt] tab mới redirect khỏi /admin (url=${recreated?.url}) — user chưa login`,
+      );
+      return { ok: false, tabId: newTabId };
+    }
+    // Explicit executeScript phòng auto-inject lỗi
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: newTabId }, files });
+    } catch (e) {
+      console.warn("[autogpt] executeScript sau recreate failed:", e);
+    }
+    const POST_RECREATE_DELAYS_MS = [800, 1200, 1500, 2000, 2000];
+    for (const delay of POST_RECREATE_DELAYS_MS) {
+      await new Promise((r) => setTimeout(r, delay));
+      if (await pingContent(newTabId)) {
+        console.log(`[autogpt] ✓ content script ready sau Step 3 NUCLEAR (tab ${newTabId})`);
+        return { ok: true, tabId: newTabId };
+      }
+    }
+  } catch (e) {
+    console.warn("[autogpt] Step 3 NUCLEAR failed:", e);
+  }
+
   console.warn(
-    "[autogpt] Step 1 + Step 2 đều fail — give up. Tab user giữ nguyên.",
+    `[autogpt] Cả 3 step fallback đều fail — give up. tab=${newTabId}`,
   );
-  return { ok: false, tabId };
+  return { ok: false, tabId: newTabId };
 }
 
 async function sendToContent(
