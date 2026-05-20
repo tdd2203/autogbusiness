@@ -3,11 +3,11 @@
  * Wrap quanh revokeInvite — đảm bảo đúng tab + loop emails.
  */
 
-import type { ExecuteActionResponse } from "../../shared/messages";
-import { humanClick, sleep } from "../human";
-import { findControlByKey } from "../i18n-ui";
-import { TEXT_FALLBACKS } from "../selectors";
-import { revokeInvites } from "./revoke-invite";
+import type { ExecuteActionResponse } from "../../../shared/messages";
+import { humanClick, sleep } from "../../human";
+import { findControlByKey } from "../../i18n-ui";
+import { TEXT_FALLBACKS } from "../../selectors";
+import { revokeInvites } from "./revoke-invites-loop";
 
 const PENDING_TAB_LOAD_WAIT_MS = 1500;
 

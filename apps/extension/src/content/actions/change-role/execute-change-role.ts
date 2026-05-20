@@ -1,11 +1,11 @@
 import type {
   ChatGPTRole,
   ExecuteActionResponse,
-} from "../../shared/messages";
-import { humanClick, randomDelay, sleep } from "../human";
-import { findRoleOption } from "../i18n-ui";
-import { reportProgress } from "../progress";
-import { findMemberRow, findRowRoleDropdown } from "./member-row";
+} from "../../../shared/messages";
+import { humanClick, randomDelay, sleep } from "../../human";
+import { findRoleOption } from "../../i18n-ui";
+import { reportProgress } from "../../progress";
+import { findMemberRow, findRowRoleDropdown } from "../member-row";
 
 /**
  * UI 2026 đổi role qua INLINE dropdown trên row:

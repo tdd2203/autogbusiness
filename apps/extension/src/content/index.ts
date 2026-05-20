@@ -8,7 +8,7 @@ import { executeRemove } from "./actions/remove";
 import { executeChangeRole } from "./actions/change-role";
 import { executeSync } from "./actions/sync";
 import { executeSyncBilling } from "./actions/sync-billing";
-import { executeRevokeInvites } from "./actions/revoke-invites-batch";
+import { executeRevokeInvites } from "./actions/revoke";
 import { executeHarvestLabels } from "./actions/harvest-labels";
 import { executePurchaseSeat } from "./actions/purchase-seat";
 
