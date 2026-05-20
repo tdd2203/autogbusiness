@@ -33,7 +33,7 @@ function findTabButton(
  * → Detect "active" qua presence của border class hoặc text color, nhưng đơn giản
  *   nhất là cứ click rồi đợi.
  */
-async function clickTabAndWait(
+export async function clickTabAndWait(
   controlKey: string,
   tabTexts: readonly string[],
   postClickWaitMs = 1500,

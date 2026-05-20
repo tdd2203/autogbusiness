@@ -20,7 +20,7 @@ import { dbLabelsFor, reportLabelMismatch } from "../../shared/ui-labels";
 import { reportProgress } from "../progress";
 import { SELECTORS, TEXT_FALLBACKS } from "../selectors";
 import { withExternalInvitesEnabled } from "./external-invites";
-import { scrapePendingInvitesAfterInvite } from "./sync";
+import { clickTabAndWait, scrapePendingInvitesAfterInvite } from "./sync";
 
 /**
  * Filter: loại trừ button là switch/toggle/tab/menu — chỉ giữ button "action"
@@ -491,17 +491,35 @@ async function executeInviteInner(
     `[autogpt-invite] SUBMIT SUCCESS: ${emails.length} email(s) role=${role}`,
   );
 
-  // Phase 1 (submit) HOÀN TẤT. Verify pending list được tách thành Phase 2 —
-  // background sẽ chrome.tabs.reload (F5 thật) tab admin để ChatGPT BUỘC PHẢI
-  // load lại pending list từ server (KHÔNG dùng React Query cache stale), rồi
-  // gửi message VERIFY_PENDING_INVITE cho content script mới → scrape.
-  //
-  // Trả `awaiting_reload_verify: true` để runner biết cần F5 + verify riêng.
+  // v0.6.4: Sau submit, CHUYỂN SANG tab "Lời mời đang chờ xử lý" NGAY (trước
+  // khi runner F5). Khi F5 xảy ra ở URL `/admin/members?tab=invites`, ChatGPT
+  // load thẳng pending list từ server vào view — không cần navigation phụ sau
+  // F5, scrape thấy data tươi ngay. Approach này (gợi ý user 2026-05-20):
+  //   - Tránh race condition của verify scrape (a12 vô tình mất khỏi DB do
+  //     bulk-upsert reconcile khi DOM chưa render).
+  //   - Bỏ 1.5s delay + retry chain trong Phase 2 → invite nhanh hơn rõ rệt.
+  await sleep(500); // chờ dialog đóng + state ổn định
+  const switched = await clickTabAndWait(
+    "tab_pending_invites",
+    TEXT_FALLBACKS.tabPendingInvites,
+    1500,
+  );
+  if (switched) {
+    console.log("[autogpt-invite] đã chuyển sang tab 'Lời mời' trước F5 verify");
+  } else {
+    console.warn(
+      "[autogpt-invite] không click được tab 'Lời mời' — Phase 2 sau F5 sẽ tự navigate",
+    );
+  }
+
+  // Phase 1 (submit + chuyển tab) HOÀN TẤT. Background runner sẽ chrome.tabs.reload
+  // (F5 thật) tại URL hiện tại — vì đã ở /admin/members?tab=invites, ChatGPT
+  // load thẳng pending list. Phase 2 scrape ngay.
   await reportProgress(
     taskId,
     {
       phase: "submit-done",
-      message: `Submit ${emails.length} email OK — chờ background F5 trang để verify pending list...`,
+      message: `Submit ${emails.length} email OK — đã mở tab Lời mời, chờ F5 verify...`,
       current: emails.length,
       total: emails.length,
     },
@@ -533,13 +551,16 @@ export async function executeVerifyPendingInvite(
   role: ChatGPTRole,
 ): Promise<ExecuteActionResponse> {
   console.log(
-    `[autogpt-invite-verify] START: ${emails.length} email(s) role=${role} pathname=${location.pathname}`,
+    `[autogpt-invite-verify] START: ${emails.length} email(s) role=${role} pathname=${location.pathname}${location.search}`,
   );
 
-  // Page có thể vừa load xong sau F5 — đợi DOM ready + sidebar render.
-  await sleep(1500);
+  // v0.6.4: Phase 1 đã chuyển sang tab "Lời mời" → URL hiện tại thường là
+  // /admin/members?tab=invites → F5 load thẳng pending list. Chỉ cần đợi DOM
+  // render xong (~800ms thay vì 1500ms).
+  await sleep(800);
 
-  // Nếu sau F5 không ở /admin/members thì navigate qua sidebar / pushState.
+  // Defensive: nếu vì lý do gì đó (Step 3 NUCLEAR recreate tab) URL không
+  // ở /admin/members → navigate qua sidebar / pushState.
   if (!location.pathname.includes("/admin/members")) {
     console.log(
       `[autogpt-invite-verify] sau F5 đang ở ${location.pathname}, navigate /admin/members`,
@@ -583,9 +604,10 @@ export async function executeVerifyPendingInvite(
   let unverifiedEmails: string[] = invitedLower.slice();
   let scrapedEmailSet = new Set<string>();
 
-  // Sau F5, attempt 1 chỉ cần delay nhỏ vì cache đã sạch. Retry với delay dài
-  // dần phòng case ChatGPT backend index chậm.
-  const RETRY_DELAYS_MS = [0, 3000, 5000];
+  // v0.6.4: Sau F5 trên đúng URL /admin/members?tab=invites, pending list load
+  // tươi ngay → attempt 1 thường đủ. Giảm retry chain để invite kết thúc nhanh
+  // hơn; nếu attempt 1 đã verify hết thì break sớm.
+  const RETRY_DELAYS_MS = [0, 2500];
   for (let attempt = 0; attempt < RETRY_DELAYS_MS.length; attempt++) {
     if (RETRY_DELAYS_MS[attempt] > 0) {
       await reportProgress(

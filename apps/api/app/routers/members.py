@@ -572,12 +572,24 @@ def bulk_upsert_members(
 
     if scopes and body.members:
         incoming_emails = {m.email.lower() for m in body.members}
+        # Safety: KHÔNG reconcile member vừa invite qua dashboard trong 10 phút
+        # gần đây (ChatGPT thường mất 1-30s để index pending invite vào tab "Lời
+        # mời"; nếu extension verify trong khoảng đó, scrape chưa thấy thì backend
+        # phải GIỮ chứ không mark removed). Threshold 10 phút đủ rộng cho mọi
+        # case index chậm + tránh false-positive khi user invite nhiều email gần
+        # nhau (vd a12 lúc 08:34, g12 lúc 08:37 + verify g12 08:38). Sự kiện
+        # đáng chú ý — log audit_logs nếu skip nhiều.
+        reconcile_cutoff = now - timedelta(minutes=10)
         stale = (
             db.execute(
                 select(Member).where(
                     Member.workspace_id == workspace_id,
                     Member.status.in_(scopes),
                     Member.email.notin_(incoming_emails),
+                    ~(
+                        (Member.invited_by_user_id.isnot(None))
+                        & (Member.created_at > reconcile_cutoff)
+                    ),
                 )
             )
             .scalars()

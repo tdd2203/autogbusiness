@@ -172,7 +172,16 @@ export async function bulkUpsertMembers(
     chatgpt_role?: "owner" | "admin" | "member" | null;
     status?: "active" | "pending" | "removed";
   }>,
-  options?: { scrapedStatuses?: Array<"active" | "pending"> },
+  options?: {
+    scrapedStatuses?: Array<"active" | "pending">;
+    /**
+     * `false` = chỉ upsert members trong payload, KHÔNG reconcile/mark removed
+     * cho members ngoài payload. Bắt buộc dùng `false` khi scrape kết quả của
+     * 1 thao tác cụ thể (vd verify-pending sau INVITE) để tránh xoá nhầm
+     * members khác cùng status. Default true (sync full).
+     */
+    isFullSync?: boolean;
+  },
 ): Promise<{
   created: number;
   updated: number;
@@ -187,6 +196,7 @@ export async function bulkUpsertMembers(
       body: JSON.stringify({
         members,
         scraped_statuses: options?.scrapedStatuses,
+        is_full_sync: options?.isFullSync !== false,
       }),
     },
   );

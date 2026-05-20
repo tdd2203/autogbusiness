@@ -18,6 +18,20 @@ Mọi thay đổi đáng kể của extension được ghi tại đây. File nà
 
 ---
 
+## v0.6.4 — 2026-05-20 — fix
+
+**Verify pending nhanh hơn (chuyển tab "Lời mời" TRƯỚC F5) + fix bug `a12` bị mark `removed` oan do bulk-upsert reconcile**
+
+- **BUG (`a12` "biến mất")**: User invite `a12` (08:34) → ChatGPT nhận thật. Sau invite `g12` (08:37) extension verify scrape tab "Lời mời" tại 08:38 chỉ thấy `g12` (a12 chưa được ChatGPT index về client) → bulk-upsert với `scraped_statuses=['pending']` → backend reconcile mark `a12=removed` oan. Phantom cleanup INVITE_MEMBER vẫn đúng (`verify_scrape_failed=true` → giữ); lỗi nằm ở **bulk-upsert dùng chung endpoint** cho cả full sync + verify after invite.
+- **FIX 1 — Extension (`runner.ts` INVITE_MEMBER `reportToBackend`)**: thêm option `isFullSync=false` vào `bulkUpsertMembers`, bỏ `scrapedStatuses`. Backend nhận `is_full_sync=false` → CHỈ upsert email trong payload, KHÔNG reconcile. Verify chỉ là "confirm những email này đang pending", không nói gì về email khác.
+- **FIX 2 — Backend (`members.py:bulk_upsert_members`) defense-in-depth**: reconcile `WHERE NOT (invited_by_user_id IS NOT NULL AND created_at > NOW() - INTERVAL '10 minutes')`. Nếu extension lỡ gửi `is_full_sync=true` sau khi vừa invite, member mới vẫn an toàn.
+- **UX SPEEDUP — Approach của user 2026-05-20**: "sau khi mời xong chuyển sang tab Lời mời đang xử lý, chờ load rồi reload trang là thấy toàn bộ". Phase 1 (`invite.ts:executeInviteInner`) cuối: thêm `clickTabAndWait("tab_pending_invites", ..., 1500)` NGAY trước khi return `awaiting_reload_verify=true` → URL = `/admin/members?tab=invites` khi runner F5 → ChatGPT load thẳng pending list từ server vào view (không cần navigate phụ).
+- **Phase 2 (`executeVerifyPendingInvite`) simplify**: initial sleep 1500ms → 800ms (DOM đã ở đúng tab), retry chain `[0, 3000, 5000]` → `[0, 2500]` (data tươi hơn sau F5 đúng URL). Tiết kiệm ~3-5s mỗi invite.
+- **Lợi ích kép**: nhanh hơn + né được race của bug `a12` (scrape data từ server response của F5 thay vì DOM stale của tab cũ).
+- **File đã đổi**: [invite.ts](src/content/actions/invite.ts) (Phase 1+2), [sync.ts](src/content/actions/sync.ts) (export `clickTabAndWait`), [api.ts](src/shared/api.ts) (`bulkUpsertMembers` thêm `isFullSync`), [runner.ts](src/background/runner.ts) (INVITE_MEMBER no-reconcile), [members.py](../api/app/routers/members.py) (reconcile skip recent invite).
+
+---
+
 ## v0.6.3 — 2026-05-20 — fix
 
 **Re-thêm Step 3 NUCLEAR (recreate tab) + Step 2 inject thêm lần 2 — fix `CONTENT_NOT_INJECTED` hiếm gặp**

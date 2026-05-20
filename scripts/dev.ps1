@@ -1,4 +1,5 @@
-hiê# Dev mode: 1 lệnh khởi chạy toàn bộ stack.
+# Dev mode: 1 lệnh khởi chạy toàn bộ stack trên Windows (PowerShell).
+# macOS / Linux: dùng scripts/dev.sh (bash/zsh) tương đương.
 # Run from project root: .\scripts\dev.ps1
 #
 # Mở 3 cửa sổ PowerShell riêng cho backend / web / extension để xem log từng service.

@@ -627,13 +627,19 @@ async function reportToBackend(
         try {
           for (let i = 0; i < pending.length; i += CHUNK_SIZE) {
             const chunk = pending.slice(i, i + CHUNK_SIZE);
+            // v0.6.4 fix: isFullSync=false + bỏ scrapedStatuses → backend chỉ
+            // upsert email trong chunk, KHÔNG reconcile/mark removed cho pending
+            // members khác. Trước đây dùng scrapedStatuses=["pending"] gây bug:
+            // verify g12 cùng giây với invite a12, scrape chưa thấy a12 → backend
+            // reconcile → a12 bị mark "removed" oan. Lưu ý: việc reconcile thật
+            // sự thuộc về SYNC_DATA task chuyên dụng, KHÔNG phải verify sau invite.
             await bulkUpsertMembers(config, task.workspace_id, chunk, {
-              scrapedStatuses: ["pending"],
+              isFullSync: false,
             });
             mappedCount += chunk.length;
           }
           console.log(
-            `[autogpt-invite] verify+map: ${mappedCount} verified email được upsert`,
+            `[autogpt-invite] verify+map: ${mappedCount} verified email được upsert (no-reconcile)`,
           );
         } catch (e) {
           console.warn(
