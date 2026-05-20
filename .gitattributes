@@ -1,0 +1,40 @@
+# Đảm bảo line endings nhất quán giữa Windows ↔ macOS/Linux.
+# Không có file này, core.autocrlf=true trên Windows có thể commit shell
+# scripts với CRLF → bash trên Mac/Linux fail vì shebang `#!/usr/bin/env bash\r`.
+
+# Shell scripts PHẢI LF — chạy trên macOS/Linux/WSL
+*.sh text eol=lf
+
+# Python source — LF chuẩn (Mac/Linux deploy)
+*.py text eol=lf
+
+# PowerShell scripts — CRLF cho Windows
+*.ps1 text eol=crlf
+
+# Cmd batch — CRLF cho Windows
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Source code — auto-detect (let Git decide based on content)
+*.ts text
+*.tsx text
+*.js text
+*.jsx text
+*.json text
+*.md text
+*.yml text
+*.yaml text
+*.toml text
+*.html text
+*.css text
+
+# Binary — không convert
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.db binary
+*.sqlite binary
