@@ -46,5 +46,8 @@ extension/dist/
 backend/htmlcov/
 
 # Internal docs & planning (not pushed to GitHub)
+# Mọi .md (README, CHANGELOG, action docs, planning) là internal — không leak lên GitHub.
+# Người clone repo sẽ KHÔNG có README/CHANGELOG; AI/dev đọc từ filesystem local.
+*.md
 docs/
 PLAN.md
