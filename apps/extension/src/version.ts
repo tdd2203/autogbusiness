@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.6.12";
+export const VERSION = "0.6.13";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,20 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.6.13",
+    date: "2026-05-21",
+    kind: "chore",
+    summary: "Mỗi action có README.md riêng kèm code — AI mở folder action là đọc được logic + history; user sửa dễ",
+    details: [
+      "Move 9 file Logic_<action>.md từ docs/Extension_Refactor/ (gitignored) vào apps/extension/src/content/actions/<action>/README.md (tracked trong source tree).",
+      "Mục đích: (1) AI khi navigate vào folder action thấy README ngay → context đầy đủ về logic/flow/history mà không phải tìm doc folder riêng; (2) user sửa doc cạnh code, không phải nhảy file xa.",
+      "Thêm apps/extension/src/content/actions/README.md làm index 9 actions + quy tắc code structure pattern cho người mới.",
+      "Path trong README đã fix relative để link đúng từ vị trí mới: refs tới ../human.ts, ../../../shared/, ../<other-action>/README.md, ../../../../../web/src/... và ../../../../../api/app/...",
+      "QUY TẮC MỚI: mỗi action PHẢI có README.md kế bên code, mỗi bug fix PHẢI append entry vào section 'Lịch sử sửa lỗi' của README tương ứng — không chỉ JSDoc trong code.",
+      "KHÔNG đổi behavior code — chỉ thêm 10 file .md.",
+    ],
+  },
   {
     version: "0.6.12",
     date: "2026-05-20",
