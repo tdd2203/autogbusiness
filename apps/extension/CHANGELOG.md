@@ -18,6 +18,33 @@ Mọi thay đổi đáng kể của extension được ghi tại đây. File nà
 
 ---
 
+## v0.6.13 — 2026-05-21 — chore
+
+**Mỗi action có README.md riêng kèm code — AI mở folder action là đọc được logic + history; user sửa dễ**
+
+- Move 9 file `Logic_<action>.md` từ `docs/Extension_Refactor/` (gitignored) vào [`apps/extension/src/content/actions/<action>/README.md`](src/content/actions/) (tracked trong source tree).
+- **Mục đích**: (1) AI khi navigate vào folder action thấy README ngay → context đầy đủ về logic/flow/history mà không phải tìm doc folder riêng; (2) user sửa doc cạnh code, không phải nhảy file xa.
+- Thêm [`apps/extension/src/content/actions/README.md`](src/content/actions/README.md) làm **index 9 actions** + quy tắc code structure pattern cho người mới.
+- **Path đã fix relative** để link đúng từ vị trí mới: refs tới `../human.ts`, `../../../shared/`, `../<other-action>/README.md`, `../../../../../web/src/...` và `../../../../../api/app/...`
+- **QUY TẮC MỚI**: mỗi action **PHẢI** có README.md kế bên code, mỗi bug fix **PHẢI** append entry vào section "Lịch sử sửa lỗi" của README tương ứng — không chỉ JSDoc trong code.
+- **KHÔNG đổi behavior code** — chỉ thêm 10 file `.md`.
+
+---
+
+## v0.6.12 — 2026-05-20 — chore
+
+**Refactor (Pha 0): chuẩn bị tách action mỗi hàm 1 file riêng — chưa đổi behavior**
+
+- Tạo branch `refactor/extension-actions-split` để chia nhỏ các file [`src/content/actions/*.ts`](src/content/actions/) đang quá fat: [invite.ts](src/content/actions/invite.ts) 802 dòng, [purchase-seat.ts](src/content/actions/purchase-seat.ts) 894 dòng, [harvest-labels.ts](src/content/actions/harvest-labels.ts) 738 dòng, [sync.ts](src/content/actions/sync.ts) 648 dòng.
+- Kế hoạch chi tiết tại `docs/Extension_Refactor/Plan_Split_Actions_Per_File.md` (gitignored, local-only — file dài 280 dòng list từng pha + cấu trúc target + checklist verify).
+- **Mục tiêu**: mỗi action thành 1 folder, mỗi hàm public 1 file riêng, helper theo concern (`finders/`, `pages/`, `modal1/`, `modal2/`, `row-extractors/`). Tổng ~58 file mới thay cho 10 file fat.
+- **Quy tắc refactor**: PURE FILE-SPLIT, KHÔNG đổi logic/behavior. JSDoc copy nguyên si để giữ context lịch sử (v0.6.4 vì sao bỏ `scrapedStatuses`, v0.6.6 vì sao force OFF, …).
+- Public API contract giữ nguyên qua barrel `index.ts` mỗi folder — [content/index.ts](src/content/index.ts) dispatcher chỉ đổi 1 import (`./actions/revoke-invites-batch` → `./actions/revoke`).
+- **9 pha tiếp theo** (1 commit/pha): change-role+revoke → external-invites → remove+sync-billing → sync → invite → purchase-seat → harvest-labels → smoke test.
+- **Pha 0 này CHƯA tách file nào** — chỉ bump version + ghi entry để các pha sau có baseline rõ ràng.
+
+---
+
 ## v0.6.11 — 2026-05-20 — fix
 
 **REMOVE_MEMBER: search qua ô "Lọc theo tên" trước khi mở menu "..." → "Loại bỏ thành viên" — fix miss row khi list dài**

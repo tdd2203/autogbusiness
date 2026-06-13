@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.6.11";
+export const VERSION = "0.6.15";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,57 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.6.15",
+    date: "2026-06-09",
+    kind: "fix",
+    summary: "Pagination sync: lật hết mọi trang (3/5, 10/10…), không cố định 2 trang",
+    details: [
+      "Loop while hasMorePages() — mỗi vòng đọc lại indicator N/M từ DOM (total có thể > 2).",
+      "goToFirstPage() guard tăng tới 200 — kể cả user đang ở trang cuối.",
+      "visitedPages Set chống loop; waitForPageAdvance(from) thay vì hard-code page+1.",
+    ],
+  },
+  {
+    version: "0.6.14",
+    date: "2026-06-09",
+    kind: "fix",
+    summary: "SYNC_DATA lật từng trang khi ChatGPT admin members có phân trang (vd 1/2)",
+    details: [
+      "Symptom: danh sách Người dùng ChatGPT > ~1 trang (pagination '1 / 2') nhưng extension chỉ scrape trang hiện tại → dashboard thiếu member.",
+      "Fix: pagination.ts detect indicator N/M + nút prev/next, goToFirstPage() rồi scrape + clickNextPage() lần lượt tới hết.",
+      "Fallback: nếu không có pagination → giữ scroll-until-loaded như cũ (virtualized list 1 trang dài).",
+    ],
+  },
+  {
+    version: "0.6.13",
+    date: "2026-05-21",
+    kind: "chore",
+    summary: "Mỗi action có README.md riêng kèm code — AI mở folder action là đọc được logic + history; user sửa dễ",
+    details: [
+      "Move 9 file Logic_<action>.md từ docs/Extension_Refactor/ (gitignored) vào apps/extension/src/content/actions/<action>/README.md (tracked trong source tree).",
+      "Mục đích: (1) AI khi navigate vào folder action thấy README ngay → context đầy đủ về logic/flow/history mà không phải tìm doc folder riêng; (2) user sửa doc cạnh code, không phải nhảy file xa.",
+      "Thêm apps/extension/src/content/actions/README.md làm index 9 actions + quy tắc code structure pattern cho người mới.",
+      "Path trong README đã fix relative để link đúng từ vị trí mới: refs tới ../human.ts, ../../../shared/, ../<other-action>/README.md, ../../../../../web/src/... và ../../../../../api/app/...",
+      "QUY TẮC MỚI: mỗi action PHẢI có README.md kế bên code, mỗi bug fix PHẢI append entry vào section 'Lịch sử sửa lỗi' của README tương ứng — không chỉ JSDoc trong code.",
+      "KHÔNG đổi behavior code — chỉ thêm 10 file .md.",
+    ],
+  },
+  {
+    version: "0.6.12",
+    date: "2026-05-20",
+    kind: "chore",
+    summary: "Refactor (Pha 0): chuẩn bị tách action mỗi hàm 1 file riêng — chưa đổi behavior",
+    details: [
+      "Tạo branch refactor/extension-actions-split để chia nhỏ các file actions/*.ts đang quá fat (invite 802 dòng, purchase-seat 894 dòng, harvest-labels 738 dòng, sync 648 dòng).",
+      "Kế hoạch chi tiết tại docs/Extension_Refactor/Plan_Split_Actions_Per_File.md (gitignored, local-only).",
+      "Mục tiêu: mỗi action thành 1 folder, mỗi hàm public 1 file riêng, helper theo concern (finders/, pages/, modal1/, modal2/, row-extractors/). Tổng ~58 file mới thay cho 10 file fat.",
+      "QUY TẮC PHA REFACTOR: PURE FILE-SPLIT, KHÔNG đổi logic/behavior. JSDoc copy nguyên si để giữ context lịch sử (v0.6.4 vì sao bỏ scrapedStatuses, v0.6.6 vì sao force OFF, ...).",
+      "Public API contract giữ nguyên qua barrel index.ts mỗi folder — content/index.ts dispatcher chỉ đổi 1 import (./actions/revoke-invites-batch → ./actions/revoke).",
+      "9 pha tiếp theo (1 commit/pha): change-role+revoke → external-invites → remove+sync-billing → sync → invite → purchase-seat → harvest-labels → smoke test.",
+      "Pha 0 này CHƯA tách file nào — chỉ bump version + ghi entry CHANGELOG để các pha sau có baseline rõ ràng.",
+    ],
+  },
   {
     version: "0.6.11",
     date: "2026-05-20",
