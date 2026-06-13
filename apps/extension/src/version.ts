@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.6.13";
+export const VERSION = "0.6.15";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,28 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.6.15",
+    date: "2026-06-09",
+    kind: "fix",
+    summary: "Pagination sync: lật hết mọi trang (3/5, 10/10…), không cố định 2 trang",
+    details: [
+      "Loop while hasMorePages() — mỗi vòng đọc lại indicator N/M từ DOM (total có thể > 2).",
+      "goToFirstPage() guard tăng tới 200 — kể cả user đang ở trang cuối.",
+      "visitedPages Set chống loop; waitForPageAdvance(from) thay vì hard-code page+1.",
+    ],
+  },
+  {
+    version: "0.6.14",
+    date: "2026-06-09",
+    kind: "fix",
+    summary: "SYNC_DATA lật từng trang khi ChatGPT admin members có phân trang (vd 1/2)",
+    details: [
+      "Symptom: danh sách Người dùng ChatGPT > ~1 trang (pagination '1 / 2') nhưng extension chỉ scrape trang hiện tại → dashboard thiếu member.",
+      "Fix: pagination.ts detect indicator N/M + nút prev/next, goToFirstPage() rồi scrape + clickNextPage() lần lượt tới hết.",
+      "Fallback: nếu không có pagination → giữ scroll-until-loaded như cũ (virtualized list 1 trang dài).",
+    ],
+  },
   {
     version: "0.6.13",
     date: "2026-05-21",

@@ -1,6 +1,14 @@
 import type { ScrapedMember } from "../../../shared/messages";
 import { sleep } from "../../human";
 import { reportProgress } from "../../progress";
+import {
+  clickNextPage,
+  findPaginationState,
+  goToFirstPage,
+  hasMorePages,
+  MAX_PAGINATION_PAGES,
+  waitForPageAdvance,
+} from "./pagination";
 import { scrapeAllRows } from "./scrape-all-rows";
 
 /** Scroll tới đáy, lặp lại tới khi số row không tăng nữa (xử lý virtualized list). */
@@ -50,36 +58,27 @@ export const MAX_SYNC_MS = 5 * 60 * 1000; // 5 phút hard cap cho TOÀN BỘ syn
  * - Dedup theo email
  * - Gán `status` cho mỗi member
  */
-export async function scrapeCurrentTab(
+async function collectRowsByScrolling(
   taskId: string,
   status: "active" | "pending",
   label: string,
+  collected: Map<string, ScrapedMember>,
   isOverTime: () => boolean,
-): Promise<{ members: ScrapedMember[]; timedOut: boolean }> {
-  await reportProgress(
-    taskId,
-    { phase: "discover", message: `[${label}] Đang quét...` },
-    true,
-  );
+  pageLabel?: string,
+): Promise<boolean> {
+  const tag = pageLabel ? `${label} ${pageLabel}` : label;
 
   window.scrollTo({ top: 0, behavior: "auto" });
   await sleep(400);
 
   const totalAfterScroll = await scrollUntilAllLoaded();
-  console.log(`[autogpt-sync] [${label}] scroll xong: ~${totalAfterScroll} rows`);
+  console.log(`[autogpt-sync] [${tag}] scroll xong: ~${totalAfterScroll} rows`);
 
   window.scrollTo({ top: 0, behavior: "auto" });
   await sleep(400);
 
-  const collected = new Map<string, ScrapedMember>();
-  let scrollPass = 0;
-  let timedOut = false;
-
-  for (scrollPass = 0; scrollPass < 200; scrollPass++) {
-    if (isOverTime()) {
-      timedOut = true;
-      break;
-    }
+  for (let scrollPass = 0; scrollPass < 200; scrollPass++) {
+    if (isOverTime()) return true;
 
     const visible = scrapeAllRows();
     for (const m of visible) collected.set(m.email, { ...m, status });
@@ -94,7 +93,7 @@ export async function scrapeCurrentTab(
     await reportProgress(taskId, {
       phase: "scraping",
       current: collected.size,
-      message: `[${label}] Đã thu ${collected.size} (pass ${scrollPass + 1})`,
+      message: `[${tag}] Đã thu ${collected.size} (pass ${scrollPass + 1})`,
     });
 
     if (collected.size === before && scrollPass > 3) {
@@ -102,6 +101,98 @@ export async function scrapeCurrentTab(
         window.innerHeight + window.scrollY >= document.body.scrollHeight - 50;
       if (atBottom) break;
     }
+  }
+
+  return false;
+}
+
+export async function scrapeCurrentTab(
+  taskId: string,
+  status: "active" | "pending",
+  label: string,
+  isOverTime: () => boolean,
+): Promise<{ members: ScrapedMember[]; timedOut: boolean }> {
+  await reportProgress(
+    taskId,
+    { phase: "discover", message: `[${label}] Đang quét...` },
+    true,
+  );
+
+  const collected = new Map<string, ScrapedMember>();
+  let timedOut = false;
+
+  const pagination = findPaginationState();
+  if (pagination && pagination.total > 1) {
+    console.log(
+      `[autogpt-sync] [${label}] pagination ${pagination.current}/${pagination.total} — lật hết mọi trang`,
+    );
+    await goToFirstPage();
+
+    const visitedPages = new Set<number>();
+    for (let guard = 0; guard < MAX_PAGINATION_PAGES; guard++) {
+      if (isOverTime()) {
+        timedOut = true;
+        break;
+      }
+
+      const state = findPaginationState();
+      if (!state) {
+        console.warn(`[autogpt-sync] [${label}] mất pagination indicator — dừng`);
+        break;
+      }
+
+      if (visitedPages.has(state.current)) {
+        console.warn(
+          `[autogpt-sync] [${label}] trang ${state.current} đã scrape — tránh loop`,
+        );
+        break;
+      }
+      visitedPages.add(state.current);
+
+      timedOut = await collectRowsByScrolling(
+        taskId,
+        status,
+        label,
+        collected,
+        isOverTime,
+        `trang ${state.current}/${state.total}`,
+      );
+      if (timedOut) break;
+
+      const afterScrape = findPaginationState();
+      if (!afterScrape || !hasMorePages(afterScrape)) {
+        console.log(
+          `[autogpt-sync] [${label}] hết trang (${afterScrape?.current ?? "?"}/${afterScrape?.total ?? "?"})`,
+        );
+        break;
+      }
+
+      const fromPage = afterScrape.current;
+      const clicked = await clickNextPage(afterScrape);
+      if (!clicked) {
+        console.warn(
+          `[autogpt-sync] [${label}] không lật được từ trang ${fromPage}`,
+        );
+        break;
+      }
+
+      const loaded = await waitForPageAdvance(fromPage);
+      if (!loaded) {
+        console.warn(
+          `[autogpt-sync] [${label}] timeout chờ trang sau ${fromPage}`,
+        );
+        break;
+      }
+      await sleep(400);
+    }
+  } else {
+    timedOut = await collectRowsByScrolling(
+      taskId,
+      status,
+      label,
+      collected,
+      isOverTime,
+    );
   }
 
   return { members: Array.from(collected.values()), timedOut };
