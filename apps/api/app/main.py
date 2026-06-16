@@ -11,7 +11,16 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Member, QueueItem
-from app.routers import audit_logs, auth, members, queue, ui_labels, users, workspaces
+from app.routers import (
+    added_members,
+    audit_logs,
+    auth,
+    members,
+    queue,
+    ui_labels,
+    users,
+    workspaces,
+)
 from app.seed import seed_super_admin
 from app.sse import publish_task_event
 from app.audit import log_event
@@ -199,6 +208,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router)
     app.include_router(workspaces.router)
     app.include_router(members.router)
+    app.include_router(added_members.router)
     app.include_router(queue.router)
     app.include_router(audit_logs.router)
     app.include_router(ui_labels.router)

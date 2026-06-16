@@ -13,7 +13,7 @@ export type ProgressInfo = {
 };
 
 let lastSentAt = 0;
-const MIN_INTERVAL_MS = 500;
+const MIN_INTERVAL_MS = 300;
 
 export async function reportProgress(
   taskId: string,

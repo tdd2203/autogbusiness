@@ -142,19 +142,12 @@ export async function executeVerifyPendingInvite(
     true,
   );
 
-  if (!scrapeFailed && verifiedEmails.length === 0 && emails.length > 0) {
-    return {
-      ok: false,
-      error_code: "VERIFY_FAILED",
-      error_message:
-        `Đã submit ${emails.length} email lên ChatGPT (toast success) + F5 verify nhưng KHÔNG email nào ` +
-        `xuất hiện trong tab 'Lời mời đang chờ xử lý'. Có thể: (a) email đã active sẵn, ` +
-        `(b) domain không verify, (c) ChatGPT từ chối silently. Unverified: ` +
-        unverifiedEmails.slice(0, 5).join(", ") +
-        (unverifiedEmails.length > 5 ? ` +${unverifiedEmails.length - 5}` : ""),
-    };
-  }
-
+  // LUÔN trả ok:true kèm verified/unverified — KHÔNG tự quyết success/fail ở đây.
+  // Runner (background) sẽ: (1) upsert verified, (2) gọi reconcile-after-invite để
+  // DỌN các email unverified (scrape OK) khỏi dashboard, (3) đánh dấu task FAILED
+  // nếu 0 email verified (scrape OK). Trước đây early-return ok:false làm runner
+  // nhảy vào nhánh FAILED → BỎ QUA bước dọn phantom → email không có trong tab
+  // 'Lời mời' vẫn hiển thị "đang chờ" trên dashboard (bug user report).
   return {
     ok: true,
     data: {

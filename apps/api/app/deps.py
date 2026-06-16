@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.db import get_db
-from app.models import User, Workspace
+from app.models import User, Workspace, WorkspaceAssignment
 from app.permissions import Permission
 from app.security import decode_access_token
 
@@ -68,6 +68,35 @@ def require_super_admin(user: User = Depends(get_current_user)) -> User:
             status_code=status.HTTP_403_FORBIDDEN, detail="Chỉ super-admin được phép"
         )
     return user
+
+
+def user_can_access_workspace(db: Session, user: User, workspace_id: UUID) -> bool:
+    """True nếu user được phép thao tác trên workspace.
+
+    Super-admin: luôn True. Sub-admin: phải có row WorkspaceAssignment tương ứng.
+    """
+    if user.is_super_admin:
+        return True
+    row = db.execute(
+        select(WorkspaceAssignment.id).where(
+            WorkspaceAssignment.workspace_id == workspace_id,
+            WorkspaceAssignment.user_id == user.id,
+        )
+    ).first()
+    return row is not None
+
+
+def assert_workspace_access(db: Session, user: User, workspace_id: UUID) -> None:
+    """Raise 404 nếu sub-admin không được gán workspace này.
+
+    Dùng 404 (không 403) để không tiết lộ sự tồn tại của workspace — đồng bộ với
+    `_member_or_404_visible` ('không tồn tại hoặc bạn không có quyền truy cập').
+    """
+    if not user_can_access_workspace(db, user, workspace_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace không tồn tại hoặc bạn không có quyền truy cập",
+        )
 
 
 def require_extension_workspace(

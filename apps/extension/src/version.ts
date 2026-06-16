@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.6.15";
+export const VERSION = "0.7.9";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,187 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.7.9",
+    date: "2026-06-16",
+    kind: "chore",
+    summary:
+      "Giảm 30% thời gian chờ giữa 2 task: betweenTasksMs 1200→840ms. Throughput tăng ~30% khi chạy nhiều task liên tiếp (invite/role/remove…).",
+    details: [
+      "RATE_LIMIT.betweenTasksMs: 1200 → 840 (-30%). Đây là min delay giữa 2 task BẤT KỲ trong runner (applyRateLimit), chống ChatGPT nghi bot. Lịch sử: 5000→2000→1200→840.",
+      "batchSize (10) + batchPause (6–12s mỗi 10 task) GIỮ NGUYÊN — chỉ giảm nhịp chờ giữa từng task.",
+      "Lưu ý: 3 setting workspace rate_limit_invite_ms/role_ms/remove_ms trong UI Settings hiện KHÔNG được code execute đọc (dead config) — tốc độ thực tế do RATE_LIMIT này quyết định, không phải 3 số đó.",
+    ],
+  },
+  {
+    version: "0.7.8",
+    date: "2026-06-15",
+    kind: "fix",
+    summary:
+      "STALE_BUILD: phát hiện build cũ NGAY trước khi inject → bỏ 3 step executeScript chắc-chắn-fail (~23s + phá tab) → mark task FAILED rõ ràng rồi tự reload extension. Guard count-based cho thêm 1 lần reload khi Chrome chậm nạp build (hết kẹt CONTENT_NOT_INJECTED vĩnh viễn)",
+    details: [
+      "USER REPORT: task fail CONTENT_NOT_INJECTED, diag 'Could not load file: assets/index.ts-loader-CycUqvAL.js' — cả 3 step fallback (executeScript / reload tab / recreate tab) đều THREW 'Could not load file', tốn ~23s rồi give up. Kèm theo: toggle 'mời ngoài tên miền' không tự bật — thực ra là HỆ QUẢ (content script chưa hề inject thì executeInvite/setExternalInvites không chạy), KHÔNG phải bug riêng.",
+      "ROOT CAUSE 1 (3 step vô ích): manifest đang chạy trỏ file content-script đã bị xoá khỏi đĩa (rebuild đổi hash, Chrome chưa reload). Cả 3 step trong ensureContentInjected đều dùng chrome.scripting.executeScript({files}) với CHÍNH file đã mất → luôn THREW 'Could not load file'. 3 step chỉ reload TAB, không bao giờ reload EXTENSION → về bản chất không thể chữa stale build, chỉ phí thời gian + phá tab user (Step 3 NUCLEAR).",
+      "ROOT CAUSE 2 (self-heal kẹt): guard v0.7.5 chặn CỨNG sau đúng 1 reload/sig (lastSig===sig → không reload nữa). Nếu chrome.runtime.reload() lần đầu KHÔNG kéo được build mới vào (Chrome chậm áp dụng unpacked build) → manifest kẹt hash cũ → sig không đổi → guard chặn vĩnh viễn → mọi task fail tới khi reload tay. Guard nhầm 'đã reload 1 lần' = 'build hỏng' trong khi đĩa có build tốt.",
+      "FIX 1 (ensureContentInjected): sau initial ping fail → check isExtensionStale() NGAY. Nếu stale → bỏ qua hẳn 3 step executeScript (chắc chắn fail), return {stale:true}. Tiết kiệm ~23s + không phá tab user.",
+      "FIX 2 (sendToContent + runOnce): stale → error_code MỚI 'STALE_BUILD' (tách khỏi CONTENT_NOT_INJECTED). runOnce reportToBackend mark task FAILED (immediate, KHÔNG kẹt 5 phút chờ lazy-cleanup TIMEOUT) RỒI mới reloadForStaleBuild() → SW restart, task kế chạy bình thường không cần user reload tay.",
+      "FIX 3 (reloadForStaleBuild + guard count-based): tách logic reload ra hàm riêng dùng chung cho selfHealIfStale (đầu drain) + runOnce. Thay guard 'chặn cứng sau 1 lần' bằng đếm STALE_RELOAD_COUNT_KEY: cho phép tối đa MAX_RELOADS_PER_SIG=2 reload/sig rồi mới bỏ cuộc → Chrome chậm nạp build vẫn được thử lại 1 lần, nhưng build hỏng thật vẫn bound (không loop vô hạn). sig đổi → count reset.",
+      "File đổi: background/runner.ts (reloadForStaleBuild + STALE_RELOAD_COUNT_KEY/MAX_RELOADS_PER_SIG + stale short-circuit trong ensureContentInjected + map STALE_BUILD trong sendToContent + trigger reload trong runOnce), shared/messages.ts (+error_code STALE_BUILD).",
+    ],
+  },
+  {
+    version: "0.7.7",
+    date: "2026-06-15",
+    kind: "fix",
+    summary:
+      "Định vị member khi đổi giấy phép/xoá: thử lọc cả full email + log [autogpt-locate] để debug 'không tìm thấy email'",
+    details: [
+      "USER: sau khi nạp bản mới, đổi seat hết lỗi inject (self-heal v0.7.4+) nhưng báo UI_ELEMENT_NOT_FOUND 'Không tìm thấy <email> sau khi lọc + lật mọi trang'.",
+      "filterAndFindRow (dùng chung REMOVE + CHANGE_LICENSE_TYPE): trước chỉ gõ local-part vào ô lọc. Giờ thử local-part RỒI full email (giống user gõ tay) — humanType tự clear nên gọi lại an toàn.",
+      "Thêm log [autogpt-locate]: ô lọc tìm thấy chưa (+placeholder), số row hiển thị sau mỗi lần lọc, thấy/không thấy row, vào nhánh lật trang + thấy ở trang mấy → đọc console biết chính xác bước nào trượt.",
+      "Web: hiển thị tiến trình task (đổi giấy phép/xoá/đổi vai trò) ngay trên trang Thành viên dashboard.",
+      "File đổi: remove/member-filter.ts, remove/locate-member.ts; web Members.tsx.",
+    ],
+  },
+  {
+    version: "0.7.5",
+    date: "2026-06-15",
+    kind: "fix",
+    summary:
+      "SELF-HEAL chỉ pop chrome://extensions khi extension THỰC SỰ có build mới (guard theo chữ ký build) + chỉ khi có task PENDING — hết cảnh tự reload + mở tab ChatGPT lặp lại lúc rảnh",
+    details: [
+      "USER REPORT: extension đang chạy trên tab ChatGPT của user, rồi tự bật chrome://extensions, xong tự mở thêm 1 tab ChatGPT khác — lặp lại rất khó chịu. Yêu cầu: chỉ pop chrome://extensions khi extension thực sự có thay đổi.",
+      "ROOT CAUSE: self-heal (v0.7.4) chạy ở đầu doRunUntilIdle nên kích hoạt ở MỌI nhịp drain (poll 5s SSE + alarm 1 phút) kể cả lúc rảnh. Guard cũ dùng TIMESTAMP 15s: nếu build cứ stale thì cứ mỗi 15s lại chrome.runtime.reload() → Chrome bật chrome://extensions + SW boot lại mở tab ChatGPT → pop lặp vô hạn dù build KHÔNG đổi gì thêm.",
+      "FIX 1 — guard theo CHỮ KÝ BUILD (manifestBuildSig: danh sách file content-script kèm hash trong manifest). Thay STALE_RELOAD_KEY (timestamp) bằng STALE_RELOAD_SIG_KEY (sig). Chỉ chrome.runtime.reload() khi sig KHÁC sig đã reload lần trước = đĩa có build MỚI thật sự → pop ĐÚNG 1 LẦN cho mỗi build. Nếu vẫn stale với cùng sig (Chrome chưa nạp / build hỏng) → log lỗi, KHÔNG reload lại → hết loop pop.",
+      "FIX 2 — gate bằng countPendingTasks() trong doRunUntilIdle: chỉ self-heal khi isExtensionStale() VÀ có ≥1 task PENDING. Rảnh (0 task) thì im lặng, không pop, không mở tab thừa. isExtensionStale() (fetch file local) check trước nên case bình thường không tốn request mạng.",
+      "Giữ nguyên khả năng tự phục hồi: build stale + có task chờ → vẫn tự reload đúng như v0.7.4 (không quay lại bug CONTENT_NOT_INJECTED), nhưng giờ tối đa 1 pop cho mỗi build mới.",
+      "File đổi: background/runner.ts (manifestBuildSig + guard sig trong selfHealIfStale + import countPendingTasks + gate trong doRunUntilIdle).",
+    ],
+  },
+  {
+    version: "0.7.4",
+    date: "2026-06-15",
+    kind: "fix",
+    summary:
+      "SELF-HEAL: SW tự chrome.runtime.reload() khi phát hiện manifest trỏ file đã bị xoá (rebuild) — KHÔNG còn phải reload tay ở chrome://extensions, fix gốc CONTENT_NOT_INJECTED",
+    details: [
+      "USER REPORT: task CHANGE_LICENSE_TYPE fail CONTENT_NOT_INJECTED, diag: 'Could not load file: assets/index.ts-loader-D8UHvaps.js'. Manifest SW đang chạy trỏ hash CŨ (D8UHvaps) trong khi đĩa đã rebuild ra hash MỚI (CCL10K53) + file cũ bị xoá → cả auto-injection lẫn 3 step executeScript fallback đều 'Could not load file'.",
+      "ROOT CAUSE (mọi lần vá trước — v0.4.17/0.4.18/0.6.3/0.6.7 — đều xử lý phần ngọn): sau `vite build` Chrome KHÔNG tự reload extension unpacked → service worker giữ manifest cũ trong RAM, trỏ tới file content-script đã bị xoá. Mọi task fail tới khi user bấm reload ở chrome://extensions.",
+      "FIX (runner.ts): thêm isExtensionStale() — fetch từng file js mà manifest tham chiếu qua chrome.runtime.getURL; file 404 = stale build. selfHealIfStale() gọi chrome.runtime.reload() để Chrome đọc lại manifest+file MỚI từ đĩa (extension unpacked), tự sửa hash. Guard 15s (timestamp trong chrome.storage.local, sống sót qua reload) chống loop nếu build thật sự thiếu file.",
+      "Đặt ở ĐẦU doRunUntilIdle — 1 điểm chặn duy nhất mà mọi đường drain (SSE task-available, SSE poll 5s, alarm backup 1 phút, popup run-pending, boot SW) đều đi qua, và chạy TRƯỚC pickNextTask nên không task nào bị claim rồi bỏ dở khi SW restart.",
+      "KẾT QUẢ: sau khi rebuild extension, lần drain kế tiếp (≤5s nếu SSE connected, ≤1 phút qua alarm) SW tự reload → task chạy tiếp tự động. KHÔNG cần thao tác chrome://extensions thủ công nữa.",
+      "File đổi: background/runner.ts (isExtensionStale + selfHealIfStale + chèn vào doRunUntilIdle).",
+    ],
+  },
+  {
+    version: "0.7.3",
+    date: "2026-06-15",
+    kind: "fix",
+    summary:
+      "Đổi giấy phép: LỌC THEO TÊN bằng email trước khi bấm '...' (như REMOVE) — fix không đổi được trên list 100+ member phân trang",
+    details: [
+      "USER chỉ rõ thao tác: tab Người dùng → 'Lọc theo tên' → nhập email → bấm '...' → 'Thay đổi loại giấy phép' → ChatGPT/Codex.",
+      "ROOT CAUSE: v0.7.0–0.7.2 gọi findMemberRow(email) thẳng trên DOM. List 108 member phân trang (5 trang × 25 row ảo) → row cần đổi thường KHÔNG nằm trong viewport → findMemberRow null → task FAILED, ChatGPT không đổi gì.",
+      "FIX: executeChangeLicenseType tái dùng locateMemberRow + clearMemberFilter của REMOVE: clickTabAndWait('tab_active_members') → lọc theo email (zoom còn 1 row) → bấm '...' → chọn ChatGPT/Codex → clear filter. Giữ log [autogpt-license] + dump menu + xử lý submenu + dialog xác nhận của v0.7.2.",
+      "File đổi: change-license-type/execute-change-license-type.ts (import locate-member + member-filter từ ../remove, clickTabAndWait từ ../sync).",
+    ],
+  },
+  {
+    version: "0.7.2",
+    date: "2026-06-15",
+    kind: "fix",
+    summary:
+      "CHANGE_LICENSE_TYPE: log chi tiết + dump menu items + xử lý submenu (hover/pointer/ArrowRight) + dialog xác nhận — debug 'đổi giấy phép không ăn'",
+    details: [
+      "USER REPORT: scrape license đã OK nhưng đổi giấy phép không tác động lên ChatGPT (UI đang English).",
+      "execute-change-license-type viết lại: console.log từng bước (prefix [autogpt-license]) + dumpOpenMenus() in text mọi menu item đang mở → biết chính xác menu '...' chứa gì.",
+      "openSubmenu(): mở submenu 'Change license type' bằng nhiều cách — pointerover/pointerenter/mouseover/mousemove + focus + phím ArrowRight + click (Radix Menu.Sub mở theo pointer/keyboard, không chỉ click).",
+      "findConfirmButton(): nếu ChatGPT bật dialog xác nhận sau khi chọn → tự click nút Change/Confirm/Switch/Đổi/Xác nhận.",
+      "Nếu vẫn fail: error_message hướng dẫn xem console [autogpt-license] để lấy danh sách menu items thật.",
+      "File đổi: change-license-type/execute-change-license-type.ts.",
+    ],
+  },
+  {
+    version: "0.7.1",
+    date: "2026-06-15",
+    kind: "fix",
+    summary:
+      "Scrape license_type mạnh hơn — bắt được cả khi 'ChatGPT/Codex' nằm trong nút/dropdown (kèm mũi tên), không chỉ text thuần",
+    details: [
+      "USER REPORT: dashboard cột 'Giấy phép' trống dù tab Người dùng trên ChatGPT có hiển thị loại giấy phép.",
+      "Nguyên nhân: findLicenseTypeInRow v0.7.0 chỉ match element LÁ có text ĐÚNG y hệt 'ChatGPT'/'Codex'. UI thật render trong button/dropdown (đổi được) nên text kèm mũi tên '▾' hoặc icon → không phải lá hoặc không bằng đúng chuỗi → trượt.",
+      "Fix: duyệt mọi element, lấy DIRECT TEXT (bỏ text của element con để cô lập nhãn 1 cell), strip caret ▼▾▿⌄⇣ rồi so khớp 'chatgpt'/'codex'. Vẫn tránh false-positive từ email/tên vì direct text của ô email là cả địa chỉ.",
+      "Thêm console.warn tối đa 3 row đầu khi không tìm thấy (in row.text rút gọn) để debug DOM nếu vẫn trượt.",
+      "Cần SYNC lại workspace sau khi load bản này để điền license_type.",
+      "File đổi: row-extractors/license-type.ts.",
+    ],
+  },
+  {
+    version: "0.7.0",
+    date: "2026-06-15",
+    kind: "feature",
+    summary:
+      "CHANGE_LICENSE_TYPE — đổi loại suất cấp phép (ChatGPT/Codex) của member từ dashboard + scrape license_type khi SYNC",
+    details: [
+      "USER REQUEST 2026-06-15 (kèm ảnh menu '...' /admin/members): mỗi member có 'Loại suất cấp phép' = ChatGPT | Codex, đổi qua menu '...' → 'Thay đổi loại giấy phép' → ChatGPT/Codex. Cần đưa thông tin này vào dashboard + cho đổi.",
+      "Action mới CHANGE_LICENSE_TYPE (mirror CHANGE_ROLE): dashboard (super-admin) chọn ChatGPT/Codex trong dropdown cột 'Giấy phép' → PATCH /workspaces/{id}/members/{mid}/license-type → QueueItem CHANGE_LICENSE_TYPE → SSE → extension thực thi.",
+      "execute-change-license-type.ts: findMemberRow(email) → click nút '...' → tìm option ChatGPT/Codex (mở submenu 'Thay đổi loại giấy phép' nếu cần) → click. Bỏ qua nếu old==new.",
+      "SYNC_DATA giờ scrape thêm license_type mỗi row (row-extractors/license-type.ts: tìm element lá có text đúng 'ChatGPT'/'Codex', tránh false-positive từ email/tên). bulk-upsert lưu Member.license_type.",
+      "Backend: Member.license_type (migration 0014), MemberOut/MemberUpsert + LicenseType schema, queue.update_task sync license_type khi task COMPLETED. Permission tái dùng MEMBER_CHANGE_ROLE.",
+      "File đổi: ext messages.ts, i18n-ui.ts, scrape-all-rows.ts, runner.ts, content/index.ts, api.ts, change-license-type/*; api models.py, schemas.py, routers/members.py, routers/queue.py, alembic 0014; web types.ts, Members.tsx, i18n vi/zh-CN.",
+    ],
+  },
+  {
+    version: "0.6.19",
+    date: "2026-06-15",
+    kind: "fix",
+    summary:
+      "REMOVE member: lật trang + scroll như SYNC để không tìm sót trong list dài (hết kick 'ảo')",
+    details: [
+      "Bug: trên workspace đông member (list phân trang/virtualized), executeRemove chỉ dựa ô lọc → tìm sót row → báo UI_ELEMENT_NOT_FOUND dù member vẫn còn → backend reconcile nhầm thành 'đã removed' (kick ảo, member thực tế vẫn trong workspace).",
+      "locate-member.ts mới: thử ô lọc trước, không thấy thì clear lọc + về trang 1 + lật từng trang + scroll-scan (tái dùng pagination.ts của SYNC) tới khi thấy row hoặc hết trang.",
+      "Backend (queue.py): BỎ auto-reconcile UI_ELEMENT_NOT_FOUND→COMPLETED cho REMOVE_MEMBER — không tự đánh dấu removed nữa; task để FAILED, SYNC là nguồn chân lý.",
+    ],
+  },
+  {
+    version: "0.6.18",
+    date: "2026-06-14",
+    kind: "fix",
+    summary:
+      "Sync bỏ tab 'Yêu cầu đang chờ xử lý' — members=tab Người dùng, invites=tab Lời mời, both=cả 2",
+    details: [
+      "User yêu cầu: không quét tab 'Yêu cầu đang chờ xử lý' nữa.",
+      "execute-sync.ts: bỏ block scrape tab_pending_requests. scope 'invites' giờ CHỈ quét tab 'Lời mời đang chờ xử lý'; 'members' chỉ tab 'Người dùng'; 'both' = cả 2 tab đó.",
+    ],
+  },
+  {
+    version: "0.6.17",
+    date: "2026-06-14",
+    kind: "fix",
+    summary:
+      "Sync 'Lời mời': verify URL ?tab=invites đã đổi tab mới scrape (hết bug vẫn ở tab Người dùng)",
+    details: [
+      "User report: đồng bộ 'Lời mời đang chờ xử lý' KHÔNG đổi tab, vẫn ở tab Người dùng → scrape nhầm.",
+      "Nguyên nhân: clickTabAndWait chỉ humanClick rồi sleep cố định, KHÔNG kiểm chứng tab đã đổi. humanClick đôi khi không trigger React onClick / match nhầm element → tab không đổi nhưng code vẫn proceed scrape DOM hiện tại.",
+      "Fix: clickTabAndWait thêm tham số verifyTabParam. Với tab Lời mời truyền 'tab=invites' → sau click POLL location.search tới khi khớp (tab thực sự đổi); chưa khớp thì RETRY click (tối đa 3 lần); hết retry vẫn sai → return false → execute-sync BỎ QUA, KHÔNG scrape nhầm tab Người dùng.",
+      "Tab Người dùng / Yêu cầu giữ hành vi cũ (không truyền verifyTabParam) để không đổi behavior ngoài phạm vi bug.",
+      "File đổi: click-tab-and-wait.ts, execute-sync.ts.",
+    ],
+  },
+  {
+    version: "0.6.16",
+    date: "2026-06-14",
+    kind: "fix",
+    summary:
+      "Verify invite: email KHÔNG có trong tab 'Lời mời' bị GỠ khỏi dashboard (hết phantom 'đang chờ') + bắt buộc bật toggle ngoài-domain mới mời",
+    details: [
+      "BUG 1 (phantom 'đã add'): sau invite, verify scrape tab 'Lời mời đang chờ xử lý'. Trước đây email KHÔNG xuất hiện trong pending vẫn giữ Member status=pending (backend tạo lúc bấm mời) → dashboard hiển thị 'đang chờ' dù ChatGPT chưa nhận. FIX: runner gọi endpoint mới POST /members/reconcile-after-invite với danh sách unverified → backend mark các Member pending đó = 'removed' (chỉ pending, KHÔNG đụng active). Nếu scrape pending FAIL thì giữ nguyên (tránh xoá oan).",
+      "execute-verify-pending.ts không còn early-return ok:false khi 0 verified — luôn trả verified/unverified cho runner. Runner quyết định: 0 verified + scrape OK → task FAILED (VERIFY_FAILED) SAU khi đã dọn phantom; có verified → COMPLETED.",
+      "BUG 2 (toggle ngoài-domain): khi có email ngoài domain xác minh, BẮT BUỘC bật toggle 'Cho phép lời mời ngoài tên miền' và XÁC NHẬN state=ON trước khi mời. setExternalInvites() trả thêm `confirmed`. Nếu không xác nhận được ON (không thấy toggle / click không ăn) → execute-invite return FAIL EXTERNAL_TOGGLE_FAILED, KHÔNG submit (tránh ChatGPT từ chối silently → phantom). Sau invite vẫn force OFF như cũ.",
+      "EXTERNAL_TOGGLE_FAILED cũng kích hoạt reconcile dọn phantom (vì chưa hề submit invite).",
+      "File đổi: api/routers/members.py (+reconcile-after-invite), api/schemas.py (InviteVerifyReconcileIn), ext set-toggle.ts (confirmed), execute-invite.ts (fail-on-toggle + force OFF), execute-verify-pending.ts (luôn ok:true), runner.ts (reconcile + status), shared/api.ts (reconcileAfterInvite).",
+    ],
+  },
   {
     version: "0.6.15",
     date: "2026-06-09",

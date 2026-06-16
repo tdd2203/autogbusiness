@@ -3,6 +3,7 @@ import { parseChatGPTRole } from "../../i18n-ui";
 import { SELECTORS } from "../../selectors";
 import { EMAIL_FULL_RE, extractSingleEmail, findEmailTextNode } from "./row-extractors/email";
 import { findJoinedAtInRow } from "./row-extractors/joined-at";
+import { findLicenseTypeInRow } from "./row-extractors/license-type";
 import { findNameInRow } from "./row-extractors/name";
 
 /**
@@ -41,6 +42,7 @@ export function scrapeAllRows(): ScrapedMember[] {
         email: found.email,
         name: findNameInRow(row, found.email),
         chatgpt_role: parseChatGPTRole(row.textContent ?? null),
+        license_type: findLicenseTypeInRow(row),
         status: "active",
         joined_at: findJoinedAtInRow(row),
       });
@@ -97,6 +99,7 @@ export function scrapeAllRows(): ScrapedMember[] {
       email,
       name: findNameInRow(row, email),
       chatgpt_role: parseChatGPTRole(row.textContent ?? null),
+      license_type: findLicenseTypeInRow(row),
       status: "active",
       joined_at: findJoinedAtInRow(row),
     });

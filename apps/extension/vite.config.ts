@@ -17,6 +17,12 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    emptyOutDir: true,
+    // emptyOutDir=false: KHÔNG xoá file build cũ. Lý do: mỗi lần build, hash
+    // file đổi (vd index.ts-loader-<hash>.js). Nếu xoá file cũ trong khi Chrome
+    // còn đang chạy bản trước (service worker tham chiếu hash cũ qua manifest),
+    // executeScript inject sẽ "Could not load file" → CONTENT_NOT_INJECTED, mọi
+    // task fail tới khi reload. Giữ file cũ → bản đang load vẫn chạy được tới khi
+    // user reload lấy bản mới. Đánh đổi: dist tích tụ file cũ — thi thoảng xoá tay.
+    emptyOutDir: false,
   },
 });

@@ -3,7 +3,7 @@
  * Single source of truth cho TEXT_FALLBACKS, role labels, revoke, billing hints.
  */
 
-import type { ChatGPTRole } from "../shared/messages";
+import type { ChatGPTRole, LicenseType } from "../shared/messages";
 import {
   dbLabelsFor,
   reportLabelMismatch,
@@ -94,6 +94,25 @@ export const TEXT_FALLBACKS = {
     "变更角色",
     "更改席位类型",
     "修改席位类型",
+  ],
+  // Item menu "..." trên row member mở submenu chọn loại giấy phép (ChatGPT/Codex).
+  // UI 2026 vi: "Thay đổi loại giấy phép". Có thể là submenu trigger hoặc header.
+  changeLicenseTypeMenuItem: [
+    "Thay đổi loại giấy phép",
+    "Đổi loại giấy phép",
+    "Thay đổi giấy phép",
+    "Loại giấy phép",
+    "Change license type",
+    "Change license",
+    "Edit license type",
+    "License type",
+    "Change seat type",
+    "Edit seat type",
+    "更改许可证类型",
+    "修改许可证类型",
+    "更改许可证",
+    "许可证类型",
+    "更改席位类型",
   ],
   confirmRemoveButton: [
     "Remove",
@@ -309,6 +328,57 @@ export function findRoleOption(
   }
   if (dbLabels.length > 0) {
     reportLabelMismatch(controlKey, dbLabels[0], "/admin/members");
+  }
+  return null;
+}
+
+/**
+ * Label hiển thị cho loại giấy phép. ChatGPT/Codex là brand name — giống nhau
+ * mọi locale, nhưng vẫn để mảng phòng biến thể chữ hoa/khoảng trắng.
+ */
+export const LICENSE_TYPE_LABELS: Record<LicenseType, string[]> = {
+  ChatGPT: ["ChatGPT", "Chat GPT"],
+  Codex: ["Codex"],
+};
+
+/** Keyword nhận diện license khi scrape row (substring, đã normalize lowercase). */
+const LICENSE_KEYWORDS: Array<{ type: LicenseType; patterns: string[] }> = [
+  // Codex trước ChatGPT: "Codex" không bao giờ chứa "chatgpt" nên match Codex
+  // chính xác; còn "ChatGPT" là default phổ biến nhất.
+  { type: "Codex", patterns: ["codex"] },
+  { type: "ChatGPT", patterns: ["chatgpt", "chat gpt"] },
+];
+
+/**
+ * Parse loại giấy phép từ text 1 CELL (đã scope về đúng ô "Loại suất cấp phép").
+ * KHÔNG truyền nguyên row text vào đây — "chatgpt" xuất hiện ở nhiều chỗ
+ * (tên workspace, link...) dễ false-positive. Dùng findLicenseTypeInRow để
+ * scope trước.
+ */
+export function parseLicenseType(
+  raw: string | null | undefined,
+): LicenseType | null {
+  if (!raw) return null;
+  const t = raw.trim().toLowerCase();
+  for (const { type, patterns } of LICENSE_KEYWORDS) {
+    if (patterns.some((p) => t.includes(p))) return type;
+  }
+  return null;
+}
+
+/** Tìm option ChatGPT/Codex trong menu/submenu đang mở (mirror findRoleOption). */
+export function findLicenseTypeOption(
+  type: LicenseType,
+  root: ParentNode = document,
+): HTMLElement | null {
+  for (const label of LICENSE_TYPE_LABELS[type]) {
+    const el =
+      queryByText('[role="menuitemradio"]', label, root) ??
+      queryByText('[role="menuitem"]', label, root) ??
+      queryByText('[role="option"]', label, root) ??
+      queryByText("button", label, root) ??
+      queryByText("li", label, root);
+    if (el) return el;
   }
   return null;
 }

@@ -11,7 +11,8 @@ import { SELECTORS, TEXT_FALLBACKS } from "../../selectors";
 import { findMemberRow, findRowMenuButton } from "../member-row";
 import { dbLabelsFor, reportLabelMismatch } from "../../../shared/ui-labels";
 import { clickTabAndWait } from "../sync";
-import { clearMemberFilter, filterAndFindRow } from "./member-filter";
+import { clearMemberFilter } from "./member-filter";
+import { locateMemberRow } from "./locate-member";
 
 export async function executeRemove(
   taskId: string,
@@ -37,15 +38,17 @@ export async function executeRemove(
 
   await reportProgress(
     taskId,
-    { phase: "searching", message: `Tìm kiếm ${email} qua ô lọc...` },
+    { phase: "searching", message: `Tìm ${email} (ô lọc → lật trang nếu cần)...` },
     true,
   );
-  const row = await filterAndFindRow(email);
+  // Định vị bền vững: ô lọc trước, không thấy thì lật hết trang + scroll
+  // (giống SYNC) để không bỏ sót member trong list dài/phân trang.
+  const row = await locateMemberRow(email);
   if (!row) {
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
-      error_message: `Không tìm thấy row của member ${email} sau khi filter. Có thể email đã bị xoá rồi hoặc đang ở tab khác.`,
+      error_message: `Không tìm thấy ${email} sau khi duyệt hết mọi trang. Có thể email đã rời workspace; chạy SYNC để đối chiếu lại.`,
     };
   }
 

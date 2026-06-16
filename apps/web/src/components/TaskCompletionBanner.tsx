@@ -103,6 +103,12 @@ function renderDetail(task: QueueItem, t: Translator): string {
       const role = (task.payload?.new_role as string | undefined) ?? "";
       return t("sync.completedChangeRole", { email, role });
     }
+    case "CHANGE_LICENSE_TYPE": {
+      const email = (task.payload?.email as string | undefined) ?? "";
+      const license =
+        (task.payload?.new_license_type as string | undefined) ?? "";
+      return t("sync.completedChangeLicenseType", { email, license });
+    }
     default:
       return task.type;
   }

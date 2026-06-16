@@ -1,19 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { queuePollInterval } from "../lib/queuePolling";
 import { useAuth } from "../hooks/useAuth";
 import { useFormatDate, useT } from "../i18n";
-import type { Member, QueueItem } from "../types";
-import { triggerExtensionRun } from "../hooks/useExtensionTrigger";
+import type { Member, QueueItem, WorkspaceMemberStats } from "../types";
+import { useRemoveMembers } from "../hooks/useRemoveMembers";
+import { useMemberMutations } from "../hooks/useMemberMutations";
 import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
-import { confirm, toast } from "../components/Toast";
+import { confirm } from "../components/Toast";
 
 // Dashboard CHỈ cho phép đổi giữa 2 role này. admin/owner phải thao tác trực
 // tiếp trên ChatGPT (an toàn — tránh dashboard cấp quyền cao bằng UI dễ nhầm).
 // Member đã có role admin/owner từ trước → hiển thị label nhưng KHÔNG cho đổi.
 type Role = "owner" | "admin" | "member" | "analytics_viewer";
 const DASHBOARD_ALLOWED_ROLES: Role[] = ["member", "analytics_viewer"];
+
+// Loại suất cấp phép ChatGPT — đổi qua menu "..." trên row /admin/members.
+type LicenseType = "ChatGPT" | "Codex";
+const LICENSE_TYPES: LicenseType[] = ["ChatGPT", "Codex"];
 
 const STATUS_BADGE: Record<string, string> = {
   active: "badge badge-success",
@@ -31,6 +37,9 @@ export default function Members() {
   // Invite form đã được lift sang InviteMemberModal (WorkspaceLayout header).
   // Members.tsx chỉ còn hiển thị danh sách + filter + progress.
   const [search, setSearch] = useState("");
+  // Xoá hàng loạt qua checkbox chọn nhiều dòng. Modal dán email nằm ở
+  // WorkspaceLayout header (cạnh nút Mời) — đồng bộ với flow mời thành viên.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const { data: members = [], isLoading } = useQuery({
     queryKey: ["members", workspaceId],
@@ -39,12 +48,25 @@ export default function Members() {
     enabled: !!workspaceId,
   });
 
+  // Thống kê workspace: tổng member toàn workspace + seat. Để sub-admin (chỉ
+  // thấy member mình mời trong bảng) vẫn biết TỔNG số người + còn bao seat trống.
+  const { data: stats } = useQuery({
+    queryKey: ["member-stats", workspaceId],
+    queryFn: () =>
+      api<WorkspaceMemberStats>(
+        `/api/v1/workspaces/${workspaceId}/members/stats`,
+      ),
+    enabled: !!workspaceId && hasPermission("MEMBER_VIEW"),
+  });
+
   const { data: recentTasks = [] } = useQuery({
     queryKey: ["recent-tasks", workspaceId],
     queryFn: () =>
       api<QueueItem[]>(`/api/v1/queue?workspace_id=${workspaceId}&limit=50`),
     enabled: !!workspaceId,
-    refetchInterval: 2000,
+    // Poll 2s khi có task chạy, dừng khi idle (resume qua invalidate). Xem
+    // lib/queuePolling.
+    refetchInterval: queuePollInterval(2000),
   });
 
   // Auto-reload members list khi extension hoàn thành task (COMPLETED/FAILED)
@@ -61,6 +83,7 @@ export default function Members() {
       "INVITE_MEMBER",
       "REMOVE_MEMBER",
       "CHANGE_ROLE",
+      "CHANGE_LICENSE_TYPE",
       "REVOKE_INVITES",
       "SYNC_DATA",
     ]);
@@ -75,6 +98,7 @@ export default function Members() {
     }
     if (shouldInvalidate) {
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      qc.invalidateQueries({ queryKey: ["member-stats", workspaceId] });
     }
   }, [recentTasks, qc, workspaceId]);
 
@@ -86,6 +110,14 @@ export default function Members() {
     (t) => t.type === "INVITE_MEMBER",
   );
   const activeInviteCount = activeInviteTasks.length;
+  // Tác vụ thao tác từng member đang chạy/chờ (đổi giấy phép, xoá, đổi vai trò).
+  // Bulk tạo nhiều task cùng loại → banner show count + tiến trình từng cái.
+  const activeActionTasks = activeTasks.filter(
+    (t) =>
+      t.type === "CHANGE_LICENSE_TYPE" ||
+      t.type === "REMOVE_MEMBER" ||
+      t.type === "CHANGE_ROLE",
+  );
   // Lấy invite FAILED gần đây (trong recentTasks) để show debug info ngay banner
   // → user thấy được error code/message của task vừa fail mà không cần mở Queue tab.
   const recentFailedInvites = recentTasks
@@ -125,54 +157,18 @@ export default function Members() {
   // sync mutation đã được lift lên WorkspaceLayout (button nằm cùng hàng tabs).
   // Members.tsx vẫn theo dõi activeSyncTask để show banner progress + cancel.
 
-  const cancelTask = useMutation({
-    mutationFn: async (taskId: string) => {
-      const ok = await confirm(
-        t("queue.cancelConfirm", { type: activeSyncTask?.type ?? "SYNC_DATA" }),
-        {
-          title: t("queue.cancelConfirmTitle"),
-          okText: t("queue.cancelOk"),
-          cancelText: t("common.cancel"),
-          danger: true,
-        },
-      );
-      if (!ok) throw new Error("__user_cancel__");
-      return api<{ id: string; status: string }>(
-        `/api/v1/queue/${taskId}/cancel`,
-        { method: "POST" },
-      );
-    },
-    onSuccess: () => {
-      toast.success(t("queue.cancelOkToast"));
-      qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
-    },
-    onError: (e) => {
-      if (e instanceof Error && e.message === "__user_cancel__") return;
-      toast.error(
-        t("queue.cancelError", {
-          error: e instanceof Error ? e.message : String(e),
-        }),
-      );
-    },
-  });
-
-  const revokeInvites = useMutation({
-    mutationFn: (emails: string[]) =>
-      api<{ queue_item_id: string; count: number }>(
-        `/api/v1/workspaces/${workspaceId}/revoke-invites`,
-        { method: "POST", body: JSON.stringify({ emails }) },
-      ),
-    onSuccess: (resp) => {
-      toast.success(t("member.revokeToastOk", { n: resp.count }));
-      qc.invalidateQueries({ queryKey: ["members", workspaceId] });
-    },
-    onError: (e) => {
-      toast.error(
-        t("member.revokeToastError", {
-          error: e instanceof Error ? e.message : String(e),
-        }),
-      );
-    },
+  // Đổi vai trò / giấy phép / thu hồi lời mời / huỷ task đã tách sang hook riêng
+  // kèm docs — xem hooks/useMemberMutations.md TRƯỚC KHI SỬA. cancelTask cần biết
+  // loại task đang chạy để render confirm → truyền getCancelTaskType.
+  const {
+    changeRole,
+    changeLicenseType,
+    bulkChangeLicense,
+    revokeInvites,
+    cancelTask,
+  } = useMemberMutations(workspaceId, {
+    onBulkChangeLicenseCleared: () => setSelectedIds(new Set()),
+    getCancelTaskType: () => activeSyncTask?.type,
   });
 
   useEffect(() => {
@@ -209,31 +205,20 @@ export default function Members() {
   // Invite mutation đã chuyển sang InviteMemberModal (modal popup ở
   // WorkspaceLayout header). Members.tsx chỉ giữ remove + changeRole.
 
-  const remove = useMutation({
-    mutationFn: (memberId: string) =>
-      api(`/api/v1/workspaces/${workspaceId}/members/${memberId}`, {
-        method: "DELETE",
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["members", workspaceId] });
-      triggerExtensionRun();
-    },
-  });
-
-  const changeRole = useMutation({
-    mutationFn: ({ memberId, role }: { memberId: string; role: Role }) =>
-      api(`/api/v1/workspaces/${workspaceId}/members/${memberId}/role`, {
-        method: "PATCH",
-        body: JSON.stringify({ new_role: role }),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["members", workspaceId] });
-      triggerExtensionRun();
-    },
-  });
+  // Remove Member (xoá đơn / hàng loạt / cleanup hết hạn) đã tách sang hook
+  // riêng kèm docs — xem hooks/useRemoveMembers.md TRƯỚC KHI SỬA.
+  const { remove, bulkRemoveSelected, cleanupExpired } = useRemoveMembers(
+    workspaceId,
+    { onBulkRemoveCleared: () => setSelectedIds(new Set()) },
+  );
 
   const canRemove = hasPermission("MEMBER_REMOVE");
   const canChangeRole = user?.is_super_admin === true;
+  // Đổi license type cũng chỉ super-admin (tái dùng quyền như đổi role).
+  const canChangeLicense = user?.is_super_admin === true;
+  // Có thể thao tác hàng loạt (checkbox + thanh "Cập nhật hàng loạt") khi có ít
+  // nhất 1 trong 2 quyền: xoá hoặc đổi giấy phép.
+  const canBulk = canRemove || canChangeLicense;
 
   const total = members.length;
   const activeCount = members.filter((m) => m.status === "active").length;
@@ -261,23 +246,6 @@ export default function Members() {
       new Date(m.subscription_end_at).getTime() - now <= SEVEN_DAYS_MS,
   );
 
-  const cleanupExpired = useMutation({
-    mutationFn: () =>
-      api<{ count: number; emails: string[] }>(
-        `/api/v1/workspaces/${workspaceId}/members/cleanup-expired`,
-        { method: "POST" },
-      ),
-    onSuccess: (resp) => {
-      toast.success(t("member.cleanupExpiredOk", { n: resp.count }));
-      qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
-      qc.invalidateQueries({ queryKey: ["members", workspaceId] });
-    },
-    onError: (e) => {
-      const msg = e instanceof Error ? e.message : String(e);
-      toast.error(msg);
-    },
-  });
-
   const filteredMembers = useMemo(() => {
     if (!search.trim()) return members;
     const s = search.trim().toLowerCase();
@@ -287,6 +255,82 @@ export default function Members() {
         (m.name ?? "").toLowerCase().includes(s),
     );
   }, [members, search]);
+
+  // Xoá hàng loạt: chỉ chọn được member active/pending (removed thì bỏ qua) khi
+  // có quyền MEMBER_REMOVE. Select-all chỉ áp lên các dòng đang hiển thị (đã lọc).
+  const selectableMembers = useMemo(
+    () =>
+      canBulk
+        ? filteredMembers.filter(
+            (m) => m.status === "active" || m.status === "pending",
+          )
+        : [],
+    [filteredMembers, canBulk],
+  );
+  const selectedCount = selectableMembers.filter((m) =>
+    selectedIds.has(m.id),
+  ).length;
+  const allSelected =
+    selectableMembers.length > 0 && selectedCount === selectableMembers.length;
+
+  function toggleSelect(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function toggleSelectAll() {
+    setSelectedIds((prev) => {
+      if (selectableMembers.length > 0 && allSelected) {
+        // Bỏ chọn các dòng đang hiển thị.
+        const next = new Set(prev);
+        for (const m of selectableMembers) next.delete(m.id);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const m of selectableMembers) next.add(m.id);
+      return next;
+    });
+  }
+  // Thanh "Cập nhật hàng loạt": 1 select gom mọi hành động trên các dòng đã chọn.
+  //   - remove                → xoá khỏi workspace (cần MEMBER_REMOVE)
+  //   - license:ChatGPT/Codex → đổi giấy phép hàng loạt (cần super-admin)
+  async function handleBulkAction(value: string) {
+    if (!value) return;
+    const ids = selectableMembers
+      .filter((m) => selectedIds.has(m.id))
+      .map((m) => m.id);
+    if (ids.length === 0) return;
+
+    if (value === "remove") {
+      const ok = await confirm(t("bulkRemove.confirmSelectedBody", { n: ids.length }), {
+        title: t("bulkRemove.confirmSelectedTitle", { n: ids.length }),
+        okText: t("bulkRemove.confirmSelectedOk", { n: ids.length }),
+        cancelText: t("common.cancel"),
+        danger: true,
+        requireType: "delete",
+      });
+      if (ok) bulkRemoveSelected.mutate(ids);
+      return;
+    }
+
+    if (value.startsWith("license:")) {
+      const licenseType = value.slice("license:".length) as LicenseType;
+      const ok = await confirm(
+        t("bulkLicense.confirmBody", { n: ids.length, license: licenseType }),
+        {
+          title: t("bulkLicense.confirmTitle", { n: ids.length }),
+          okText: t("bulkLicense.confirmOk", { license: licenseType }),
+          cancelText: t("common.cancel"),
+        },
+      );
+      if (ok) bulkChangeLicense.mutate({ memberIds: ids, licenseType });
+    }
+  }
+
+  const colCount = canBulk ? 9 : 8;
 
   return (
     <div>
@@ -331,6 +375,28 @@ export default function Members() {
               {activeInviteTasks.map((task) => (
                 <InviteProgressRow key={task.id} task={task} />
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+      {activeActionTasks.length > 0 && (
+        <div className="notice" style={{ marginBottom: 16 }}>
+          <div className="notice-icon">
+            <div className="spinner" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div className="notice-title">
+              {t("member.actionsInFlight", { n: activeActionTasks.length })}
+            </div>
+            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+              {activeActionTasks.slice(0, 8).map((task) => (
+                <InviteProgressRow key={task.id} task={task} />
+              ))}
+              {activeActionTasks.length > 8 && (
+                <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
+                  {t("member.actionsMore", { n: activeActionTasks.length - 8 })}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -450,6 +516,21 @@ export default function Members() {
             <div className="table-title">{t("member.listTitle")}</div>
             <div className="table-meta" style={{ marginTop: 2 }}>
               {t("members.countLabel", { n: total })}
+              {stats && (
+                <>
+                  {" · "}
+                  {t("members.totalInWorkspace", { n: stats.total })}
+                  {stats.seat_total != null && (
+                    <>
+                      {" · "}
+                      {t("members.seatUsage", {
+                        used: stats.seat_used ?? stats.total,
+                        total: stats.seat_total,
+                      })}
+                    </>
+                  )}
+                </>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2" style={{ flexWrap: "wrap" }}>
@@ -458,6 +539,40 @@ export default function Members() {
               onChange={setSearch}
               placeholder={t("members.searchPlaceholder")}
             />
+            {canBulk && selectedCount > 0 && (
+              <select
+                className="form-input"
+                value=""
+                disabled={
+                  bulkRemoveSelected.isPending || bulkChangeLicense.isPending
+                }
+                onChange={(e) => {
+                  void handleBulkAction(e.target.value);
+                  e.target.value = "";
+                }}
+                style={{ width: "auto" }}
+                title={t("bulkAction.placeholder", { n: selectedCount })}
+              >
+                <option value="">
+                  {bulkRemoveSelected.isPending || bulkChangeLicense.isPending
+                    ? t("bulkRemove.submitBusy")
+                    : t("bulkAction.placeholder", { n: selectedCount })}
+                </option>
+                {canChangeLicense && (
+                  <option value="license:ChatGPT">
+                    {t("bulkAction.licenseChatGPT")}
+                  </option>
+                )}
+                {canChangeLicense && (
+                  <option value="license:Codex">
+                    {t("bulkAction.licenseCodex")}
+                  </option>
+                )}
+                {canRemove && (
+                  <option value="remove">{t("bulkAction.remove")}</option>
+                )}
+              </select>
+            )}
             {/* Action buttons (Sync ChatGPT + Mời thành viên) đã được lift
                 lên WorkspaceLayout header để nằm cùng hàng với tabs. */}
           </div>
@@ -467,9 +582,21 @@ export default function Members() {
           <table className="data-table">
             <thead>
               <tr>
+                {canBulk && (
+                  <th style={{ width: 36, textAlign: "center" }}>
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      disabled={selectableMembers.length === 0}
+                      onChange={toggleSelectAll}
+                      title={t("bulkRemove.selectAll")}
+                    />
+                  </th>
+                )}
                 <th>{t("member.colEmail")}</th>
                 <th>{t("member.colName")}</th>
                 <th>{t("member.colRole")}</th>
+                <th>{t("member.colLicenseType")}</th>
                 <th>{t("member.colStatus")}</th>
                 <th>{t("member.colSubscription")}</th>
                 <th>{t("member.colJoinedAt")}</th>
@@ -479,22 +606,36 @@ export default function Members() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={7} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
+                  <td colSpan={colCount} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
                     {t("common.loading")}
                   </td>
                 </tr>
               )}
               {!isLoading && filteredMembers.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
+                  <td colSpan={colCount} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
                     {user?.is_super_admin
                       ? t("member.emptySuper")
                       : t("member.emptySub")}
                   </td>
                 </tr>
               )}
-              {filteredMembers.map((m) => (
+              {filteredMembers.map((m) => {
+                const selectable =
+                  canBulk && (m.status === "active" || m.status === "pending");
+                return (
                 <tr key={m.id}>
+                  {canBulk && (
+                    <td style={{ textAlign: "center" }}>
+                      {selectable && (
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(m.id)}
+                          onChange={() => toggleSelect(m.id)}
+                        />
+                      )}
+                    </td>
+                  )}
                   <td className="cell-email">{m.email}</td>
                   <td className="cell-muted">{m.name ?? "—"}</td>
                   <td>
@@ -506,6 +647,36 @@ export default function Members() {
                             .toUpperCase()}${m.chatgpt_role.slice(1)}`,
                         )}
                       </span>
+                    ) : (
+                      <span className="cell-muted">—</span>
+                    )}
+                  </td>
+                  <td>
+                    {canChangeLicense && m.status === "active" ? (
+                      <select
+                        value={m.license_type ?? ""}
+                        onChange={(e) =>
+                          changeLicenseType.mutate({
+                            memberId: m.id,
+                            licenseType: e.target.value as LicenseType,
+                          })
+                        }
+                        className="form-input"
+                        style={{ padding: "4px 8px", fontSize: 12, width: "auto" }}
+                      >
+                        {!m.license_type && (
+                          <option value="" disabled>
+                            —
+                          </option>
+                        )}
+                        {LICENSE_TYPES.map((lt) => (
+                          <option key={lt} value={lt}>
+                            {lt}
+                          </option>
+                        ))}
+                      </select>
+                    ) : m.license_type ? (
+                      <span className="role-tag">{m.license_type}</span>
                     ) : (
                       <span className="cell-muted">—</span>
                     )}
@@ -610,7 +781,8 @@ export default function Members() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>

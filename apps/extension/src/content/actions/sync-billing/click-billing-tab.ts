@@ -2,7 +2,8 @@ import { humanClick, sleep } from "../../human";
 import { findControlByKey } from "../../i18n-ui";
 import type { UiLabelPage } from "../../../shared/ui-labels";
 
-/** Render delay sau khi navigate / click tab trong SPA. */
+/** Render delay sau khi navigate / click tab trong SPA. GIỮ NGUYÊN: phụ thuộc
+ * tốc độ render trang (network/máy), không giảm. */
 export const POST_NAV_RENDER_MS = 2500;
 
 /**

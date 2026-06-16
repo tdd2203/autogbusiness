@@ -1,15 +1,55 @@
 import type { ScrapedMember } from "../../../shared/messages";
-import { sleep } from "../../human";
+import { humanClick, sleep, waitFor, waitForCountStable } from "../../human";
 import { reportProgress } from "../../progress";
 import {
-  clickNextPage,
   findPaginationState,
   goToFirstPage,
-  hasMorePages,
+  isDisabled,
   MAX_PAGINATION_PAGES,
-  waitForPageAdvance,
 } from "./pagination";
 import { scrapeAllRows } from "./scrape-all-rows";
+
+// Tổng số member hiển thị ở header, vd "Business · 49 thành viên".
+const MEMBER_COUNT_RE =
+  /([\d.,]+)\s*(thành viên|members?|miembros|membres|成员|會員|회원)/i;
+
+/** Đọc tổng số member từ header workspace. null nếu không thấy. */
+function readHeaderMemberCount(): number | null {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const match = MEMBER_COUNT_RE.exec((node.nodeValue ?? "").trim());
+    if (!match) continue;
+    const n = Number.parseInt(match[1].replace(/[.,]/g, ""), 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+/** Chữ ký trang hiện tại = email vài row đầu — để phát hiện trang đã đổi. */
+function pageSignature(): string {
+  return scrapeAllRows()
+    .map((m) => m.email)
+    .slice(0, 5)
+    .join("|");
+}
+
+/** Đợi NỘI DUNG trang đổi so với chữ ký trước (sau khi bấm next). */
+async function waitForContentChange(prevSig: string): Promise<boolean> {
+  try {
+    await waitFor(
+      () => {
+        const sig = pageSignature();
+        return sig && sig !== prevSig ? sig : null;
+      },
+      8000,
+      200,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Scroll tới đáy, lặp lại tới khi số row không tăng nữa (xử lý virtualized list). */
 async function scrollUntilAllLoaded(maxIterations = 200): Promise<number> {
@@ -118,68 +158,86 @@ export async function scrapeCurrentTab(
     true,
   );
 
+  // Render-aware gate: chờ list member render & ỔN ĐỊNH trước khi scrape lần đầu
+  // (thay cho việc tin vào sleep cố định ở click-tab-and-wait). Resolve ngay khi
+  // số row ngừng tăng; tối đa 6s fallback. List rỗng → chờ hết 6s rồi đi tiếp.
+  // Downstream (scroll/pagination) vẫn re-scrape nên đây chỉ là cổng "đừng scrape
+  // lúc DOM chưa paint".
+  const stableCount = await waitForCountStable(() => scrapeAllRows().length, {
+    timeoutMs: 6000,
+    stablePolls: 2,
+    pollMs: 300,
+  });
+  console.log(
+    `[autogpt-sync] [${label}] list render ổn định ở ~${stableCount} rows trước khi scrape`,
+  );
+
   const collected = new Map<string, ScrapedMember>();
   let timedOut = false;
+
+  // Tổng kỳ vọng đọc từ header (mốc dừng) — chỉ có ý nghĩa với tab active.
+  const expectedTotal = status === "active" ? readHeaderMemberCount() : null;
+  if (expectedTotal) {
+    console.log(`[autogpt-sync] [${label}] header tổng = ${expectedTotal} member`);
+  }
 
   const pagination = findPaginationState();
   if (pagination && pagination.total > 1) {
     console.log(
-      `[autogpt-sync] [${label}] pagination ${pagination.current}/${pagination.total} — lật hết mọi trang`,
+      `[autogpt-sync] [${label}] pagination ${pagination.current}/${pagination.total} — lật hết mọi trang (mốc ${expectedTotal ?? "?"})`,
     );
     await goToFirstPage();
 
-    const visitedPages = new Set<number>();
     for (let guard = 0; guard < MAX_PAGINATION_PAGES; guard++) {
       if (isOverTime()) {
         timedOut = true;
         break;
       }
 
-      const state = findPaginationState();
-      if (!state) {
-        console.warn(`[autogpt-sync] [${label}] mất pagination indicator — dừng`);
-        break;
-      }
-
-      if (visitedPages.has(state.current)) {
-        console.warn(
-          `[autogpt-sync] [${label}] trang ${state.current} đã scrape — tránh loop`,
-        );
-        break;
-      }
-      visitedPages.add(state.current);
-
+      const before = collected.size;
       timedOut = await collectRowsByScrolling(
         taskId,
         status,
         label,
         collected,
         isOverTime,
-        `trang ${state.current}/${state.total}`,
+        `trang ${guard + 1}`,
       );
       if (timedOut) break;
+      console.log(
+        `[autogpt-sync] [${label}] sau trang ${guard + 1}: ${collected.size} member (mốc ${expectedTotal ?? "?"})`,
+      );
 
-      const afterScrape = findPaginationState();
-      if (!afterScrape || !hasMorePages(afterScrape)) {
+      // Đủ tổng kỳ vọng → dừng.
+      if (expectedTotal && collected.size >= expectedTotal) {
         console.log(
-          `[autogpt-sync] [${label}] hết trang (${afterScrape?.current ?? "?"}/${afterScrape?.total ?? "?"})`,
+          `[autogpt-sync] [${label}] đã đủ ${collected.size}/${expectedTotal} — dừng`,
         );
         break;
       }
 
-      const fromPage = afterScrape.current;
-      const clicked = await clickNextPage(afterScrape);
-      if (!clicked) {
+      // Tìm nút next; hết nút hoặc disabled → hết trang.
+      const nextBtn = findPaginationState()?.nextButton ?? null;
+      if (!nextBtn || isDisabled(nextBtn)) {
+        console.log(`[autogpt-sync] [${label}] không còn nút next — hết trang`);
+        break;
+      }
+
+      // Bấm next rồi đợi NỘI DUNG trang đổi (không lệ thuộc chỉ số "1/2").
+      const sigBefore = pageSignature();
+      await humanClick(nextBtn);
+      const changed = await waitForContentChange(sigBefore);
+      if (!changed) {
         console.warn(
-          `[autogpt-sync] [${label}] không lật được từ trang ${fromPage}`,
+          `[autogpt-sync] [${label}] bấm next nhưng trang không đổi — dừng`,
         );
         break;
       }
 
-      const loaded = await waitForPageAdvance(fromPage);
-      if (!loaded) {
+      // An toàn: trang mới không thêm member nào (không phải trang đầu) → dừng.
+      if (collected.size === before && guard > 0) {
         console.warn(
-          `[autogpt-sync] [${label}] timeout chờ trang sau ${fromPage}`,
+          `[autogpt-sync] [${label}] trang mới không có member mới — dừng`,
         );
         break;
       }

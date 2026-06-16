@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { queuePollInterval } from "../lib/queuePolling";
 import { useAuth } from "../hooks/useAuth";
 import { localeTag, useI18n, useT, useTranslateEnum } from "../i18n";
 import type { QueueItem } from "../types";
@@ -27,7 +28,9 @@ export default function Queue() {
     queryKey: ["queue", "all"],
     queryFn: () => api<QueueItem[]>("/api/v1/queue?limit=200"),
     enabled: hasPermission("QUEUE_VIEW"),
-    refetchInterval: 5000,
+    // Trang theo dõi queue: poll 5s khi có task chạy, idle giãn còn 15s (vẫn
+    // bắt task do người/tab khác tạo). Xem lib/queuePolling.
+    refetchInterval: queuePollInterval(5000, 15000),
   });
 
   const [filter, setFilter] = useState<Filter>("all");

@@ -78,6 +78,32 @@ def test_sub_admin_cannot_create_workspace(
     assert resp.status_code == 403
 
 
+def test_create_user_without_email_synthesizes(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Tạo tài khoản phụ chỉ với username + password (không gửi email) → backend
+    tự sinh email nội bộ; login bằng username vẫn hoạt động."""
+    resp = client.post(
+        "/api/v1/users",
+        json={
+            "username": "noemailuser",
+            "password": "SubPassword123!",
+            "permissions": ["MEMBER_VIEW"],
+        },
+        headers=auth_header,
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["username"] == "noemailuser"
+    assert body["email"].endswith("@no-email.local")
+    # Đăng nhập bằng username vẫn được
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"identifier": "noemailuser", "password": "SubPassword123!"},
+    )
+    assert login.status_code == 200, login.text
+
+
 def test_regenerate_api_key_changes_key(client: TestClient, auth_header: dict) -> None:
     create_resp = client.post(
         "/api/v1/workspaces",
@@ -129,6 +155,13 @@ def _setup_ws_and_sub_admin(client: TestClient, auth_header: dict) -> tuple[str,
         username="subview",
         permissions=["MEMBER_VIEW", "MEMBER_INVITE", "MEMBER_REMOVE"],
     )
+    # Gán workspace cho sub-admin (bắt buộc kể từ workspace-assignment RBAC).
+    assign = client.post(
+        f"/api/v1/workspaces/{ws_id}/assignments",
+        json={"user_id": sub["id"]},
+        headers=auth_header,
+    )
+    assert assign.status_code == 201, assign.text
     sub_token = _login_token(client, "subview", "SubPassword123!")
     return ws_id, sub["id"], sub_token
 
@@ -333,6 +366,11 @@ def test_bulk_upsert_marks_invited_by_null_for_new_members(
         email="bulkview@example.com",
         username="bulkview",
         permissions=["MEMBER_VIEW"],
+    )
+    client.post(
+        f"/api/v1/workspaces/{ws['id']}/assignments",
+        json={"user_id": sub["id"]},
+        headers=auth_header,
     )
     sub_token = _login_token(client, "bulkview", "SubPassword123!")
     sub_list = client.get(

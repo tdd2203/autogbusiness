@@ -5,8 +5,23 @@
 
 export type ChatGPTRole = "owner" | "admin" | "member" | "analytics_viewer";
 
+/** Loại suất cấp phép trên ChatGPT admin (cột "Loại suất cấp phép"). */
+export type LicenseType = "ChatGPT" | "Codex";
+
+/** Phạm vi đồng bộ member từ ChatGPT admin. */
+export type SyncScope = "members" | "invites" | "both";
+
 export type ExecuteActionRequest =
-  | { kind: "INVITE_MEMBER"; taskId: string; emails: string[]; role: ChatGPTRole }
+  | {
+      kind: "INVITE_MEMBER";
+      taskId: string;
+      emails: string[];
+      role: ChatGPTRole;
+      /** Tên miền đã xác minh của workspace (vd "ndaigroup.org"). Nếu MỌI email
+       * thuộc domain này → KHÔNG cần bật toggle "mời ngoài tên miền". null/thiếu
+       * → coi như chưa cấu hình, vẫn bật toggle cho an toàn. */
+      verifiedDomain?: string | null;
+    }
   | { kind: "REMOVE_MEMBER"; taskId: string; email: string }
   | {
       kind: "CHANGE_ROLE";
@@ -16,8 +31,19 @@ export type ExecuteActionRequest =
       old_role: ChatGPTRole | null;
     }
   | {
+      kind: "CHANGE_LICENSE_TYPE";
+      taskId: string;
+      email: string;
+      new_license_type: LicenseType;
+      old_license_type: LicenseType | null;
+    }
+  | {
       kind: "SYNC_DATA";
       taskId: string;
+      /** Phạm vi đồng bộ: 'members' (chỉ Người dùng) | 'invites' (chỉ Lời mời +
+       * Yêu cầu chờ) | 'both' (cả hai). Mặc định 'both'. */
+      scope?: SyncScope;
+      /** @deprecated giữ tương thích cũ — true ≈ 'both', false ≈ 'members'. */
       includePending?: boolean;
       /** Dashboard locale ('vi' | 'en' | 'zh') — extension dùng để check ChatGPT
        * locale, surface lỗi rõ ràng nếu mismatch. Null = không check. */
@@ -70,6 +96,8 @@ export type ScrapedMember = {
   email: string;
   name?: string | null;
   chatgpt_role?: ChatGPTRole | null;
+  /** "ChatGPT" | "Codex" từ cột "Loại suất cấp phép" — null nếu không scrape được. */
+  license_type?: LicenseType | null;
   status?: "active" | "pending" | "removed";
   /** ISO date string từ cột "Ngày thêm" trên ChatGPT — null nếu không scrape được. */
   joined_at?: string | null;
@@ -87,6 +115,8 @@ export type ExecuteActionResponse =
         | "PAGE_NOT_ADMIN"
         | "LANGUAGE_MISMATCH"
         | "CONTENT_NOT_INJECTED"
+        | "STALE_BUILD"
+        | "EXTERNAL_TOGGLE_FAILED"
         | "UNKNOWN";
       error_message: string;
     };

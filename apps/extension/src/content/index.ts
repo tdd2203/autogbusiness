@@ -6,6 +6,7 @@ import { loadBundleFromStorage } from "../shared/ui-labels";
 import { executeInvite, executeVerifyPendingInvite } from "./actions/invite";
 import { executeRemove } from "./actions/remove";
 import { executeChangeRole } from "./actions/change-role";
+import { executeChangeLicenseType } from "./actions/change-license-type";
 import { executeSync } from "./actions/sync";
 import { executeSyncBilling } from "./actions/sync-billing";
 import { executeRevokeInvites } from "./actions/revoke";
@@ -70,19 +71,25 @@ async function dispatch(
     case "PING":
       return { ok: true, data: { url: location.href } };
     case "INVITE_MEMBER":
-      return executeInvite(msg.taskId, msg.emails, msg.role);
+      return executeInvite(msg.taskId, msg.emails, msg.role, msg.verifiedDomain ?? null);
     case "VERIFY_PENDING_INVITE":
       return executeVerifyPendingInvite(msg.taskId, msg.emails, msg.role);
     case "REMOVE_MEMBER":
       return executeRemove(msg.taskId, msg.email);
     case "CHANGE_ROLE":
       return executeChangeRole(msg.taskId, msg.email, msg.new_role, msg.old_role ?? null);
-    case "SYNC_DATA":
-      return executeSync(
+    case "CHANGE_LICENSE_TYPE":
+      return executeChangeLicenseType(
         msg.taskId,
-        msg.includePending !== false,
-        msg.expectedLocale ?? null,
+        msg.email,
+        msg.new_license_type,
+        msg.old_license_type ?? null,
       );
+    case "SYNC_DATA": {
+      const scope =
+        msg.scope ?? (msg.includePending === false ? "members" : "both");
+      return executeSync(msg.taskId, scope, msg.expectedLocale ?? null);
+    }
     case "SYNC_BILLING":
       return executeSyncBilling(msg.taskId);
     case "REVOKE_INVITES":

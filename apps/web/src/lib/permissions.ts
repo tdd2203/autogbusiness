@@ -18,7 +18,6 @@ export type PermissionKey = keyof typeof PERMISSIONS;
 export const SUPER_ADMIN_ONLY: PermissionKey[] = [
   "USER_MANAGE",
   "EXTENSION_CONFIG",
-  "BILLING_VIEW",
   "BILLING_PAY",
   "MEMBER_CHANGE_ROLE",
   "UI_LABEL_MANAGE",
@@ -31,6 +30,18 @@ export const GRANTABLE: PermissionKey[] = [
   "WORKSPACE_SYNC_TRIGGER",
   "QUEUE_VIEW",
   "AUDIT_LOG_VIEW",
+  // BILLING_VIEW: cấp được cho sub-admin (chỉ xem thanh toán).
+  "BILLING_VIEW",
+];
+
+// Quyền mặc định khi tạo tài khoản phụ mới: add thành viên + xem thành viên đã
+// add + xem queue task (chỉ task do chính họ tạo). Xoá thành viên
+// (MEMBER_REMOVE) để admin chủ động tick thêm nếu cần.
+export const DEFAULT_SUB_ADMIN_PERMS: PermissionKey[] = [
+  "MEMBER_VIEW",
+  "MEMBER_INVITE",
+  "QUEUE_VIEW",
+  "WORKSPACE_SYNC_TRIGGER",
 ];
 
 export const PERMISSION_LABEL: Record<PermissionKey, string> = {

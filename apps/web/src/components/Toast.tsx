@@ -311,7 +311,7 @@ function ToastContainer({
   const tt = useT();
   const ariaDismissLabel = tt("common.dismiss");
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 max-w-sm pointer-events-none">
+    <div className="fixed bottom-4 right-4 left-4 sm:left-auto z-50 flex flex-col gap-2 max-w-[90vw] sm:max-w-sm sm:ml-auto pointer-events-none">
       {items.map((t) => (
         <div
           key={t.id}

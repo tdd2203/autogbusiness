@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
+import { queuePollInterval } from "../lib/queuePolling";
 import { useAuth } from "../hooks/useAuth";
 import { triggerExtensionRun } from "../hooks/useExtensionTrigger";
 import { useFormatDate, useT } from "../i18n";
@@ -12,6 +13,7 @@ import {
   type WorkspaceWithKey,
 } from "../types";
 import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
+import { AssignWorkspaceModal } from "../components/AssignWorkspaceModal";
 import { SearchInput } from "./Members";
 
 export default function Workspaces() {
@@ -23,9 +25,11 @@ export default function Workspaces() {
   const [name, setName] = useState("");
   const [plan, setPlan] = useState<"business" | "enterprise">("business");
   const [seatTotal, setSeatTotal] = useState<string>("");
+  const [verifiedDomain, setVerifiedDomain] = useState<string>("");
   const [createdKey, setCreatedKey] = useState<WorkspaceWithKey | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [assignWs, setAssignWs] = useState<Workspace | null>(null);
 
   const { data: workspaces = [], isLoading } = useQuery({
     queryKey: ["workspaces"],
@@ -40,6 +44,7 @@ export default function Workspaces() {
           name: name.trim(),
           plan,
           seat_total: seatTotal ? Number(seatTotal) : null,
+          verified_domain: verifiedDomain.trim() || null,
         }),
       }),
     onSuccess: (ws) => {
@@ -47,6 +52,7 @@ export default function Workspaces() {
       setShowForm(false);
       setName("");
       setSeatTotal("");
+      setVerifiedDomain("");
       qc.invalidateQueries({ queryKey: ["workspaces"] });
     },
     onError: (e) => {
@@ -65,7 +71,8 @@ export default function Workspaces() {
   const { data: recentTasks = [] } = useQuery({
     queryKey: ["recent-tasks-global"],
     queryFn: () => api<QueueItem[]>("/api/v1/queue?limit=20"),
-    refetchInterval: 2000,
+    // Chỉ bật khi có billing task in-flight; poll 2s lúc chạy, dừng khi xong.
+    refetchInterval: queuePollInterval(2000),
     enabled: !!lastBillingTaskId,
   });
 
@@ -208,12 +215,12 @@ export default function Workspaces() {
             className="form-input"
             style={{ marginBottom: 12 }}
           />
-          <div className="flex gap-3" style={{ marginBottom: 8 }}>
+          <div className="flex gap-3" style={{ marginBottom: 8, flexWrap: "wrap" }}>
             <select
               value={plan}
               onChange={(e) => setPlan(e.target.value as "business" | "enterprise")}
               className="form-input"
-              style={{ width: 180 }}
+              style={{ flex: 1, minWidth: 150 }}
             >
               <option value="business">{t("workspace.planBusiness")}</option>
               <option value="enterprise">{t("workspace.planEnterprise")}</option>
@@ -231,6 +238,17 @@ export default function Workspaces() {
           </div>
           <div className="form-hint" style={{ marginBottom: 12 }}>
             {t("workspace.seatHint", { max: SEAT_TOTAL_MAX })}
+          </div>
+          <input
+            placeholder="Tên miền đã xác minh (vd: ndaigroup.org) — để trống nếu chưa có"
+            value={verifiedDomain}
+            onChange={(e) => setVerifiedDomain(e.target.value)}
+            className="form-input"
+            style={{ marginBottom: 6 }}
+          />
+          <div className="form-hint" style={{ marginBottom: 12 }}>
+            Khi mời thành viên: nếu mọi email đều thuộc tên miền này thì không cần
+            bật "cho phép mời ngoài tên miền". Có thể cập nhật sau.
           </div>
           {formError && (
             <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>
@@ -361,16 +379,28 @@ export default function Workspaces() {
                     </td>
                     {user?.is_super_admin && (
                       <td style={{ textAlign: "right" }}>
-                        <button
-                          onClick={() => syncBilling.mutate(ws)}
-                          disabled={isSyncing}
-                          title={t("workspace.syncBillingTooltip")}
-                          className="btn btn-ghost btn-sm"
+                        <div
+                          className="flex items-center justify-end"
+                          style={{ gap: 6 }}
                         >
-                          {isSyncing
-                            ? t("workspace.syncBillingBusy")
-                            : t("workspace.syncBilling")}
-                        </button>
+                          <button
+                            onClick={() => setAssignWs(ws)}
+                            title={t("assign.tooltip")}
+                            className="btn btn-ghost btn-sm"
+                          >
+                            {t("assign.action")}
+                          </button>
+                          <button
+                            onClick={() => syncBilling.mutate(ws)}
+                            disabled={isSyncing}
+                            title={t("workspace.syncBillingTooltip")}
+                            className="btn btn-ghost btn-sm"
+                          >
+                            {isSyncing
+                              ? t("workspace.syncBillingBusy")
+                              : t("workspace.syncBilling")}
+                          </button>
+                        </div>
                       </td>
                     )}
                   </tr>
@@ -380,6 +410,13 @@ export default function Workspaces() {
           </table>
         </div>
       </div>
+
+      {assignWs && (
+        <AssignWorkspaceModal
+          workspace={assignWs}
+          onClose={() => setAssignWs(null)}
+        />
+      )}
     </div>
   );
 }

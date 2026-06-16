@@ -1,4 +1,5 @@
-import { Link, NavLink, Outlet, useNavigate } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { useI18n, type Lang } from "../i18n";
 import { dashboardLangToChatGPTLocale } from "../lib/chatgpt-locale";
@@ -24,6 +25,13 @@ const ICONS = {
       <rect x="3" y="4" width="18" height="4" rx="1" />
       <rect x="3" y="10" width="18" height="4" rx="1" />
       <rect x="3" y="16" width="18" height="4" rx="1" />
+    </svg>
+  ),
+  addedEmails: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M3 8l7.89 4.26a2 2 0 0 0 2.22 0L21 8" />
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M16 16l2 2 3-3" />
     </svg>
   ),
   audit: (
@@ -56,6 +64,7 @@ const ICONS = {
 
 const NAV: NavEntry[] = [
   { to: "/workspaces", labelKey: "nav.workspaces", perm: "MEMBER_VIEW", icon: ICONS.workspaces, section: "manage" },
+  { to: "/added-emails", labelKey: "nav.addedEmails", perm: "MEMBER_VIEW", icon: ICONS.addedEmails, section: "manage" },
   { to: "/queue", labelKey: "nav.queue", perm: "QUEUE_VIEW", icon: ICONS.queue, section: "manage" },
   { to: "/audit-logs", labelKey: "nav.auditLog", perm: "AUDIT_LOG_VIEW", icon: ICONS.audit, section: "manage" },
   { to: "/billing", labelKey: "nav.billing", perm: "BILLING_VIEW", icon: ICONS.billing, section: "org" },
@@ -67,6 +76,13 @@ export default function Layout() {
   const { user, logout, hasPermission } = useAuth();
   const { lang, setLang, t } = useI18n();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [navOpen, setNavOpen] = useState(false);
+
+  // Đóng drawer mỗi khi chuyển trang (mobile).
+  useEffect(() => {
+    setNavOpen(false);
+  }, [location.pathname]);
 
   function onDashboardLangChange(next: Lang) {
     if (next === lang) return;
@@ -100,12 +116,34 @@ export default function Layout() {
   );
 
   return (
-    <div
-      className="min-h-screen"
-      style={{ display: "grid", gridTemplateColumns: "240px 1fr" }}
-    >
+    <div className="app-shell min-h-screen">
+      <header className="app-topbar">
+        <button
+          type="button"
+          className="app-hamburger"
+          aria-label={t("nav.openMenu")}
+          aria-expanded={navOpen}
+          onClick={() => setNavOpen(true)}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
+            <path d="M3 6h18M3 12h18M3 18h18" />
+          </svg>
+        </button>
+        <Link to="/workspaces" className="app-topbar-title">
+          {t("app.name")}
+        </Link>
+      </header>
+
+      {navOpen && (
+        <div
+          className="app-backdrop"
+          aria-hidden
+          onClick={() => setNavOpen(false)}
+        />
+      )}
+
       <aside
-        className="flex flex-col sticky top-0 h-screen"
+        className={`app-sidebar flex flex-col${navOpen ? " open" : ""}`}
         style={{
           background: "var(--surface)",
           borderRight: "1px solid var(--border)",
@@ -276,14 +314,7 @@ export default function Layout() {
         </div>
       </aside>
 
-      <main
-        style={{
-          padding: "32px 48px 64px",
-          maxWidth: 1440,
-          width: "100%",
-          overflow: "auto",
-        }}
-      >
+      <main className="app-main">
         <Outlet />
       </main>
     </div>

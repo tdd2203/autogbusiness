@@ -18,25 +18,46 @@ function findMemberFilterInput(): HTMLInputElement | null {
  * Nếu không tìm được filter input → fallback scroll-find theo cách cũ
  * (findMemberRow trực tiếp trên DOM hiện tại).
  */
+/** Đếm số row member đang hiển thị (debug). */
+function visibleRowCount(): number {
+  return document.querySelectorAll(
+    'tr[data-testid^="member-row"], table tbody tr, [role="row"]',
+  ).length;
+}
+
 export async function filterAndFindRow(email: string): Promise<HTMLElement | null> {
   const input = findMemberFilterInput();
   if (!input) {
-    console.warn("[autogpt-remove] không tìm được filter input — fallback scroll-find");
+    console.warn("[autogpt-locate] KHÔNG tìm được ô lọc — fallback scroll-find");
     return findMemberRow(email);
   }
+  console.log(
+    `[autogpt-locate] ô lọc OK (placeholder="${input.placeholder}"), tìm ${email}`,
+  );
 
-  // Search bằng phần local-part trước @ — ChatGPT filter theo cả tên + email,
-  // dùng prefix giúp tránh giới hạn ký tự nếu input có maxlength.
-  const needle = email.includes("@") ? email.split("@")[0] : email;
-  await humanType(input, needle);
-  // Đợi React Query / debounce filter (ChatGPT thường debounce 200-400ms).
-  await sleep(600);
+  // Thử nhiều needle: local-part (tránh maxlength) RỒI full email (giống user
+  // gõ tay). ChatGPT "Filter by name" match cả tên + email; needle nào ra row
+  // thì dừng. humanType tự clear input trước khi gõ nên gọi lại an toàn.
+  const local = email.includes("@") ? email.split("@")[0] : email;
+  const needles = local === email ? [local] : [local, email];
 
-  try {
-    return await waitFor(() => findMemberRow(email), 4000, 200);
-  } catch {
-    return null;
+  for (const needle of needles) {
+    await humanType(input, needle);
+    await sleep(700); // chờ React Query / debounce filter
+    console.log(
+      `[autogpt-locate] đã lọc "${needle}" → ${visibleRowCount()} row hiển thị`,
+    );
+    try {
+      const row = await waitFor(() => findMemberRow(email), 4000, 200);
+      if (row) {
+        console.log(`[autogpt-locate] ✓ thấy row sau khi lọc "${needle}"`);
+        return row;
+      }
+    } catch {
+      console.warn(`[autogpt-locate] lọc "${needle}" chưa ra row, thử cách khác`);
+    }
   }
+  return null;
 }
 
 /**

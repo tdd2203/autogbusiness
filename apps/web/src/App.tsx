@@ -7,6 +7,7 @@ import Settings from "./pages/Settings";
 import Billing from "./pages/Billing";
 import Workspaces from "./pages/Workspaces";
 import Members from "./pages/Members";
+import AddedEmails from "./pages/AddedEmails";
 import WorkspaceQueue from "./pages/WorkspaceQueue";
 import WorkspaceExtension from "./pages/WorkspaceExtension";
 import WorkspaceSettings from "./pages/WorkspaceSettings";
@@ -69,6 +70,14 @@ export default function App() {
             }
           />
         </Route>
+        <Route
+          path="added-emails"
+          element={
+            <ProtectedRoute requirePermission="MEMBER_VIEW">
+              <AddedEmails />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="queue"
           element={

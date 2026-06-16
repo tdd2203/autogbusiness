@@ -26,7 +26,9 @@ class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    email: EmailStr
+    # str (không EmailStr): tài khoản phụ không nhập email sẽ có email nội bộ tự
+    # sinh (vd ...@no-email.local) — domain reserved nên không qua được EmailStr.
+    email: str
     username: str
     is_super_admin: bool
     is_active: bool
@@ -36,7 +38,9 @@ class UserOut(BaseModel):
 
 
 class UserCreate(BaseModel):
-    email: EmailStr
+    # Email tuỳ chọn — tài khoản phụ đăng nhập bằng username. Nếu không gửi,
+    # backend tự sinh email nội bộ từ username (xem routers/users.py).
+    email: EmailStr | None = None
     username: str = Field(..., min_length=3, max_length=64)
     password: str = Field(..., min_length=8)
     permissions: list[str] = Field(default_factory=list)
@@ -56,6 +60,7 @@ QueueType = Literal[
     "INVITE_MEMBER",
     "REMOVE_MEMBER",
     "CHANGE_ROLE",
+    "CHANGE_LICENSE_TYPE",
     "SYNC_DATA",
     "SYNC_BILLING",
     "REVOKE_INVITES",
@@ -91,6 +96,9 @@ class QueueOut(BaseModel):
     error_message: str | None
     workspace_id: UUID | None
     created_by_id: UUID | None
+    # Username/email của người tạo task — super-admin xem để biết sub-admin nào
+    # đã yêu cầu. Populate ở list_tasks (None nếu task hệ thống / không có creator).
+    created_by_username: str | None = None
     created_at: datetime
     picked_at: datetime | None
     completed_at: datetime | None
@@ -117,6 +125,8 @@ class WorkspaceCreate(BaseModel):
     chatgpt_id: str | None = Field(default=None, max_length=128)
     plan: WorkspacePlan | None = None
     seat_total: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)
+    # Tên miền đã xác minh (vd "ndaigroup.org"). Admin nhập khi tạo, sửa sau.
+    verified_domain: str | None = Field(default=None, max_length=255)
 
 
 class WorkspaceUpdate(BaseModel):
@@ -124,6 +134,7 @@ class WorkspaceUpdate(BaseModel):
     chatgpt_id: str | None = Field(default=None, max_length=128)
     plan: WorkspacePlan | None = None
     seat_total: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)
+    verified_domain: str | None = Field(default=None, max_length=255)
 
 
 class WorkspaceOut(BaseModel):
@@ -143,6 +154,7 @@ class WorkspaceOut(BaseModel):
     renewal_date: datetime | None
     last_billing_synced_at: datetime | None
     billing_invoices: list[dict] | None = None
+    verified_domain: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -198,6 +210,37 @@ class WorkspaceWithKey(WorkspaceOut):
     extension_api_key: str
 
 
+class WorkspaceAssignmentCreate(BaseModel):
+    user_id: UUID
+
+
+class WorkspaceAssignmentOut(BaseModel):
+    """1 user được gán workspace — kèm thông tin user để hiển thị."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: UUID
+    email: str
+    username: str
+    is_active: bool
+    created_at: datetime
+
+
+class WorkspaceMemberStats(BaseModel):
+    """Thống kê member của workspace cho user được gán.
+
+    total/active/pending = toàn bộ member workspace (để user biết tổng số);
+    own_count = member do user hiện tại mời.
+    """
+
+    total: int
+    active: int
+    pending: int
+    seat_total: int | None
+    seat_used: int | None
+    own_count: int
+
+
 class WorkspaceSettingsOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -218,6 +261,8 @@ class WorkspaceSettingsUpdate(BaseModel):
 # ---------- Member ----------
 ChatGPTRole = Literal["owner", "admin", "member", "analytics_viewer"]
 MemberStatus = Literal["active", "pending", "removed"]
+# Loại suất cấp phép trên ChatGPT admin (cột "Loại suất cấp phép").
+LicenseType = Literal["ChatGPT", "Codex"]
 
 
 class MemberOut(BaseModel):
@@ -228,6 +273,7 @@ class MemberOut(BaseModel):
     email: EmailStr
     name: str | None
     chatgpt_role: str | None
+    license_type: str | None = None
     status: str
     invited_by_user_id: UUID | None
     joined_at: datetime | None
@@ -235,12 +281,77 @@ class MemberOut(BaseModel):
     created_at: datetime
     subscription_months: int | None = None
     subscription_end_at: datetime | None = None
+    # Payment tracking (Dashboard-only): 'unpaid' | 'paid'.
+    payment_status: str = "unpaid"
+    paid_at: datetime | None = None
+
+
+class AddedMemberOut(MemberOut):
+    """1 dòng trong tab 'Email đã add' — gom xuyên workspace, kèm tên workspace."""
+
+    workspace_name: str | None = None
+    # Username của sub-admin sở hữu email (để super-admin biết email của ai).
+    # None nếu là 'email còn lại' (chưa có chủ).
+    invited_by_username: str | None = None
+
+
+class MemberMarkPaidIn(BaseModel):
+    """Duyệt/huỷ thanh toán cho nhiều email cùng lúc.
+
+    paid=True → đánh dấu đã thanh toán (set paid_at = now).
+    paid=False → trả về chưa thanh toán (clear paid_at).
+    """
+
+    member_ids: list[UUID] = Field(min_length=1, max_length=500)
+    paid: bool = True
+
+
+class MemberRevokeOwnerIn(BaseModel):
+    """Super-admin thu hồi quyền sở hữu nhiều email (về 'email còn lại')."""
+
+    member_ids: list[UUID] = Field(min_length=1, max_length=500)
+
+
+class MemberTransferOwnerIn(BaseModel):
+    """Super-admin chuyển quyền sở hữu nhiều email sang 1 user (admin hoặc sub-admin).
+
+    Dùng cho cả 'thu hồi' (target = 1 super-admin) lẫn 'chuyển' (target = sub-admin).
+    """
+
+    member_ids: list[UUID] = Field(min_length=1, max_length=500)
+    target_user_id: UUID
+
+
+class MemberSetOwnerIn(BaseModel):
+    """Admin gán/thu hồi chủ sở hữu 1 member.
+
+    invited_by_user_id = UUID → gán cho user đó.
+    invited_by_user_id = None → THU HỒI (member về trạng thái chưa có chủ).
+    """
+
+    invited_by_user_id: UUID | None = None
+
+
+class MemberBulkAssignOwnerIn(BaseModel):
+    """Admin gán hàng loạt member cho 1 user (vd quy đám member cũ cho hdh2102).
+
+    Loại trừ: email trong `exclude_emails` (owner + danh sách Excel) và — nếu
+    skip_verified_domain — email thuộc verified_domain của workspace.
+    only_unassigned=True (mặc định) chỉ đụng member CHƯA có chủ (an toàn, không
+    cướp member người khác đã sở hữu).
+    """
+
+    target_user_id: UUID
+    exclude_emails: list[str] = Field(default_factory=list)
+    only_unassigned: bool = True
+    skip_verified_domain: bool = True
 
 
 class MemberUpsert(BaseModel):
     email: EmailStr
     name: str | None = None
     chatgpt_role: ChatGPTRole | None = None
+    license_type: LicenseType | None = None
     status: MemberStatus = "active"
     joined_at: datetime | None = None
 
@@ -312,6 +423,16 @@ class MemberBulkInviteIn(BaseModel):
         return list(out.values())
 
 
+class MemberBulkRemoveIn(BaseModel):
+    """Xoá hàng loạt member: chọn bằng `member_ids` (checkbox trong bảng) và/hoặc
+    `emails` (dán tay giống flow mời). Có thể trộn cả hai — backend gộp & dedupe
+    theo member.id, chỉ enqueue member status active/pending còn tồn tại trong DB.
+    """
+
+    member_ids: list[UUID] = Field(default_factory=list, max_length=500)
+    emails: list[str] = Field(default_factory=list, max_length=500)
+
+
 class MemberUpdateSubscriptionIn(BaseModel):
     """PATCH subscription_months — extend hoặc đổi vô thời hạn."""
 
@@ -320,6 +441,35 @@ class MemberUpdateSubscriptionIn(BaseModel):
 
 class MemberChangeRoleIn(BaseModel):
     new_role: ChatGPTRole
+
+
+class MemberChangeLicenseTypeIn(BaseModel):
+    new_license_type: LicenseType
+
+
+class MemberBulkChangeLicenseTypeIn(BaseModel):
+    """Đổi giấy phép hàng loạt: chọn bằng `member_ids` (checkbox) và/hoặc `emails`.
+    Backend gộp & dedupe theo member.id, chỉ enqueue member status active còn tồn
+    tại trong DB, mỗi member = 1 task CHANGE_LICENSE_TYPE.
+    """
+
+    member_ids: list[UUID] = Field(default_factory=list, max_length=500)
+    emails: list[str] = Field(default_factory=list, max_length=500)
+    new_license_type: LicenseType
+
+
+class InviteVerifyReconcileIn(BaseModel):
+    """Extension báo kết quả verify sau INVITE_MEMBER (scrape tab 'Lời mời').
+
+    Dùng để DỌN phantom: email đã tạo Member status=pending lúc bấm mời nhưng
+    KHÔNG xuất hiện trong tab 'Lời mời đang chờ xử lý' khi verify → đánh dấu
+    removed (chỉ row đang pending). Nếu `verify_scrape_failed=True` thì KHÔNG dọn
+    (không scrape được → giữ nguyên, tránh xoá oan).
+    """
+
+    verified_emails: list[str] = Field(default_factory=list)
+    unverified_emails: list[str] = Field(default_factory=list)
+    verify_scrape_failed: bool = False
 
 
 # ---------- Invite ----------

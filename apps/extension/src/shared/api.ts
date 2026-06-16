@@ -156,6 +156,7 @@ export async function bulkUpsertMembers(
     email: string;
     name?: string | null;
     chatgpt_role?: "owner" | "admin" | "member" | null;
+    license_type?: "ChatGPT" | "Codex" | null;
     status?: "active" | "pending" | "removed";
   }>,
   options?: {
@@ -183,6 +184,35 @@ export async function bulkUpsertMembers(
         members,
         scraped_statuses: options?.scrapedStatuses,
         is_full_sync: options?.isFullSync !== false,
+      }),
+    },
+  );
+}
+
+/**
+ * Dọn phantom sau verify INVITE_MEMBER: báo backend email nào KHÔNG xuất hiện
+ * trong tab "Lời mời" (scrape OK) → backend mark Member pending tương ứng
+ * 'removed'. Nếu scrape pending thất bại → gửi verifyScrapeFailed=true để backend
+ * GIỮ NGUYÊN (tránh xoá oan).
+ */
+export async function reconcileAfterInvite(
+  config: ExtensionConfig,
+  workspaceId: string,
+  body: {
+    verifiedEmails: string[];
+    unverifiedEmails: string[];
+    verifyScrapeFailed: boolean;
+  },
+): Promise<{ removed: number; skipped: boolean }> {
+  return request(
+    config,
+    `/api/v1/workspaces/${workspaceId}/members/reconcile-after-invite`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        verified_emails: body.verifiedEmails,
+        unverified_emails: body.unverifiedEmails,
+        verify_scrape_failed: body.verifyScrapeFailed,
       }),
     },
   );

@@ -1,7 +1,8 @@
 export const BILLING_PLAN_PATH = "/admin/billing";
 export const BILLING_PLAN_SEARCH = "?tab=plan";
 
-/** Render delay sau khi navigate / click trong SPA. */
+/** Render delay sau khi navigate / click trong SPA. GIỮ NGUYÊN: chờ trang
+ * render sau nav → phụ thuộc tốc độ mạng/máy, giảm = thao tác sớm khi chưa render. */
 export const POST_NAV_RENDER_MS = 2500;
 
 /** Hard cap đợi modal "Xem xét" mở. */

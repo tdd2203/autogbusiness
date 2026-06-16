@@ -1,17 +1,20 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, NavLink, Outlet, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
+import { queuePollInterval } from "../lib/queuePolling";
 import { useAuth } from "../hooks/useAuth";
-import { useExtensionStatus } from "../hooks/useExtensionTrigger";
+import { useExtensionStatus, triggerExtensionRun } from "../hooks/useExtensionTrigger";
+import { useBillingActions } from "../hooks/useBillingActions";
 import { useI18n, useT } from "../i18n";
 import { dashboardLangToChatGPTLocale } from "../lib/chatgpt-locale";
 import type { QueueItem, Workspace } from "../types";
 import { WorkspaceBillingPanel } from "./WorkspaceBillingPanel";
 import { TaskCompletionBanner } from "./TaskCompletionBanner";
 import { TaskProgressBanner } from "./TaskProgressBanner";
-import { confirm, toast } from "./Toast";
+import { toast } from "./Toast";
 import { InviteMemberModal } from "./InviteMemberModal";
+import { BulkRemoveModal } from "./BulkRemoveModal";
 
 type Tab = { to: string; labelKey: string; superAdminOnly?: boolean };
 
@@ -29,7 +32,8 @@ export default function WorkspaceLayout() {
   const { user, hasPermission } = useAuth();
   const qc = useQueryClient();
   const [showInviteModal, setShowInviteModal] = useState(false);
-  const [lastBillingTaskId, setLastBillingTaskId] = useState<string | null>(null);
+  const [showBulkRemoveModal, setShowBulkRemoveModal] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
 
   const { data: workspace } = useQuery({
     queryKey: ["workspace", workspaceId],
@@ -45,78 +49,33 @@ export default function WorkspaceLayout() {
     queryFn: () =>
       api<QueueItem[]>(`/api/v1/queue?workspace_id=${workspaceId}&limit=50`),
     enabled: !!workspaceId,
-    refetchInterval: 2000,
+    // Poll 2s khi có task chạy, dừng khi idle. Mutation tạo task invalidate
+    // ["recent-tasks", …] → refetch → poll tự bật lại. Xem lib/queuePolling.
+    refetchInterval: queuePollInterval(2000),
   });
 
-  const activeBillingTask = recentTasks.find(
-    (t) =>
-      t.type === "SYNC_BILLING" &&
-      (t.status === "PENDING" || t.status === "IN_PROGRESS"),
-  );
-  const lastBillingTask = lastBillingTaskId
-    ? recentTasks.find((t) => t.id === lastBillingTaskId) ?? null
-    : null;
-  const showBillingCompletion =
-    lastBillingTask?.status === "COMPLETED" ||
-    lastBillingTask?.status === "FAILED";
-
-  // Khi billing task COMPLETED → refresh workspace để bảng billing show data mới
-  useEffect(() => {
-    if (lastBillingTask?.status === "COMPLETED") {
-      qc.invalidateQueries({ queryKey: ["workspace", workspaceId] });
-    }
-  }, [lastBillingTask?.status, qc, workspaceId]);
-
-  // Auto-dismiss completion banner sau 10s khi COMPLETED (giữ lại FAILED để user đọc)
-  useEffect(() => {
-    if (!showBillingCompletion || lastBillingTask?.status !== "COMPLETED") return;
-    const timer = setTimeout(() => setLastBillingTaskId(null), 10_000);
-    return () => clearTimeout(timer);
-  }, [showBillingCompletion, lastBillingTask?.status]);
-
-  const cancelBillingTask = useMutation({
-    mutationFn: async (taskId: string) => {
-      const ok = await confirm(t("queue.cancelConfirm", { type: "SYNC_BILLING" }), {
-        title: t("queue.cancelConfirmTitle"),
-        okText: t("queue.cancelOk"),
-        cancelText: t("common.cancel"),
-        danger: true,
-      });
-      if (!ok) throw new Error("__user_cancel__");
-      return api<{ id: string; status: string }>(
-        `/api/v1/queue/${taskId}/cancel`,
-        { method: "POST" },
-      );
-    },
-    onSuccess: () => {
-      toast.success(t("queue.cancelOkToast"));
-      qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
-    },
-    onError: (e) => {
-      if (e instanceof Error && e.message === "__user_cancel__") return;
-      toast.error(
-        t("queue.cancelError", {
-          error: e instanceof Error ? e.message : String(e),
-        }),
-      );
-    },
-  });
+  // Billing actions (sync-billing + cancel billing task) + vòng đời billing task
+  // đã tách ra hook — xem useBillingActions.md.
+  const {
+    syncBilling,
+    cancelBillingTask,
+    activeBillingTask,
+    lastBillingTask,
+    showBillingCompletion,
+    setLastBillingTaskId,
+  } = useBillingActions(workspaceId, workspace, recentTasks);
 
   const tabs = TABS.filter((tab) => !tab.superAdminOnly || user?.is_super_admin);
 
   // ---- 3 action mutations dùng chung cho toàn workspace ----
   const syncMembers = useMutation({
-    mutationFn: async () => {
-      const includePending = await confirm(t("member.syncConfirmBody"), {
-        title: t("member.syncConfirmTitle"),
-        okText: t("member.syncConfirmOk"),
-        cancelText: t("member.syncConfirmCancel"),
-      });
+    mutationFn: async (scope: "members" | "invites" | "both") => {
+      setSyncOpen(false);
       // expected_locale chỉ để extension BÁO LỖI / hướng dẫn nếu ChatGPT lệch ngôn ngữ —
       // KHÔNG tự đổi Settings giúp user.
       const expectedLocale = dashboardLangToChatGPTLocale(lang);
       return api<{ queue_item_id: string }>(
-        `/api/v1/workspaces/${workspaceId}/sync?include_pending=${includePending}&expected_locale=${expectedLocale}`,
+        `/api/v1/workspaces/${workspaceId}/sync?scope=${scope}&expected_locale=${expectedLocale}`,
         { method: "POST" },
       );
     },
@@ -131,45 +90,13 @@ export default function WorkspaceLayout() {
     },
   });
 
-  const syncBilling = useMutation({
-    mutationFn: async () => {
-      if (workspace?.last_billing_synced_at) {
-        const ok = await confirm(
-          t("billing.alreadySyncedWarn", {
-            time: new Date(workspace.last_billing_synced_at).toLocaleString("vi-VN"),
-          }),
-          {
-            title: t("billing.workspaceTitle"),
-            okText: t("billing.syncAgainAnyway"),
-            cancelText: t("common.cancel"),
-          },
-        );
-        if (!ok) throw new Error("__user_cancel__");
-      }
-      return api<{ queue_item_id: string }>(
-        `/api/v1/workspaces/${workspaceId}/sync-billing`,
-        { method: "POST" },
-      );
-    },
-    onSuccess: (resp) => {
-      toast.success(t("billing.syncQueuedToast"));
-      setLastBillingTaskId(resp.queue_item_id);
-      qc.invalidateQueries({ queryKey: ["workspace", workspaceId] });
-      qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
-    },
-    onError: (e) => {
-      if (e instanceof Error && e.message === "__user_cancel__") return;
-      const msg = e instanceof ApiError ? String(e.detail) : String(e);
-      toast.error(t("billing.syncErrorToast", { error: msg }));
-    },
-  });
-
   function openInviteForm() {
     setShowInviteModal(true);
   }
 
   const canSync = hasPermission("WORKSPACE_SYNC_TRIGGER");
   const canInvite = hasPermission("MEMBER_INVITE");
+  const canRemove = hasPermission("MEMBER_REMOVE");
   const alreadySyncedBilling = !!workspace?.last_billing_synced_at;
 
   return (
@@ -212,7 +139,7 @@ export default function WorkspaceLayout() {
           ))}
         </div>
         <div className="flex items-center" style={{ gap: 8, flexWrap: "wrap" }}>
-          {canSync && (
+          {user?.is_super_admin && (
             <button
               onClick={() => syncBilling.mutate()}
               disabled={syncBilling.isPending}
@@ -226,7 +153,7 @@ export default function WorkspaceLayout() {
           )}
           {canSync && (
             <button
-              onClick={() => syncMembers.mutate()}
+              onClick={() => setSyncOpen(true)}
               disabled={syncMembers.isPending}
               className="btn btn-sm btn-ghost"
               title={t("member.syncTooltip")}
@@ -242,6 +169,14 @@ export default function WorkspaceLayout() {
               className="btn btn-sm btn-primary"
             >
               {t("member.inviteButton")}
+            </button>
+          )}
+          {(canRemove || user?.is_super_admin) && (
+            <button
+              onClick={() => setShowBulkRemoveModal(true)}
+              className="btn btn-sm btn-ghost"
+            >
+              {t("bulkUpdate.openModalBtn")}
             </button>
           )}
         </div>
@@ -265,8 +200,64 @@ export default function WorkspaceLayout() {
         </div>
       )}
 
-      {workspace && <WorkspaceBillingPanel workspace={workspace} />}
+      {workspace && hasPermission("BILLING_VIEW") && (
+        <WorkspaceBillingPanel workspace={workspace} />
+      )}
       <Outlet />
+
+      {syncOpen && (
+        <div
+          onClick={() => setSyncOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="settings-section"
+            style={{ width: 360, maxWidth: "90vw", background: "var(--surface, #1e1e1e)" }}
+          >
+            <h3 className="display-h3" style={{ marginBottom: 16 }}>
+              Đồng bộ từ ChatGPT
+            </h3>
+            <div className="flex flex-col" style={{ gap: 8 }}>
+              <button
+                className="btn btn-primary"
+                disabled={syncMembers.isPending}
+                onClick={() => syncMembers.mutate("members")}
+              >
+                Đồng bộ thành viên
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={syncMembers.isPending}
+                onClick={() => syncMembers.mutate("invites")}
+              >
+                Đồng bộ lời mời
+              </button>
+              <button
+                className="btn btn-primary"
+                disabled={syncMembers.isPending}
+                onClick={() => syncMembers.mutate("both")}
+              >
+                Đồng bộ cả 2
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setSyncOpen(false)}
+              >
+                {t("common.cancel")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showInviteModal && workspaceId && (
         <InviteMemberModal
@@ -275,6 +266,17 @@ export default function WorkspaceLayout() {
           onDone={() => {
             qc.invalidateQueries({ queryKey: ["members", workspaceId] });
             qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
+          }}
+        />
+      )}
+      {showBulkRemoveModal && workspaceId && (
+        <BulkRemoveModal
+          workspaceId={workspaceId}
+          onClose={() => setShowBulkRemoveModal(false)}
+          onDone={() => {
+            qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+            qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
+            triggerExtensionRun();
           }}
         />
       )}

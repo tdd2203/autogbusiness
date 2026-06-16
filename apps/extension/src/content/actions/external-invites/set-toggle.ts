@@ -26,23 +26,26 @@ function getToggleState(el: HTMLElement): boolean {
  * Set toggle về `target`. Trả về:
  *   - prev: state trước khi đổi (true|false), hoặc null nếu không tìm thấy toggle
  *   - changed: boolean — có thực sự click hay không
+ *   - confirmed: boolean — trạng thái CUỐI đã được xác nhận = `target`. Caller
+ *     dùng cờ này để quyết định có an toàn invite hay không (vd email ngoài
+ *     domain BẮT BUỘC confirmed=true mới được mời).
  */
 export async function setExternalInvites(
   target: boolean,
-): Promise<{ prev: boolean | null; changed: boolean }> {
+): Promise<{ prev: boolean | null; changed: boolean; confirmed: boolean }> {
   const ok = await navigateTo(IDENTITY_PATH, () => !!findExternalInvitesToggle());
   if (!ok) {
-    return { prev: null, changed: false };
+    return { prev: null, changed: false, confirmed: false };
   }
   const toggle = findExternalInvitesToggle();
-  if (!toggle) return { prev: null, changed: false };
+  if (!toggle) return { prev: null, changed: false, confirmed: false };
 
   const prev = getToggleState(toggle);
   if (prev === target) {
     console.log(
       `[autogpt-external-invites] toggle đã ở trạng thái mong muốn (${target}), skip`,
     );
-    return { prev, changed: false };
+    return { prev, changed: false, confirmed: true };
   }
 
   console.log(
@@ -52,11 +55,13 @@ export async function setExternalInvites(
   // Đợi UI/backend update — ChatGPT có thể fire PATCH /api/... để lưu
   await sleep(800);
 
-  // Verify
+  // Verify trạng thái cuối thực sự khớp target chưa.
+  let confirmed = false;
   const after = findExternalInvitesToggle();
   if (after) {
     const newState = getToggleState(after);
-    if (newState !== target) {
+    confirmed = newState === target;
+    if (!confirmed) {
       console.warn(
         `[autogpt-external-invites] toggle KHÔNG đổi như mong đợi (vẫn ${newState})`,
       );
@@ -65,5 +70,5 @@ export async function setExternalInvites(
     }
   }
 
-  return { prev, changed: true };
+  return { prev, changed: true, confirmed };
 }

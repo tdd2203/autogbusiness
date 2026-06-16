@@ -149,6 +149,11 @@ class Workspace(Base):
     billing_invoices: Mapped[list[dict] | None] = mapped_column(
         JSONB, nullable=True
     )
+    # Tên miền đã xác minh của workspace (vd "ndaigroup.org") — extension quét 1
+    # lần từ /admin/identity rồi lưu. Dùng để quyết định có cần bật toggle "Cho
+    # phép lời mời ngoài tên miền" khi invite: nếu MỌI email thuộc domain này thì
+    # KHÔNG cần bật (nhanh + an toàn); chỉ bật khi có email ngoài domain.
+    verified_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_by_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -158,6 +163,46 @@ class Workspace(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=_utcnow
     )
+
+
+class WorkspaceAssignment(Base):
+    """Gán quyền sở hữu 1 Workspace cho 1 sub-admin user.
+
+    Many-to-many: 1 user quản nhiều workspace, 1 workspace có thể gán cho ≥1 user.
+    Super-admin KHÔNG cần row này (thấy mọi workspace). Sub-admin chỉ thấy & thao
+    tác trên workspace có assignment tương ứng — xem `assert_workspace_access`.
+    """
+
+    __tablename__ = "workspace_assignments"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "user_id", name="uq_workspace_assignments_ws_user"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    assigned_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    workspace = relationship("Workspace")
+    user = relationship("User", foreign_keys=[user_id])
+    assigned_by = relationship("User", foreign_keys=[assigned_by_id])
 
 
 class WorkspaceSettings(Base):
@@ -195,6 +240,8 @@ class Member(Base):
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # owner | admin | member
     chatgpt_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Loại suất cấp phép trên ChatGPT admin: ChatGPT | Codex. NULL = chưa scrape.
+    license_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # active | pending | removed
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", index=True)
     invited_by_user_id: Mapped[UUID | None] = mapped_column(
@@ -218,9 +265,23 @@ class Member(Base):
     subscription_end_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    # Payment tracking (Dashboard-only) — phục vụ tài khoản phụ bán dịch vụ: theo
+    # dõi email mình đã add đã trả tiền cho admin hay chưa. KHÔNG liên quan billing
+    # workspace. unpaid | paid. paid_at = thời điểm duyệt; paid_marked_by_id = ai duyệt.
+    payment_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unpaid", server_default="unpaid", index=True
+    )
+    paid_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    paid_marked_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     workspace = relationship("Workspace")
-    invited_by = relationship("User")
+    invited_by = relationship("User", foreign_keys=[invited_by_user_id])
 
 
 class UiLabel(Base):

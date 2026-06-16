@@ -19,13 +19,11 @@
  */
 
 import { useMemo, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
 import { useFormatDate, useT } from "../i18n";
-import { api, ApiError } from "../lib/api";
-import { toast } from "./Toast";
+import { useIsMobile } from "../hooks/useIsMobile";
+import { useBulkInvite } from "../hooks/useBulkInvite";
+import { parseEmailsFromText } from "../lib/emailParser";
 
-const INVITE_ROLE = "member" as const;
-const EMAIL_RE = /^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i;
 const DEFAULT_MONTHS = 1;
 const MIN_MONTHS = 1;
 const MAX_MONTHS = 60;
@@ -35,38 +33,6 @@ const DAYS_PER_MONTH = 30;
 function clampMonths(n: number): number {
   if (!Number.isFinite(n)) return DEFAULT_MONTHS;
   return Math.max(MIN_MONTHS, Math.min(MAX_MONTHS, Math.floor(n)));
-}
-
-function parseEmailsFromText(raw: string): {
-  validUnique: string[]; // lowercase, dedup
-  validRaw: string[]; // original case, dedup
-  invalid: string[];
-  duplicates: string[];
-} {
-  const tokens = raw
-    .split(/[\n,;]/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  const seen = new Set<string>();
-  const validUnique: string[] = [];
-  const validRaw: string[] = [];
-  const invalid: string[] = [];
-  const duplicates: string[] = [];
-  for (const tok of tokens) {
-    if (!EMAIL_RE.test(tok)) {
-      invalid.push(tok);
-      continue;
-    }
-    const lower = tok.toLowerCase();
-    if (seen.has(lower)) {
-      duplicates.push(tok);
-      continue;
-    }
-    seen.add(lower);
-    validUnique.push(lower);
-    validRaw.push(tok);
-  }
-  return { validUnique, validRaw, invalid, duplicates };
 }
 
 export function InviteMemberModal({
@@ -80,6 +46,9 @@ export function InviteMemberModal({
 }) {
   const t = useT();
   const formatDate = useFormatDate();
+  const isMobile = useIsMobile();
+  // Grid cột bảng email: desktop rộng rãi, mobile co lại để không tràn.
+  const rowCols = isMobile ? "minmax(0,1fr) 112px 66px 22px" : "1fr 200px 130px 28px";
   const formatExpiresDate = (months: number) => {
     const d = new Date();
     d.setUTCDate(d.getUTCDate() + months * DAYS_PER_MONTH);
@@ -113,34 +82,11 @@ export function InviteMemberModal({
   // Why: paste nhiều email + chỉnh months tốn công, lỡ click backdrop / Esc
   // sẽ mất hết → không có shortcut nào dismiss modal.
 
-  const bulkInvite = useMutation({
-    mutationFn: () =>
-      api<{ queue_item_id: string; count: number }>(
-        `/api/v1/workspaces/${workspaceId}/members/bulk-invite`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            invites: entries.map((e) => ({
-              email: e.email,
-              subscription_months: e.months,
-            })),
-            role: INVITE_ROLE,
-          }),
-        },
-      ),
-    onSuccess: (resp) => {
-      toast.success(t("invite.resultQueued", { n: resp.count }));
+  const bulkInvite = useBulkInvite(workspaceId, {
+    entries,
+    onSuccess: () => {
       onDone();
       onClose();
-    },
-    onError: (e) => {
-      const msg =
-        e instanceof ApiError
-          ? String(e.detail)
-          : e instanceof Error
-            ? e.message
-            : String(e);
-      toast.error(t("invite.resultError", { error: msg }));
     },
   });
 
@@ -220,6 +166,7 @@ export function InviteMemberModal({
         <div
           style={{
             display: "flex",
+            flexDirection: isMobile ? "column" : "row",
             flex: 1,
             minHeight: 0,
           }}
@@ -227,10 +174,11 @@ export function InviteMemberModal({
           {/* LEFT — paste textarea + counters + apply-to-all + invalid */}
           <div
             style={{
-              width: 380,
+              width: isMobile ? "100%" : 380,
               flexShrink: 0,
               padding: "12px 16px",
-              borderRight: "1px solid var(--border)",
+              borderRight: isMobile ? "none" : "1px solid var(--border)",
+              borderBottom: isMobile ? "1px solid var(--border)" : "none",
               overflowY: "auto",
               display: "flex",
               flexDirection: "column",
@@ -374,7 +322,7 @@ export function InviteMemberModal({
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "1fr 200px 130px 28px",
+                    gridTemplateColumns: rowCols,
                     columnGap: 8,
                     fontSize: 11,
                     color: "var(--ink-3)",
@@ -397,7 +345,7 @@ export function InviteMemberModal({
                       key={row.email}
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "1fr 200px 130px 28px",
+                        gridTemplateColumns: rowCols,
                         columnGap: 8,
                         alignItems: "center",
                         padding: "6px 0",
@@ -435,7 +383,7 @@ export function InviteMemberModal({
                           disabled={bulkInvite.isPending}
                           className="border rounded px-2 py-1 text-sm font-mono focus:outline-none disabled:opacity-50"
                           style={{
-                            width: 56,
+                            width: isMobile ? 40 : 56,
                             textAlign: "center",
                             borderColor: "var(--border)",
                           }}
@@ -448,9 +396,11 @@ export function InviteMemberModal({
                         >
                           +
                         </button>
-                        <span style={{ fontSize: 10, color: "var(--ink-3)" }}>
-                          {t("invite.monthsUnit")}
-                        </span>
+                        {!isMobile && (
+                          <span style={{ fontSize: 10, color: "var(--ink-3)" }}>
+                            {t("invite.monthsUnit")}
+                          </span>
+                        )}
                       </div>
                       <div
                         style={{

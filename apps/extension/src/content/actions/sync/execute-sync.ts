@@ -1,6 +1,7 @@
 import type {
   ExecuteActionResponse,
   ScrapedMember,
+  SyncScope,
 } from "../../../shared/messages";
 import { sleep } from "../../human";
 import {
@@ -16,9 +17,14 @@ import { MAX_SYNC_MS, scrapeCurrentTab } from "./scrape-current-tab";
 
 export async function executeSync(
   taskId: string,
-  includePending: boolean = true,
+  scope: SyncScope = "both",
   expectedLocale: ChatGPTLocale | null = null,
 ): Promise<ExecuteActionResponse> {
+  // scope: 'members' = chỉ tab Người dùng (active); 'invites' = chỉ tab Lời mời
+  // đang chờ xử lý (pending); 'both' = cả hai. Tab "Yêu cầu đang chờ xử lý"
+  // KHÔNG còn quét (user 2026-06-14).
+  const scrapeInvites = scope !== "members";
+  const scrapeActive = scope !== "invites";
   if (!location.pathname.includes("/admin")) {
     return {
       ok: false,
@@ -103,9 +109,19 @@ export async function executeSync(
   // active thắng. Nhưng thường email pending không trùng với active.
   const merged = new Map<string, ScrapedMember>();
 
-  if (includePending) {
+  if (scrapeInvites) {
     // ----- Tab 1: Lời mời đang chờ xử lý (pending invites) -----
-    if (await clickTabAndWait("tab_pending_invites", TEXT_FALLBACKS.tabPendingInvites)) {
+    // verifyTabParam="tab=invites": bắt buộc URL đổi sang ?tab=invites mới coi là
+    // đã đổi tab (fix bug "sync lời mời vẫn ở tab Người dùng" — humanClick không
+    // trigger đổi tab thì retry, hết retry thì bỏ qua thay vì scrape nhầm).
+    if (
+      await clickTabAndWait(
+        "tab_pending_invites",
+        TEXT_FALLBACKS.tabPendingInvites,
+        1500,
+        "tab=invites",
+      )
+    ) {
       const { members } = await scrapeCurrentTab(
         taskId,
         "pending",
@@ -115,28 +131,18 @@ export async function executeSync(
       console.log(`[autogpt-sync] tab Lời mời: ${members.length} entries`);
       for (const m of members) merged.set(m.email, m);
     }
-
-    // ----- Tab 2: Yêu cầu đang chờ xử lý (pending requests) -----
-    if (await clickTabAndWait("tab_pending_requests", TEXT_FALLBACKS.tabPendingRequests)) {
-      const { members } = await scrapeCurrentTab(
-        taskId,
-        "pending",
-        "Yêu cầu",
-        isOverTime,
-      );
-      console.log(`[autogpt-sync] tab Yêu cầu: ${members.length} entries`);
-      for (const m of members) merged.set(m.email, m);
-    }
+    // Tab "Yêu cầu đang chờ xử lý" (pending requests): KHÔNG quét nữa (user
+    // 2026-06-14). 'invites' = chỉ tab Lời mời đang chờ xử lý.
   } else {
-    console.log(
-      "[autogpt-sync] includePending=false → bỏ qua Lời mời + Yêu cầu, chỉ scrape Người dùng",
-    );
+    console.log(`[autogpt-sync] scope=${scope} → bỏ qua tab Lời mời`);
   }
 
   // ----- Tab 3: Người dùng (active members) — scrape CUỐI để status active
   //         thắng nếu trùng email với 2 tab trên (race condition giữa các sync).
   let tab1Found = false;
-  if (await clickTabAndWait("tab_active_members", TEXT_FALLBACKS.tabActiveMembers)) {
+  if (!scrapeActive) {
+    console.log(`[autogpt-sync] scope=${scope} → bỏ qua tab Người dùng`);
+  } else if (await clickTabAndWait("tab_active_members", TEXT_FALLBACKS.tabActiveMembers)) {
     tab1Found = true;
     const { members } = await scrapeCurrentTab(
       taskId,

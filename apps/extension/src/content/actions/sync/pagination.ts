@@ -13,7 +13,11 @@ export type PaginationState = {
   nextButton: HTMLElement | null;
 };
 
-function isDisabled(btn: HTMLElement): boolean {
+// ChatGPT đôi khi render nút mũi tên prev/next KHÔNG phải <button> mà là
+// <div role="button"> hoặc <a>. Bắt cả 3 để bộ dò không trượt.
+const CLICKABLE_SELECTOR = 'button, [role="button"], a[role]';
+
+export function isDisabled(btn: HTMLElement): boolean {
   const button = btn as HTMLButtonElement;
   return (
     button.disabled === true ||
@@ -35,13 +39,18 @@ function findButtonsNearIndicator(indicatorEl: Node): {
   let container: HTMLElement | null = start.parentElement;
   for (let depth = 0; depth < 6 && container; depth++) {
     const buttons = Array.from(
-      container.querySelectorAll<HTMLElement>("button"),
+      container.querySelectorAll<HTMLElement>(CLICKABLE_SELECTOR),
     ).filter((b) => b.offsetParent !== null || b.getClientRects().length > 0);
 
     if (buttons.length >= 2) {
       const byAria = pickByAriaLabel(buttons);
-      if (byAria.prev || byAria.next) return byAria;
-      return { prev: buttons[0], next: buttons[buttons.length - 1] };
+      // Bù vị trí cho nút mà aria-label không khớp pattern (vd next của
+      // ChatGPT VI ghi "Trang tiếp theo", không chứa "next"/"sau"):
+      // prev = nút đầu, next = nút cuối trong thanh.
+      return {
+        prev: byAria.prev ?? buttons[0],
+        next: byAria.next ?? buttons[buttons.length - 1],
+      };
     }
     container = container.parentElement;
   }
@@ -52,8 +61,8 @@ function pickByAriaLabel(buttons: HTMLElement[]): {
   prev: HTMLElement | null;
   next: HTMLElement | null;
 } {
-  const prevPatterns = /previous|prev|trước|上一页|上一頁|前一页/i;
-  const nextPatterns = /next|sau|下一页|下一頁|后一页/i;
+  const prevPatterns = /previous|prev|trước|lùi|上一页|上一頁|前一页/i;
+  const nextPatterns = /next|sau|tiếp|kế|下一页|下一頁|后一页/i;
   let prev: HTMLElement | null = null;
   let next: HTMLElement | null = null;
   for (const btn of buttons) {
@@ -64,50 +73,78 @@ function pickByAriaLabel(buttons: HTMLElement[]): {
   return { prev, next };
 }
 
+/** Dựng PaginationState từ một phần tử "neo" (chứa chỉ số trang) + giá trị N/M. */
+function buildState(
+  anchor: Element,
+  current: number,
+  total: number,
+): PaginationState | null {
+  if (
+    !Number.isFinite(current) ||
+    !Number.isFinite(total) ||
+    total < 2 ||
+    total > MAX_PAGINATION_PAGES ||
+    current < 1 ||
+    current > total
+  ) {
+    return null;
+  }
+
+  const { prev, next } = findButtonsNearIndicator(anchor);
+  if (!prev && !next) return null;
+
+  let container: HTMLElement | null = anchor.parentElement;
+  for (let i = 0; i < 6 && container?.parentElement; i++) {
+    if (container.querySelectorAll(CLICKABLE_SELECTOR).length >= 2) break;
+    container = container.parentElement;
+  }
+  if (!container) return null;
+
+  return { current, total, container, prevButton: prev, nextButton: next };
+}
+
 /**
- * Tìm thanh phân trang ChatGPT admin members (vd "1 / 2" + nút mũi tên).
+ * Tìm thanh phân trang ChatGPT admin members (vd "‹ 1/2 ›").
  * Trả null nếu không có hoặc chỉ 1 trang.
+ *
+ * Hai pass:
+ *  1) Text node đơn "N / M" (fast path, UI cũ).
+ *  2) Phần tử nhỏ có textContent gộp = "N/M" — xử lý khi ChatGPT tách chỉ số
+ *     thành nhiều node con (vd <span>1</span>/<span>2</span>) khiến pass 1 trượt.
  */
 export function findPaginationState(): PaginationState | null {
+  // Pass 1: từng text node.
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   let node: Node | null;
   while ((node = walker.nextNode())) {
     const text = (node.nodeValue ?? "").trim();
     const match = PAGE_INDICATOR_RE.exec(text);
-    if (!match) continue;
-
-    const current = Number.parseInt(match[1], 10);
-    const total = Number.parseInt(match[2], 10);
-    if (
-      !Number.isFinite(current) ||
-      !Number.isFinite(total) ||
-      total < 2 ||
-      total > MAX_PAGINATION_PAGES ||
-      current < 1 ||
-      current > total
-    ) {
-      continue;
-    }
-
-    const { prev, next } = findButtonsNearIndicator(node);
-    if (!prev && !next) continue;
-
-    let container: HTMLElement | null = node.parentElement;
-    for (let i = 0; i < 6 && container?.parentElement; i++) {
-      const btnCount = container.querySelectorAll("button").length;
-      if (btnCount >= 2) break;
-      container = container.parentElement;
-    }
-    if (!container) continue;
-
-    return {
-      current,
-      total,
-      container,
-      prevButton: prev,
-      nextButton: next,
-    };
+    if (!match || !node.parentElement) continue;
+    const state = buildState(
+      node.parentElement,
+      Number.parseInt(match[1], 10),
+      Number.parseInt(match[2], 10),
+    );
+    if (state) return state;
   }
+
+  // Pass 2: phần tử nhỏ có textContent = "N/M" (chỉ số bị tách node con).
+  // Giới hạn độ dài ≤ 12 + yêu cầu có ≥2 nút lân cận (trong buildState) để
+  // tránh khớp nhầm các chuỗi "x/y" khác trên trang.
+  const els = document.querySelectorAll<HTMLElement>("nav, div, span, p, li");
+  for (const el of Array.from(els)) {
+    const text = (el.textContent ?? "").trim();
+    if (text.length === 0 || text.length > 12) continue;
+    const match = PAGE_INDICATOR_RE.exec(text);
+    if (!match) continue;
+    const state = buildState(
+      el,
+      Number.parseInt(match[1], 10),
+      Number.parseInt(match[2], 10),
+    );
+    if (state) return state;
+  }
+
   return null;
 }
 

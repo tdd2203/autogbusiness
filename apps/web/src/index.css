@@ -816,4 +816,168 @@ body {
   .page-fade {
     animation: fade-in-up 0.3s ease;
   }
+
+  /* ---------- App shell (responsive) ---------- */
+  .app-shell {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+  }
+  .app-sidebar {
+    position: sticky;
+    top: 0;
+    height: 100vh;
+  }
+  .app-main {
+    padding: 32px 48px 64px;
+    max-width: 1440px;
+    width: 100%;
+    overflow: auto;
+  }
+  /* Top bar + hamburger: ẩn trên desktop, chỉ hiện ở mobile */
+  .app-topbar {
+    display: none;
+  }
+  .app-backdrop {
+    display: none;
+  }
+  .app-hamburger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    margin-left: -8px;
+    border: none;
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+    border-radius: var(--radius);
+  }
+  .app-hamburger svg {
+    width: 22px;
+    height: 22px;
+  }
+  .app-hamburger:hover {
+    background: var(--surface-2);
+  }
+  .app-topbar-title {
+    font-family: var(--font-display);
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    text-decoration: none;
+  }
+
+  @media (max-width: 768px) {
+    .app-shell {
+      grid-template-columns: 1fr;
+    }
+    /* Sidebar trở thành drawer trượt từ trái */
+    .app-sidebar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      height: 100vh;
+      width: 264px;
+      max-width: 82vw;
+      z-index: 50;
+      transform: translateX(-100%);
+      transition: transform 0.22s ease;
+      box-shadow: 0 8px 40px rgba(0, 0, 0, 0.18);
+    }
+    .app-sidebar.open {
+      transform: translateX(0);
+    }
+    .app-backdrop {
+      display: block;
+      position: fixed;
+      inset: 0;
+      z-index: 45;
+      background: rgba(0, 0, 0, 0.4);
+      animation: fade-in-up 0.15s ease;
+    }
+    .app-topbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      height: 52px;
+      padding: 0 16px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    .app-main {
+      padding: 16px 16px 48px;
+    }
+
+    /* Typography co lại cho màn hình nhỏ */
+    .display-h1 {
+      font-size: 24px;
+    }
+    .display-h2 {
+      font-size: 18px;
+    }
+    .page-sub {
+      font-size: 13px;
+    }
+
+    /* Bảng: giảm padding, scroll ngang trong card */
+    .data-table thead th {
+      padding: 9px 12px;
+    }
+    .data-table tbody td {
+      padding: 11px 12px;
+      font-size: 13px;
+    }
+
+    /* Metrics: 1 cột */
+    .metrics {
+      grid-template-columns: 1fr;
+    }
+    .metric {
+      padding: 16px 18px;
+    }
+    .metric-value {
+      font-size: 24px;
+    }
+
+    /* Settings info-row xếp dọc */
+    .info-row {
+      grid-template-columns: 1fr;
+      gap: 4px;
+    }
+
+    /* Tabs cuộn ngang thay vì tràn */
+    .tabs-bar {
+      overflow-x: auto;
+      flex-wrap: nowrap;
+      -webkit-overflow-scrolling: touch;
+    }
+    .tab {
+      white-space: nowrap;
+    }
+
+    /* Ô tìm kiếm chiếm trọn chiều ngang */
+    .search-wrap {
+      width: 100%;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .app-main {
+      padding: 14px 12px 40px;
+    }
+    .display-h1 {
+      font-size: 21px;
+    }
+    .table-head {
+      padding: 14px 14px;
+    }
+    .settings-section {
+      padding: 20px 16px;
+    }
+  }
 }

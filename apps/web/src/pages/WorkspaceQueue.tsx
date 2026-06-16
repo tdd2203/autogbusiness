@@ -2,7 +2,9 @@ import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { queuePollInterval } from "../lib/queuePolling";
 import { useT, useTranslateEnum } from "../i18n";
+import { useAuth } from "../hooks/useAuth";
 import type { QueueItem } from "../types";
 import { Chip, TimeCell } from "./Queue";
 import { SearchInput } from "./Members";
@@ -21,6 +23,8 @@ export default function WorkspaceQueue() {
   const tStatus = useTranslateEnum("status");
   const tTaskType = useTranslateEnum("taskType");
   const { workspaceId } = useParams<{ workspaceId: string }>();
+  const { user } = useAuth();
+  const isSuper = !!user?.is_super_admin;
   const qc = useQueryClient();
 
   const { data: tasks = [], isLoading } = useQuery({
@@ -30,7 +34,9 @@ export default function WorkspaceQueue() {
         `/api/v1/queue?workspace_id=${workspaceId}&limit=200`,
       ),
     enabled: !!workspaceId,
-    refetchInterval: 5000,
+    // Trang theo dõi queue: poll 5s khi có task chạy, idle giãn còn 15s. Xem
+    // lib/queuePolling.
+    refetchInterval: queuePollInterval(5000, 15000),
   });
 
   const [filter, setFilter] = useState<Filter>("all");
@@ -131,6 +137,7 @@ export default function WorkspaceQueue() {
                 <th>{t("queue.colTime")}</th>
                 <th>{t("queue.colType")}</th>
                 <th>{t("queue.colStatus")}</th>
+                {isSuper && <th>Người yêu cầu</th>}
                 <th>{t("queue.colPayload")}</th>
                 <th>{t("queue.colResult")}</th>
               </tr>
@@ -138,14 +145,14 @@ export default function WorkspaceQueue() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={5} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
+                  <td colSpan={isSuper ? 6 : 5} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
                     {t("common.loading")}
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
+                  <td colSpan={isSuper ? 6 : 5} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
                     {t("queue.emptyWs")}
                   </td>
                 </tr>
@@ -165,6 +172,13 @@ export default function WorkspaceQueue() {
                       {tStatus(task.status)}
                     </span>
                   </td>
+                  {isSuper && (
+                    <td>
+                      <span className="action-name">
+                        {task.created_by_username ?? "—"}
+                      </span>
+                    </td>
+                  )}
                   <td>
                     <span className="payload">
                       {JSON.stringify(task.payload)}

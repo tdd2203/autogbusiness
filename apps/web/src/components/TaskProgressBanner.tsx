@@ -42,6 +42,11 @@ function getTaskTitle(task: QueueItem, t: Translator): string {
       const role = (payload.new_role as string | undefined) ?? "";
       return t("task.title.CHANGE_ROLE", { email, role });
     }
+    case "CHANGE_LICENSE_TYPE": {
+      const email = (payload.email as string | undefined) ?? "";
+      const license = (payload.new_license_type as string | undefined) ?? "";
+      return t("task.title.CHANGE_LICENSE_TYPE", { email, license });
+    }
     case "REVOKE_INVITES": {
       const emails = payload.emails as string[] | undefined;
       return t("task.title.REVOKE_INVITES", { n: emails?.length ?? 0 });

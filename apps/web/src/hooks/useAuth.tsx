@@ -7,7 +7,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, getToken, setToken } from "../lib/api";
+import {
+  api,
+  getToken,
+  setToken,
+  AUTH_UNAUTHORIZED_EVENT,
+} from "../lib/api";
 
 export type UserProfile = {
   id: string;
@@ -55,6 +60,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Phiên hết hạn giữa chừng: api() phát AUTH_UNAUTHORIZED_EVENT khi gặp 401
+  // lúc đang có token. Xóa user → ProtectedRoute điều hướng về /login và các
+  // trang protected unmount (dừng mọi query poll). Xem lib/api.ts.
+  useEffect(() => {
+    function onUnauthorized() {
+      setToken(null);
+      setUser(null);
+    }
+    window.addEventListener(AUTH_UNAUTHORIZED_EVENT, onUnauthorized);
+    return () =>
+      window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, onUnauthorized);
+  }, []);
 
   const login = useCallback(
     async (identifier: string, password: string) => {

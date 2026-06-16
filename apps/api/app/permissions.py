@@ -29,7 +29,6 @@ SUPER_ADMIN_ONLY: frozenset[Permission] = frozenset(
     {
         Permission.USER_MANAGE,
         Permission.EXTENSION_CONFIG,
-        Permission.BILLING_VIEW,
         Permission.BILLING_PAY,
         Permission.MEMBER_CHANGE_ROLE,
         Permission.UI_LABEL_MANAGE,
@@ -44,6 +43,9 @@ GRANTABLE: frozenset[Permission] = frozenset(
         Permission.WORKSPACE_SYNC_TRIGGER,
         Permission.QUEUE_VIEW,
         Permission.AUDIT_LOG_VIEW,
+        # BILLING_VIEW: cấp được cho sub-admin (CHỈ xem thanh toán). BILLING_PAY
+        # (thực hiện thanh toán) vẫn super-admin-only.
+        Permission.BILLING_VIEW,
     }
 )
 

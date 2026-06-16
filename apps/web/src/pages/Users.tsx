@@ -1,7 +1,11 @@
 import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
-import { GRANTABLE, type PermissionKey } from "../lib/permissions";
+import {
+  DEFAULT_SUB_ADMIN_PERMS,
+  GRANTABLE,
+  type PermissionKey,
+} from "../lib/permissions";
 import { useFormatDate, useT } from "../i18n";
 import { SearchInput } from "./Members";
 
@@ -176,10 +180,11 @@ export default function Users() {
 
 function CreateUserForm({ onCreated }: { onCreated: () => void }) {
   const t = useT();
-  const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [perms, setPerms] = useState<Set<PermissionKey>>(new Set());
+  const [perms, setPerms] = useState<Set<PermissionKey>>(
+    () => new Set(DEFAULT_SUB_ADMIN_PERMS),
+  );
   const [err, setErr] = useState<string | null>(null);
 
   const mut = useMutation({
@@ -187,7 +192,6 @@ function CreateUserForm({ onCreated }: { onCreated: () => void }) {
       api("/api/v1/users", {
         method: "POST",
         body: JSON.stringify({
-          email,
           username,
           password,
           permissions: Array.from(perms),
@@ -234,14 +238,6 @@ function CreateUserForm({ onCreated }: { onCreated: () => void }) {
           marginBottom: 16,
         }}
       >
-        <input
-          placeholder={t("users.email")}
-          required
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="form-input"
-        />
         <input
           placeholder={t("users.username")}
           required

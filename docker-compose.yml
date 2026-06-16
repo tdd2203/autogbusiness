@@ -2,12 +2,11 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: autogpt-postgres
+    restart: always
     environment:
       POSTGRES_USER: autogpt
-      POSTGRES_PASSWORD: autogpt
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-autogpt}
       POSTGRES_DB: autogpt_dashboard
-    ports:
-      - "5432:5432"
     volumes:
       - autogpt_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -15,6 +14,52 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # DB không expose ra ngoài — chỉ dùng nội bộ docker network.
+    # Bỏ comment nếu cần nối từ máy host (vd chạy alembic/pgcli thủ công):
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+
+  api:
+    build: ./apps/api
+    container_name: autogpt-api
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://autogpt:${POSTGRES_PASSWORD:-autogpt}@postgres:5432/autogpt_dashboard
+      JWT_SECRET: ${JWT_SECRET:?Thiếu JWT_SECRET trong .env}
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRE_MINUTES: "720"
+      FRONTEND_ORIGIN: ${PUBLIC_URL:-http://localhost:17173}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-admin@example.com}
+      SUPER_ADMIN_USERNAME: ${SUPER_ADMIN_USERNAME:-admin}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:?Thiếu SUPER_ADMIN_PASSWORD trong .env}
+    ports:
+      # Expose cho Chrome Extension chạy native trên Mac.
+      # Trong popup extension đặt Backend URL = http://localhost:18000
+      - "127.0.0.1:18000:8000"
+
+  web:
+    build: ./apps/web
+    container_name: autogpt-web
+    restart: always
+    depends_on:
+      - api
+    ports:
+      # Chỉ bind localhost; team truy cập qua Cloudflare tunnel (service web:80), không qua port này.
+      - "127.0.0.1:17173:80"
+
+  # Tunnel cho team truy cập từ xa. Chỉ chạy khi bật profile "remote":
+  #   docker compose --profile remote up -d
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: autogpt-cloudflared
+    restart: always
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN:-}
+    depends_on:
+      - web
+    profiles: ["remote"]
 
 volumes:
   autogpt_pgdata:

@@ -1,8 +1,8 @@
 /**
  * Anti-detection helpers — simulate human input.
  *
- * Spec gốc: delay 1.5-4s giữa thao tác. Tuy nhiên user 2026-05-19 yêu cầu giảm
- * 70% delay vì extension chạy quá chậm → DELAY_MULTIPLIER = 0.30. Tất cả
+ * Spec gốc: delay 1.5-4s giữa thao tác. User 2026-05-19 giảm 70% (→0.30) vì
+ * extension chạy chậm; 2026-06-16 giảm thêm 40% (0.30→0.18). Tất cả
  * `randomDelay`, `microDelay`, và per-character typing đều scale qua hằng số
  * này — đổi 1 chỗ áp dụng toàn bộ.
  *
@@ -10,7 +10,7 @@
  * - Nhập liệu gõ từng ký tự (keypress events) — vẫn realistic nhưng nhanh hơn
  */
 
-const DELAY_MULTIPLIER = 0.30;
+const DELAY_MULTIPLIER = 0.18;
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -133,6 +133,42 @@ export async function waitFor<T>(
     await sleep(pollMs);
   }
   throw new Error(`Timeout sau ${timeoutMs}ms`);
+}
+
+/**
+ * NHẬN BIẾT RENDER XONG (thay cho `sleep` cố định khi chờ SPA render).
+ *
+ * Chờ tới khi 1 giá trị đếm (vd số row đã render) > 0 và GIỮ NGUYÊN qua
+ * `stablePolls` lần poll liên tiếp = nội dung đã render xong & ngừng thay đổi.
+ *
+ * - Máy nhanh: resolve ngay khi list ổn định (thường < 1s) → nhanh hơn sleep cố định.
+ * - Máy chậm: chờ tới khi render kịp → an toàn hơn (không thao tác/scrape sớm).
+ * - KHÔNG throw: hết `timeoutMs` thì trả về count cuối (fallback — không chặn
+ *   flow; downstream vẫn re-scrape/scroll). List rỗng (luôn 0) → chờ hết timeout.
+ */
+export async function waitForCountStable(
+  getCount: () => number,
+  {
+    timeoutMs = 6000,
+    stablePolls = 2,
+    pollMs = 300,
+  }: { timeoutMs?: number; stablePolls?: number; pollMs?: number } = {},
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  let last = -1;
+  let stableHits = 0;
+  while (Date.now() < deadline) {
+    const c = getCount();
+    if (c > 0 && c === last) {
+      stableHits += 1;
+      if (stableHits >= stablePolls) return c;
+    } else {
+      stableHits = 0;
+      last = c;
+    }
+    await sleep(pollMs);
+  }
+  return Math.max(last, 0);
 }
 
 export function querySelectorFirst<T extends Element = Element>(

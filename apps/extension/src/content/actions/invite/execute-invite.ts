@@ -4,18 +4,50 @@ import type {
 } from "../../../shared/messages";
 import { sleep } from "../../human";
 import { TEXT_FALLBACKS } from "../../selectors";
-import { withExternalInvitesEnabled } from "../external-invites";
+import { navigateTo } from "../external-invites/navigate";
+import { setExternalInvites } from "../external-invites/set-toggle";
 import { clickTabAndWait } from "../sync";
 import { executeInviteInner } from "./execute-invite-inner";
 import { waitForPendingListStable } from "./wait-for-pending-list-stable";
+
+const MEMBERS_PATH = "/admin/members";
+
+/** Predicate: đã ở /admin/members VÀ page đã render (main + có button). */
+function membersPageReady(): boolean {
+  if (!location.pathname.includes(MEMBERS_PATH)) return false;
+  const main = document.querySelector("main, [role='main']");
+  const hasButtons = document.querySelectorAll("button").length > 2;
+  return !!main && hasButtons;
+}
+
+/** Lấy phần domain sau '@' của email (lowercase). "" nếu không hợp lệ. */
+function emailDomain(email: string): string {
+  const at = email.lastIndexOf("@");
+  return at >= 0 ? email.slice(at + 1).trim().toLowerCase() : "";
+}
+
+/**
+ * True nếu `verifiedDomain` đã cấu hình VÀ MỌI email đều thuộc domain đó.
+ * Khi đó invite không cần bật toggle "mời ngoài tên miền" → bỏ qua /admin/identity.
+ */
+function allEmailsInVerifiedDomain(
+  emails: string[],
+  verifiedDomain: string | null,
+): boolean {
+  if (!verifiedDomain) return false;
+  const dom = verifiedDomain.trim().toLowerCase().replace(/^@/, "");
+  if (!dom) return false;
+  return emails.every((e) => emailDomain(e) === dom);
+}
 
 export async function executeInvite(
   taskId: string,
   emails: string[],
   role: ChatGPTRole,
+  verifiedDomain: string | null = null,
 ): Promise<ExecuteActionResponse> {
   console.log(
-    `[autogpt-invite] START ${emails.length} email(s) role=${role} pathname=${location.pathname}`,
+    `[autogpt-invite] START ${emails.length} email(s) role=${role} verifiedDomain=${verifiedDomain ?? "(chưa cấu hình)"} pathname=${location.pathname}`,
   );
 
   if (!location.pathname.includes("/admin")) {
@@ -54,9 +86,63 @@ export async function executeInvite(
   // Nếu đảo lại (chuyển tab → restore toggle navigate qua /admin/identity →
   // navigate về /admin/members) thì URL mất ?tab=invites → F5 load tab "Người
   // dùng" default → Phase 2 phải click lại tab, chậm hơn + dễ race với cache.
-  const inviteResult = await withExternalInvitesEnabled(() =>
-    executeInviteInner(taskId, emails, role),
-  );
+  //
+  // TỐI ƯU (theo user): nếu MỌI email thuộc tên miền đã xác minh của workspace
+  // thì KHÔNG cần bật toggle "mời ngoài tên miền" → bỏ qua 2 lần navigate
+  // /admin/identity (nhanh hơn + không để workspace mở external). Chỉ khi
+  // domain chưa cấu hình HOẶC có email ngoài domain mới dùng wrapper.
+  let inviteResult: ExecuteActionResponse;
+  if (allEmailsInVerifiedDomain(emails, verifiedDomain)) {
+    console.log(
+      `[autogpt-invite] mọi email thuộc domain xác minh "${verifiedDomain}" → BỎ QUA toggle external invites`,
+    );
+    // executeInviteInner yêu cầu đang ở /admin/members → điều hướng trước.
+    await navigateTo(MEMBERS_PATH, membersPageReady, 10_000);
+    inviteResult = await executeInviteInner(taskId, emails, role);
+  } else {
+    // Có email NGOÀI domain xác minh (hoặc domain chưa cấu hình) → BẮT BUỘC bật
+    // toggle "Cho phép lời mời ngoài tên miền" trước khi mời. Nếu KHÔNG xác nhận
+    // được toggle về ON → KHÔNG mời (return FAIL). Lý do (user yêu cầu): nếu mời
+    // khi toggle vẫn OFF, ChatGPT từ chối email ngoài domain silently → dashboard
+    // tạo phantom "đang chờ" cho email chưa thực sự được mời. Thà fail rõ ràng.
+    const ensured = await setExternalInvites(true);
+    if (!ensured.confirmed) {
+      console.warn(
+        "[autogpt-invite] KHÔNG xác nhận được toggle external invites = ON → huỷ invite (tránh phantom).",
+      );
+      return {
+        ok: false,
+        error_code: "EXTERNAL_TOGGLE_FAILED",
+        error_message:
+          ensured.prev === null
+            ? "Không tìm thấy toggle 'Cho phép lời mời ngoài tên miền' trên /admin/identity — không thể đảm bảo bật trước khi mời email ngoài domain. Kiểm tra lại trang/UI ChatGPT rồi thử lại."
+            : "Đã click bật toggle 'mời ngoài tên miền' nhưng không xác nhận được trạng thái ON. Huỷ invite để tránh thêm nhầm email vào dashboard.",
+      };
+    }
+    console.log(
+      `[autogpt-invite] toggle external invites đã ON (prev=${ensured.prev ? "ON" : "OFF"}) → tiến hành mời`,
+    );
+    try {
+      await navigateTo(MEMBERS_PATH, membersPageReady, 10_000);
+      inviteResult = await executeInviteInner(taskId, emails, role);
+    } finally {
+      // Spec bảo mật: LUÔN tắt toggle về OFF sau invite (kể cả prev=ON hay
+      // invite throw) + về /admin/members cho task kế tiếp.
+      try {
+        await setExternalInvites(false);
+      } catch (e) {
+        console.warn(
+          "[autogpt-invite] force OFF toggle external invites FAILED — tắt thủ công nếu cần.",
+          e,
+        );
+      }
+      try {
+        await navigateTo(MEMBERS_PATH, membersPageReady, 10_000);
+      } catch (e) {
+        console.warn("[autogpt-invite] navigate về /admin/members fail", e);
+      }
+    }
+  }
 
   // Bước 4: chuyển tab "Lời mời" SAU khi toggle đã tắt + đã ở /admin/members.
   // Chỉ chạy khi invite submit thành công — fail thì không cần verify.

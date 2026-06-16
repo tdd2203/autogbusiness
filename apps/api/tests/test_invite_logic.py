@@ -266,6 +266,44 @@ def test_single_invite_after_removed_resets_to_pending(
     assert again["id"] == member_id  # reuse cùng row (UPSERT theo email)
 
 
+def test_remove_not_found_does_not_mark_removed(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Regression: extension báo UI_ELEMENT_NOT_FOUND cho REMOVE_MEMBER KHÔNG
+    còn bị backend tự coi là 'đã removed'. Trên list dài, extension có thể tìm
+    sót row dù member vẫn còn trên ChatGPT → không được đánh dấu removed nhầm.
+    Task để FAILED; SYNC mới là nguồn chân lý."""
+    ws = _create_workspace(client, auth_header)
+    m = _invite_one(client, ws["id"], email="stay@example.com", headers=auth_header)
+    member_id = m["id"]
+
+    del_resp = client.delete(
+        f"/api/v1/workspaces/{ws['id']}/members/{member_id}", headers=auth_header
+    )
+    assert del_resp.status_code == 202
+
+    queue = _list_queue(client, auth_header)
+    remove_task = next(q for q in queue if q["type"] == "REMOVE_MEMBER")
+
+    patched = _patch_task_as_extension(
+        client,
+        remove_task["id"],
+        ws["extension_api_key"],
+        status="FAILED",
+        error_code="UI_ELEMENT_NOT_FOUND",
+        error_message="Không tìm thấy row sau khi duyệt hết trang",
+    )
+    # Task GIỮ FAILED — không bị convert sang COMPLETED.
+    assert patched["status"] == "FAILED"
+
+    # Member KHÔNG bị mark removed → vẫn hiện trong danh sách (list mặc định
+    # ẩn removed, nên còn thấy nghĩa là chưa bị xoá nhầm).
+    members = _list_members(client, ws["id"], auth_header)
+    target = next((x for x in members if x["id"] == member_id), None)
+    assert target is not None, "member bị ẩn → đã bị đánh dấu removed nhầm"
+    assert target["status"] != "removed"
+
+
 def test_single_invite_workspace_not_found_returns_404(
     client: TestClient, auth_header: dict
 ) -> None:
@@ -311,6 +349,13 @@ def test_sub_admin_invite_sets_invited_by_to_self(
         username="inviter",
         permissions=["MEMBER_INVITE", "MEMBER_VIEW"],
     )
+    # Gán workspace cho sub-admin (bắt buộc kể từ workspace-assignment RBAC).
+    assign = client.post(
+        f"/api/v1/workspaces/{ws['id']}/assignments",
+        json={"user_id": sub["id"]},
+        headers=auth_header,
+    )
+    assert assign.status_code == 201, assign.text
     sub_token = _login(client, "inviter")
 
     body = _invite_one(

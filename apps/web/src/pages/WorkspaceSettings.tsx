@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useT } from "../i18n";
-import type { WorkspaceSettings as WSettings } from "../types";
+import type { Workspace, WorkspaceSettings as WSettings } from "../types";
 
 export default function WorkspaceSettings() {
   const t = useT();
@@ -15,10 +15,21 @@ export default function WorkspaceSettings() {
   const [dryRun, setDryRun] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
+  const [verifiedDomain, setVerifiedDomain] = useState("");
+  const [domainMsg, setDomainMsg] = useState<{ ok: boolean; text: string } | null>(
+    null,
+  );
+
   const { data: settings } = useQuery({
     queryKey: ["workspace-settings", workspaceId],
     queryFn: () =>
       api<WSettings>(`/api/v1/workspaces/${workspaceId}/settings`),
+    enabled: !!workspaceId,
+  });
+
+  const { data: workspace } = useQuery({
+    queryKey: ["workspace", workspaceId],
+    queryFn: () => api<Workspace>(`/api/v1/workspaces/${workspaceId}`),
     enabled: !!workspaceId,
   });
 
@@ -30,6 +41,28 @@ export default function WorkspaceSettings() {
       setDryRun(settings.dry_run_mode);
     }
   }, [settings]);
+
+  useEffect(() => {
+    if (workspace) setVerifiedDomain(workspace.verified_domain ?? "");
+  }, [workspace]);
+
+  const saveDomain = useMutation({
+    mutationFn: () =>
+      api<Workspace>(`/api/v1/workspaces/${workspaceId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ verified_domain: verifiedDomain.trim() }),
+      }),
+    onSuccess: () => {
+      setDomainMsg({ ok: true, text: "Đã lưu tên miền xác minh" });
+      qc.invalidateQueries({ queryKey: ["workspace", workspaceId] });
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
+    },
+    onError: (e) =>
+      setDomainMsg({
+        ok: false,
+        text: e instanceof ApiError ? String(e.detail) : "Lưu thất bại",
+      }),
+  });
 
   const save = useMutation({
     mutationFn: () =>
@@ -130,6 +163,49 @@ export default function WorkspaceSettings() {
         )}
         <button disabled={save.isPending} className="btn btn-primary">
           {save.isPending ? t("common.saving") : t("common.save")}
+        </button>
+      </form>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          setDomainMsg(null);
+          saveDomain.mutate();
+        }}
+        className="settings-section"
+      >
+        <h3 className="display-h3">Tên miền đã xác minh</h3>
+        <p
+          style={{
+            fontSize: 13,
+            color: "var(--ink-3)",
+            marginTop: 4,
+            marginBottom: 16,
+          }}
+        >
+          Khi mời thành viên: nếu mọi email đều thuộc tên miền này thì không cần
+          bật "cho phép mời ngoài tên miền". Để trống nếu chưa có.
+        </p>
+        <input
+          placeholder="vd: ndaigroup.org"
+          value={verifiedDomain}
+          onChange={(e) => setVerifiedDomain(e.target.value)}
+          className="form-input"
+          style={{ marginBottom: 12 }}
+        />
+        {domainMsg && (
+          <div
+            style={{
+              fontSize: 13,
+              color: domainMsg.ok ? "var(--success)" : "var(--danger)",
+              marginBottom: 12,
+            }}
+          >
+            {domainMsg.text}
+          </div>
+        )}
+        <button disabled={saveDomain.isPending} className="btn btn-primary">
+          {saveDomain.isPending ? t("common.saving") : t("common.save")}
         </button>
       </form>
     </div>

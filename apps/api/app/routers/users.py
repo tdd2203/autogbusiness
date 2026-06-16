@@ -1,3 +1,4 @@
+import re
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -12,6 +13,22 @@ from app.schemas import ResetPasswordIn, UserCreate, UserOut, UserUpdate
 from app.security import hash_password
 
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
+
+
+# Domain nội bộ cho email tự sinh khi tạo tài khoản phụ không nhập email.
+# Tài khoản phụ đăng nhập bằng username; email chỉ để thoả ràng buộc NOT NULL +
+# unique của cột. ".local" là TLD dành riêng, không định tuyến ra ngoài.
+SYNTHETIC_EMAIL_DOMAIN = "no-email.local"
+
+
+def _synthesize_email(username: str) -> str:
+    """Sinh email nội bộ hợp lệ (EmailStr) từ username.
+
+    Lọc ký tự không hợp lệ ở local-part; username là unique nên email sinh ra
+    gần như luôn unique (va chạm hiếm sẽ bị bắt bởi check unique → 409).
+    """
+    local = re.sub(r"[^a-z0-9._%+-]", "", username.lower()).strip(".") or "user"
+    return f"{local}@{SYNTHETIC_EMAIL_DOMAIN}"
 
 
 def _email_or_username_taken(db: Session, email: str, username: str) -> tuple[bool, bool]:
@@ -44,7 +61,8 @@ def create_user(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
-    email_taken, username_taken = _email_or_username_taken(db, body.email, body.username)
+    email = body.email.lower() if body.email else _synthesize_email(body.username)
+    email_taken, username_taken = _email_or_username_taken(db, email, body.username)
     if email_taken or username_taken:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -55,7 +73,7 @@ def create_user(
         )
 
     user = User(
-        email=body.email.lower(),
+        email=email,
         username=body.username,
         password_hash=hash_password(body.password),
         is_super_admin=False,

@@ -24,6 +24,7 @@ export type QueueItem = {
     | "INVITE_MEMBER"
     | "REMOVE_MEMBER"
     | "CHANGE_ROLE"
+    | "CHANGE_LICENSE_TYPE"
     | "SYNC_DATA"
     | "SYNC_BILLING"
     | "REVOKE_INVITES"
