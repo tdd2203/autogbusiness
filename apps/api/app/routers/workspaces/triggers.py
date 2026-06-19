@@ -5,31 +5,73 @@ Docs ghi lịch sử lỗi, business rule và ý tưởng cải tiến — code 
 
 Endpoints (đăng ký lên router dùng chung từ `_shared`):
   - POST /{workspace_id}/sync           → trigger_sync          (SYNC_DATA)
+  - POST /{workspace_id}/sync-member    → trigger_sync_member   (SYNC_MEMBER)
+  - GET  /{workspace_id}/sync-quota     → get_sync_quota        (web ẩn nút)
   - POST /{workspace_id}/revoke-invites → trigger_revoke_invites (REVOKE_INVITES)
   - POST /{workspace_id}/harvest-labels → trigger_harvest_labels (HARVEST_LABELS)
   - POST /{workspace_id}/sync-billing   → trigger_sync_billing  (SYNC_BILLING)
   - POST /{workspace_id}/purchase-seat  → trigger_purchase_seat (PURCHASE_SEAT)
+
+Rate-limit (⚠️ xem `triggers.md` mục business rules):
+  - Full-sync (SYNC_DATA): admin phụ (is_super_admin=False) tối đa 1 lần/NGÀY
+    (mốc UTC) / workspace; admin chính không giới hạn.
+  - Chống spam lệnh per-email (SYNC_MEMBER, REMOVE_MEMBER, CHANGE_ROLE,
+    CHANGE_LICENSE_TYPE): lặp CÙNG (loại lệnh, email) liên tiếp >3 lần (task FAILED
+    không tính) → cấm tài khoản 10 phút (đá session + chặn login). Dùng chung
+    `enforce_command_spam` ở app.deps (User.command_ban_until).
 """
 
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
 from app.deps import (
     assert_workspace_access,
+    enforce_command_spam,
     get_session,
     require_permission,
     require_super_admin,
 )
-from app.models import QueueItem, User
+from app.models import QueueItem, User, Workspace
 from app.permissions import Permission
-from app.schemas import PurchaseSeatIn
+from app.schemas import PurchaseSeatIn, SyncMemberIn
 from app.sse import publish_task_event
 
 from ._shared import router, _get_workspace_or_404
+
+# --- Rate-limit constants (⚠️ xem triggers.md trước khi đổi) ---
+# Full-sync: admin phụ tối đa N lần/ngày (UTC). 1 = đúng yêu cầu "1 lần/ngày".
+FULL_SYNC_MAX_PER_DAY = 1
+# Chống-spam sync lẻ (và các lệnh per-email khác) dùng chung helper
+# `enforce_command_spam` ở app.deps: cùng (loại lệnh, email) lặp >3 lần → cấm 10 phút.
+
+
+def _utc_day_start(now: datetime) -> datetime:
+    """Mốc 00:00:00 UTC của ngày chứa `now`. Ranh giới full-sync theo ngày là UTC
+    (KHÔNG theo giờ VN) — ghi rõ ở triggers.md để không hiểu nhầm mốc reset."""
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _full_sync_used_today(db: Session, user_id: UUID, workspace_id: UUID, now: datetime) -> int:
+    """Đếm số task SYNC_DATA do `user_id` tạo cho workspace trong ngày UTC hiện tại.
+
+    Tính MỌI status (kể cả FAILED) — giữ đúng yêu cầu cứng "1 lần/ngày". Nếu sau
+    này muốn nới (loại trừ FAILED), sửa filter ở đây + ghi docs.
+    """
+    return int(
+        db.execute(
+            select(func.count(QueueItem.id)).where(
+                QueueItem.type == "SYNC_DATA",
+                QueueItem.created_by_id == user_id,
+                QueueItem.workspace_id == workspace_id,
+                QueueItem.created_at >= _utc_day_start(now),
+            )
+        ).scalar_one()
+    )
 
 
 @router.post("/{workspace_id}/sync", status_code=status.HTTP_202_ACCEPTED)
@@ -53,6 +95,28 @@ def trigger_sync(
     """
     _get_workspace_or_404(db, workspace_id)
     assert_workspace_access(db, user, workspace_id)
+
+    # Rate-limit full-sync: admin phụ tối đa FULL_SYNC_MAX_PER_DAY lần/ngày/workspace.
+    # Admin chính (is_super_admin) bỏ qua hoàn toàn. Khoá hàng workspace FOR UPDATE
+    # TRƯỚC khi count để serialize double-click (mẫu purchase-seat) — nếu không,
+    # 2 request đồng thời cùng thấy count=0 rồi cùng tạo task → lọt giới hạn.
+    if not user.is_super_admin:
+        now = datetime.now(timezone.utc)
+        db.execute(
+            select(Workspace.id).where(Workspace.id == workspace_id).with_for_update()
+        )
+        used = _full_sync_used_today(db, user.id, workspace_id, now)
+        if used >= FULL_SYNC_MAX_PER_DAY:
+            reset_at = _utc_day_start(now) + timedelta(days=1)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "code": "FULL_SYNC_DAILY_LIMIT",
+                    "message": "Đồng bộ toàn bộ chỉ 1 lần mỗi ngày, không được spam.",
+                    "reset_at": reset_at.isoformat(),
+                },
+            )
+
     normalized_locale: str | None = None
     if expected_locale in ("vi", "en", "zh"):
         normalized_locale = expected_locale
@@ -103,6 +167,104 @@ def trigger_sync(
         {"type": "task-available", "task_id": str(queue_item.id), "task_type": "SYNC_DATA"},
     )
     return {"queue_item_id": str(queue_item.id), "status": "queued"}
+
+
+@router.get("/{workspace_id}/sync-quota")
+def get_sync_quota(
+    workspace_id: UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_permission(Permission.WORKSPACE_SYNC_TRIGGER)),
+) -> dict:
+    """Web hỏi: user hiện tại còn được full-sync hôm nay không (để ẩn/hiện nút).
+
+    Admin chính: luôn cho phép. Admin phụ: cho phép nếu chưa dùng hết lượt ngày
+    UTC. Logic count khớp y hệt `trigger_sync` để UI và backend không lệch.
+    """
+    _get_workspace_or_404(db, workspace_id)
+    assert_workspace_access(db, user, workspace_id)
+    if user.is_super_admin:
+        return {"full_sync_allowed": True, "reset_at": None}
+    now = datetime.now(timezone.utc)
+    used = _full_sync_used_today(db, user.id, workspace_id, now)
+    reset_at = _utc_day_start(now) + timedelta(days=1)
+    return {
+        "full_sync_allowed": used < FULL_SYNC_MAX_PER_DAY,
+        "reset_at": reset_at.isoformat(),
+    }
+
+
+@router.post("/{workspace_id}/sync-member", status_code=status.HTTP_202_ACCEPTED)
+def trigger_sync_member(
+    workspace_id: UUID,
+    body: SyncMemberIn,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_permission(Permission.WORKSPACE_SYNC_TRIGGER)),
+) -> dict:
+    """Tạo task SYNC_MEMBER — "đồng bộ 1 tài khoản lẻ" cho đúng 1 email.
+
+    Extension tìm email ở tab "Lời mời đang chờ xử lý" trước; không thấy → fallback
+    sang tab "Người dùng". Kết quả (`found_in`) được completion reconcile:
+    active → member.status='active' (đã tham gia); pending → giữ pending; none →
+    chỉ báo "email không tồn tại trong workspace" (KHÔNG mark removed).
+
+    Chống-spam: nếu lặp lại CÙNG (SYNC_MEMBER, email) liên tiếp >3 lần (task FAILED
+    không tính) → cấm tài khoản 10 phút (đá session + chặn login) qua
+    `enforce_command_spam`. Áp cho MỌI user.
+    """
+    _get_workspace_or_404(db, workspace_id)
+    assert_workspace_access(db, user, workspace_id)
+    email = body.email.strip().lower()
+
+    # Chống spam: cùng email lặp >3 lần liên tiếp → cấm 10 phút (raise 403).
+    enforce_command_spam(db, user, "SYNC_MEMBER", email)
+
+    # Dedupe: đã có SYNC_MEMBER PENDING/IN_PROGRESS cùng email → trả task cũ.
+    existing = (
+        db.execute(
+            select(QueueItem).where(
+                QueueItem.workspace_id == workspace_id,
+                QueueItem.type == "SYNC_MEMBER",
+                QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
+                QueueItem.payload["email"].astext == email,
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if existing:
+        return {
+            "queue_item_id": str(existing.id),
+            "status": existing.status,
+            "deduplicated": True,
+        }
+
+    queue_item = QueueItem(
+        type="SYNC_MEMBER",
+        status="PENDING",
+        workspace_id=workspace_id,
+        payload={"email": email},
+        created_by_id=user.id,
+    )
+    db.add(queue_item)
+    db.flush()
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.email,
+        action="SYNC_MEMBER_QUEUED",
+        result="PENDING",
+        target_type="WORKSPACE",
+        target_id=str(workspace_id),
+        data={"queue_item_id": str(queue_item.id), "email": email},
+        commit=False,
+    )
+    db.commit()
+    publish_task_event(
+        workspace_id,
+        {"type": "task-available", "task_id": str(queue_item.id), "task_type": "SYNC_MEMBER"},
+    )
+    return {"queue_item_id": str(queue_item.id), "status": "queued", "deduplicated": False}
 
 
 @router.post(
@@ -283,6 +445,16 @@ def trigger_purchase_seat(
     được mọi lần thực hiện.
     """
     _get_workspace_or_404(db, workspace_id)
+    # Khoá hàng workspace (FOR UPDATE) trước khi check-then-insert để serialize
+    # các request purchase-seat ĐỒNG THỜI (double-click / retry mạng). Nếu không
+    # khoá, 2 request có thể cùng thấy `existing = None` rồi cùng tạo task
+    # PURCHASE_SEAT → double-charge. Lock giữ tới commit; request thứ 2 chờ rồi
+    # thấy task PENDING mà request 1 vừa tạo → đi nhánh dedup (fix 2026-06-17).
+    db.execute(
+        select(Workspace.id)
+        .where(Workspace.id == workspace_id)
+        .with_for_update()
+    )
     existing = (
         db.execute(
             select(QueueItem).where(

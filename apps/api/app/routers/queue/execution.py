@@ -37,34 +37,68 @@ def pick_next(
 ) -> QueueItem | None:
     """Extension polling: lấy 1 task PENDING FIFO trong workspace của API key, đánh dấu IN_PROGRESS.
 
-    Trước khi pick task mới, AUTO-FAIL task IN_PROGRESS bị treo > 5 phút trong
-    cùng workspace — extension picked nhưng không trả kết quả (content script
-    crash, tab close, DOM treo, …). Lazy cleanup tránh popup hiển thị 'ĐANG
-    CHẠY' mãi mãi + cho phép task tiếp theo chạy.
+    Trước khi pick task mới, AUTO-FAIL task IN_PROGRESS bị treo quá ngưỡng (theo
+    loại task) trong cùng workspace — extension picked nhưng không trả kết quả
+    (service worker MV3 chết giữa chừng, content script crash, tab close, DOM
+    treo, …). Lazy cleanup tránh popup hiển thị 'ĐANG CHẠY' mãi mãi + cho phép
+    task tiếp theo chạy.
+
+    Ngưỡng treo theo LOẠI task (`STUCK_THRESHOLDS`) thay cho 5 phút cứng (tồn
+    đọng #4 trong execution.md): UI ops nhanh (invite/remove/role ~30-80s thực
+    tế) chỉ cần 3 phút → task chết được dọn nhanh, không chiếm dashboard 5 phút;
+    còn task dài (SYNC_DATA lật nhiều trang ~137s, PURCHASE_SEAT chain Stripe/
+    Link) giữ ngưỡng cao hơn để KHÔNG bị auto-fail oan khi đang chạy thật.
     """
     from datetime import timedelta
 
-    STUCK_THRESHOLD = timedelta(minutes=5)
+    # Ngưỡng treo theo loại task. Tính từ p50/max thực đo (xem execution.md mục 5):
+    # INVITE max 79s, SYNC_DATA max 137s, các UI op khác <45s. Ngưỡng để dư buffer
+    # trên max thực nhưng vẫn thấp hơn nhiều so với 5 phút cũ.
+    STUCK_THRESHOLDS = {
+        "INVITE_MEMBER": timedelta(minutes=3),
+        "REMOVE_MEMBER": timedelta(minutes=3),
+        "CHANGE_ROLE": timedelta(minutes=3),
+        "CHANGE_LICENSE_TYPE": timedelta(minutes=3),
+        "REVOKE_INVITES": timedelta(minutes=3),
+        # SYNC_MEMBER: tìm 1 email ở tab Lời mời rồi fallback lật trang tab Người
+        # dùng (như remove) → cho 4 phút (giữa UI-op 3' và SYNC_DATA full 6').
+        "SYNC_MEMBER": timedelta(minutes=4),
+        "SYNC_BILLING": timedelta(minutes=4),
+        "SYNC_DATA": timedelta(minutes=6),
+        "HARVEST_LABELS": timedelta(minutes=6),
+        "PURCHASE_SEAT": timedelta(minutes=8),
+    }
+    DEFAULT_STUCK_THRESHOLD = timedelta(minutes=5)
     now = datetime.now(timezone.utc)
-    cutoff = now - STUCK_THRESHOLD
-    stuck_tasks = (
+    # Lấy mọi task IN_PROGRESS rồi lọc theo ngưỡng riêng của từng loại (số task
+    # IN_PROGRESS đồng thời rất nhỏ nên filter ở Python không tốn kém).
+    in_progress = (
         db.execute(
             select(QueueItem).where(
                 QueueItem.workspace_id == workspace.id,
                 QueueItem.status == "IN_PROGRESS",
-                QueueItem.picked_at < cutoff,
+                QueueItem.picked_at.is_not(None),
             )
         )
         .scalars()
         .all()
     )
+    stuck_tasks = [
+        t
+        for t in in_progress
+        if t.picked_at is not None
+        and now - t.picked_at
+        > STUCK_THRESHOLDS.get(t.type, DEFAULT_STUCK_THRESHOLD)
+    ]
     for stuck in stuck_tasks:
         age_sec = int((now - stuck.picked_at).total_seconds()) if stuck.picked_at else None
+        threshold = STUCK_THRESHOLDS.get(stuck.type, DEFAULT_STUCK_THRESHOLD)
+        threshold_min = int(threshold.total_seconds() // 60)
         stuck.status = "FAILED"
         stuck.error_code = "TIMEOUT"
         stuck.error_message = (
-            f"Task IN_PROGRESS quá 5 phút ({age_sec}s) — extension không trả "
-            f"kết quả. Auto-cleanup lúc pick task tiếp theo."
+            f"Task IN_PROGRESS quá {threshold_min} phút ({age_sec}s) — extension "
+            f"không trả kết quả. Auto-cleanup lúc pick task tiếp theo."
         )
         stuck.completed_at = now
         db.add(stuck)
@@ -134,8 +168,36 @@ def update_progress(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Queue item không thuộc workspace của API key này",
         )
-    item.progress = body.progress
+    item.progress = _merge_progress_history(item.progress, body.progress)
     db.add(item)
     db.commit()
     db.refresh(item)
     return item
+
+
+# Trần số mốc phase giữ lại trong progress.history (1 task không có lý do vượt
+# vài chục transition; cap để JSONB không phình nếu extension báo phase lạ liên tục).
+_MAX_PHASE_HISTORY = 100
+
+
+def _merge_progress_history(prev: dict | None, incoming: dict) -> dict:
+    """Gộp snapshot progress mới + lịch sử phase (timeline) để dashboard tính được
+    THỜI GIAN từng giai đoạn — admin dùng dữ liệu này tối ưu tốc độ chạy.
+
+    `progress` là 1 snapshot bị GHI ĐÈ mỗi tick. Ta giữ thêm `history`: list mốc
+    `{phase, at}` (giờ SERVER, ISO-8601) — CHỈ append khi `phase` ĐỔI so với mốc
+    cuối (tick cùng phase chỉ cập nhật snapshot, không thêm mốc → tránh phình).
+    Thời lượng 1 phase = `at` mốc kế − `at` mốc này (mốc cuối: tới `completed_at`
+    hoặc hiện tại). Không thêm cột DB → không cần migration.
+    """
+    merged = dict(incoming)
+    history = list((prev or {}).get("history") or [])
+    phase = incoming.get("phase")
+    if phase and (not history or history[-1].get("phase") != phase):
+        history.append(
+            {"phase": str(phase), "at": datetime.now(timezone.utc).isoformat()}
+        )
+        if len(history) > _MAX_PHASE_HISTORY:
+            history = history[-_MAX_PHASE_HISTORY:]
+    merged["history"] = history
+    return merged

@@ -1,7 +1,7 @@
 /**
  * Content → background → backend progress reporting.
  *
- * Throttle 1 call/500ms để tránh spam endpoint khi scrape nhanh.
+ * Throttle 1 call/300ms (MIN_INTERVAL_MS) để tránh spam endpoint khi scrape nhanh.
  */
 
 export type ProgressInfo = {

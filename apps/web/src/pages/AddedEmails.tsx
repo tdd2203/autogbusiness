@@ -41,6 +41,7 @@ export default function AddedEmails() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<PaymentFilter>("all");
   const [selectedUserId, setSelectedUserId] = useState<string>("");
+  const [selectedWorkspace, setSelectedWorkspace] = useState<string>("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const { markPaid, transferOwner } = useAddedEmails({
@@ -62,9 +63,27 @@ export default function AddedEmails() {
     queryFn: () => api<AddedMember[]>(`/api/v1/added-members${queryParam}`),
   });
 
+  // Workspace có mặt trong danh sách hiện tại → đổ vào dropdown lọc riêng.
+  const workspaces = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const m of members) {
+      if (m.workspace_id)
+        map.set(m.workspace_id, m.workspace_name ?? m.workspace_id);
+    }
+    return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+  }, [members]);
+
   const filtered = useMemo(() => {
     let rows = members;
-    if (filter === "today") rows = rows.filter((m) => isToday(m.created_at));
+    if (selectedWorkspace)
+      rows = rows.filter((m) => m.workspace_id === selectedWorkspace);
+    // "Ngày thêm" = last_invited_at ?? created_at (xem Members.tsx): re-invite
+    // giữ created_at cũ → filter "hôm nay" theo last_invited_at mới để email
+    // vừa mời lại hôm nay không bị loại oan.
+    if (filter === "today")
+      rows = rows.filter((m) => isToday(m.last_invited_at ?? m.created_at));
     else if (filter === "unpaid")
       rows = rows.filter((m) => m.payment_status !== "paid");
     if (search.trim()) {
@@ -77,7 +96,7 @@ export default function AddedEmails() {
       );
     }
     return rows;
-  }, [members, filter, search]);
+  }, [members, filter, search, selectedWorkspace]);
 
   const total = members.length;
   const paidCount = members.filter((m) => m.payment_status === "paid").length;
@@ -152,9 +171,28 @@ export default function AddedEmails() {
                 style={{ padding: "6px 10px", fontSize: 13, width: "auto" }}
               >
                 <option value="">{t("addedEmails.allSubAccounts")}</option>
+                {user && <option value={user.id}>Admin (bạn)</option>}
                 {subAccounts.map((u) => (
                   <option key={u.id} value={u.id}>
                     {u.username}
+                  </option>
+                ))}
+              </select>
+            )}
+            {workspaces.length > 1 && (
+              <select
+                value={selectedWorkspace}
+                onChange={(e) => {
+                  setSelectedWorkspace(e.target.value);
+                  setSelected(new Set());
+                }}
+                className="form-input"
+                style={{ padding: "6px 10px", fontSize: 13, width: "auto" }}
+              >
+                <option value="">{t("addedEmails.allWorkspaces")}</option>
+                {workspaces.map((w) => (
+                  <option key={w.id} value={w.id}>
+                    {w.name}
                   </option>
                 ))}
               </select>
@@ -354,7 +392,7 @@ export default function AddedEmails() {
                       </span>
                     </td>
                     <td className="cell-muted" style={{ fontSize: 12 }}>
-                      {formatDate(m.created_at)}
+                      {formatDate(m.last_invited_at ?? m.created_at)}
                     </td>
                     <td>
                       {paid ? (

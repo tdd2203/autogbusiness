@@ -6,6 +6,8 @@ import { humanClick, randomDelay, sleep } from "../../human";
 import { findRoleOption } from "../../i18n-ui";
 import { reportProgress } from "../../progress";
 import { findMemberRow, findRowRoleDropdown } from "../member-row";
+import { clearMemberFilter } from "../remove/member-filter";
+import { locateMemberRow } from "../remove/locate-member";
 
 /**
  * UI 2026 đổi role qua INLINE dropdown trên row:
@@ -38,12 +40,17 @@ export async function executeChangeRole(
     };
   }
 
-  const row = findMemberRow(email);
+  // Định vị row BỀN VỮNG: lọc theo email (fast path) → fallback lật từng trang
+  // + scroll-scan. Trước đây dùng `findMemberRow` trần → member ngoài trang đầu
+  // / virtualized chưa render bị fail oan (cùng class bug đã fix ở
+  // change-license-type v0.7.3). Port `locateMemberRow` sang. Fix 2026-06-17.
+  const row = await locateMemberRow(email);
   if (!row) {
+    await clearMemberFilter();
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
-      error_message: `Không tìm thấy row của member ${email}.`,
+      error_message: `Không tìm thấy ${email} sau khi lọc + lật mọi trang. Chạy SYNC để đối chiếu.`,
     };
   }
 

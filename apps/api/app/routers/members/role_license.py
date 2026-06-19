@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.audit import log_event
 from app.deps import (
     assert_workspace_access,
+    enforce_command_spam,
     get_session,
     require_permission,
     require_super_admin,
@@ -146,6 +147,9 @@ def change_member_role(
     _get_workspace_or_404(db, workspace_id)
     member = _member_or_404_visible(db, workspace_id, member_id, user)
 
+    # Chống spam: cùng (CHANGE_ROLE, email) lặp >3 lần liên tiếp → cấm 10 phút.
+    enforce_command_spam(db, user, "CHANGE_ROLE", member.email)
+
     queue_item = QueueItem(
         type="CHANGE_ROLE",
         status="PENDING",
@@ -203,6 +207,9 @@ def change_member_license_type(
     """
     _get_workspace_or_404(db, workspace_id)
     member = _member_or_404_visible(db, workspace_id, member_id, user)
+
+    # Chống spam: cùng (CHANGE_LICENSE_TYPE, email) lặp >3 lần liên tiếp → cấm 10 phút.
+    enforce_command_spam(db, user, "CHANGE_LICENSE_TYPE", member.email)
 
     queue_item = QueueItem(
         type="CHANGE_LICENSE_TYPE",

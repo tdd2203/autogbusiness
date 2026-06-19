@@ -96,6 +96,30 @@ export const SELECTORS = {
     'input[aria-label*="Filter" i]',
   ],
 
+  // Ô search trên tab "Lời mời đang chờ xử lý" (?tab=invites). KHÁC ô "Lọc theo
+  // tên" của tab Người dùng: placeholder là "Search for invites" / "Tìm kiếm lời
+  // mời" / "搜索邀请" và thường là input[type="text"] (KHÔNG phải type="search")
+  // → memberFilterInput trượt hết. Dùng để verify nhanh email vừa mời thay vì
+  // scrape cả list + lật trang. Match theo placeholder/aria-label đa ngôn ngữ.
+  pendingSearchInput: [
+    'input[data-testid="invite-search-input"]',
+    'input[data-testid="pending-invite-search"]',
+    'input[type="search"]',
+    'input[placeholder*="Search for invite" i]',
+    'input[placeholder*="Search invite" i]',
+    'input[placeholder*="Search" i]',
+    'input[placeholder*="Tìm kiếm lời mời" i]',
+    'input[placeholder*="Tìm lời mời" i]',
+    'input[placeholder*="Tìm" i]',
+    'input[placeholder*="lời mời" i]',
+    'input[placeholder*="搜索邀请" i]',
+    'input[placeholder*="搜索" i]',
+    'input[aria-label*="Search for invite" i]',
+    'input[aria-label*="Search invite" i]',
+    'input[aria-label*="Search" i]',
+    'input[aria-label*="Tìm" i]',
+  ],
+
   // Member rows — thử nhiều pattern. Scrape fallback theo email regex nếu tất cả fail.
   memberRow: [
     'tr[data-testid^="member-row"]',

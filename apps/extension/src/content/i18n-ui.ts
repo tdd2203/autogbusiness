@@ -65,6 +65,9 @@ export const TEXT_FALLBACKS = {
     "Remove member",
     "Remove",
     "Delete",
+    // UI 2026 vi: item menu là "Loại bỏ thành viên" (không phải "Xoá ...").
+    "Loại bỏ thành viên",
+    "Loại bỏ",
     "Xoá khỏi workspace",
     "Xóa khỏi workspace",
     "Gỡ khỏi workspace",
@@ -118,6 +121,8 @@ export const TEXT_FALLBACKS = {
     "Remove",
     "Confirm",
     "Delete",
+    // UI 2026 vi: dialog "Loại bỏ thành viên" có nút xác nhận đỏ là "Xóa"
+    // (nút huỷ là "Hủy bỏ"). "Xóa"/"Xoá" bên dưới đã phủ.
     "Xoá",
     "Xóa",
     "Xác nhận",

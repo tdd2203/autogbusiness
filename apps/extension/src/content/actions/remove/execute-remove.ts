@@ -1,7 +1,7 @@
 import type { ExecuteActionResponse } from "../../../shared/messages";
 import {
   humanClick,
-  queryByText,
+  normalizeMatchText,
   querySelectorFirst,
   randomDelay,
   waitFor,
@@ -13,6 +13,66 @@ import { dbLabelsFor, reportLabelMismatch } from "../../../shared/ui-labels";
 import { clickTabAndWait } from "../sync";
 import { clearMemberFilter } from "./member-filter";
 import { locateMemberRow } from "./locate-member";
+
+const LOG = "[autogpt-remove]";
+
+/**
+ * Mọi phần tử "item" trong menu "..." đang mở. ChatGPT (Radix UI) KHÔNG luôn gắn
+ * `role="menuitem"` — item xoá có thể là `menuitemradio`/`option`/`button` trong
+ * `[role="menu"]`. v0.7.14 chỉ quét `[role="menuitem"]` → bỏ sót "Loại bỏ thành
+ * viên" → fail "không có item Remove". Quét rộng như change-license-type.
+ */
+function openMenuItems(): HTMLElement[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[role="menu"] [role="menuitem"], [role="menu"] [role="menuitemradio"], ' +
+        '[role="menu"] [role="option"], [role="menu"] button, ' +
+        '[role="menuitem"], [role="menuitemradio"], [role="option"]',
+    ),
+  );
+}
+
+/** Text mọi menu item đang mở — đưa vào error_message để debug DOM thật. */
+function dumpMenuItems(): string[] {
+  return openMenuItems()
+    .map((e) => (e.textContent ?? "").trim())
+    .filter(Boolean);
+}
+
+/** Tìm item menu khớp 1 trong các nhãn (substring sau normalize). */
+function findMenuItemByText(texts: readonly string[]): HTMLElement | null {
+  const items = openMenuItems();
+  for (const t of texts) {
+    const needle = normalizeMatchText(t);
+    if (!needle) continue;
+    for (const el of items) {
+      const hay = normalizeMatchText(el.textContent ?? "");
+      if (hay === needle || hay.includes(needle)) return el;
+    }
+  }
+  return null;
+}
+
+/** Nút xác nhận xoá trong dialog — quét cả `[role="dialog"]`/`[role="alertdialog"]`. */
+function findConfirmRemoveButton(texts: readonly string[]): HTMLElement | null {
+  const sel = querySelectorFirst<HTMLElement>(SELECTORS.confirmRemoveButton);
+  if (sel) return sel;
+  const btns = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[role="dialog"] button, [role="alertdialog"] button, button',
+    ),
+  );
+  for (const t of texts) {
+    const needle = normalizeMatchText(t);
+    if (!needle) continue;
+    for (const b of btns) {
+      const hay = normalizeMatchText(b.textContent ?? "");
+      // So khớp CHÍNH XÁC hoặc bắt đầu bằng nhãn để tránh dính nút "Hủy bỏ".
+      if (hay === needle || hay.startsWith(needle)) return b;
+    }
+  }
+  return null;
+}
 
 export async function executeRemove(
   taskId: string,
@@ -63,64 +123,65 @@ export async function executeRemove(
   await randomDelay();
   await humanClick(menuBtn);
 
-  // Đợi menu mở
+  // Đợi menu mở rồi tìm item "Loại bỏ thành viên" (vi) / "Remove" (en) / …
+  const dbRemove = dbLabelsFor("menu_remove_member", "/admin/members");
+  const removeTexts =
+    dbRemove.length > 0
+      ? [...dbRemove, ...TEXT_FALLBACKS.removeMenuItem]
+      : TEXT_FALLBACKS.removeMenuItem;
   let removeItem: HTMLElement | null = null;
   try {
-    const dbRemove = dbLabelsFor("menu_remove_member", "/admin/members");
-    const removeTexts =
-      dbRemove.length > 0
-        ? [...dbRemove, ...TEXT_FALLBACKS.removeMenuItem]
-        : TEXT_FALLBACKS.removeMenuItem;
     removeItem = await waitFor(() => {
       return (
         querySelectorFirst<HTMLElement>(SELECTORS.removeMenuItem) ??
-        removeTexts
-          .map((t) => queryByText('[role="menuitem"]', t))
-          .find((el) => el !== null) ??
-        null
+        findMenuItemByText(removeTexts)
       );
     }, 5000);
   } catch {
-    const dbRemove = dbLabelsFor("menu_remove_member", "/admin/members");
     if (dbRemove.length > 0) {
       reportLabelMismatch("menu_remove_member", dbRemove[0], "/admin/members");
     }
+    // Dump item thật để biết menu rỗng (menu không mở) hay text/role khác.
+    const seen = dumpMenuItems();
+    console.warn(`${LOG} remove item not found. Menu items:`, JSON.stringify(seen));
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
-      error_message: "Menu mở nhưng không có item 'Remove'.",
+      error_message:
+        seen.length === 0
+          ? "Menu '...' không mở (không thấy item nào). ChatGPT có thể đổi nút menu row."
+          : `Menu mở nhưng không có item xoá. Item thấy: ${JSON.stringify(seen)}`,
     };
   }
 
   await randomDelay();
   await humanClick(removeItem);
 
-  // Đợi confirm dialog
+  // Đợi confirm dialog → nút đỏ "Xóa" (vi) / "Remove" (en). Bỏ qua "Hủy bỏ".
+  const dbConfirm = dbLabelsFor("confirm_remove_button", "/admin/members");
+  const confirmTexts =
+    dbConfirm.length > 0
+      ? [...dbConfirm, ...TEXT_FALLBACKS.confirmRemoveButton]
+      : TEXT_FALLBACKS.confirmRemoveButton;
   let confirmBtn: HTMLElement;
   try {
-    const dbConfirm = dbLabelsFor("confirm_remove_button", "/admin/members");
-    const confirmTexts =
-      dbConfirm.length > 0
-        ? [...dbConfirm, ...TEXT_FALLBACKS.confirmRemoveButton]
-        : TEXT_FALLBACKS.confirmRemoveButton;
-    confirmBtn = await waitFor(() => {
-      return (
-        querySelectorFirst<HTMLElement>(SELECTORS.confirmRemoveButton) ??
-        confirmTexts
-          .map((t) => queryByText("button", t))
-          .find((el) => el !== null) ??
-        null
-      );
-    }, 5000);
+    confirmBtn = await waitFor(() => findConfirmRemoveButton(confirmTexts), 5000);
   } catch {
-    const dbConfirm = dbLabelsFor("confirm_remove_button", "/admin/members");
     if (dbConfirm.length > 0) {
       reportLabelMismatch("confirm_remove_button", dbConfirm[0], "/admin/members");
     }
+    const btns = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[role="dialog"] button, [role="alertdialog"] button',
+      ),
+    )
+      .map((b) => (b.textContent ?? "").trim())
+      .filter(Boolean);
+    console.warn(`${LOG} confirm button not found. Dialog buttons:`, JSON.stringify(btns));
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
-      error_message: "Không tìm thấy nút confirm Remove.",
+      error_message: `Không tìm thấy nút xác nhận xoá. Nút trong dialog: ${JSON.stringify(btns)}`,
     };
   }
 

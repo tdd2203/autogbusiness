@@ -68,6 +68,9 @@ export type Member = {
   joined_at: string | null;
   last_synced_at: string | null;
   created_at: string;
+  /** Lần CUỐI invite/re-invite qua dashboard. NULL nếu member chỉ từ SYNC.
+   *  Cột "Ngày thêm" hiển thị last_invited_at ?? created_at để khớp Queue. */
+  last_invited_at: string | null;
   /** Số tháng subscription admin set khi invite. NULL = không giới hạn. */
   subscription_months: number | null;
   /** Ngày hết hạn = created_at + months × 30. NULL nếu unlimited. */
@@ -85,11 +88,20 @@ export type AddedMember = Member & {
   invited_by_username: string | null;
 };
 
+/** 1 mốc chuyển phase do backend ghi (giờ server ISO-8601). Xem update_progress. */
+export type PhaseMark = {
+  phase: string;
+  at: string;
+};
+
 export type QueueProgress = {
   phase?: string;
   current?: number;
   total?: number;
   message?: string;
+  // Timeline các phase đã chạy (chỉ append khi phase đổi) → dashboard tính thời
+  // lượng từng giai đoạn. Backend (update_progress) duy trì, không cần migration.
+  history?: PhaseMark[];
   [k: string]: unknown;
 };
 
@@ -104,7 +116,10 @@ export type QueueItem = {
   error_message: string | null;
   workspace_id: string | null;
   created_by_id: string | null;
+  // Tên người tạo task — chỉ super-admin nhận giá trị; sub-admin luôn null (ẩn).
   created_by_username: string | null;
+  // Người xem hiện tại có quyền huỷ task này không (super OR creator). Backend tính.
+  can_cancel?: boolean;
   created_at: string;
   picked_at: string | null;
   completed_at: string | null;

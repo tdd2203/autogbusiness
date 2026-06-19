@@ -1,12 +1,14 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
 import { useAuth } from "../hooks/useAuth";
 import { localeTag, useI18n, useT, useTranslateEnum } from "../i18n";
 import type { QueueItem } from "../types";
 import { SearchInput } from "./Members";
+import { TaskTimingCell } from "../components/TaskTimingCell";
+import { PayloadCell } from "../components/PayloadCell";
 
 type Filter = "all" | "FAILED" | "COMPLETED" | "IN_PROGRESS" | "PENDING";
 
@@ -22,7 +24,6 @@ export default function Queue() {
   const tStatus = useTranslateEnum("status");
   const tTaskType = useTranslateEnum("taskType");
   const { hasPermission } = useAuth();
-  const qc = useQueryClient();
 
   const items = useQuery({
     queryKey: ["queue", "all"],
@@ -84,13 +85,6 @@ export default function Queue() {
           <h1 className="display-h1">{t("queue.title")}</h1>
           <p className="page-sub">{t("queue.pageSub")}</p>
         </div>
-        <button
-          onClick={() => qc.invalidateQueries({ queryKey: ["queue", "all"] })}
-          className="btn btn-ghost"
-        >
-          <RefreshIcon />
-          {t("queue.refresh")}
-        </button>
       </div>
 
       <div className="metrics" style={{ marginBottom: 24 }}>
@@ -188,7 +182,7 @@ export default function Queue() {
               {filtered.map((it) => (
                 <tr key={it.id}>
                   <td>
-                    <TimeCell iso={it.created_at} />
+                    <TaskTimingCell task={it} />
                   </td>
                   <td>
                     {it.workspace_id ? (
@@ -215,9 +209,7 @@ export default function Queue() {
                     </span>
                   </td>
                   <td>
-                    <span className="payload">
-                      {JSON.stringify(it.payload)}
-                    </span>
+                    <PayloadCell payload={it.payload} />
                   </td>
                   <td>
                     {it.error_code ? (
@@ -225,12 +217,8 @@ export default function Queue() {
                         code={it.error_code}
                         message={it.error_message ?? ""}
                       />
-                    ) : it.result ? (
-                      <span className="payload payload-success">
-                        {JSON.stringify(it.result)}
-                      </span>
                     ) : (
-                      <span className="cell-muted">—</span>
+                      <PayloadCell payload={it.result} variant="success" />
                     )}
                   </td>
                 </tr>
@@ -255,7 +243,7 @@ export default function Queue() {
  * giờ chứa diag step-by-step nhiều dòng (xem [runner.ts ensureContentInjected])
  * — collapse 2 dòng đầu, click để xem full.
  */
-function ErrorCell({ code, message }: { code: string; message: string }) {
+export function ErrorCell({ code, message }: { code: string; message: string }) {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
   const hasMultiline = message.includes("\n");
@@ -370,17 +358,3 @@ function MetricSimple({
   );
 }
 
-function RefreshIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-    >
-      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8M21 3v5h-5M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16M3 21v-5h5" />
-    </svg>
-  );
-}

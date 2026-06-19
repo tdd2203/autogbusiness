@@ -109,29 +109,119 @@ const VI_MONTH_RE =
 const ZH_MONTH_RE =
   /(?:\d{4}\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?\s*[-–—~]\s*(?:\d{4}\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?/;
 
+/**
+ * Từ khoá neo cho ngày gia hạn dạng ĐƠN (khi trang KHÔNG hiển thị dạng khoảng).
+ * vi: "gia hạn", "thanh toán/đợt/kỳ … tiếp theo"; en: "renews", "next billing/
+ * payment/invoice"; zh: "续订/续期/下次…".
+ */
+const RENEWAL_KEYWORD_RE =
+  /gia\s*hạn|tái\s*tục|(?:thanh\s*toán|đợt|kỳ|chu\s*kỳ)[^.]{0,14}tiếp\s*theo|renew|next\s*(?:billing|payment|invoice|charge|bill)|续订|续期|下次(?:付款|扣款|续费|结算)?/i;
+
+/**
+ * Suy ISO date từ (month, day[, year]). Year thiếu → suy: nếu (month,day) đã qua
+ * trong năm nay → sang năm sau (renewal luôn là tương lai).
+ */
+function isoFromMonthDay(
+  month: number,
+  day: number,
+  year?: number,
+): string | null {
+  if (
+    !Number.isFinite(month) ||
+    !Number.isFinite(day) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    return null;
+  }
+  const now = new Date();
+  let y = year ?? now.getFullYear();
+  if (year === undefined) {
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    if (Date.UTC(y, month - 1, day) < today.getTime()) y += 1;
+  }
+  const d = new Date(Date.UTC(y, month - 1, day));
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+/** Bắt 1 ngày ĐƠN (vi/zh/en, year optional) trong 1 đoạn text ngắn. */
+function extractSingleDate(s: string): string | null {
+  // ZH: "2026年7月11日" / "7月11日"
+  const zh = s.match(/(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?/);
+  if (zh) {
+    const iso = isoFromMonthDay(
+      Number(zh[2]),
+      Number(zh[3]),
+      zh[1] ? Number(zh[1]) : undefined,
+    );
+    if (iso) return iso;
+  }
+  // VI: "11 thg 7, 2026" / "11 tháng 7 năm 2026" / "11 thg 7" (year optional)
+  const vi = s.match(
+    /(\d{1,2})\s*(?:thg|th\.|tháng)\s*(\d{1,2})(?:\s*(?:,|năm)?\s*(\d{4}))?/i,
+  );
+  if (vi) {
+    const iso = isoFromMonthDay(
+      Number(vi[2]),
+      Number(vi[1]),
+      vi[3] ? Number(vi[3]) : undefined,
+    );
+    if (iso) return iso;
+  }
+  // EN month-first: "Jul 11, 2026" / "July 11 2026"
+  const enMD = s.match(
+    /(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z.]*\s+(\d{1,2})(?:\s*,?\s*(\d{4}))?/i,
+  );
+  if (enMD) {
+    const month = EN_MONTHS[enMD[1].toLowerCase()];
+    const iso = month
+      ? isoFromMonthDay(month, Number(enMD[2]), enMD[3] ? Number(enMD[3]) : undefined)
+      : null;
+    if (iso) return iso;
+  }
+  // EN day-first: "11 Jul 2026"
+  const enDM = s.match(
+    /(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z.]*(?:\s+(\d{4}))?/i,
+  );
+  if (enDM) {
+    const month = EN_MONTHS[enDM[2].toLowerCase()];
+    const iso = month
+      ? isoFromMonthDay(month, Number(enDM[1]), enDM[3] ? Number(enDM[3]) : undefined)
+      : null;
+    if (iso) return iso;
+  }
+  return null;
+}
+
+/** Ngày renew dạng ĐƠN: neo theo từ khoá renew rồi bắt ngày trong cửa sổ ~80 ký tự. */
+function parseRenewalSingleDate(rawText: string): string | null {
+  const text = rawText.replace(/\s+/g, " ");
+  const kw = text.match(RENEWAL_KEYWORD_RE);
+  if (!kw || kw.index === undefined) return null;
+  const start = Math.max(0, kw.index - 12);
+  const win = text.slice(start, kw.index + 80);
+  return extractSingleDate(win);
+}
+
 function parseRenewalDateVi(text: string): string | null {
-  // Try ZH format first (more specific)
+  // 1) Dạng KHOẢNG "X - Y" → lấy ngày END (= renewal). ZH trước (đặc trưng hơn).
   const zh = text.match(ZH_MONTH_RE);
   if (zh) {
-    const endMonth = Number(zh[3]);
-    const endDay = Number(zh[4]);
-    const now = new Date();
-    let year = now.getFullYear();
-    if (endMonth < now.getMonth() + 1) year += 1;
-    const d = new Date(Date.UTC(year, endMonth - 1, endDay));
-    if (!Number.isNaN(d.getTime())) return d.toISOString();
+    const iso = isoFromMonthDay(Number(zh[3]), Number(zh[4]));
+    if (iso) return iso;
   }
   const m = text.match(VI_MONTH_RE);
-  if (!m) return null;
-  const endDay = Number(m[3]);
-  const endMonth = Number(m[4]);
-  const now = new Date();
-  let year = now.getFullYear();
-  // Nếu tháng end < tháng hiện tại → sang năm sau
-  if (endMonth < now.getMonth() + 1) year += 1;
-  const d = new Date(Date.UTC(year, endMonth - 1, endDay));
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
+  if (m) {
+    const iso = isoFromMonthDay(Number(m[4]), Number(m[3]));
+    if (iso) return iso;
+  }
+  // 2) Fallback: ngày ĐƠN neo theo từ khoá renew (vd "gia hạn vào 11 thg 7, 2026",
+  //    "Renews on Jul 11, 2026", "下次续订 2026年7月11日"). Một số plan KHÔNG hiển
+  //    thị dạng khoảng chu kỳ → trước đây renewal về null → dashboard giá "—".
+  return parseRenewalSingleDate(text);
 }
 
 /**
@@ -243,10 +333,18 @@ function scrapeInvoices(): ScrapedInvoice[] {
         const d = parseInvoiceDate(innerText);
         if (d) {
           date = d;
-        } else if (/đã\s*thanh\s*toán|paid|已\s*付款|已支付/i.test(innerText)) {
-          status = "paid";
-        } else if (/chưa\s*thanh\s*toán|unpaid|past\s*due|未\s*付款|未支付|逾期/i.test(innerText)) {
+        } else if (
+          // Check UNPAID/VOID TRƯỚC "paid": chuỗi "unpaid" chứa substring "paid"
+          // nên nếu check /paid/ trước sẽ gán nhầm "đã thanh toán". "void" =
+          // hoá đơn bị huỷ/không hợp lệ (vd add-seat huỷ giữa kỳ) → coi như
+          // CHƯA thanh toán; dashboard chỉ tính giá trên hoá đơn paid.
+          /chưa\s*thanh\s*toán|unpaid|past\s*due|overdue|void|đã\s*hủy|đã\s*huỷ|cancell?ed|未\s*付款|未支付|逾期|作废|已作废/i.test(
+            innerText,
+          )
+        ) {
           status = "unpaid";
+        } else if (/đã\s*thanh\s*toán|\bpaid\b|已\s*付款|已支付/i.test(innerText)) {
+          status = "paid";
         }
       }
       if (date) break;

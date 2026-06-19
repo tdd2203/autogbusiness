@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException, status
@@ -8,11 +9,84 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.db import get_db
-from app.models import User, Workspace, WorkspaceAssignment
+from app.models import QueueItem, User, Workspace, WorkspaceAssignment
 from app.permissions import Permission
 from app.security import decode_access_token
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
+
+# --- Chống spam lệnh (⚠️ xem docs Sync_Single_Account.md) ---
+# Spam = lặp lại CÙNG (loại lệnh, email) liên tiếp. Tối đa COMMAND_SPAM_MAX_REPEAT
+# lần; lần kế tiếp (thứ 4) → cấm COMMAND_BAN_MINUTES phút. Task FAILED KHÔNG tính
+# (cho phép retry hợp lệ). Lệnh/đối tượng khác chen vào → reset chuỗi.
+COMMAND_SPAM_MAX_REPEAT = 3
+COMMAND_BAN_MINUTES = 10
+_SPAM_HISTORY_LOOKBACK = 30  # số task gần nhất của user dùng để xét chuỗi liên tiếp
+
+
+def _command_banned_exc(now: datetime, ban_until: datetime) -> HTTPException:
+    retry = max(1, int((ban_until - now).total_seconds()))
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "code": "COMMAND_BANNED",
+            "message": (
+                "Bạn thao tác lặp lại quá nhiều lần trên cùng một mục — tài khoản "
+                "bị tạm khoá 10 phút. Vui lòng đăng nhập lại sau."
+            ),
+            "retry_after_sec": retry,
+        },
+    )
+
+
+def enforce_command_spam(
+    db: Session, user: User, command_type: str, email: str | None
+) -> None:
+    """Chống spam: nếu user lặp lại CÙNG (command_type, email) liên tiếp đủ
+    COMMAND_SPAM_MAX_REPEAT lần thì lần kế tiếp bị cấm COMMAND_BAN_MINUTES phút.
+
+    Cơ chế cấm: set `user.command_ban_until` + bump `token_version` (đá MỌI session
+    hiện tại → request kế tiếp 401 → web tự logout) + 403. Login cũng bị chặn tới
+    mốc đó (xem `assert_not_command_banned`).
+
+    `email=None` (lệnh không gắn 1 email cụ thể, vd full-sync) → KHÔNG xét spam.
+    Task `FAILED` không tính (retry hợp lệ); lệnh/đối tượng khác chen vào → reset.
+    Gọi TRƯỚC khi tạo QueueItem của lệnh hiện tại.
+    """
+    now = datetime.now(timezone.utc)
+    # Defensive (hiếm khi tới đây vì token đã bị thu hồi khi bị cấm).
+    if user.command_ban_until and now < user.command_ban_until:
+        raise _command_banned_exc(now, user.command_ban_until)
+    if not email:
+        return
+    email = email.strip().lower()
+
+    recent = (
+        db.execute(
+            select(QueueItem)
+            .where(QueueItem.created_by_id == user.id)
+            .order_by(QueueItem.created_at.desc())
+            .limit(_SPAM_HISTORY_LOOKBACK)
+        )
+        .scalars()
+        .all()
+    )
+    streak = 0
+    for it in recent:
+        if it.status == "FAILED":
+            continue  # task lỗi không tính (cho retry)
+        it_email = str((it.payload or {}).get("email") or "").lower()
+        if it.type == command_type and it_email and it_email == email:
+            streak += 1
+        else:
+            break  # lệnh/đối tượng khác chen vào → hết chuỗi liên tiếp
+    if streak >= COMMAND_SPAM_MAX_REPEAT:
+        ban_until = now + timedelta(minutes=COMMAND_BAN_MINUTES)
+        user.command_ban_until = ban_until
+        user.token_version = user.token_version + 1  # đá mọi session hiện tại
+        db.add(user)
+        db.commit()
+        raise _command_banned_exc(now, ban_until)
 
 
 def get_session() -> Iterator[Session]:

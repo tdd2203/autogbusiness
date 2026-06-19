@@ -5,7 +5,6 @@ import type {
 import {
   ApiError,
   bulkUpsertMembers,
-  countPendingTasks,
   pickNextTask,
   postHarvestLabels,
   pushBillingSync,
@@ -31,6 +30,96 @@ const RATE_LIMIT = {
 const CHATGPT_TAB_MATCH = "https://chatgpt.com/admin/*";
 const CHATGPT_ADMIN_URL = "https://chatgpt.com/admin/members";
 const TAB_LOAD_TIMEOUT_MS = 30_000;
+
+/**
+ * Quy tắc quản lý tab chatgpt.com/admin (yêu cầu user 2026-06-19):
+ *   - TÁI SỬ DỤNG tab admin sẵn có (tab mới nhất). CHỈ mở tab mới khi action
+ *     không chạy được trên tab cũ — việc đó do `ensureContentInjected` xử lý
+ *     (Step 3 NUCLEAR: đóng tab hỏng + tạo tab mới).
+ *   - Khi đang có >ADMIN_TAB_MAX tab trùng → tự đóng bớt tab cũ, chỉ giữ
+ *     lại ADMIN_TAB_MAX tab mới nhất.
+ */
+const ADMIN_TAB_MAX = 5;
+
+/**
+ * Hard-cap cho vòng VERIFY_PENDING_INVITE (Phase 2 sau F5). Verify scrape có thể
+ * chậm/treo (ChatGPT index pending list 1-5s, React Query cache, retry chain +
+ * nhiều pass scrape). Trước đây KHÔNG có timeout → nếu content treo, runOnce
+ * treo tới khi SW chết → task kẹt IN_PROGRESS đến lazy-cleanup backend (5 phút,
+ * user report "1 mời đến 5 phút"). Cap 75s: vượt → coi như verify scrape failed
+ * (benefit-of-doubt, giữ record pending → SYNC_DATA định kỳ reconcile sau), task
+ * vẫn COMPLETED ngay thay vì kẹt. 60s đủ cho case index chậm mà tổng flow (Phase
+ * 1 ~30-80s + F5 ~20s + verify ≤60s) vẫn < ngưỡng treo invite của backend (3
+ * phút = 180s) → SW còn sống luôn tự kết thúc trước, không bị auto-fail oan.
+ */
+const VERIFY_ROUNDTRIP_TIMEOUT_MS = 60_000;
+
+/**
+ * v0.7.15 (2026-06-17): mục tiêu user "giảm thời gian chờ F5 verify còn ~10s".
+ * Trước đây Phase 2 (content) tự ngủ cố định 2.5s + retry chain [0,3000,6000] →
+ * tổng ~11.5s ngay cả khi đã đủ email. Giờ Phase 2 scrape 1 lần nhanh (poll
+ * render-aware) rồi báo `needs_reload_retry`; runner đứng ra F5 THẬT lại +
+ * verify nhiều vòng trong NGÂN SÁCH này. Dừng sớm khi đủ email / scrape fail /
+ * hết budget. ~10s đủ cho 2 vòng F5 (mỗi vòng reload+render ~3-5s).
+ */
+const VERIFY_BUDGET_MS = 10_000;
+/** Số vòng F5+verify tối đa (backstop chống loop khi ChatGPT index chậm bất thường). */
+const MAX_VERIFY_RELOADS = 3;
+
+/**
+ * Hard-cap cho PHASE 1 (round-trip background→content `sendToContent`) THEO LOẠI
+ * task. v0.7.17 (2026-06-18) — fix bug "Mời thành viên kẹt IN_PROGRESS 343s rồi
+ * TIMEOUT".
+ *
+ * Nguyên nhân gốc: `chrome.tabs.sendMessage` ở background KHÔNG có timeout sẵn.
+ * Nếu content script bị HUỶ context giữa chừng (tab ChatGPT hard-reload / redirect
+ * auth khi action navigate qua `/admin/identity` để bật toggle 'mời ngoài tên
+ * miền' — case email ngoài domain), HOẶC content treo / message thất lạc, thì
+ * `sendResponse` KHÔNG bao giờ được gọi → `await sendToContent` treo VĨNH VIỄN →
+ * task kẹt IN_PROGRESS tới khi backend lazy-cleanup (3 phút) — đúng triệu chứng
+ * user gặp. Phase 2 (VERIFY_PENDING_INVITE) đã được bọc `withTimeout` từ trước;
+ * Phase 1 thì CHƯA → đây là lỗ hổng.
+ *
+ * Cap PHẢI: (a) lớn hơn thời gian chạy hợp lệ tối đa của content (INVITE worst
+ * case ~100s gồm 2 lần navigate identity + dialog 20s + toast 15s + stable 8s;
+ * SYNC_DATA lật nhiều trang ~137s), (b) NHỎ HƠN ngưỡng treo backend
+ * (`STUCK_THRESHOLDS` trong execution.py) ~30s để EXTENSION tự fail TRƯỚC →
+ * báo `CONTENT_TIMEOUT` rõ ràng + giải phóng SW + task kế chạy ngay, thay vì để
+ * backend auto-cleanup mơ hồ sau khi đã treo lâu.
+ */
+const CONTENT_TIMEOUTS: Record<string, number> = {
+  // Backend 180s (3') → extension tự fail ở 150s.
+  INVITE_MEMBER: 150_000,
+  REMOVE_MEMBER: 150_000,
+  CHANGE_ROLE: 150_000,
+  CHANGE_LICENSE_TYPE: 150_000,
+  REVOKE_INVITES: 150_000,
+  // Backend 240s (4') → 210s.
+  SYNC_MEMBER: 210_000,
+  SYNC_BILLING: 210_000,
+  // Backend 360s (6') → 330s.
+  SYNC_DATA: 330_000,
+  HARVEST_LABELS: 330_000,
+  // Backend 480s (8') → 450s.
+  PURCHASE_SEAT: 450_000,
+};
+/** Backend default 300s (5') → 270s. */
+const DEFAULT_CONTENT_TIMEOUT_MS = 270_000;
+
+/**
+ * Promise.race với timeout. Reject `Error("timeout:<label>")` nếu `p` không
+ * settle trong `ms`. Dùng bọc các round-trip background→content (chrome.tabs.
+ * sendMessage) vốn KHÔNG có timeout sẵn — tránh treo SW khi content không phản
+ * hồi.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`timeout:${label} sau ${ms}ms`)), ms),
+    ),
+  ]);
+}
 
 type RunnerState = {
   lastTaskAt: number;
@@ -91,14 +180,23 @@ function manifestBuildSig(): string {
  * giữ manifest cũ → executeScript / auto-injection "Could not load file" →
  * CONTENT_NOT_INJECTED, mọi task fail tới khi reload tay.
  *
- * Cách check: fetch từng file js mà manifest tham chiếu qua chrome.runtime.getURL.
+ * Cách check (2 tầng):
+ *  (1) Fetch từng file js mà manifest ĐANG CHẠY (RAM) tham chiếu. File đã xoá →
+ *      404/throw → stale. Bắt được case `emptyOutDir:true` (vite xoá file cũ).
+ *  (2) Đọc `manifest.json` TRÊN ĐĨA (luôn ở path cố định, vite ghi đè mỗi build)
+ *      và so danh sách content-script với manifest trong RAM. Khác nhau ⟺ đĩa có
+ *      build MỚI mà SW chưa nạp. CẦN tầng này vì repo để `emptyOutDir:false`
+ *      (vite.config) — file cũ KHÔNG bị xoá nên (1) luôn 200 → không bao giờ bắt
+ *      được build mới → self-heal "chết" → mỗi lần build phải reload tay (đây là
+ *      lý do nhiều bản fix trước test nhầm code cũ). v0.7.16.
  * SW fetch resource cùng origin của chính extension → đọc thẳng từ đĩa, không cần
- * web_accessible_resources. File còn → 200; file đã xoá → 404/throw → stale.
+ * web_accessible_resources.
  */
 async function isExtensionStale(): Promise<boolean> {
   const manifest = chrome.runtime.getManifest();
   const scripts = (manifest.content_scripts ?? []) as Array<{ js?: string[] }>;
   const files = scripts.flatMap((cs) => cs.js ?? []);
+  // (1) File cũ bị xoá khỏi đĩa.
   for (const file of files) {
     try {
       const resp = await fetch(chrome.runtime.getURL(file));
@@ -106,6 +204,25 @@ async function isExtensionStale(): Promise<boolean> {
     } catch {
       return true;
     }
+  }
+  // (2) manifest.json trên đĩa trỏ content-script khác in-memory → build mới.
+  try {
+    const resp = await fetch(chrome.runtime.getURL("manifest.json"), {
+      cache: "no-store",
+    });
+    if (resp.ok) {
+      const disk = (await resp.json()) as {
+        content_scripts?: Array<{ js?: string[] }>;
+      };
+      const diskSig = (disk.content_scripts ?? [])
+        .flatMap((cs) => cs.js ?? [])
+        .sort()
+        .join("|");
+      const memSig = files.slice().sort().join("|");
+      if (diskSig && diskSig !== memSig) return true;
+    }
+  } catch {
+    // Không đọc được manifest đĩa → chỉ dựa tầng (1), không coi là stale.
   }
   return false;
 }
@@ -159,43 +276,54 @@ async function reloadForStaleBuild(reason: string): Promise<boolean> {
  *
  * Gọi TRƯỚC pickNextTask để không claim task rồi bỏ dở khi SW restart.
  * Trả về true nếu đã trigger reload (caller nên dừng ngay, SW sắp chết).
+ *
+ * ⚠ v0.7.6 (2026-06-17): BỎ gate `pending>0`. Trước đây chỉ reload khi có task
+ * PENDING → build mới (sau `npm run build`) KHÔNG tự áp lúc rảnh, và task đầu
+ * tiên tới có thể bị SW stale claim rồi bỏ dở → TIMEOUT 5 phút (xem
+ * docs/Extension_Runtime/Self_Heal_Stale_Build.md). User muốn "update là tự áp
+ * dụng" → giờ stale = reload NGAY kể cả lúc rảnh. Chống loop vẫn an toàn nhờ
+ * `reloadForStaleBuild` dedup theo build signature (tối đa MAX_RELOADS_PER_SIG
+ * lần / mỗi build): mỗi `npm run build` = 1 sig mới = reload 1 lần rồi thôi.
  */
 async function selfHealIfStale(): Promise<boolean> {
   if (!(await isExtensionStale())) return false;
-
-  // GATE: chỉ reload khi THỰC SỰ có task PENDING đang chờ. Lúc rảnh thì im lặng —
-  // không pop chrome://extensions, không mở tab ChatGPT thừa. Cần config (API key)
-  // để hỏi backend; chưa có key thì cũng chẳng có gì để chạy → skip.
-  const config = await getConfig();
-  if (!config) {
-    console.log(
-      "[autogpt-selfheal] stale build nhưng chưa có API key — skip (không có việc để làm).",
-    );
-    return false;
-  }
-  let pending = 0;
-  try {
-    pending = await countPendingTasks(config);
-  } catch (e) {
-    console.warn(
-      "[autogpt-selfheal] không lấy được pending-count — skip self-heal lần này:",
-      e,
-    );
-    return false;
-  }
-  if (pending <= 0) {
-    console.log(
-      "[autogpt-selfheal] stale build nhưng 0 task PENDING — chờ, không reload lúc rảnh.",
-    );
-    return false;
-  }
-
-  return reloadForStaleBuild("phát hiện ở vòng drain (có task PENDING)");
+  return reloadForStaleBuild("phát hiện stale build — reload ngay (kể cả lúc rảnh)");
 }
 
-async function findAdminTab(): Promise<chrome.tabs.Tab | null> {
+/**
+ * Lấy tất cả tab chatgpt.com/admin/* đang mở, sắp xếp CŨ → MỚI.
+ * Dùng tab.id làm proxy "mới nhất" (Chrome cấp id tăng dần theo thời điểm tạo).
+ */
+async function queryAdminTabs(): Promise<chrome.tabs.Tab[]> {
   const tabs = await chrome.tabs.query({ url: CHATGPT_TAB_MATCH });
-  return tabs[0] ?? null;
+  return tabs
+    .filter((t) => t.id !== undefined)
+    .sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+}
+
+/**
+ * Khi có >ADMIN_TAB_MAX tab admin → đóng bớt các tab CŨ nhất, chỉ giữ lại
+ * ADMIN_TAB_MAX tab mới nhất. Không throw nếu đóng lỗi (tab có thể đã đóng).
+ */
+async function pruneStaleAdminTabs(
+  tabs: chrome.tabs.Tab[],
+): Promise<chrome.tabs.Tab[]> {
+  if (tabs.length <= ADMIN_TAB_MAX) return tabs;
+  const stale = tabs.slice(0, tabs.length - ADMIN_TAB_MAX);
+  const staleIds = stale
+    .map((t) => t.id)
+    .filter((id): id is number => id !== undefined);
+  console.log(
+    `[autogpt-runner] ${tabs.length} admin tab (>${ADMIN_TAB_MAX}) — tự đóng ${staleIds.length} tab cũ: ${staleIds.join(",")}`,
+  );
+  try {
+    await chrome.tabs.remove(staleIds);
+  } catch (e) {
+    console.warn(
+      `[autogpt-runner] đóng tab cũ lỗi (bỏ qua): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  return queryAdminTabs();
 }
 
 /**
@@ -234,22 +362,37 @@ function waitForTabComplete(
 }
 
 /**
- * Đảm bảo có tab chatgpt.com/admin/* đang mở.
- * Logic:
- *   1. Có tab khớp → trả ngay
- *   2. Không có → tự mở tab MỚI tới chatgpt.com/admin/members (background tab,
- *      không steal focus), đợi load xong
- *   3. Sau khi load, verify URL vẫn ở /admin (nếu bị redirect tới login = chưa
- *      đăng nhập ChatGPT trong browser này) → trả null
+ * Đảm bảo có tab chatgpt.com/admin/* sẵn sàng cho action, theo quy tắc tab của
+ * user (2026-06-19): CHỈ mở tab mới khi action không chạy được trên tab cũ.
+ *   1. Đếm tab admin đang mở (sắp xếp cũ → mới).
+ *   2. >ADMIN_TAB_MAX tab → tự đóng bớt tab cũ, chỉ giữ ADMIN_TAB_MAX tab mới nhất.
+ *   3. Còn ≥1 tab → TÁI SỬ DỤNG tab MỚI NHẤT (không mở thêm). Nếu content script
+ *      không chạy được trên tab này, `ensureContentInjected` sẽ tự reload/đẻ tab
+ *      mới (Step 3 NUCLEAR) — đó mới là lúc mở tab mới.
+ *   4. Không có tab nào → mở tab MỚI tới /admin/members (background tab, không
+ *      steal focus), đợi load xong, verify URL vẫn ở /admin (nếu bị redirect tới
+ *      login = chưa đăng nhập ChatGPT) → trả null.
  *
- * Trả về tab khớp hoặc null nếu user chưa đăng nhập ChatGPT.
+ * Trả về tab dùng được hoặc null nếu user chưa đăng nhập ChatGPT.
  */
 async function ensureAdminTab(): Promise<chrome.tabs.Tab | null> {
-  const existing = await findAdminTab();
-  if (existing) return existing;
+  let tabs = await queryAdminTabs();
 
+  // >ADMIN_TAB_MAX → tự đóng bớt tab cũ
+  tabs = await pruneStaleAdminTabs(tabs);
+
+  // Còn tab → tái sử dụng tab mới nhất, KHÔNG mở thêm
+  if (tabs.length > 0) {
+    const newest = tabs[tabs.length - 1];
+    console.log(
+      `[autogpt-runner] ${tabs.length} admin tab — tái sử dụng tab mới nhất ${newest.id} (chỉ mở mới khi action fail)`,
+    );
+    return newest;
+  }
+
+  // Không có tab nào → mở tab MỚI
   console.log(
-    `[autogpt-runner] không có admin tab — tự mở ${CHATGPT_ADMIN_URL} (background)`,
+    `[autogpt-runner] không có admin tab — mở tab MỚI ${CHATGPT_ADMIN_URL} (background)`,
   );
   const created = await chrome.tabs.create({
     url: CHATGPT_ADMIN_URL,
@@ -567,6 +710,12 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
         taskId: task.id,
         email: String(p.email ?? ""),
       };
+    case "SYNC_MEMBER":
+      return {
+        kind: "SYNC_MEMBER",
+        taskId: task.id,
+        email: String(p.email ?? ""),
+      };
     case "CHANGE_ROLE":
       return {
         kind: "CHANGE_ROLE",
@@ -785,28 +934,42 @@ async function reportToBackend(
       let totalUpdated = 0;
       const rogueEmailsAggregated: string[] = [];
       try {
+        // Bước 1: upsert từng chunk KHÔNG reconcile (isFullSync:false). Reconcile
+        // per-chunk sẽ mark removed oan member của chunk khác (mỗi chunk chỉ thấy
+        // 200 email của nó) — bug khi sync số lượng lớn (>200) tách nhiều chunk.
         for (let i = 0; i < members.length; i += CHUNK_SIZE) {
           const chunk = members.slice(i, i + CHUNK_SIZE);
           const result = (await bulkUpsertMembers(
             config,
             task.workspace_id,
             chunk,
-            { scrapedStatuses },
-          )) as {
-            created: number;
-            updated: number;
-            rogue_pending_emails?: string[];
-          };
+            { isFullSync: false },
+          )) as { created: number; updated: number };
           totalCreated += result.created;
           totalUpdated += result.updated;
-          if (Array.isArray(result.rogue_pending_emails)) {
-            rogueEmailsAggregated.push(...result.rogue_pending_emails);
-          }
           console.log(
             `[autogpt-sync-upsert] chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${Math.ceil(
               members.length / CHUNK_SIZE,
             )}: +${result.created} ~${result.updated}`,
           );
+        }
+
+        // Bước 2: reconcile 1 LẦN trên TOÀN BỘ email đã scrape (members rỗng).
+        // Bỏ qua nếu scrape rỗng (members.length === 0) — tránh xoá oan toàn team
+        // khi scrape lỗi/trống. rogue-pending cũng tính từ tập đầy đủ này.
+        if (members.length > 0) {
+          const reconcileEmails = members.map((m) => m.email);
+          const reconcilePendingEmails = members
+            .filter((m) => m.status === "pending")
+            .map((m) => m.email);
+          const result = (await bulkUpsertMembers(config, task.workspace_id, [], {
+            scrapedStatuses,
+            reconcileEmails,
+            reconcilePendingEmails,
+          })) as { rogue_pending_emails?: string[] };
+          if (Array.isArray(result.rogue_pending_emails)) {
+            rogueEmailsAggregated.push(...result.rogue_pending_emails);
+          }
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -1054,35 +1217,16 @@ async function doRunUntilIdle(): Promise<{
   // (rebuild đổi hash file nhưng Chrome chưa reload). Nếu có → tự reload từ đĩa.
   // Chạy TRƯỚC pickNextTask nên không task nào bị claim rồi bỏ dở khi SW restart.
   //
-  // ⚠ GATE bằng pending-count (v0.7.5): chrome.runtime.reload() khiến Chrome bật
-  // chrome://extensions + sau khi SW boot lại sẽ mở tab ChatGPT mới. Trước đây
-  // self-heal chạy ở MỌI nhịp drain — kể cả poll 5s / alarm 1 phút lúc RẢNH —
-  // nên nếu build đang stale (vd user đang dev/rebuild liên tục) thì cứ vài giây
-  // lại reload → chrome://extensions nhấp nháy + tab thừa, rất khó chịu dù không
-  // có việc gì để làm. Giờ chỉ tự phục hồi khi THỰC SỰ có task PENDING đang chờ;
-  // rảnh thì im lặng. isExtensionStale() (fetch file local) check trước để case
-  // bình thường (không stale) KHÔNG tốn request mạng nào.
-  const config = await getConfig();
-  if (config && (await isExtensionStale())) {
-    let pending = 0;
-    try {
-      pending = await countPendingTasks(config);
-    } catch (e) {
-      console.warn(
-        "[autogpt-selfheal] không đếm được pending-count — hoãn self-heal:",
-        e,
-      );
-    }
-    if (pending > 0) {
-      if (await selfHealIfStale()) {
-        return { processed: 0, lastStatus: "self-heal-reloading" };
-      }
-    } else {
-      console.log(
-        "[autogpt-selfheal] build stale nhưng 0 task PENDING → KHÔNG reload " +
-          "(tránh bật chrome://extensions + mở tab ChatGPT thừa lúc rảnh)",
-      );
-    }
+  // ⚠ v0.7.6: reload NGAY khi stale, KỂ CẢ lúc rảnh (bỏ gate pending>0 của
+  // v0.7.5) — để mỗi `npm run build` tự áp dụng trong ≤1 phút mà không cần
+  // reload tay tại chrome://extensions. `reloadForStaleBuild` dedup theo build
+  // signature (tối đa MAX_RELOADS_PER_SIG lần/build) nên KHÔNG loop dù dev
+  // rebuild liên tục. isExtensionStale() (fetch file local) check trước nên case
+  // bình thường (không stale) không tốn request mạng nào. Khi đang dev nên dùng
+  // `npm run dev` (CRXJS HMR) — files do dev-server phục vụ luôn tồn tại nên
+  // KHÔNG bị coi là stale → HMR tự reload, self-heal không xen vào.
+  if (await selfHealIfStale()) {
+    return { processed: 0, lastStatus: "self-heal-reloading" };
   }
 
   let processed = 0;
@@ -1341,6 +1485,37 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
   }
   console.log(`[autogpt-runner] using admin tab ${tab.id} ${tab.url}`);
 
+  // Các action thao tác trên LIST "Người dùng" của /admin/members (định vị row
+  // theo email rồi mở menu "..."/dropdown). ensureAdminTab TÁI SỬ DỤNG tab admin
+  // mới nhất — tab này có thể đang ở /admin/billing, /admin/identity... (sub-page
+  // KHÁC, không có 3 sub-tab Người dùng/Lời mời/Yêu cầu). Khi đó in-page
+  // clickTabAndWait("Người dùng") không thấy nút → no-op → locateMemberRow quét
+  // nhầm trang → UI_ELEMENT_NOT_FOUND dù member đang active (bug user 2026-06-19:
+  // đổi seat type "không tìm thấy ... sau khi lọc + lật mọi trang").
+  // FIX: ép tab về /admin/members trước khi gửi action.
+  const MEMBER_LIST_TASKS = new Set([
+    "REMOVE_MEMBER",
+    "CHANGE_ROLE",
+    "CHANGE_LICENSE_TYPE",
+  ]);
+  if (
+    MEMBER_LIST_TASKS.has(task.type) &&
+    tab.id !== undefined &&
+    !(tab.url ?? "").includes("/admin/members")
+  ) {
+    console.log(
+      `[autogpt-runner] ${task.type}: tab đang ở "${tab.url}" (không phải /admin/members) → navigate về ${CHATGPT_ADMIN_URL}`,
+    );
+    await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: false });
+    const navigated = await waitForTabComplete(tab.id, 20_000);
+    if (navigated?.url && !navigated.url.includes("/admin")) {
+      console.warn(
+        `[autogpt-runner] sau navigate, tab bị redirect khỏi /admin (${navigated.url}) — có thể đã logout ChatGPT`,
+      );
+    }
+    await sleep(1500); // chờ list member render xong trước khi locate
+  }
+
   if (isLongOp) {
     await reportRunnerProgress(config, task.id, {
       phase: "rate_limit",
@@ -1351,7 +1526,35 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
   }
   await applyRateLimit();
   console.log(`[autogpt-runner] sending ${request.kind} to content script...`);
-  let response = await sendToContent(tab.id, request);
+  // PHASE 1 với hard-cap timeout (v0.7.17): nếu content không trả kết quả trong
+  // ngưỡng của loại task (vd context bị huỷ khi navigate /admin/identity lúc mời
+  // email ngoài domain) → fail sớm `CONTENT_TIMEOUT` thay vì treo tới backend
+  // lazy-cleanup. KHÔNG dọn phantom ở đây: không chắc invite đã gửi hay chưa
+  // (content có thể submit trước khi context chết) → để FAILED → backend phantom
+  // cleanup (completion.py Case 1) hoặc SYNC_DATA định kỳ tự reconcile.
+  const phase1Timeout = CONTENT_TIMEOUTS[task.type] ?? DEFAULT_CONTENT_TIMEOUT_MS;
+  let response: ExecuteActionResponse;
+  try {
+    response = await withTimeout(
+      sendToContent(tab.id, request),
+      phase1Timeout,
+      `content-${request.kind}`,
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(
+      `[autogpt-runner] Phase 1 ${request.kind} TIMEOUT/throw sau ${phase1Timeout}ms: ${msg}`,
+    );
+    response = {
+      ok: false,
+      error_code: "CONTENT_TIMEOUT",
+      error_message:
+        `Content script không trả kết quả cho ${request.kind} trong ` +
+        `${Math.round(phase1Timeout / 1000)}s. Có thể tab ChatGPT bị reload/redirect ` +
+        `giữa chừng (mất context content script) hoặc thao tác treo. Task được fail ` +
+        `sớm để giải phóng hàng đợi thay vì kẹt tới auto-cleanup. Lỗi gốc: ${msg}`,
+    };
+  }
   console.log(
     `[autogpt-runner] content script response: ok=${response.ok}`,
     response.ok ? "" : `err=${response.error_code}: ${response.error_message}`,
@@ -1372,70 +1575,91 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
     request.kind === "INVITE_MEMBER"
   ) {
     console.log(`[autogpt-runner] invite submit OK — F5 tab ${tab.id} để verify pending list`);
-    await reportRunnerProgress(config, task.id, {
-      phase: "f5-verify",
-      message: "Submit invite OK — F5 trang admin để ChatGPT load lại pending list...",
-    });
-    try {
-      await chrome.tabs.reload(tab.id);
-      const reloaded = await waitForTabComplete(tab.id, 20_000);
-      if (!reloaded?.url?.includes("/admin")) {
-        console.warn(
-          `[autogpt-runner] F5 sau invite: tab redirect khỏi /admin (url=${reloaded?.url}) — verify skipped`,
-        );
-        // Vẫn coi như invite OK (submit thành công), nhưng đánh dấu scrape failed
-        response = {
-          ok: true,
-          data: {
-            ...((response as { ok: true; data?: Record<string, unknown> }).data ?? {}),
-            verified_emails: [],
-            unverified_emails: request.emails,
-            pending_members: [],
-            verify_scrape_failed: true,
-          },
-        };
-      } else {
+    // Snapshot data submit để merge vào mọi fallback (giữ emails/count/role).
+    const submitData = ((response as { ok: true; data?: Record<string, unknown> }).data) ?? {};
+    const scrapeFailedFallback: ExecuteActionResponse = {
+      ok: true,
+      data: {
+        ...submitData,
+        verified_emails: [],
+        unverified_emails: request.emails,
+        pending_members: [],
+        verify_scrape_failed: true,
+      },
+    };
+
+    // v0.7.15: vòng lặp F5 THẬT + verify trong NGÂN SÁCH VERIFY_BUDGET_MS (~10s).
+    // Mỗi vòng: chrome.tabs.reload → wait complete → re-inject → VERIFY_PENDING_INVITE.
+    // Dừng sớm khi: đủ email (Phase 2 báo needs_reload_retry=false), scrape fail,
+    // hết MAX_VERIFY_RELOADS vòng, hoặc hết budget 10s.
+    const verifyStart = Date.now();
+    let round = 0;
+    while (round < MAX_VERIFY_RELOADS) {
+      round++;
+      const elapsed = Date.now() - verifyStart;
+      await reportRunnerProgress(config, task.id, {
+        phase: "f5-verify",
+        message:
+          round === 1
+            ? "Submit invite OK — F5 trang admin để ChatGPT load lại pending list..."
+            : `Còn email chưa thấy — F5 lại (lần ${round}) để ChatGPT load tiếp...`,
+      });
+      try {
+        await chrome.tabs.reload(tab.id);
+        const reloaded = await waitForTabComplete(tab.id, 15_000);
+        if (!reloaded?.url?.includes("/admin")) {
+          console.warn(
+            `[autogpt-runner] F5 sau invite (lần ${round}): tab redirect khỏi /admin (url=${reloaded?.url}) — verify skipped`,
+          );
+          response = scrapeFailedFallback;
+          break;
+        }
         // Re-inject content script vào tab vừa load
         const ready = await ensureContentInjected(tab.id);
         if (!ready.ok) {
-          console.warn("[autogpt-runner] sau F5: content inject failed → verify skipped");
-          response = {
-            ok: true,
-            data: {
-              ...((response as { ok: true; data?: Record<string, unknown> }).data ?? {}),
-              verified_emails: [],
-              unverified_emails: request.emails,
-              pending_members: [],
-              verify_scrape_failed: true,
-            },
-          };
-        } else {
-          const verifyResp = await chrome.tabs.sendMessage(ready.tabId, {
+          console.warn(`[autogpt-runner] sau F5 (lần ${round}): content inject failed → verify skipped`);
+          response = scrapeFailedFallback;
+          break;
+        }
+        const verifyResp = (await withTimeout(
+          chrome.tabs.sendMessage(ready.tabId, {
             kind: "VERIFY_PENDING_INVITE",
             taskId: task.id,
             emails: request.emails,
             role: request.role,
-          } satisfies ExecuteActionRequest);
+          } satisfies ExecuteActionRequest),
+          VERIFY_ROUNDTRIP_TIMEOUT_MS,
+          "verify-pending-invite",
+        )) as ExecuteActionResponse;
+        console.log(
+          `[autogpt-runner] verify round ${round}: ok=${verifyResp?.ok}`,
+          verifyResp?.ok ? "" : `err=${verifyResp?.error_code}: ${verifyResp?.error_message}`,
+        );
+        // Verify response thay thế response submit (đã merge emails/count/role)
+        response = verifyResp;
+
+        const vdata =
+          verifyResp?.ok
+            ? ((verifyResp.data as Record<string, unknown> | undefined) ?? {})
+            : {};
+        // Scrape fail → reload nữa cũng không scrape được, giữ kết quả + thoát.
+        if (vdata.verify_scrape_failed === true) break;
+        // Đủ email (hoặc Phase 2 không yêu cầu reload) → xong.
+        if (vdata.needs_reload_retry !== true) break;
+        // Còn email thiếu nhưng hết budget → dùng kết quả cuối (unverified sẽ
+        // được reconcile/cleanup ở backend). +1 vòng F5 ~3-5s nên cắt khi đã
+        // tiêu quá nửa budget để không vượt 10s.
+        if (Date.now() - verifyStart > VERIFY_BUDGET_MS) {
           console.log(
-            `[autogpt-runner] verify response: ok=${verifyResp?.ok}`,
-            verifyResp?.ok ? "" : `err=${verifyResp?.error_code}: ${verifyResp?.error_message}`,
+            `[autogpt-runner] verify hết budget ${VERIFY_BUDGET_MS}ms (elapsed ${elapsed}ms) — dừng, dùng kết quả vòng ${round}`,
           );
-          // Verify response thay thế response submit (đã merge emails/count/role)
-          response = verifyResp as ExecuteActionResponse;
+          break;
         }
+      } catch (e) {
+        console.warn(`[autogpt-runner] F5+verify vòng ${round} FAILED — fallback ok với scrape failed:`, e);
+        response = scrapeFailedFallback;
+        break;
       }
-    } catch (e) {
-      console.warn("[autogpt-runner] F5+verify FAILED — fallback ok với scrape failed:", e);
-      response = {
-        ok: true,
-        data: {
-          ...((response as { ok: true; data?: Record<string, unknown> }).data ?? {}),
-          verified_emails: [],
-          unverified_emails: request.emails,
-          pending_members: [],
-          verify_scrape_failed: true,
-        },
-      };
     }
   }
 

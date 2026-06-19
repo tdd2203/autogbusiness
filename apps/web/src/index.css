@@ -310,6 +310,24 @@ body {
     color: var(--ink-3);
   }
 
+  /* Bảng compact (bảng thành viên): cỡ chữ nhỏ + padding hẹp + nowrap để mọi ô
+     nằm trên 1 hàng ngang, không co/xuống dòng. Tràn ngang → scroll (khung bảng
+     đã bọc overflow-x:auto). */
+  .data-table-compact thead th {
+    padding: 8px 12px;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+  }
+  .data-table-compact tbody td {
+    padding: 8px 12px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  .data-table-compact .cell-email {
+    font-size: 11.5px;
+  }
+
   /* ---------- Metrics ---------- */
   .metrics {
     display: grid;
@@ -829,7 +847,9 @@ body {
   }
   .app-main {
     padding: 32px 48px 64px;
-    max-width: 1440px;
+    /* Không giới hạn bề ngang: trên màn hình rộng (>1440px) nội dung trước đây
+       dồn về trái, để lại khoảng trắng bên phải. Bỏ trần để vùng nội dung + panel
+       hàng đợi (WorkspaceTaskRail) trải hết bề ngang, lấp đầy mép phải. */
     width: 100%;
     overflow: auto;
   }

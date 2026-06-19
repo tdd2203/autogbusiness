@@ -37,6 +37,13 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     permissions: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    # Mốc kết thúc lệnh-cấm chống-spam. Khi user lặp lại CÙNG (loại lệnh, email)
+    # liên tiếp quá 3 lần (task FAILED không tính), endpoint set cột này = now+10
+    # phút + bump token_version (đá session) → mọi request 401, login bị chặn tới
+    # mốc này. NULL = không bị cấm. (Thay cho sync_member_cooldown_until cũ.)
+    command_ban_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_by_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -252,6 +259,12 @@ class Member(Base):
     )
     joined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Lần CUỐI member được invite/re-invite qua dashboard. Khác created_at (bất
+    # biến từ lần đầu) — reconcile bulk-upsert dùng COALESCE(last_invited_at,
+    # created_at) để KHÔNG mark removed oan member vừa re-invite (xem reconcile.py).
+    last_invited_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(

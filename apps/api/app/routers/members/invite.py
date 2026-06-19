@@ -26,14 +26,22 @@ from app.schemas import MemberBulkInviteIn, MemberInviteIn, MemberOut
 from ._shared import router, _compute_subscription_end, _get_workspace_or_404
 
 
+# Cho phép invite vượt seat_total tối đa +50% (overcommit). Vượt ngưỡng này thì
+# chặn và yêu cầu admin mở thêm seat. Đổi hệ số ở đây nếu muốn nới/siết.
+SEAT_OVERCOMMIT_RATIO = 1.5
+
+
 def _assert_seat_available(
     db: Session, workspace: Workspace, additional: int, user: User
 ) -> None:
-    """Chặn invite khi hết seat. Super-admin bỏ qua (họ quản billing/mua seat).
+    """Chặn invite khi vượt ngưỡng overcommit. Super-admin bỏ qua (họ quản billing/mua seat).
 
-    effective_used = max(seat_used báo từ billing, số Member active+pending trong
-    DB) — dùng DB count để tránh over-invite khi billing chưa sync kịp các pending
-    invite vừa tạo. Chỉ enforce khi seat_total đã set (workspace đã sync billing).
+    effective_used = max(seat_used báo từ billing, số Member ACTIVE trong DB).
+    Chỉ đếm member đang hoạt động (active) — member `pending` (chờ tham gia) CHƯA
+    được tính vào tổng. Chỉ enforce khi seat_total đã set (workspace đã sync billing).
+
+    Cho phép overcommit tới `seat_total * SEAT_OVERCOMMIT_RATIO` (vượt +50%). Chỉ
+    khi vượt mốc này mới chặn và báo admin mở thêm seat.
     """
     if user.is_super_admin or workspace.seat_total is None:
         return
@@ -41,19 +49,21 @@ def _assert_seat_available(
         db.execute(
             select(func.count(Member.id)).where(
                 Member.workspace_id == workspace.id,
-                Member.status.in_(("active", "pending")),
+                Member.status == "active",
             )
         ).scalar_one()
         or 0
     )
     effective_used = max(workspace.seat_used or 0, db_used)
-    if effective_used + additional > workspace.seat_total:
-        free = max(workspace.seat_total - effective_used, 0)
+    seat_cap = int(workspace.seat_total * SEAT_OVERCOMMIT_RATIO)
+    if effective_used + additional > seat_cap:
+        free = max(seat_cap - effective_used, 0)
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
-                f"Hết seat trống: đang dùng {effective_used}/{workspace.seat_total}, "
-                f"còn {free} seat nhưng yêu cầu mời {additional}"
+                f"Chờ admin mở thêm seat: đang dùng {effective_used}/{workspace.seat_total} "
+                f"(giới hạn cho phép {seat_cap} = +50%), còn {free} seat "
+                f"nhưng yêu cầu mời {additional}"
             ),
         )
 
@@ -78,8 +88,8 @@ def invite_member(
             status_code=status.HTTP_409_CONFLICT,
             detail="Member với email này đã tồn tại trong workspace",
         )
-    # Re-invite member đã removed không tốn thêm seat (đã đếm trong active+pending
-    # chỉ khi chưa removed). Member mới hoặc removed→pending cần 1 seat trống.
+    # Seat chỉ tính theo member ACTIVE. Invite mới tạo record `pending` (chưa tính
+    # vào tổng); guard chặn theo active hiện tại + số yêu cầu mời so với cap +50%.
     _assert_seat_available(db, ws, 1, user)
 
     queue_item = QueueItem(
@@ -104,6 +114,7 @@ def invite_member(
         existing.invited_by_user_id = user.id
         existing.subscription_months = body.subscription_months
         existing.subscription_end_at = sub_end
+        existing.last_invited_at = now
         member = existing
     else:
         member = Member(
@@ -114,6 +125,7 @@ def invite_member(
             invited_by_user_id=user.id,
             subscription_months=body.subscription_months,
             subscription_end_at=sub_end,
+            last_invited_at=now,
         )
         db.add(member)
 
@@ -236,6 +248,7 @@ def bulk_invite_members(
                 ):
                     existing.subscription_months = months
                     existing.subscription_end_at = sub_end
+                existing.last_invited_at = now
                 member = existing
             else:
                 # removed/pending → cho phép re-invite, set lại status
@@ -244,6 +257,7 @@ def bulk_invite_members(
                 existing.invited_by_user_id = user.id
                 existing.subscription_months = months
                 existing.subscription_end_at = sub_end
+                existing.last_invited_at = now
                 member = existing
         else:
             member = Member(
@@ -254,6 +268,7 @@ def bulk_invite_members(
                 invited_by_user_id=user.id,
                 subscription_months=months,
                 subscription_end_at=sub_end,
+                last_invited_at=now,
             )
             db.add(member)
         db.flush()

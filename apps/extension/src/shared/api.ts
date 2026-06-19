@@ -168,6 +168,15 @@ export async function bulkUpsertMembers(
      * members khác cùng status. Default true (sync full).
      */
     isFullSync?: boolean;
+    /**
+     * Khi sync lớn chia `members` thành nhiều chunk: upsert từng chunk với
+     * `isFullSync:false` (KHÔNG reconcile), rồi gọi 1 lần cuối (members rỗng)
+     * truyền `reconcileEmails` = TẤT CẢ email đã scrape + `reconcilePendingEmails`
+     * = email pending đã scrape. Backend reconcile/rogue 1 lần trên toàn bộ tập,
+     * tránh mark removed oan member của chunk khác.
+     */
+    reconcileEmails?: string[];
+    reconcilePendingEmails?: string[];
   },
 ): Promise<{
   created: number;
@@ -184,6 +193,8 @@ export async function bulkUpsertMembers(
         members,
         scraped_statuses: options?.scrapedStatuses,
         is_full_sync: options?.isFullSync !== false,
+        reconcile_emails: options?.reconcileEmails,
+        reconcile_pending_emails: options?.reconcilePendingEmails,
       }),
     },
   );

@@ -1,13 +1,15 @@
 import { useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
 import { useT, useTranslateEnum } from "../i18n";
 import { useAuth } from "../hooks/useAuth";
 import type { QueueItem } from "../types";
-import { Chip, TimeCell } from "./Queue";
+import { Chip, ErrorCell } from "./Queue";
 import { SearchInput } from "./Members";
+import { TaskTimingCell } from "../components/TaskTimingCell";
+import { PayloadCell } from "../components/PayloadCell";
 
 type Filter = "all" | "FAILED" | "COMPLETED" | "IN_PROGRESS" | "PENDING";
 
@@ -25,7 +27,6 @@ export default function WorkspaceQueue() {
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const { user } = useAuth();
   const isSuper = !!user?.is_super_admin;
-  const qc = useQueryClient();
 
   const { data: tasks = [], isLoading } = useQuery({
     queryKey: ["queue", workspaceId],
@@ -75,17 +76,8 @@ export default function WorkspaceQueue() {
 
   return (
     <div>
-      <div
-        className="flex items-center justify-between"
-        style={{ marginBottom: 16, gap: 12, flexWrap: "wrap" }}
-      >
+      <div style={{ marginBottom: 16 }}>
         <div className="display-h3">{t("queue.subtitleWs")}</div>
-        <button
-          onClick={() => qc.invalidateQueries({ queryKey: ["queue", workspaceId] })}
-          className="btn btn-ghost btn-sm"
-        >
-          {t("queue.refresh")}
-        </button>
       </div>
 
       <div className="flex flex-wrap gap-2" style={{ marginBottom: 16 }}>
@@ -160,7 +152,7 @@ export default function WorkspaceQueue() {
               {filtered.map((task) => (
                 <tr key={task.id}>
                   <td>
-                    <TimeCell iso={task.created_at} />
+                    <TaskTimingCell task={task} />
                   </td>
                   <td>
                     <span className="action-name">{tTaskType(task.type)}</span>
@@ -180,22 +172,14 @@ export default function WorkspaceQueue() {
                     </td>
                   )}
                   <td>
-                    <span className="payload">
-                      {JSON.stringify(task.payload)}
-                    </span>
+                    <PayloadCell payload={task.payload} />
                   </td>
                   <td>
-                    {task.error_message ? (
-                      <div
-                        style={{
-                          fontSize: 12.5,
-                          color: "var(--danger)",
-                          maxWidth: 420,
-                        }}
-                      >
-                        <strong className="mono">{task.error_code}:</strong>{" "}
-                        {task.error_message}
-                      </div>
+                    {task.error_code || task.error_message ? (
+                      <ErrorCell
+                        code={task.error_code ?? ""}
+                        message={task.error_message ?? ""}
+                      />
                     ) : task.status === "IN_PROGRESS" && task.progress ? (
                       <span style={{ color: "var(--info)", fontSize: 12.5 }}>
                         {(task.progress.message as string | undefined) ??
@@ -211,12 +195,8 @@ export default function WorkspaceQueue() {
                           </>
                         )}
                       </span>
-                    ) : task.result ? (
-                      <span className="payload payload-success">
-                        {JSON.stringify(task.result)}
-                      </span>
                     ) : (
-                      <span className="cell-muted">—</span>
+                      <PayloadCell payload={task.result} variant="success" />
                     )}
                   </td>
                 </tr>

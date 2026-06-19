@@ -13,6 +13,7 @@ import { findRowMenuButton } from "../member-row";
 import { clickTabAndWait } from "../sync";
 import { clearMemberFilter } from "../remove/member-filter";
 import { locateMemberRow } from "../remove/locate-member";
+import { findLicenseTypeInRow } from "../sync/row-extractors/license-type";
 
 const LOG = "[autogpt-license]";
 
@@ -126,6 +127,26 @@ export async function executeChangeLicenseType(
     };
   }
   console.log(`${LOG} row found via filter`);
+
+  // 2b) Đọc license type HIỆN TẠI trên DOM. Nếu đã đúng target thì KHÔNG cần đổi
+  // (tránh thao tác thừa + dialog xác nhận). Đáng tin hơn `oldLicenseType` từ DB
+  // (có thể stale) vì đây là giá trị thật đang hiển thị trên ChatGPT.
+  const currentLicenseType = findLicenseTypeInRow(row);
+  if (currentLicenseType === newLicenseType) {
+    console.log(
+      `${LOG} DOM license đã = '${newLicenseType}' → skip (no-op)`,
+    );
+    await clearMemberFilter();
+    return {
+      ok: true,
+      data: {
+        email,
+        new_license_type: newLicenseType,
+        old_license_type: currentLicenseType,
+        skipped: "already",
+      },
+    };
+  }
 
   // 3) Click nút "..." trên row.
   await reportProgress(

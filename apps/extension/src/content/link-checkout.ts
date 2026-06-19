@@ -46,7 +46,8 @@ async function waitFor<T>(
 /**
  * Normalize số tiền để so sánh. ChatGPT modal hiển thị "Tổng đến hạn hôm
  * nay₫2079.47" (= 207,947₫), Link popup hiển thị "Thanh toán 207.948 đ" (=
- * 207,948₫). Chênh lệch 1 đồng do làm tròn cuối kỳ. Cho phép tolerance ±5đ.
+ * 207,948₫). Chênh lệch 1 đồng do làm tròn cuối kỳ. Cho phép tolerance ±50đ
+ * (xem hằng so sánh ở dispatch — đồng bộ với comment tại đó).
  *
  * Trả về số nguyên VND (vd 207948) hoặc null nếu không parse được.
  */
@@ -266,13 +267,24 @@ async function dispatch(msg: ExecuteActionRequest): Promise<ExecuteActionRespons
     `[autogpt-link] amount check: popup=${popupAmountText} (=${popupAmountVnd}vnd), expected="${msg.expectedAmountText}" (=${expectedVnd}vnd)`,
   );
 
+  // FAIL-CLOSED: không parse được số tiền (popup HOẶC expected = null) → KHÔNG
+  // thể verify FINAL CHARGE → DỪNG, admin tự xác minh. Trước đây null làm
+  // short-circuit qua sanity check rồi VẪN click "Thanh toán" = fail-open nguy
+  // hiểm (trả tiền mà không đối chiếu được số). Fix 2026-06-17.
+  if (expectedVnd === null || popupAmountVnd === null) {
+    return {
+      ok: false,
+      error_code: "VERIFY_FAILED",
+      error_message:
+        `Không parse được số tiền để đối chiếu (popup="${popupAmountText}" → ${popupAmountVnd}, ` +
+        `expected="${msg.expectedAmountText}" → ${expectedVnd}). ` +
+        "KHÔNG tự click trả tiền — admin tự xác minh.",
+    };
+  }
+
   // Tolerance: ±50 đ cho rounding (kỳ vọng chỉ chênh 1 đồng do làm tròn cuối kỳ
   // hoặc khác locale display). Lớn hơn 50đ = STOP.
-  if (
-    expectedVnd !== null &&
-    popupAmountVnd !== null &&
-    Math.abs(popupAmountVnd - expectedVnd) > 50
-  ) {
+  if (Math.abs(popupAmountVnd - expectedVnd) > 50) {
     return {
       ok: false,
       error_code: "VERIFY_FAILED",

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -110,8 +110,16 @@ def bulk_upsert_members(
     else:
         scopes = ()
 
-    if scopes and body.members:
+    # Tập email "đã scrape" để reconcile. Khi sync lớn chia chunk, extension gửi
+    # `reconcile_emails` = TẤT CẢ email đã scrape ở 1 request cuối (members rỗng)
+    # → reconcile 1 lần trên toàn bộ, KHÔNG theo từng chunk (tránh mark removed oan
+    # member của chunk khác). Fallback: suy ra từ body.members (1 chunk / verify).
+    if body.reconcile_emails is not None:
+        incoming_emails = {e.lower() for e in body.reconcile_emails}
+    else:
         incoming_emails = {m.email.lower() for m in body.members}
+
+    if scopes and incoming_emails:
         # Safety: KHÔNG reconcile member vừa invite qua dashboard trong 10 phút
         # gần đây (ChatGPT thường mất 1-30s để index pending invite vào tab "Lời
         # mời"; nếu extension verify trong khoảng đó, scrape chưa thấy thì backend
@@ -120,6 +128,10 @@ def bulk_upsert_members(
         # nhau (vd a12 lúc 08:34, g12 lúc 08:37 + verify g12 08:38). Sự kiện
         # đáng chú ý — log audit_logs nếu skip nhiều.
         reconcile_cutoff = now - timedelta(minutes=10)
+        # Dùng COALESCE(last_invited_at, created_at): member RE-INVITE có
+        # created_at cũ (lần đầu) nhưng last_invited_at = lúc re-invite → vẫn
+        # được vùng-bảo-vệ 10 phút che, không bị mark removed oan khi ChatGPT
+        # index pending invite chậm (fix 2026-06-17, migration 0015).
         stale = (
             db.execute(
                 select(Member).where(
@@ -128,7 +140,12 @@ def bulk_upsert_members(
                     Member.email.notin_(incoming_emails),
                     ~(
                         (Member.invited_by_user_id.isnot(None))
-                        & (Member.created_at > reconcile_cutoff)
+                        & (
+                            func.coalesce(
+                                Member.last_invited_at, Member.created_at
+                            )
+                            > reconcile_cutoff
+                        )
                     ),
                 )
             )
@@ -145,10 +162,14 @@ def bulk_upsert_members(
     # qua dashboard → trả về để extension auto-revoke trên ChatGPT.
     rogue_pending_emails: list[str] = []
     if scopes and "pending" in scopes:
-        # Tất cả pending emails từ scrape
-        scraped_pending = [
-            m.email.lower() for m in body.members if m.status == "pending"
-        ]
+        # Tất cả pending emails từ scrape. Ưu tiên reconcile_pending_emails (gửi
+        # ở request reconcile cuối khi sync lớn); else suy từ body.members.
+        if body.reconcile_pending_emails is not None:
+            scraped_pending = [e.lower() for e in body.reconcile_pending_emails]
+        else:
+            scraped_pending = [
+                m.email.lower() for m in body.members if m.status == "pending"
+            ]
         if scraped_pending:
             existing_by_email = {
                 row.email.lower(): row

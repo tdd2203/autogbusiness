@@ -30,8 +30,12 @@ function collectScrollContainers(): Array<HTMLElement | Window> {
  * Scroll qua list của TRANG hiện tại, kiểm tra row khớp email sau mỗi nấc.
  * Trả row ngay khi thấy; null nếu scroll hết (chiều cao ổn định) mà không thấy.
  * Xử lý virtualized list — row chỉ render khi nằm trong/đến gần viewport.
+ *
+ * Export để các action khác trên list virtualized (vd revoke tab "Lời mời")
+ * tái dùng — chúng không cần lọc/phân trang như members tab nhưng vẫn phải
+ * scroll để render row ngoài viewport.
  */
-async function scrollScanForRow(email: string): Promise<HTMLElement | null> {
+export async function scrollScanForRow(email: string): Promise<HTMLElement | null> {
   const containers = collectScrollContainers();
 
   // Về đầu list trước khi quét.

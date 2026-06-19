@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 from app.audit import log_event
 from app.deps import (
     assert_workspace_access,
+    enforce_command_spam,
     get_session,
     require_permission,
 )
@@ -212,6 +213,17 @@ def remove_member(
     _get_workspace_or_404(db, workspace_id)
     assert_workspace_access(db, user, workspace_id)
     member = _member_or_404_visible(db, workspace_id, member_id, user)
+
+    # DB là nguồn member đầy đủ: mọi member vào qua web app + SYNC_DATA giữ DB
+    # đồng bộ với ChatGPT. Member đã 'removed' → KHÔNG enqueue task: tránh
+    # extension đi tìm lại email đó trên ChatGPT (vô ích, tốn thời gian lật hết
+    # các trang). Khớp business rule "chỉ active/pending mới xoá" mà bulk-remove
+    # và cleanup-expired đã áp sẵn (xem remove.md §4).
+    if member.status == "removed":
+        return {"status": "already_removed", "email": member.email}
+
+    # Chống spam: cùng (REMOVE_MEMBER, email) lặp >3 lần liên tiếp → cấm 10 phút.
+    enforce_command_spam(db, user, "REMOVE_MEMBER", member.email)
 
     queue_item = QueueItem(
         type="REMOVE_MEMBER",

@@ -24,6 +24,14 @@ export type ExecuteActionRequest =
     }
   | { kind: "REMOVE_MEMBER"; taskId: string; email: string }
   | {
+      /** "Đồng bộ 1 tài khoản lẻ" — tìm 1 email ở tab Lời mời rồi fallback tab
+       * Người dùng để xác nhận đã tham gia chưa. Trả data.found_in ∈
+       * {"pending","active","none"}. Read-only, không thao tác phá huỷ. */
+      kind: "SYNC_MEMBER";
+      taskId: string;
+      email: string;
+    }
+  | {
       kind: "CHANGE_ROLE";
       taskId: string;
       email: string;
@@ -115,6 +123,7 @@ export type ExecuteActionResponse =
         | "PAGE_NOT_ADMIN"
         | "LANGUAGE_MISMATCH"
         | "CONTENT_NOT_INJECTED"
+        | "CONTENT_TIMEOUT"
         | "STALE_BUILD"
         | "EXTERNAL_TOGGLE_FAILED"
         | "UNKNOWN";

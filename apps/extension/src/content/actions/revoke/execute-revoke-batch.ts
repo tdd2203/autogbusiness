@@ -7,12 +7,14 @@ import type { ExecuteActionResponse } from "../../../shared/messages";
 import { humanClick, sleep } from "../../human";
 import { findControlByKey } from "../../i18n-ui";
 import { TEXT_FALLBACKS } from "../../selectors";
+import { executeRemove } from "../remove";
 import { revokeInvites } from "./revoke-invites-loop";
+import type { RevokeResult } from "./revoke-invite";
 
 const PENDING_TAB_LOAD_WAIT_MS = 1500;
 
 export async function executeRevokeInvites(
-  _taskId: string,
+  taskId: string,
   emails: string[],
 ): Promise<ExecuteActionResponse> {
   if (emails.length === 0) {
@@ -46,11 +48,44 @@ export async function executeRevokeInvites(
   await sleep(PENDING_TAB_LOAD_WAIT_MS);
 
   const results = await revokeInvites(emails);
-  const revoked = results.filter((r) => r.ok).length;
-  const failed = results.length - revoked;
+
+  // Fallback: email KHÔNG có trên tab "Lời mời" (notInPending) thường vì người đó
+  // đã CHẤP NHẬN lời mời → trở thành active member, không còn pending invite để
+  // thu hồi. Chuyển sang tab "Người dùng" và xoá họ khỏi workspace (executeRemove
+  // tự click tab Người dùng + lọc/lật trang + confirm + verify).
+  const toRemove = results.filter((r) => r.notInPending).map((r) => r.email);
+  let removedViaFallback = 0;
+  if (toRemove.length > 0) {
+    console.log(
+      `[autogpt-revoke] fallback REMOVE cho ${toRemove.length} email không có trên tab Lời mời:`,
+      toRemove,
+    );
+    for (const email of toRemove) {
+      const rm = await executeRemove(taskId, email);
+      const idx = results.findIndex((r) => r.email === email);
+      const merged: RevokeResult = rm.ok
+        ? { email, ok: true, viaRemove: true }
+        : {
+            email,
+            ok: false,
+            viaRemove: true,
+            reason: `Không có trên tab Lời mời; xoá khỏi tab Người dùng cũng thất bại: ${
+              rm.error_message ?? rm.error_code ?? "unknown"
+            }`,
+          };
+      if (idx >= 0) results[idx] = merged;
+      else results.push(merged);
+      if (rm.ok) removedViaFallback += 1;
+      // Delay anti-bot giữa các thao tác destructive.
+      await sleep(1000 + Math.floor(Math.random() * 2000));
+    }
+  }
+
+  const revoked = results.filter((r) => r.ok && !r.viaRemove).length;
+  const failed = results.filter((r) => !r.ok).length;
 
   return {
     ok: true,
-    data: { revoked, failed, results },
+    data: { revoked, removed: removedViaFallback, failed, results },
   };
 }

@@ -42,14 +42,22 @@ export async function executeInviteInner(
 
   // 1. Đảm bảo đang ở tab "Người dùng" — nếu user mở /admin/members và tab
   //    đang là "Lời mời" hay "Yêu cầu", nút "Mời thành viên" có thể không có.
-  const activeTab = findControlByKey(
-    "tab_active_members",
-    TEXT_FALLBACKS.tabActiveMembers,
-    { page: "/admin/members" },
-  );
-  if (activeTab) {
-    await humanClick(activeTab);
-    await randomDelay(500, 1200);
+  //
+  //    TỐI ƯU TỐC ĐỘ (2026-06-18): nếu nút "Mời thành viên" ĐÃ hiện sẵn thì
+  //    đang ở đúng tab rồi → KHÔNG click lại tab "Người dùng". Click thừa khiến
+  //    ChatGPT re-fetch + re-render cả danh sách member (vài giây) ngay trước khi
+  //    mở dialog → là một trong các nguyên nhân chính "mở dialog tốn nhiều thời
+  //    gian". Chỉ click tab khi thật sự chưa thấy nút Mời (đang ở tab khác).
+  if (!findInviteOpenButton()) {
+    const activeTab = findControlByKey(
+      "tab_active_members",
+      TEXT_FALLBACKS.tabActiveMembers,
+      { page: "/admin/members" },
+    );
+    if (activeTab) {
+      await humanClick(activeTab);
+      await randomDelay(500, 1200);
+    }
   }
 
   // 2. Mở dialog Invite. Poll-wait button render — wrap external-invites điều
@@ -83,19 +91,40 @@ export async function executeInviteInner(
   await humanClick(openBtn);
   console.log("[autogpt-invite] clicked open button (1st), waiting...");
 
-  // Sau 800ms, nếu chưa thấy modal nào → retry click. ChatGPT Radix DialogTrigger
-  // đôi khi miss event đầu, click lần 2 thường mở được.
-  await sleep(800);
-  const dialogAfter1 = document.querySelector(
-    '[role="dialog"], [role="alertdialog"], [aria-modal="true"], [data-state="open"]',
-  );
-  if (!dialogAfter1) {
-    console.log("[autogpt-invite] chưa thấy dialog sau 800ms — retry click");
+  // POLL dialog mở (thay sleep 800ms CỐ ĐỊNH — 2026-06-18). Dialog Radix thường
+  // mở trong ~150-400ms; chờ cứng 800ms phí ~400-650ms mỗi lần. Poll 150ms/lần,
+  // tối đa 1000ms, mở sớm thì đi tiếp NGAY. Hết 1000ms vẫn chưa thấy → retry click
+  // (Radix DialogTrigger đôi khi miss event đầu, click lần 2 thường mở được).
+  const dialogSel =
+    '[role="dialog"], [role="alertdialog"], [aria-modal="true"], [data-state="open"]';
+  let dialogOpened = false;
+  for (let waited = 0; waited < 1000; waited += 150) {
+    await sleep(150);
+    if (document.querySelector(dialogSel)) {
+      dialogOpened = true;
+      break;
+    }
+  }
+  if (!dialogOpened) {
+    console.log("[autogpt-invite] chưa thấy dialog sau ~1s — retry click");
     await humanClick(openBtn);
   }
 
   // 3. Đợi dialog mở + input email xuất hiện. Tăng từ 10s → 20s vì sau v0.4.17
   //    auto-reload tab, SPA cần thời gian rehydrate + dialog animate open.
+  //    Tách phase "waiting-dialog" để PhaseBreakdown trên dashboard tách bạch
+  //    "thời gian tìm+click nút mở" (phase opening-dialog) với "thời gian dialog
+  //    + ô email render" (phase này) → chẩn đoán đúng bước nào chậm.
+  await reportProgress(
+    taskId,
+    {
+      phase: "waiting-dialog",
+      message: "Dialog đang mở — đợi ô nhập email render...",
+      current: 0,
+      total: emails.length,
+    },
+    true,
+  );
   let emailInput: HTMLInputElement | HTMLTextAreaElement;
   try {
     emailInput = await waitFor(() => findInviteEmailInput(), 20_000);

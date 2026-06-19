@@ -35,11 +35,13 @@ export const GRANTABLE: PermissionKey[] = [
 ];
 
 // Quyền mặc định khi tạo tài khoản phụ mới: add thành viên + xem thành viên đã
-// add + xem queue task (chỉ task do chính họ tạo). Xoá thành viên
-// (MEMBER_REMOVE) để admin chủ động tick thêm nếu cần.
+// add + xem queue task (chỉ task do chính họ tạo) + thu hồi/xoá thành viên
+// (MEMBER_REMOVE — vẫn chỉ xoá được member do chính họ mời, theo visibility
+// filter ở backend). Mọi admin phụ đều có sẵn chức năng thu hồi/xoá.
 export const DEFAULT_SUB_ADMIN_PERMS: PermissionKey[] = [
   "MEMBER_VIEW",
   "MEMBER_INVITE",
+  "MEMBER_REMOVE",
   "QUEUE_VIEW",
   "WORKSPACE_SYNC_TRIGGER",
 ];

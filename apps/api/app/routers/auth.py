@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -52,6 +54,29 @@ def login(body: LoginIn, db: Session = Depends(get_session)) -> TokenOut:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Tài khoản đã bị vô hiệu hóa. Vui lòng liên hệ super-admin",
+        )
+
+    # Chặn đăng nhập khi đang bị cấm do spam (cùng lệnh+email lặp >3 lần → cấm 10
+    # phút). Ban cũng đã bump token_version nên token cũ vô hiệu; chặn login để
+    # không lấy được token mới trong thời gian cấm.
+    now = datetime.now(timezone.utc)
+    if user.command_ban_until and now < user.command_ban_until:
+        mins = int((user.command_ban_until - now).total_seconds() // 60) + 1
+        log_event(
+            db,
+            actor_type="ADMIN",
+            actor_id=user.id,
+            actor_label=user.email,
+            action="LOGIN_BLOCKED_SPAM",
+            result="FAILED",
+            data={"command_ban_until": user.command_ban_until.isoformat()},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Tài khoản tạm khoá do thao tác lặp lại quá nhiều lần. "
+                f"Vui lòng thử lại sau ~{mins} phút."
+            ),
         )
 
     perms = _permissions_for_token(user)

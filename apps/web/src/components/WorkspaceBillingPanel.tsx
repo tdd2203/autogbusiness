@@ -173,23 +173,27 @@ function computeTodayPerSlotPrice(
     total: 0,
     baseInvoice: null,
   };
-  if (!invoices || invoices.length === 0) {
+  // CHỈ tính trên hoá đơn ĐÃ THANH TOÁN. Hoá đơn "void"/unpaid (vd add-seat
+  // huỷ giữa kỳ — số tiền khổng lồ 88M/209M) không phản ánh giá thực 1 slot,
+  // nếu giữ lại sẽ làm nhiễu inferSlotsPurchased / pickFirstCycleInvoice.
+  const paidInvoices = (invoices ?? []).filter((inv) => inv.status === "paid");
+  if (paidInvoices.length === 0) {
     return { ...empty, note: "no_invoices" };
   }
   if (!renewalIso) {
-    return { ...empty, total: invoices.length, note: "no_renewal_date" };
+    return { ...empty, total: paidInvoices.length, note: "no_renewal_date" };
   }
   const renewal = new Date(renewalIso);
   renewal.setUTCHours(0, 0, 0, 0);
   const cycleStart = cycleStartFromRenewal(renewal);
-  const cycleInvoices = filterInvoicesInCurrentCycle(invoices, renewal);
+  const cycleInvoices = filterInvoicesInCurrentCycle(paidInvoices, renewal);
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
   const daysToday = daysBetween(today, renewal);
   if (daysToday <= 0) {
     return {
       ...empty,
-      total: invoices.length,
+      total: paidInvoices.length,
       note: "cycle_ended",
     };
   }
@@ -382,7 +386,7 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
         />
         <Metric
           label={t("billing.invoiceCount")}
-          value={String(invoices.length)}
+          value={String(total)}
           hint={t("billing.thisCycle")}
         />
       </div>

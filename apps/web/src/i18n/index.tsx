@@ -6,7 +6,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { formatDateForLang, localeTag } from "../lib/locale-format";
+import {
+  formatDateForLang,
+  formatDateTimeForLang,
+  localeTag,
+} from "../lib/locale-format";
 import vi from "./locales/vi.json";
 import zhCN from "./locales/zh-CN.json";
 
@@ -99,6 +103,13 @@ export function useFormatDate() {
   const { lang } = useI18n();
   return (value: string | Date, options?: Intl.DateTimeFormatOptions) =>
     formatDateForLang(lang, value, options);
+}
+
+/** Định dạng ngày + giờ chi tiết theo ngôn ngữ dashboard. */
+export function useFormatDateTime() {
+  const { lang } = useI18n();
+  return (value: string | Date, options?: Intl.DateTimeFormatOptions) =>
+    formatDateTimeForLang(lang, value, options);
 }
 
 /** Dịch mã enum (status, task type, …) — key dạng `prefix.VALUE`. */

@@ -14,10 +14,11 @@ from uuid import UUID
 
 from fastapi import Depends, HTTPException, Query, status
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.audit import log_event
 from app.deps import (
+    assert_workspace_access,
     get_current_user,
     get_session,
     require_permission,
@@ -93,18 +94,40 @@ def list_tasks(
     workspace_id: UUID | None = Query(default=None),
     limit: int = Query(default=50, le=200),
 ) -> list[QueueItem]:
-    stmt = select(QueueItem).order_by(QueueItem.created_at.desc()).limit(limit)
+    # Visibility (2026-06-17):
+    #  - Panel hàng đợi trong 1 workspace cần hiển thị TOÀN BỘ task để cả admin
+    #    chính lẫn admin phụ thấy đúng thứ tự chạy tuần tự. Vì thế khi có
+    #    `workspace_id`, sub-admin xem mọi task của workspace đó — NHƯNG phải có
+    #    quyền truy cập workspace (chặn dò workspace_id tuỳ ý), và danh tính người
+    #    tạo bị ẩn (chỉ super-admin mới thấy `created_by_username`).
+    #  - Queue toàn cục (không workspace_id): giữ nguyên — sub-admin chỉ thấy task
+    #    mình tạo, tránh lộ task chéo workspace.
+    if not user.is_super_admin and workspace_id is not None:
+        assert_workspace_access(db, user, workspace_id)
+
+    stmt = (
+        select(QueueItem)
+        .options(selectinload(QueueItem.created_by))  # tránh N+1 khi gắn username
+        .order_by(QueueItem.created_at.desc())
+        .limit(limit)
+    )
     if status_filter:
         stmt = stmt.where(QueueItem.status == status_filter)
     if workspace_id is not None:
         stmt = stmt.where(QueueItem.workspace_id == workspace_id)
-    # Sub-admin chỉ thấy task DO CHÍNH HỌ tạo; super-admin thấy toàn bộ.
-    if not user.is_super_admin:
+    if not user.is_super_admin and workspace_id is None:
         stmt = stmt.where(QueueItem.created_by_id == user.id)
+
     items = list(db.execute(stmt).scalars())
-    # Gắn username người tạo (transient attr) để response báo "sub-admin nào yêu cầu".
     for it in items:
-        it.created_by_username = it.created_by.username if it.created_by else None
+        # Danh tính người tạo: chỉ super-admin mới thấy (ẩn với sub-admin).
+        it.created_by_username = (
+            it.created_by.username
+            if (user.is_super_admin and it.created_by)
+            else None
+        )
+        # Quyền huỷ: super-admin huỷ mọi task; sub-admin chỉ task mình tạo.
+        it.can_cancel = user.is_super_admin or it.created_by_id == user.id
     return items
 
 

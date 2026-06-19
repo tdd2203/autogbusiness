@@ -11,10 +11,9 @@ import { dashboardLangToChatGPTLocale } from "../lib/chatgpt-locale";
 import type { QueueItem, Workspace } from "../types";
 import { WorkspaceBillingPanel } from "./WorkspaceBillingPanel";
 import { TaskCompletionBanner } from "./TaskCompletionBanner";
-import { TaskProgressBanner } from "./TaskProgressBanner";
-import { toast } from "./Toast";
 import { InviteMemberModal } from "./InviteMemberModal";
 import { BulkRemoveModal } from "./BulkRemoveModal";
+import { toast } from "./Toast";
 
 type Tab = { to: string; labelKey: string; superAdminOnly?: boolean };
 
@@ -49,16 +48,23 @@ export default function WorkspaceLayout() {
     queryFn: () =>
       api<QueueItem[]>(`/api/v1/queue?workspace_id=${workspaceId}&limit=50`),
     enabled: !!workspaceId,
-    // Poll 2s khi có task chạy, dừng khi idle. Mutation tạo task invalidate
-    // ["recent-tasks", …] → refetch → poll tự bật lại. Xem lib/queuePolling.
-    refetchInterval: queuePollInterval(2000),
+    // Poll 2s khi có task chạy; lúc idle KHÔNG dừng hẳn mà nhịp tim 10s. Lý do:
+    // panel hàng đợi (WorkspaceTaskRail) phải hiện task do NGƯỜI/PHIÊN KHÁC tạo
+    // (vd admin chính bấm Xoá/Đồng bộ trong khi "người thực hiện" mở dashboard ở
+    // máy chạy extension để theo dõi) — phiên không tự bấm thì không có mutation
+    // invalidate, nếu idle=false thì poll tắt vĩnh viễn → không bao giờ thấy task
+    // mới. 10s đủ để task "bắn lên" rail mà vẫn nhẹ (40 tab ≈ 4 req/s). Xem
+    // lib/queuePolling. Phiên TỰ tạo task vẫn thấy tức thì qua invalidate.
+    refetchInterval: queuePollInterval(2000, 10000),
   });
 
   // Billing actions (sync-billing + cancel billing task) + vòng đời billing task
   // đã tách ra hook — xem useBillingActions.md.
+  // cancelBillingTask KHÔNG còn dùng ở đây — tiến trình + huỷ task billing đã chuyển
+  // sang panel cột phải (WorkspaceTaskRail). Giữ activeBillingTask để biết khi nào
+  // chuyển sang banner KẾT QUẢ (completion).
   const {
     syncBilling,
-    cancelBillingTask,
     activeBillingTask,
     lastBillingTask,
     showBillingCompletion,
@@ -67,7 +73,12 @@ export default function WorkspaceLayout() {
 
   const tabs = TABS.filter((tab) => !tab.superAdminOnly || user?.is_super_admin);
 
-  // ---- 3 action mutations dùng chung cho toàn workspace ----
+  // ---- Đồng bộ TOÀN BỘ (full-sync) từ ChatGPT về DB ----
+  // Mở modal 3 lựa chọn scope: members / invites / both → tạo task SYNC_DATA,
+  // extension scrape danh sách từ chatgpt.com/admin rồi bulk-upsert về DB.
+  // (Khôi phục lại sau khi từng bị gỡ tạm 2026-06-17. Backend /sync vẫn sẵn.)
+  // Đồng bộ 1 tài khoản lẻ per-row ở tab "Chờ tham gia" (Members.tsx) là tính
+  // năng riêng, không thay thế full-sync này.
   const syncMembers = useMutation({
     mutationFn: async (scope: "members" | "invites" | "both") => {
       setSyncOpen(false);
@@ -117,80 +128,80 @@ export default function WorkspaceLayout() {
         {workspace && <ConnectionInfo workspace={workspace} />}
       </div>
 
-      <div
-        className="flex items-center"
-        style={{
-          gap: 12,
-          marginBottom: 16,
-          flexWrap: "wrap",
-          justifyContent: "space-between",
-        }}
-      >
-        <div className="tabs-bar" style={{ marginBottom: 0 }}>
-          {tabs.map((tab) => (
-            <NavLink
-              key={tab.to}
-              to={tab.to}
-              end
-              className={({ isActive }) => (isActive ? "tab active" : "tab")}
-            >
-              {t(tab.labelKey)}
-            </NavLink>
-          ))}
-        </div>
-        <div className="flex items-center" style={{ gap: 8, flexWrap: "wrap" }}>
-          {user?.is_super_admin && (
-            <button
-              onClick={() => syncBilling.mutate()}
-              disabled={syncBilling.isPending}
-              className={`btn btn-sm ${alreadySyncedBilling ? "btn-ghost" : "btn-primary"}`}
-              title={t("billing.syncTooltip")}
-            >
-              {syncBilling.isPending
-                ? t("billing.syncBusy")
-                : t("billing.syncButton")}
-            </button>
-          )}
-          {canSync && (
-            <button
-              onClick={() => setSyncOpen(true)}
-              disabled={syncMembers.isPending}
-              className="btn btn-sm btn-ghost"
-              title={t("member.syncTooltip")}
-            >
-              {syncMembers.isPending
-                ? t("member.syncBusy")
-                : t("member.syncButton")}
-            </button>
-          )}
-          {canInvite && (
-            <button
-              onClick={openInviteForm}
-              className="btn btn-sm btn-primary"
-            >
-              {t("member.inviteButton")}
-            </button>
-          )}
-          {(canRemove || user?.is_super_admin) && (
-            <button
-              onClick={() => setShowBulkRemoveModal(true)}
-              className="btn btn-sm btn-ghost"
-            >
-              {t("bulkUpdate.openModalBtn")}
-            </button>
-          )}
+      {/* HÀNG 1: tabs + nút hành động. Cột trái rộng = cột nội dung; có spacer giữ
+          chỗ cột phải (= bề rộng rail) khi rail hiển thị → mép phải hàng nút trùng
+          mép phải bảng thành viên (không lấn sang panel hàng đợi). */}
+      <div className="flex items-start" style={{ gap: 24, marginBottom: 16 }}>
+        <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+          <div
+            className="flex items-center"
+            style={{
+              gap: 12,
+              flexWrap: "wrap",
+              justifyContent: "space-between",
+            }}
+          >
+            <div className="tabs-bar" style={{ marginBottom: 0 }}>
+              {tabs.map((tab) => (
+                <NavLink
+                  key={tab.to}
+                  to={tab.to}
+                  end
+                  className={({ isActive }) => (isActive ? "tab active" : "tab")}
+                >
+                  {t(tab.labelKey)}
+                </NavLink>
+              ))}
+            </div>
+            {/* Hàng nút hành động — căn phải sát mép bảng, hiển thị thẳng hàng. */}
+            <div className="flex items-center" style={{ gap: 8, flexWrap: "wrap" }}>
+              {user?.is_super_admin && (
+                <button
+                  onClick={() => syncBilling.mutate()}
+                  disabled={syncBilling.isPending}
+                  className={`btn btn-sm ${alreadySyncedBilling ? "btn-ghost" : "btn-primary"}`}
+                  title={t("billing.syncTooltip")}
+                >
+                  {syncBilling.isPending
+                    ? t("billing.syncBusy")
+                    : t("billing.syncButton")}
+                </button>
+              )}
+              {canSync && (
+                <button
+                  onClick={() => setSyncOpen(true)}
+                  disabled={syncMembers.isPending}
+                  className="btn btn-sm btn-ghost"
+                  title={t("member.syncTooltip")}
+                >
+                  {syncMembers.isPending
+                    ? t("member.syncBusy")
+                    : t("member.syncButton")}
+                </button>
+              )}
+              {canInvite && (
+                <button
+                  onClick={openInviteForm}
+                  className="btn btn-sm btn-primary"
+                >
+                  {t("member.inviteButton")}
+                </button>
+              )}
+              {(canRemove || user?.is_super_admin) && (
+                <button
+                  onClick={() => setShowBulkRemoveModal(true)}
+                  className="btn btn-sm btn-ghost"
+                >
+                  {t("bulkUpdate.openModalBtn")}
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
-      {activeBillingTask && (
-        <div style={{ marginBottom: 16 }}>
-          <TaskProgressBanner
-            task={activeBillingTask}
-            onCancel={() => cancelBillingTask.mutate(activeBillingTask.id)}
-            canceling={cancelBillingTask.isPending}
-          />
-        </div>
-      )}
+      {/* Banner KẾT QUẢ billing — full-width, nằm dưới hàng tabs, trên hàng nội dung.
+          (Banner TIẾN TRÌNH billing đã chuyển sang panel "Hàng đợi tác vụ" cột phải.) */}
       {!activeBillingTask && showBillingCompletion && lastBillingTask && (
         <div style={{ marginBottom: 16 }}>
           <TaskCompletionBanner
@@ -200,10 +211,14 @@ export default function WorkspaceLayout() {
         </div>
       )}
 
-      {workspace && hasPermission("BILLING_VIEW") && (
-        <WorkspaceBillingPanel workspace={workspace} />
-      )}
-      <Outlet />
+      {/* Nội dung chính. Panel "Hàng đợi tác vụ" đã chuyển VÀO trang Thành viên
+          (Members.tsx) — nằm giữa phần tổng quan (metrics) và bảng danh sách. */}
+      <div>
+        {workspace && hasPermission("BILLING_VIEW") && (
+          <WorkspaceBillingPanel workspace={workspace} />
+        )}
+        <Outlet />
+      </div>
 
       {syncOpen && (
         <div
@@ -224,7 +239,7 @@ export default function WorkspaceLayout() {
             style={{ width: 360, maxWidth: "90vw", background: "var(--surface, #1e1e1e)" }}
           >
             <h3 className="display-h3" style={{ marginBottom: 16 }}>
-              Đồng bộ từ ChatGPT
+              {t("member.syncButton")}
             </h3>
             <div className="flex flex-col" style={{ gap: 8 }}>
               <button
@@ -232,21 +247,21 @@ export default function WorkspaceLayout() {
                 disabled={syncMembers.isPending}
                 onClick={() => syncMembers.mutate("members")}
               >
-                Đồng bộ thành viên
+                {t("member.syncScopeMembers")}
               </button>
               <button
                 className="btn btn-primary"
                 disabled={syncMembers.isPending}
                 onClick={() => syncMembers.mutate("invites")}
               >
-                Đồng bộ lời mời
+                {t("member.syncScopeInvites")}
               </button>
               <button
                 className="btn btn-primary"
                 disabled={syncMembers.isPending}
                 onClick={() => syncMembers.mutate("both")}
               >
-                Đồng bộ cả 2
+                {t("member.syncScopeBoth")}
               </button>
               <button
                 className="btn btn-ghost"

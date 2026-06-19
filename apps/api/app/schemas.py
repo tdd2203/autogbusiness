@@ -59,6 +59,7 @@ class ResetPasswordIn(BaseModel):
 QueueType = Literal[
     "INVITE_MEMBER",
     "REMOVE_MEMBER",
+    "SYNC_MEMBER",
     "CHANGE_ROLE",
     "CHANGE_LICENSE_TYPE",
     "SYNC_DATA",
@@ -96,9 +97,13 @@ class QueueOut(BaseModel):
     error_message: str | None
     workspace_id: UUID | None
     created_by_id: UUID | None
-    # Username/email của người tạo task — super-admin xem để biết sub-admin nào
-    # đã yêu cầu. Populate ở list_tasks (None nếu task hệ thống / không có creator).
+    # Username/email của người tạo task — CHỈ super-admin mới thấy (để biết sub-admin
+    # nào đã yêu cầu). Sub-admin luôn nhận None (ẩn danh tính người thực hiện).
+    # Populate ở list_tasks (None nếu task hệ thống / không có creator).
     created_by_username: str | None = None
+    # Người xem hiện tại có được phép HUỶ task này không (super-admin: mọi task;
+    # sub-admin: chỉ task mình tạo). UI dùng ẩn/hiện nút Huỷ. Populate ở list_tasks.
+    can_cancel: bool = False
     created_at: datetime
     picked_at: datetime | None
     completed_at: datetime | None
@@ -279,6 +284,10 @@ class MemberOut(BaseModel):
     joined_at: datetime | None
     last_synced_at: datetime | None
     created_at: datetime
+    # Lần CUỐI invite/re-invite qua dashboard (NULL nếu member chỉ đến từ SYNC).
+    # Dashboard hiển thị COALESCE(last_invited_at, created_at) cho cột "Ngày thêm"
+    # để khớp thời điểm task INVITE trong Queue (re-invite giữ created_at cũ).
+    last_invited_at: datetime | None = None
     subscription_months: int | None = None
     subscription_end_at: datetime | None = None
     # Payment tracking (Dashboard-only): 'unpaid' | 'paid'.
@@ -367,6 +376,15 @@ class MemberBulkUpsert(BaseModel):
     #   - sync 1 tab "Người dùng" → scraped_statuses=["active"] → chỉ reconcile active
     #   - sync 3 tab → scraped_statuses=["active","pending"] → reconcile cả 2
     scraped_statuses: list[Literal["active", "pending"]] | None = None
+    # Khi sync số lượng lớn, extension chia `members` thành nhiều chunk (200/lần)
+    # rồi gọi bulk-upsert nhiều lần. Reconcile KHÔNG được chạy theo từng chunk
+    # (mỗi chunk chỉ thấy email của nó → mark removed oan member của chunk khác).
+    # Vì vậy extension upsert các chunk KHÔNG reconcile, rồi gọi 1 lần cuối với
+    # `reconcile_emails` = TẤT CẢ email đã scrape (+ `reconcile_pending_emails`
+    # cho rogue-pending). Khi set, dùng các list này làm tập "đã scrape" thay vì
+    # suy ra từ `members` của riêng request này.
+    reconcile_emails: list[str] | None = None
+    reconcile_pending_emails: list[str] | None = None
 
 
 class MemberInviteIn(BaseModel):
@@ -375,6 +393,12 @@ class MemberInviteIn(BaseModel):
     # Subscription tracking — Dashboard-only. Default 1 tháng = 30 ngày.
     # None = không giới hạn (admin tự quản lý). Range 1-60 để tránh nhập nhầm.
     subscription_months: int | None = Field(default=1, ge=1, le=60)
+
+
+class SyncMemberIn(BaseModel):
+    """Body cho "đồng bộ 1 tài khoản lẻ" (POST /{workspace_id}/sync-member)."""
+
+    email: EmailStr
 
 
 class MemberInviteEntry(BaseModel):

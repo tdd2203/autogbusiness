@@ -4,23 +4,33 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
 import { useAuth } from "../hooks/useAuth";
-import { useFormatDate, useT } from "../i18n";
+import { useFormatDate, useFormatDateTime, useT } from "../i18n";
 import type { Member, QueueItem, WorkspaceMemberStats } from "../types";
 import { useRemoveMembers } from "../hooks/useRemoveMembers";
 import { useMemberMutations } from "../hooks/useMemberMutations";
 import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
+import { WorkspaceTaskRail } from "../components/WorkspaceTaskRail";
 import { confirm } from "../components/Toast";
+import { Chip } from "./Queue";
 
-// Dashboard CHỈ cho phép đổi giữa 2 role này. admin/owner phải thao tác trực
-// tiếp trên ChatGPT (an toàn — tránh dashboard cấp quyền cao bằng UI dễ nhầm).
-// Member đã có role admin/owner từ trước → hiển thị label nhưng KHÔNG cho đổi.
-type Role = "owner" | "admin" | "member" | "analytics_viewer";
-const DASHBOARD_ALLOWED_ROLES: Role[] = ["member", "analytics_viewer"];
+// Tab lọc theo trạng thái tham gia workspace (giống ChatGPT):
+//   active  → Đang hoạt động (đã tham gia)
+//   pending → Chờ tham gia (đã mời, chưa accept)
+// Không có tab "tất cả"; mặc định mở tab active.
+type StatusFilter = "active" | "pending";
 
 // Loại suất cấp phép ChatGPT — đổi qua menu "..." trên row /admin/members.
 type LicenseType = "ChatGPT" | "Codex";
 const LICENSE_TYPES: LicenseType[] = ["ChatGPT", "Codex"];
 
+// "Ngày thêm" = thời điểm WEB APP ghi nhận member, KHÔNG dùng joined_at scrape
+// từ ChatGPT. Dùng last_invited_at ?? created_at:
+//   - created_at BẤT BIẾN từ lần web ghi nhận ĐẦU (invite đầu / lần SYNC đầu).
+//   - last_invited_at = lần CUỐI invite/re-invite qua dashboard.
+// Member RE-INVITE (invite fail rồi mời lại, hoặc removed→mời lại) giữ created_at
+// cũ → nếu hiện created_at thì "Ngày thêm" LỆCH với thời điểm task INVITE trong
+// Queue (xem v0.x fix). last_invited_at ?? created_at khớp lại; member chỉ từ
+// SYNC (last_invited_at NULL) vẫn hiện created_at như cũ.
 const STATUS_BADGE: Record<string, string> = {
   active: "badge badge-success",
   pending: "badge badge-warning",
@@ -30,6 +40,7 @@ const STATUS_BADGE: Record<string, string> = {
 export default function Members() {
   const t = useT();
   const formatDate = useFormatDate();
+  const formatDateTime = useFormatDateTime();
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const { hasPermission, user } = useAuth();
   const qc = useQueryClient();
@@ -37,6 +48,7 @@ export default function Members() {
   // Invite form đã được lift sang InviteMemberModal (WorkspaceLayout header).
   // Members.tsx chỉ còn hiển thị danh sách + filter + progress.
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
   // Xoá hàng loạt qua checkbox chọn nhiều dòng. Modal dán email nằm ở
   // WorkspaceLayout header (cạnh nút Mời) — đồng bộ với flow mời thành viên.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -64,9 +76,11 @@ export default function Members() {
     queryFn: () =>
       api<QueueItem[]>(`/api/v1/queue?workspace_id=${workspaceId}&limit=50`),
     enabled: !!workspaceId,
-    // Poll 2s khi có task chạy, dừng khi idle (resume qua invalidate). Xem
-    // lib/queuePolling.
-    refetchInterval: queuePollInterval(2000),
+    // Poll 2s khi có task chạy; lúc idle nhịp tim 10s (KHÔNG dừng hẳn) để panel
+    // hàng đợi hiện task do người/phiên khác tạo — "người thực hiện" mở dashboard
+    // theo dõi vẫn thấy task Xoá/Đồng bộ admin khác vừa tạo dù phiên này không tự
+    // invalidate. Khớp WorkspaceLayout (cùng queryKey). Xem lib/queuePolling.
+    refetchInterval: queuePollInterval(2000, 10000),
   });
 
   // Auto-reload members list khi extension hoàn thành task (COMPLETED/FAILED)
@@ -86,6 +100,9 @@ export default function Members() {
       "CHANGE_LICENSE_TYPE",
       "REVOKE_INVITES",
       "SYNC_DATA",
+      // SYNC_MEMBER (đồng bộ 1 tài khoản lẻ): khi extension hoàn tất → member có
+      // thể chuyển pending→active → invalidate để list tự cập nhật, KHỎI reload tay.
+      "SYNC_MEMBER",
     ]);
     let shouldInvalidate = false;
     for (const task of recentTasks) {
@@ -102,21 +119,14 @@ export default function Members() {
     }
   }, [recentTasks, qc, workspaceId]);
 
-  const activeTasks = recentTasks.filter(
-    (t) => t.status === "PENDING" || t.status === "IN_PROGRESS",
-  );
-  const activeSyncTask = activeTasks.find((t) => t.type === "SYNC_DATA");
-  const activeInviteTasks = activeTasks.filter(
-    (t) => t.type === "INVITE_MEMBER",
-  );
-  const activeInviteCount = activeInviteTasks.length;
-  // Tác vụ thao tác từng member đang chạy/chờ (đổi giấy phép, xoá, đổi vai trò).
-  // Bulk tạo nhiều task cùng loại → banner show count + tiến trình từng cái.
-  const activeActionTasks = activeTasks.filter(
+  // activeSyncTask: theo dõi để (1) phát hiện rogue pending sau sync, (2) invalidate
+  // members khi sync xong. Tiến trình/huỷ các task đang chạy (sync/mời/thao tác)
+  // đã chuyển hết sang panel cột phải (WorkspaceTaskRail) — Members KHÔNG còn render
+  // banner tiến trình ở giữa trang nữa.
+  const activeSyncTask = recentTasks.find(
     (t) =>
-      t.type === "CHANGE_LICENSE_TYPE" ||
-      t.type === "REMOVE_MEMBER" ||
-      t.type === "CHANGE_ROLE",
+      t.type === "SYNC_DATA" &&
+      (t.status === "PENDING" || t.status === "IN_PROGRESS"),
   );
   // Lấy invite FAILED gần đây (trong recentTasks) để show debug info ngay banner
   // → user thấy được error code/message của task vừa fail mà không cần mở Queue tab.
@@ -157,18 +167,18 @@ export default function Members() {
   // sync mutation đã được lift lên WorkspaceLayout (button nằm cùng hàng tabs).
   // Members.tsx vẫn theo dõi activeSyncTask để show banner progress + cancel.
 
-  // Đổi vai trò / giấy phép / thu hồi lời mời / huỷ task đã tách sang hook riêng
-  // kèm docs — xem hooks/useMemberMutations.md TRƯỚC KHI SỬA. cancelTask cần biết
-  // loại task đang chạy để render confirm → truyền getCancelTaskType.
+  // Đổi vai trò / giấy phép / thu hồi lời mời đã tách sang hook riêng kèm docs —
+  // xem hooks/useMemberMutations.md TRƯỚC KHI SỬA. Huỷ task (cancelTask) KHÔNG còn
+  // dùng ở Members — đã chuyển sang panel cột phải (WorkspaceTaskRail có nút Huỷ
+  // riêng theo can_cancel).
   const {
-    changeRole,
     changeLicenseType,
     bulkChangeLicense,
     revokeInvites,
-    cancelTask,
+    syncMember,
+    bulkSyncMembers,
   } = useMemberMutations(workspaceId, {
     onBulkChangeLicenseCleared: () => setSelectedIds(new Set()),
-    getCancelTaskType: () => activeSyncTask?.type,
   });
 
   useEffect(() => {
@@ -193,7 +203,6 @@ export default function Members() {
           okText: t("member.rogueOk", { n: rogue.length }),
           cancelText: t("member.rogueCancel"),
           danger: true,
-          requireType: "delete",
         },
       );
       if (ok) {
@@ -213,8 +222,7 @@ export default function Members() {
   );
 
   const canRemove = hasPermission("MEMBER_REMOVE");
-  const canChangeRole = user?.is_super_admin === true;
-  // Đổi license type cũng chỉ super-admin (tái dùng quyền như đổi role).
+  // Đổi license type chỉ super-admin (tái dùng quyền như đổi role).
   const canChangeLicense = user?.is_super_admin === true;
   // Có thể thao tác hàng loạt (checkbox + thanh "Cập nhật hàng loạt") khi có ít
   // nhất 1 trong 2 quyền: xoá hoặc đổi giấy phép.
@@ -247,14 +255,21 @@ export default function Members() {
   );
 
   const filteredMembers = useMemo(() => {
-    if (!search.trim()) return members;
+    let rows = members.filter((m) => m.status === statusFilter);
     const s = search.trim().toLowerCase();
-    return members.filter(
-      (m) =>
-        m.email.toLowerCase().includes(s) ||
-        (m.name ?? "").toLowerCase().includes(s),
-    );
-  }, [members, search]);
+    if (s) {
+      rows = rows.filter(
+        (m) =>
+          m.email.toLowerCase().includes(s) ||
+          (m.name ?? "").toLowerCase().includes(s),
+      );
+    }
+    // Sắp xếp theo "ngày thêm" = last_invited_at ?? created_at (khớp cột hiển
+    // thị), mới nhất lên đầu — member vừa re-invite nhảy lên đầu đúng kỳ vọng.
+    const addedAt = (m: Member) =>
+      new Date(m.last_invited_at ?? m.created_at).getTime();
+    return [...rows].sort((a, b) => addedAt(b) - addedAt(a));
+  }, [members, search, statusFilter]);
 
   // Xoá hàng loạt: chỉ chọn được member active/pending (removed thì bỏ qua) khi
   // có quyền MEMBER_REMOVE. Select-all chỉ áp lên các dòng đang hiển thị (đã lọc).
@@ -295,14 +310,41 @@ export default function Members() {
     });
   }
   // Thanh "Cập nhật hàng loạt": 1 select gom mọi hành động trên các dòng đã chọn.
-  //   - remove                → xoá khỏi workspace (cần MEMBER_REMOVE)
-  //   - license:ChatGPT/Codex → đổi giấy phép hàng loạt (cần super-admin)
+  // Tuỳ tab đang mở (statusFilter) mà danh sách hành động khác nhau (xem JSX):
+  //   tab active  → remove (MEMBER_REMOVE) + license:ChatGPT/Codex (super-admin)
+  //   tab pending → sync (đồng bộ kiểm tra đã tham gia) + revoke (MEMBER_REMOVE)
+  // Mỗi action xong tự clear selection (onSuccess per-call) để tránh thao tác lại
+  // trên danh sách đã đổi.
   async function handleBulkAction(value: string) {
     if (!value) return;
-    const ids = selectableMembers
-      .filter((m) => selectedIds.has(m.id))
-      .map((m) => m.id);
-    if (ids.length === 0) return;
+    const selected = selectableMembers.filter((m) => selectedIds.has(m.id));
+    if (selected.length === 0) return;
+    const ids = selected.map((m) => m.id);
+    const emails = selected.map((m) => m.email);
+    const clearSelection = { onSuccess: () => setSelectedIds(new Set()) };
+
+    if (value === "sync") {
+      const ok = await confirm(t("bulkSync.confirmBody", { n: emails.length }), {
+        title: t("bulkSync.confirmTitle", { n: emails.length }),
+        okText: t("bulkSync.confirmOk", { n: emails.length }),
+        cancelText: t("common.cancel"),
+      });
+      if (ok) bulkSyncMembers.mutate(emails, clearSelection);
+      return;
+    }
+
+    if (value === "revoke") {
+      // Thu hồi lời mời pending = nhẹ hơn xoá member active. Tất cả các hành động
+      // xoá/thu hồi giờ chỉ cần bấm xác nhận (danger) — không bắt gõ "delete" nữa.
+      const ok = await confirm(t("bulkRevoke.confirmBody", { n: emails.length }), {
+        title: t("bulkRevoke.confirmTitle", { n: emails.length }),
+        okText: t("bulkRevoke.confirmOk", { n: emails.length }),
+        cancelText: t("common.cancel"),
+        danger: true,
+      });
+      if (ok) revokeInvites.mutate(emails, clearSelection);
+      return;
+    }
 
     if (value === "remove") {
       const ok = await confirm(t("bulkRemove.confirmSelectedBody", { n: ids.length }), {
@@ -310,7 +352,6 @@ export default function Members() {
         okText: t("bulkRemove.confirmSelectedOk", { n: ids.length }),
         cancelText: t("common.cancel"),
         danger: true,
-        requireType: "delete",
       });
       if (ok) bulkRemoveSelected.mutate(ids);
       return;
@@ -330,75 +371,20 @@ export default function Members() {
     }
   }
 
-  const colCount = canBulk ? 9 : 8;
+  const colCount = canBulk ? 8 : 7;
 
   return (
     <div>
-      {activeSyncTask && (
-        <div style={{ marginBottom: 16 }}>
-          <SyncProgressBanner
-            task={activeSyncTask}
-            onCancel={() => cancelTask.mutate(activeSyncTask.id)}
-            canceling={cancelTask.isPending}
-          />
-        </div>
-      )}
+      {/* Banner TIẾN TRÌNH task đang chạy (sync / mời / thao tác) đã GỠ khỏi giữa
+          trang — mọi task đang chạy giờ hiện ở panel "Hàng đợi tác vụ" cột phải
+          (WorkspaceTaskRail), kèm timeline thời lượng từng giai đoạn + nút Huỷ.
+          Ở đây chỉ giữ banner KẾT QUẢ (completion) + LỖI + cảnh báo hết hạn. */}
       {!activeSyncTask && showSyncCompletion && lastSyncTask && (
         <div style={{ marginBottom: 16 }}>
           <TaskCompletionBanner
             task={lastSyncTask}
             onDismiss={() => setLastSyncTaskId(null)}
           />
-        </div>
-      )}
-      {!activeSyncTask && !lastSyncTask && false && (
-        <div className="notice" style={{ marginBottom: 16 }}>
-          <div className="notice-icon">
-            <div className="spinner" />
-          </div>
-          <div>
-            <div className="notice-title">{t("member.syncRunning")}</div>
-            <div className="notice-body">{t("member.syncQueued")}</div>
-          </div>
-        </div>
-      )}
-      {activeInviteCount > 0 && (
-        <div className="notice warn" style={{ marginBottom: 16 }}>
-          <div className="notice-icon">
-            <div className="spinner" />
-          </div>
-          <div style={{ flex: 1 }}>
-            <div className="notice-title">
-              {t("member.invitesInFlight", { n: activeInviteCount })}
-            </div>
-            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-              {activeInviteTasks.map((task) => (
-                <InviteProgressRow key={task.id} task={task} />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-      {activeActionTasks.length > 0 && (
-        <div className="notice" style={{ marginBottom: 16 }}>
-          <div className="notice-icon">
-            <div className="spinner" />
-          </div>
-          <div style={{ flex: 1 }}>
-            <div className="notice-title">
-              {t("member.actionsInFlight", { n: activeActionTasks.length })}
-            </div>
-            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-              {activeActionTasks.slice(0, 8).map((task) => (
-                <InviteProgressRow key={task.id} task={task} />
-              ))}
-              {activeActionTasks.length > 8 && (
-                <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
-                  {t("member.actionsMore", { n: activeActionTasks.length - 8 })}
-                </div>
-              )}
-            </div>
-          </div>
         </div>
       )}
       {recentFailedInvites.length > 0 && (
@@ -510,6 +496,12 @@ export default function Members() {
         />
       </div>
 
+      {/* Panel "Hàng đợi tác vụ" — nằm giữa phần tổng quan (metrics) và bảng danh
+          sách thành viên. Desktop-only (tự ẩn <1024px), cần quyền QUEUE_VIEW. */}
+      {workspaceId && hasPermission("QUEUE_VIEW") && (
+        <WorkspaceTaskRail workspaceId={workspaceId} tasks={recentTasks} />
+      )}
+
       <div className="table-card">
         <div className="table-head">
           <div>
@@ -544,7 +536,10 @@ export default function Members() {
                 className="form-input"
                 value=""
                 disabled={
-                  bulkRemoveSelected.isPending || bulkChangeLicense.isPending
+                  bulkRemoveSelected.isPending ||
+                  bulkChangeLicense.isPending ||
+                  bulkSyncMembers.isPending ||
+                  revokeInvites.isPending
                 }
                 onChange={(e) => {
                   void handleBulkAction(e.target.value);
@@ -554,22 +549,38 @@ export default function Members() {
                 title={t("bulkAction.placeholder", { n: selectedCount })}
               >
                 <option value="">
-                  {bulkRemoveSelected.isPending || bulkChangeLicense.isPending
+                  {bulkRemoveSelected.isPending ||
+                  bulkChangeLicense.isPending ||
+                  bulkSyncMembers.isPending ||
+                  revokeInvites.isPending
                     ? t("bulkRemove.submitBusy")
                     : t("bulkAction.placeholder", { n: selectedCount })}
                 </option>
-                {canChangeLicense && (
-                  <option value="license:ChatGPT">
-                    {t("bulkAction.licenseChatGPT")}
-                  </option>
-                )}
-                {canChangeLicense && (
-                  <option value="license:Codex">
-                    {t("bulkAction.licenseCodex")}
-                  </option>
-                )}
-                {canRemove && (
-                  <option value="remove">{t("bulkAction.remove")}</option>
+                {/* Hành động bám theo tab: pending → đồng bộ + thu hồi (giống nút
+                    từng dòng); active → đổi giấy phép + xoá. */}
+                {statusFilter === "pending" ? (
+                  <>
+                    <option value="sync">{t("bulkAction.sync")}</option>
+                    {canRemove && (
+                      <option value="revoke">{t("bulkAction.revoke")}</option>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {canChangeLicense && (
+                      <option value="license:ChatGPT">
+                        {t("bulkAction.licenseChatGPT")}
+                      </option>
+                    )}
+                    {canChangeLicense && (
+                      <option value="license:Codex">
+                        {t("bulkAction.licenseCodex")}
+                      </option>
+                    )}
+                    {canRemove && (
+                      <option value="remove">{t("bulkAction.remove")}</option>
+                    )}
+                  </>
                 )}
               </select>
             )}
@@ -578,12 +589,32 @@ export default function Members() {
           </div>
         </div>
 
+        <div
+          className="flex flex-wrap gap-2"
+          style={{ padding: "0 16px 12px" }}
+        >
+          <Chip
+            active={statusFilter === "active"}
+            onClick={() => setStatusFilter("active")}
+            label={t("member.statusActive")}
+            count={activeCount}
+          />
+          <Chip
+            active={statusFilter === "pending"}
+            onClick={() => setStatusFilter("pending")}
+            label={t("member.statusPending")}
+            count={pendingCount}
+          />
+        </div>
+
         <div style={{ overflowX: "auto" }}>
-          <table className="data-table">
+          {/* data-table-compact: cỡ chữ nhỏ + padding hẹp + nowrap → mọi ô nằm
+              trên 1 hàng ngang, không co/xuống dòng (tràn ngang thì scroll). */}
+          <table className="data-table data-table-compact">
             <thead>
               <tr>
                 {canBulk && (
-                  <th style={{ width: 36, textAlign: "center" }}>
+                  <th style={{ width: 40, textAlign: "center" }}>
                     <input
                       type="checkbox"
                       checked={allSelected}
@@ -594,10 +625,9 @@ export default function Members() {
                   </th>
                 )}
                 <th>{t("member.colEmail")}</th>
-                <th>{t("member.colName")}</th>
-                <th>{t("member.colRole")}</th>
-                <th>{t("member.colLicenseType")}</th>
-                <th>{t("member.colStatus")}</th>
+                <th style={{ textAlign: "center" }}>{t("member.colRole")}</th>
+                <th style={{ textAlign: "center" }}>{t("member.colLicenseType")}</th>
+                <th style={{ textAlign: "center" }}>{t("member.colStatus")}</th>
                 <th>{t("member.colSubscription")}</th>
                 <th>{t("member.colJoinedAt")}</th>
                 <th style={{ textAlign: "right" }}>{t("common.actions")}</th>
@@ -637,8 +667,7 @@ export default function Members() {
                     </td>
                   )}
                   <td className="cell-email">{m.email}</td>
-                  <td className="cell-muted">{m.name ?? "—"}</td>
-                  <td>
+                  <td style={{ textAlign: "center" }}>
                     {m.chatgpt_role ? (
                       <span className="role-tag">
                         {t(
@@ -651,7 +680,7 @@ export default function Members() {
                       <span className="cell-muted">—</span>
                     )}
                   </td>
-                  <td>
+                  <td style={{ textAlign: "center" }}>
                     {canChangeLicense && m.status === "active" ? (
                       <select
                         value={m.license_type ?? ""}
@@ -681,7 +710,7 @@ export default function Members() {
                       <span className="cell-muted">—</span>
                     )}
                   </td>
-                  <td>
+                  <td style={{ textAlign: "center" }}>
                     <span className={STATUS_BADGE[m.status] ?? "badge badge-neutral"}>
                       {t(
                         `member.status${m.status
@@ -694,51 +723,26 @@ export default function Members() {
                     <SubscriptionCell member={m} t={t} formatDate={formatDate} />
                   </td>
                   <td className="cell-muted" style={{ fontSize: 12 }}>
-                    {m.joined_at ? formatDate(m.joined_at) : "—"}
+                    {formatDateTime(m.last_invited_at ?? m.created_at)}
                   </td>
                   <td style={{ textAlign: "right" }}>
                     <div
                       className="flex items-center justify-end"
                       style={{ gap: 6 }}
                     >
-                      {canChangeRole &&
-                        m.chatgpt_role &&
-                        m.status === "active" &&
-                        (DASHBOARD_ALLOWED_ROLES.includes(m.chatgpt_role as Role) ? (
-                          <select
-                            value={m.chatgpt_role}
-                            onChange={(e) =>
-                              changeRole.mutate({
-                                memberId: m.id,
-                                role: e.target.value as Role,
-                              })
-                            }
-                            className="form-input"
-                            style={{ padding: "4px 8px", fontSize: 12, width: "auto" }}
-                          >
-                            <option value="member">{t("member.roleMember")}</option>
-                            <option value="analytics_viewer">{t("member.roleAnalyticsViewer")}</option>
-                          </select>
-                        ) : (
-                          // Member đang là admin/owner — KHÔNG cho đổi qua dashboard.
-                          // Hiển thị label disabled + tooltip giải thích.
-                          <span
-                            title={t("member.roleEditOnChatGPT")}
-                            style={{
-                              padding: "4px 8px",
-                              fontSize: 12,
-                              color: "var(--ink-3)",
-                              border: "1px dashed var(--border)",
-                              borderRadius: 4,
-                              cursor: "help",
-                            }}
-                          >
-                            {m.chatgpt_role === "admin"
-                              ? t("member.roleAdmin")
-                              : t("member.roleOwner")}{" "}
-                            🔒
-                          </span>
-                        ))}
+                      {/* Đồng bộ 1 tài khoản lẻ — CHỈ ở member 'pending': tìm email
+                          ở tab Lời mời, không thấy thì fallback tab Người dùng;
+                          thấy → set 'active'; không thấy → báo không tồn tại. */}
+                      {m.status === "pending" && (
+                        <button
+                          onClick={() => syncMember.mutate(m.email)}
+                          disabled={syncMember.isPending}
+                          className="row-action"
+                          title={t("member.syncAction")}
+                        >
+                          {t("member.syncAction")}
+                        </button>
+                      )}
                       {canRemove && m.status === "pending" && (
                         <button
                           onClick={async () => {
@@ -768,7 +772,6 @@ export default function Members() {
                                 okText: t("member.removeAction"),
                                 cancelText: t("common.cancel"),
                                 danger: true,
-                                requireType: "delete",
                               },
                             );
                             if (ok) remove.mutate(m.id);
@@ -849,195 +852,9 @@ export function SearchInput({
   );
 }
 
-function SyncProgressBanner({
-  task,
-  onCancel,
-  canceling,
-}: {
-  task: QueueItem;
-  onCancel: () => void;
-  canceling: boolean;
-}) {
-  const t = useT();
-  const p = task.progress ?? {};
-  const phase = (p.phase as string | undefined) ?? task.status;
-  const current = p.current as number | undefined;
-  const message = (p.message as string | undefined) ?? t(`progress.${phase}`);
-  const showCount = typeof current === "number";
-
-  const createdAt = new Date(task.created_at).getTime();
-  const ageMs = Date.now() - createdAt;
-  const isStale =
-    (task.status === "PENDING" && ageMs > 60_000) ||
-    (task.status === "IN_PROGRESS" && ageMs > 90_000 && !p.phase);
-
-  return (
-    <div className="notice">
-      <div className="notice-icon">
-        <div className="spinner" />
-      </div>
-      <div style={{ flex: 1 }}>
-        <div className="flex items-center" style={{ gap: 8 }}>
-          <div className="notice-title">{t("member.syncRunning")}</div>
-          {showCount && (
-            <div
-              style={{
-                fontSize: 12,
-                color: "var(--info)",
-                fontFamily: "var(--font-mono)",
-                marginLeft: "auto",
-              }}
-            >
-              {t("progress.collected", { n: current ?? 0 })}
-            </div>
-          )}
-        </div>
-        <div className="notice-body">{message}</div>
-        {isStale && (
-          <div
-            style={{
-              marginTop: 6,
-              fontSize: 11.5,
-              color: "var(--warning)",
-              background: "var(--warning-bg)",
-              border: "1px solid #fde68a",
-              borderRadius: 4,
-              padding: "4px 8px",
-            }}
-          >
-            ⚠ {t("queue.stuckHint")}
-          </div>
-        )}
-      </div>
-      <button
-        onClick={onCancel}
-        disabled={canceling}
-        className="btn btn-ghost btn-sm"
-        style={{ borderColor: "#fecaca", color: "var(--danger)" }}
-      >
-        {canceling ? t("queue.cancelOkBusy") : t("queue.cancel")}
-      </button>
-    </div>
-  );
-}
-
-/**
- * Hiển thị 1 dòng progress cho 1 invite task đang chạy.
- *
- * Show:
- *  - Email(s) đang invite (từ payload)
- *  - Phase + message hiện tại (từ progress)
- *  - Elapsed time (giúp phát hiện hang)
- *  - Stale warning nếu IN_PROGRESS > 90s không có phase mới
- */
-function InviteProgressRow({ task }: { task: QueueItem }) {
-  const t = useT();
-  const p = task.progress ?? {};
-  const phase = (p.phase as string | undefined) ?? null;
-  const message = (p.message as string | undefined) ?? null;
-  const current = p.current as number | undefined;
-  const total = p.total as number | undefined;
-
-  const payload = task.payload as Record<string, unknown>;
-  const emails: string[] = Array.isArray(payload.emails)
-    ? (payload.emails as string[])
-    : typeof payload.email === "string"
-      ? [payload.email]
-      : [];
-  const emailsLabel =
-    emails.length === 0
-      ? "—"
-      : emails.length === 1
-        ? emails[0]
-        : `${emails[0]} +${emails.length - 1}`;
-
-  const startMs = new Date(task.picked_at ?? task.created_at).getTime();
-  const ageSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
-  const isStale = task.status === "IN_PROGRESS" && ageSec > 90 && !phase;
-  const isPending = task.status === "PENDING";
-
-  return (
-    <div
-      style={{
-        fontSize: 12,
-        background: "rgba(255,255,255,0.5)",
-        border: "1px solid var(--border)",
-        borderRadius: 6,
-        padding: "6px 10px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 2,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <span
-          className="mono"
-          style={{ fontWeight: 600, color: "var(--ink)" }}
-        >
-          {emailsLabel}
-        </span>
-        <span
-          style={{
-            fontSize: 10,
-            background: isPending ? "var(--ink-3)" : "var(--info)",
-            color: "white",
-            padding: "1px 6px",
-            borderRadius: 3,
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-          }}
-        >
-          {task.status}
-        </span>
-        {phase && (
-          <span
-            style={{
-              fontSize: 10,
-              color: "var(--ink-2)",
-              fontFamily: "var(--font-mono)",
-            }}
-          >
-            {phase}
-          </span>
-        )}
-        {typeof current === "number" && typeof total === "number" && (
-          <span style={{ fontSize: 10, color: "var(--ink-3)", fontFamily: "var(--font-mono)" }}>
-            {current}/{total}
-          </span>
-        )}
-        <span
-          style={{
-            marginLeft: "auto",
-            fontSize: 10,
-            color: "var(--ink-3)",
-            fontFamily: "var(--font-mono)",
-          }}
-          title={t("invite.progressElapsedHint")}
-        >
-          {ageSec}s
-        </span>
-      </div>
-      {message && (
-        <div style={{ color: "var(--ink-2)", fontSize: 11.5 }}>{message}</div>
-      )}
-      {isStale && (
-        <div
-          style={{
-            fontSize: 11,
-            color: "var(--warning)",
-            background: "var(--warning-bg, #fef3c7)",
-            border: "1px solid #fde68a",
-            borderRadius: 4,
-            padding: "3px 6px",
-            marginTop: 2,
-          }}
-        >
-          ⚠ {t("invite.progressStaleHint")}
-        </div>
-      )}
-    </div>
-  );
-}
+/* SyncProgressBanner + InviteProgressRow đã GỠ (2026-06-17): mọi task đang chạy
+   (sync / mời / thao tác) giờ hiển thị tiến trình + timeline + nút Huỷ ở panel cột
+   phải WorkspaceTaskRail, không còn banner tiến trình giữa trang. */
 
 /** Dòng error cho invite task vừa FAILED — show error_code + message. */
 function InviteFailedRow({ task }: { task: QueueItem }) {

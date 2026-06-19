@@ -47,6 +47,18 @@ def update_task(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Queue item không thuộc workspace của API key này",
         )
+    # ---- IDEMPOTENCY / TERMINAL GUARD (fix 2026-06-17) ----
+    # Task đã ở trạng thái terminal (COMPLETED/FAILED) KHÔNG được xử lý lại:
+    #  - Extension PATCH trùng (retry mạng / double-fire) → chạy lại reconcile
+    #    (re-mark removed, double DELETE invite, sync role/license lần 2) — không
+    #    idempotent an toàn.
+    #  - Task đã bị execution.py set FAILED+TIMEOUT, extension báo COMPLETED muộn
+    #    → trước đây LẬT terminal FAILED→COMPLETED rồi chạy side-effect cho task
+    #    đã chết.
+    # → Khoá: đã terminal thì trả nguyên trạng (idempotent), bỏ qua mọi
+    #   side-effect. Nguồn chân lý cuối vẫn là SYNC_DATA.
+    if item.status in ("COMPLETED", "FAILED"):
+        return item
     # ---- KHÔNG auto-reconcile REMOVE_MEMBER + UI_ELEMENT_NOT_FOUND nữa ----
     # Trước đây: extension báo không tìm thấy member → backend tự coi là "đã
     # removed" và convert FAILED → COMPLETED. ĐÃ BỎ: trên workspace đông member
@@ -193,6 +205,45 @@ def update_task(
                     data={"email": target_email},
                     commit=False,
                 )
+
+    # SYNC_MEMBER COMPLETED → "đồng bộ 1 tài khoản lẻ" reconcile theo `found_in`.
+    # Extension trả {ok, data:{email, found_in}}; runner gói thành result={data:{...}}.
+    #   found_in='active'  → member đã CHẤP NHẬN lời mời → set status='active'
+    #                        (+ joined_at nếu chưa có). Đây là mục tiêu chính.
+    #   found_in='pending' → vẫn đang chờ → giữ pending, chỉ chạm last_synced_at.
+    #   found_in='none'    → KHÔNG thấy ở cả 2 tab → CHỈ báo (giữ result để
+    #                        dashboard hiển thị "email không tồn tại trong
+    #                        workspace"); KHÔNG mark removed (tránh xoá oan khi
+    #                        scan sót row trên list lớn — cùng bài học mục đầu file).
+    if item.type == "SYNC_MEMBER" and effective_status == "COMPLETED":
+        target_email = ((item.payload or {}).get("email") or "").lower()
+        found_in = ((body.result or {}).get("data") or {}).get("found_in")
+        if target_email and found_in in ("active", "pending"):
+            member = db.execute(
+                select(Member).where(
+                    Member.workspace_id == workspace.id,
+                    Member.email == target_email,
+                )
+            ).scalar_one_or_none()
+            if member:
+                now = datetime.now(timezone.utc)
+                member.last_synced_at = now
+                if found_in == "active" and member.status != "active":
+                    member.status = "active"
+                    if member.joined_at is None:
+                        member.joined_at = now
+                    log_event(
+                        db,
+                        actor_type="EXTENSION",
+                        actor_label=f"workspace:{workspace.name}",
+                        action="MEMBER_SYNC_PROMOTED_ACTIVE",
+                        result="COMPLETED",
+                        target_type="MEMBER",
+                        target_id=str(member.id),
+                        data={"email": target_email, "found_in": found_in},
+                        commit=False,
+                    )
+                db.add(member)
 
     # PHANTOM CLEANUP cho INVITE_MEMBER: xoá Member + Invite records mà ChatGPT
     # KHÔNG thực sự nhận → dashboard chỉ hiển thị email đã được mời thật.

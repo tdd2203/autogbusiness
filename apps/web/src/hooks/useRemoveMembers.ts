@@ -13,6 +13,7 @@
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { handleCommandBan } from "../lib/commandBan";
 import { useT } from "../i18n";
 import { toast } from "../components/Toast";
 import { triggerExtensionRun } from "./useExtensionTrigger";
@@ -30,8 +31,17 @@ export function useRemoveMembers(
         method: "DELETE",
       }),
     onSuccess: () => {
+      // PHẢI invalidate ["recent-tasks"] để KHỞI ĐỘNG LẠI poll queue (dừng khi
+      // idle): task REMOVE_MEMBER vừa enqueue là PENDING → poll bật lại → watcher
+      // trong Members.tsx bắt được lúc task COMPLETED → tự invalidate ["members"]
+      // → member bị xoá biến mất ngay, KHỎI reload tay. (bulkRemoveSelected đã làm;
+      // remove đơn trước đây sót → xoá xong list không tự cập nhật.)
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
       triggerExtensionRun();
+    },
+    onError: (e) => {
+      handleCommandBan(e);
     },
   });
 
@@ -49,6 +59,7 @@ export function useRemoveMembers(
       triggerExtensionRun();
     },
     onError: (e) => {
+      if (handleCommandBan(e)) return;
       toast.error(
         t("bulkRemove.resultError", {
           error: e instanceof Error ? e.message : String(e),

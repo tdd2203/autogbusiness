@@ -30,12 +30,22 @@ import {
 } from "../../i18n-ui";
 import { dbLabelsFor, reportLabelMismatch } from "../../../shared/ui-labels";
 import { findMemberRow, findRowMenuButton } from "../member-row";
+import { locatePendingRow } from "./locate-pending-row";
 
 /** Có thể có confirm dialog hoặc không — tuỳ ChatGPT. */
 export type RevokeResult = {
   email: string;
   ok: boolean;
   reason?: string;
+  /**
+   * Email KHÔNG có trên tab "Lời mời đang chờ xử lý" (đã scroll-scan hết list).
+   * Thường vì người đó đã CHẤP NHẬN lời mời → thành active member, không còn là
+   * pending invite. Caller (`executeRevokeInvites`) dùng cờ này để fallback sang
+   * tab "Người dùng" và xoá khỏi workspace.
+   */
+  notInPending?: boolean;
+  /** Email được xử lý qua fallback REMOVE (xoá khỏi tab Người dùng) thay vì revoke. */
+  viaRemove?: boolean;
 };
 
 /**
@@ -45,12 +55,17 @@ export type RevokeResult = {
 export async function revokeInvite(email: string): Promise<RevokeResult> {
   console.log(`[autogpt-revoke] start email=${email}`);
 
-  const row = findMemberRow(email);
+  // v0.8.8: định vị row qua ô "Search for invites" (FAST + chính xác) thay vì
+  // scroll-scan list virtualized vốn dễ MISS → kết luận nhầm notInPending →
+  // fallback nhầm sang tab "Người dùng". Fallback scroll-scan nằm trong
+  // locatePendingRow khi UI không có ô search.
+  const row = await locatePendingRow(email);
   if (!row) {
     return {
       email,
       ok: false,
-      reason: `Row email không tìm thấy trên tab Lời mời (đã scroll hết chưa?)`,
+      notInPending: true,
+      reason: `Row email không tìm thấy trên tab Lời mời (đã search + scroll-scan).`,
     };
   }
 

@@ -5,6 +5,7 @@ import type {
 import { loadBundleFromStorage } from "../shared/ui-labels";
 import { executeInvite, executeVerifyPendingInvite } from "./actions/invite";
 import { executeRemove } from "./actions/remove";
+import { executeSyncMember } from "./actions/sync-member";
 import { executeChangeRole } from "./actions/change-role";
 import { executeChangeLicenseType } from "./actions/change-license-type";
 import { executeSync } from "./actions/sync";
@@ -76,6 +77,8 @@ async function dispatch(
       return executeVerifyPendingInvite(msg.taskId, msg.emails, msg.role);
     case "REMOVE_MEMBER":
       return executeRemove(msg.taskId, msg.email);
+    case "SYNC_MEMBER":
+      return executeSyncMember(msg.taskId, msg.email);
     case "CHANGE_ROLE":
       return executeChangeRole(msg.taskId, msg.email, msg.new_role, msg.old_role ?? null);
     case "CHANGE_LICENSE_TYPE":
