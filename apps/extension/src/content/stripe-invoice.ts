@@ -17,6 +17,10 @@ import type {
   ExecuteActionRequest,
   ExecuteActionResponse,
 } from "../shared/messages";
+import {
+  isDetailUsable,
+  scrapeInvoiceDetailFromDom,
+} from "./scrapers/invoice-detail";
 
 console.log("[autogpt-stripe] injected vào", location.href);
 
@@ -136,9 +140,99 @@ async function humanClickStripe(el: HTMLElement): Promise<void> {
   }
 }
 
+const DETAIL_TOGGLE_RE =
+  /^(xem\s*chi\s*tiết(\s*ho[áà]\s*đơn)?|view\s*invoice\s*details?|view\s*details?|查看发票明细|发票明细|查看明细|查看详情)\s*[>›»]?$/i;
+
+/**
+ * Mở panel "Xem chi tiết hoá đơn" nếu chưa mở (để lộ dòng Số lượng / Mỗi / chu
+ * kỳ). Stripe render toggle này là <span>/<div> chứ KHÔNG phải <button>/<a>, nên
+ * phải quét mọi phần tử, chọn phần tử NHỎ NHẤT (gần lá) có text khớp rồi click cả
+ * nó lẫn ancestor clickable (React gắn handler ở cha). Trả true nếu đã bấm.
+ */
+/** Tìm phần tử toggle "Xem chi tiết hoá đơn" (nhỏ nhất, đang hiển thị). */
+function findDetailToggle(): HTMLElement | null {
+  const all = Array.from(document.querySelectorAll<HTMLElement>("*"));
+  let best: HTMLElement | null = null;
+  let bestChildren = Infinity;
+  for (const el of all) {
+    const text = (el.textContent ?? "").trim();
+    if (text.length === 0 || text.length > 40) continue;
+    if (!DETAIL_TOGGLE_RE.test(text)) continue;
+    if (el.offsetParent === null) continue; // bỏ phần tử ẩn
+    const childCount = el.querySelectorAll("*").length;
+    if (childCount < bestChildren) {
+      best = el;
+      bestChildren = childCount;
+    }
+  }
+  return best;
+}
+
+/**
+ * Mở panel "Xem chi tiết hoá đơn". Toggle là <span>/<div> (không phải button),
+ * React gắn handler ở đâu đó trong cây → click bằng chuỗi sự kiện chuột THẬT
+ * (humanClickStripe) trên chính nó + ancestor clickable. Trả true nếu tìm thấy
+ * toggle (tức panel chưa mở). false = không thấy toggle (panel đã mở hoặc UI khác).
+ */
+async function openInvoiceDetailPanel(): Promise<boolean> {
+  const toggle = findDetailToggle();
+  if (!toggle) return false;
+  const clickable =
+    (toggle.closest(
+      "a, button, [role='button'], [class*='button' i], [class*='link' i], [class*='Link' i]",
+    ) as HTMLElement | null) ?? toggle;
+  await humanClickStripe(clickable);
+  if (clickable !== toggle) await humanClickStripe(toggle);
+  return true;
+}
+
+async function scrapeStripeInvoiceDetail(): Promise<ExecuteActionResponse> {
+  // Panel chi tiết cần click "Xem chi tiết hoá đơn" để lộ dòng Số lượng/Mỗi.
+  // Poll tới 14s: mỗi vòng, nếu toggle còn đó (panel chưa mở) thì click; rồi
+  // scrape. Panel mở → text đổi thành "Đóng chi tiết" → không click lại nữa.
+  let detail = scrapeInvoiceDetailFromDom();
+  let clicks = 0;
+  let toggleSeen = false;
+  const deadline = Date.now() + 14_000;
+  while (!isDetailUsable(detail) && Date.now() < deadline) {
+    const clicked = await openInvoiceDetailPanel();
+    if (clicked) {
+      clicks++;
+      toggleSeen = true;
+    }
+    await sleep(600);
+    detail = scrapeInvoiceDetailFromDom();
+  }
+  console.log(
+    `[autogpt-stripe] scrape-detail v0.9.8 url=${location.href} toggleSeen=${toggleSeen} clicks=${clicks} usable=${isDetailUsable(detail)}:`,
+    JSON.stringify(detail),
+  );
+  if (!isDetailUsable(detail)) {
+    return {
+      ok: false,
+      error_code: "FAILED_UI_CHANGED",
+      error_message:
+        `Không đọc được số lượng/đơn giá trên trang chi tiết hoá đơn Stripe ` +
+        `(toggle 'Xem chi tiết' ${toggleSeen ? "đã click nhưng panel không cho ra số liệu" : "KHÔNG tìm thấy"}). ` +
+        `URL: ${location.href}`,
+    };
+  }
+  return { ok: true, data: { invoice_detail: detail } };
+}
+
 async function dispatch(msg: ExecuteActionRequest): Promise<ExecuteActionResponse> {
   if (msg.kind === "PING") {
     return { ok: true, data: { url: location.href, host: location.hostname } };
+  }
+  if (msg.kind === "STRIPE_SCRAPE_INVOICE_DETAIL") {
+    if (location.hostname !== STRIPE_INVOICE_HOSTNAME) {
+      return {
+        ok: false,
+        error_code: "PAGE_NOT_ADMIN",
+        error_message: `Expected ${STRIPE_INVOICE_HOSTNAME}, got ${location.hostname}`,
+      };
+    }
+    return scrapeStripeInvoiceDetail();
   }
   if (msg.kind !== "STRIPE_CLICK_LINK") {
     return {

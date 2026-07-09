@@ -23,7 +23,7 @@ from app.permissions import Permission
 from app.sse import publish_task_event
 from app.schemas import MemberBulkInviteIn, MemberInviteIn, MemberOut
 
-from ._shared import router, _compute_subscription_end, _get_workspace_or_404
+from ._shared import router, _end_from_purchase, _get_workspace_or_404
 
 
 # Cho phép invite vượt seat_total tối đa +50% (overcommit). Vượt ngưỡng này thì
@@ -36,16 +36,18 @@ def _assert_seat_available(
 ) -> None:
     """Chặn invite khi vượt ngưỡng overcommit. Super-admin bỏ qua (họ quản billing/mua seat).
 
-    effective_used = max(seat_used báo từ billing, số Member ACTIVE trong DB).
-    Chỉ đếm member đang hoạt động (active) — member `pending` (chờ tham gia) CHƯA
-    được tính vào tổng. Chỉ enforce khi seat_total đã set (workspace đã sync billing).
+    effective_used = số Member ACTIVE THẬT trong DB — KHÔNG blend với
+    `workspace.seat_used` (scrape billing, có thể cũ/lệch cả 2 chiều, xem
+    stats.py). Chỉ đếm member đang hoạt động (active) — member `pending` (chờ
+    tham gia) CHƯA được tính vào tổng. Chỉ enforce khi seat_total đã set (workspace
+    đã sync billing).
 
     Cho phép overcommit tới `seat_total * SEAT_OVERCOMMIT_RATIO` (vượt +50%). Chỉ
     khi vượt mốc này mới chặn và báo admin mở thêm seat.
     """
     if user.is_super_admin or workspace.seat_total is None:
         return
-    db_used = (
+    effective_used = (
         db.execute(
             select(func.count(Member.id)).where(
                 Member.workspace_id == workspace.id,
@@ -54,7 +56,6 @@ def _assert_seat_available(
         ).scalar_one()
         or 0
     )
-    effective_used = max(workspace.seat_used or 0, db_used)
     seat_cap = int(workspace.seat_total * SEAT_OVERCOMMIT_RATIO)
     if effective_used + additional > seat_cap:
         free = max(seat_cap - effective_used, 0)
@@ -106,13 +107,17 @@ def invite_member(
     db.add(queue_item)
     db.flush()
 
+    # Ngày gia hạn (mốc neo) = giờ gửi lệnh mời, chính xác tới giây. Hạn = neo +
+    # tháng×30 (yêu cầu user: "hết hạn = gia hạn + 30"). Lưu cả subscription_purchased_at
+    # để cột "Ngày gia hạn" và cột "Ngày hết hạn" luôn khớp = neo + 30.
     now = datetime.now(timezone.utc)
-    sub_end = _compute_subscription_end(now, body.subscription_months)
+    sub_end = _end_from_purchase(now, body.subscription_months)
     if existing:
         existing.status = "pending"
         existing.chatgpt_role = body.role
         existing.invited_by_user_id = user.id
         existing.subscription_months = body.subscription_months
+        existing.subscription_purchased_at = now
         existing.subscription_end_at = sub_end
         existing.last_invited_at = now
         member = existing
@@ -124,6 +129,7 @@ def invite_member(
             status="pending",
             invited_by_user_id=user.id,
             subscription_months=body.subscription_months,
+            subscription_purchased_at=now,
             subscription_end_at=sub_end,
             last_invited_at=now,
         )
@@ -221,7 +227,7 @@ def bulk_invite_members(
     for entry in entries:
         email = str(entry.email).lower()
         months = entry.subscription_months
-        sub_end = _compute_subscription_end(now, months)
+        sub_end = _end_from_purchase(now, months)
         audit_emails.append(
             {
                 "email": email,
@@ -247,6 +253,7 @@ def bulk_invite_members(
                     and months != existing.subscription_months
                 ):
                     existing.subscription_months = months
+                    existing.subscription_purchased_at = now
                     existing.subscription_end_at = sub_end
                 existing.last_invited_at = now
                 member = existing
@@ -256,6 +263,7 @@ def bulk_invite_members(
                 existing.chatgpt_role = body.role
                 existing.invited_by_user_id = user.id
                 existing.subscription_months = months
+                existing.subscription_purchased_at = now
                 existing.subscription_end_at = sub_end
                 existing.last_invited_at = now
                 member = existing
@@ -267,6 +275,7 @@ def bulk_invite_members(
                 status="pending",
                 invited_by_user_id=user.id,
                 subscription_months=months,
+                subscription_purchased_at=now,
                 subscription_end_at=sub_end,
                 last_invited_at=now,
             )

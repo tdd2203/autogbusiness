@@ -237,6 +237,16 @@ export const TEXT_FALLBACKS = {
     "确认付款",
     "确认并付款",
   ],
+  // Nút trên row của trang /admin/billing/manage_member_usage_limit ("Ghi đè mỗi
+  // người dùng") khi member CHƯA đặt giới hạn ("Chưa đặt") → mở dialog đặt.
+  usageLimitAddButton: ["Thêm", "Add", "Set", "添加", "设置"],
+  // Nút trên row khi member ĐÃ đặt giới hạn (hiện "{n} tín dụng / tháng") → mở
+  // dialog sửa.
+  usageLimitEditButton: ["Chỉnh sửa", "Edit", "修改", "编辑"],
+  // Nút LƯU trong dialog "Đặt giới hạn sử dụng tùy chỉnh".
+  usageLimitSaveButton: ["Lưu", "Save", "保存"],
+  // Nút GỠ BỎ (xoá override) trong cùng dialog — PHẢI TRÁNH click nhầm khi đặt số.
+  usageLimitRemoveButton: ["Gỡ bỏ", "Gỡ", "Remove", "Clear", "移除", "删除", "清除"],
 } as const;
 
 /** Label hiển thị khi chọn role trong combobox / submenu. */
@@ -345,31 +355,6 @@ export const LICENSE_TYPE_LABELS: Record<LicenseType, string[]> = {
   ChatGPT: ["ChatGPT", "Chat GPT"],
   Codex: ["Codex"],
 };
-
-/** Keyword nhận diện license khi scrape row (substring, đã normalize lowercase). */
-const LICENSE_KEYWORDS: Array<{ type: LicenseType; patterns: string[] }> = [
-  // Codex trước ChatGPT: "Codex" không bao giờ chứa "chatgpt" nên match Codex
-  // chính xác; còn "ChatGPT" là default phổ biến nhất.
-  { type: "Codex", patterns: ["codex"] },
-  { type: "ChatGPT", patterns: ["chatgpt", "chat gpt"] },
-];
-
-/**
- * Parse loại giấy phép từ text 1 CELL (đã scope về đúng ô "Loại suất cấp phép").
- * KHÔNG truyền nguyên row text vào đây — "chatgpt" xuất hiện ở nhiều chỗ
- * (tên workspace, link...) dễ false-positive. Dùng findLicenseTypeInRow để
- * scope trước.
- */
-export function parseLicenseType(
-  raw: string | null | undefined,
-): LicenseType | null {
-  if (!raw) return null;
-  const t = raw.trim().toLowerCase();
-  for (const { type, patterns } of LICENSE_KEYWORDS) {
-    if (patterns.some((p) => t.includes(p))) return type;
-  }
-  return null;
-}
 
 /** Tìm option ChatGPT/Codex trong menu/submenu đang mở (mirror findRoleOption). */
 export function findLicenseTypeOption(
@@ -591,6 +576,39 @@ export const EXTERNAL_INVITE_LABEL_PATTERNS = [
   "允许外部邀请",
   "外部域邀请",
   "外部邀请",
+];
+
+/**
+ * Banner CẢNH BÁO ChatGPT hiện TRONG DIALOG MỜI khi có email không thuộc miền đã
+ * xác minh và setting "Allow External Domain Invites" CHƯA có hiệu lực (toggle
+ * vừa bật ở /admin/identity còn đang propagate, hoặc thật sự OFF). Khác
+ * `EXTERNAL_INVITE_LABEL_PATTERNS` (là LABEL của toggle trên /admin/identity).
+ *
+ * Dùng (v0.8.12): sau khi gõ email, nếu banner còn → ĐỢI toggle propagate (kiểm
+ * tra lại) rồi mới submit; hết timeout vẫn còn → huỷ invite (tránh submit vào nút
+ * disabled / phantom). lowercase, includes().
+ *
+ * Các phrase chọn đủ đặc trưng để KHÔNG khớp text dialog bình thường (tiêu đề,
+ * "Only users from the following emails ...", nút "Send invites").
+ */
+export const EXTERNAL_DOMAIN_WARNING_PATTERNS = [
+  // en
+  "verified domains",
+  "verified domain",
+  "not a part of your organization",
+  "not part of your organization",
+  "organization's verified",
+  // vi
+  "miền đã xác minh",
+  "tên miền đã xác minh",
+  "miền được xác minh",
+  "không thuộc các miền",
+  "chưa được xác minh",
+  // zh
+  "已验证的域",
+  "已验证域名",
+  "验证的域名",
+  "未验证的域",
 ];
 
 /**

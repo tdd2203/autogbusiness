@@ -12,7 +12,7 @@
  */
 
 /** Regex validate 1 email (case-insensitive). */
-export const EMAIL_RE = /^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i;
+const EMAIL_RE = /^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i;
 
 export function parseEmailsFromText(raw: string): {
   validUnique: string[]; // lowercase, dedup

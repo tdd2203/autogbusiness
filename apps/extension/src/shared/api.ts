@@ -41,16 +41,6 @@ export async function updateExtensionInfo(
   });
 }
 
-export async function countPendingTasks(
-  config: ExtensionConfig,
-): Promise<number> {
-  const resp = await request<{ count: number }>(
-    config,
-    "/api/v1/queue/pending-count",
-  );
-  return resp.count;
-}
-
 export type ActiveTaskInfo = {
   in_progress: {
     id: string;
@@ -120,6 +110,16 @@ export async function pushBillingSync(
       date: string;
       amount_vnd: number;
       status: string;
+      detail_url?: string | null;
+      detail_scraped?: boolean;
+      quantity?: number | null;
+      unit_price_vnd?: number | null;
+      subtotal_vnd?: number | null;
+      vat_vnd?: number | null;
+      total_vnd?: number | null;
+      period_start?: string | null;
+      period_end?: string | null;
+      invoice_number?: string | null;
     }>;
   },
 ): Promise<Workspace> {
@@ -177,12 +177,21 @@ export async function bulkUpsertMembers(
      */
     reconcileEmails?: string[];
     reconcilePendingEmails?: string[];
+    /**
+     * Tổng active ChatGPT báo ở header (vd 49). Backend so với số active scrape
+     * được: nếu scrape ra ≪ mốc này → sync THIẾU → BỎ QUA reconcile (không mark
+     * removed), tránh phá dữ liệu khi list chưa render hết. Gửi kèm request
+     * reconcile (members rỗng) là đủ. null/omit = backend dùng heuristic fallback.
+     */
+    expectedTotal?: number | null;
   },
 ): Promise<{
   created: number;
   updated: number;
   total: number;
   rogue_pending_emails?: string[];
+  reconcile_skipped?: boolean;
+  reconcile_skip_reason?: string | null;
 }> {
   return request(
     config,
@@ -195,6 +204,7 @@ export async function bulkUpsertMembers(
         is_full_sync: options?.isFullSync !== false,
         reconcile_emails: options?.reconcileEmails,
         reconcile_pending_emails: options?.reconcilePendingEmails,
+        expected_total: options?.expectedTotal,
       }),
     },
   );

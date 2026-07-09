@@ -2,7 +2,6 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
-    JSON,
     Boolean,
     DateTime,
     ForeignKey,
@@ -84,6 +83,19 @@ class QueueItem(Base):
     picked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Duyệt lệnh (chỉ áp cho task do sub-admin tạo cần admin phê duyệt, vd
+    # SET_USAGE_LIMIT). NULL = không cần duyệt (task của super-admin / loại task khác)
+    # → extension pick ngay. 'pending' = chờ super-admin duyệt → extension KHÔNG pick.
+    # 'approved' = đã duyệt → pick như PENDING thường. 'rejected' = bị từ chối (status
+    # chuyển FAILED). Xem queue/execution.py pick_next + queue/admin.py approve/reject.
+    approval_status: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    approved_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     workspace_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("workspaces.id", ondelete="SET NULL"),
@@ -91,7 +103,7 @@ class QueueItem(Base):
         index=True,
     )
 
-    created_by = relationship("User")
+    created_by = relationship("User", foreign_keys=[created_by_id])
     workspace = relationship("Workspace")
 
 
@@ -149,10 +161,17 @@ class Workspace(Base):
     last_billing_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    # Lịch sử hoá đơn scrape từ /admin/billing — list các transactions:
-    #   [{"date": "2026-05-17", "amount_vnd": 230535, "quantity": 1, "status": "paid"}]
-    # Dashboard dùng để (1) hiển thị lịch sử và (2) ước tính giá per-slot hôm
-    # nay dựa trên transaction gần nhất + days_until_renewal.
+    # Lịch sử hoá đơn scrape từ /admin/billing — list các transactions. Mỗi phần
+    # tử gồm field cơ bản (date/amount_vnd/status) + field CHI TIẾT đọc từ trang
+    # hoá đơn Stripe (detail_scraped=True):
+    #   {"date": "2026-06-25", "amount_vnd": 10029250, "status": "paid",
+    #    "detail_scraped": true, "quantity": 35, "unit_price_vnd": 260500,
+    #    "subtotal_vnd": 9117500, "vat_vnd": 911750, "total_vnd": 10029250,
+    #    "period_start": "2026-06-25", "period_end": "2026-07-25",
+    #    "invoice_number": "MSNS6RGC-0024", "detail_url": "https://invoice.stripe.com/..."}
+    # Dashboard dùng để (1) hiển thị lịch sử và (2) tính giá/seat CHÍNH XÁC từ
+    # quantity + unit_price_vnd (không còn đoán bằng phép chia); renewal/cycle
+    # suy từ period_end/period_start. Hoá đơn cũ thiếu field mới → detail_scraped=false.
     billing_invoices: Mapped[list[dict] | None] = mapped_column(
         JSONB, nullable=True
     )
@@ -203,13 +222,18 @@ class WorkspaceAssignment(Base):
     assigned_by_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # Ngân sách tín dụng/tháng admin cấp cho sub-admin NÀY trong workspace NÀY: tổng
+    # usage_limit_credits sub-admin đặt cho các member của mình không được vượt số
+    # này. Mặc định 0 = chưa cấp (sub-admin không đặt được giới hạn nào > 0).
+    credit_budget: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
     workspace = relationship("Workspace")
     user = relationship("User", foreign_keys=[user_id])
-    assigned_by = relationship("User", foreign_keys=[assigned_by_id])
 
 
 class WorkspaceSettings(Base):
@@ -278,11 +302,34 @@ class Member(Base):
     subscription_end_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    # "Ngày mua" — MỐC NEO tính hạn do admin đặt trong modal Đổi hạn dùng. NULL = chưa
+    # đặt (modal mặc định về COALESCE(last_invited_at, created_at) = "ngày thêm" log).
+    # Khi set theo gói tháng: subscription_end_at = subscription_purchased_at + months×30
+    # ngày CHÍNH XÁC tới giây (KHÔNG chốt cuối ngày, không dư). Xem subscription.py.
+    subscription_purchased_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # usage_limit_credits: giới hạn tín dụng/tháng admin đặt cho member trên trang
+    # ChatGPT /admin/billing/manage_member_usage_limit ("Ghi đè mỗi người dùng").
+    # NULL = chưa đặt override (dùng mặc định workspace). 0 hợp lệ = chặn dùng.
+    # Extension đặt giá trị qua action SET_USAGE_LIMIT; DB sync khi task COMPLETED.
+    usage_limit_credits: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Payment tracking (Dashboard-only) — phục vụ tài khoản phụ bán dịch vụ: theo
     # dõi email mình đã add đã trả tiền cho admin hay chưa. KHÔNG liên quan billing
-    # workspace. unpaid | paid. paid_at = thời điểm duyệt; paid_marked_by_id = ai duyệt.
+    # workspace. Duyệt 2 bước: unpaid → requested (sub-admin gửi yêu cầu duyệt) →
+    # paid (super-admin xác nhận đã thanh toán).
+    #   payment_requested_at / payment_requested_by_id = bước 1 (ai gửi yêu cầu, khi nào)
+    #   paid_at / paid_marked_by_id                     = bước 2 (super-admin nào xác nhận)
     payment_status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="unpaid", server_default="unpaid", index=True
+    )
+    payment_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    payment_requested_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
     )
     paid_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -292,9 +339,120 @@ class Member(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Subscription change approval (Dashboard-only) — đổi hạn dùng PHẢI được admin
+    # duyệt. Sub-admin gọi PATCH subscription → KHÔNG áp dụng ngay mà tạo YÊU CẦU
+    # chờ duyệt (giống payment 2 bước). Super-admin tự đổi = áp dụng ngay (tự duyệt).
+    #   subscription_request_status: 'none' | 'requested'
+    #   pending_subscription_months / pending_subscription_end_at = giá trị ĐỀ XUẤT
+    #     (end_at đã resolve sẵn từ ngày cụ thể hoặc months×30); áp vào subscription_*
+    #     khi super-admin duyệt, xoá khi từ chối.
+    subscription_request_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="none", server_default="none", index=True
+    )
+    pending_subscription_months: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    pending_subscription_end_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    subscription_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    subscription_requested_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # KHOÁ sửa "Ngày gia hạn" (mốc neo = subscription_purchased_at, = ngày add đầu
+    # tiên): super-admin sửa ĐÚNG 1 LẦN qua PATCH .../members/{id}/add-date
+    # (correct_add_date.py) → cột này set = now, không sửa lại được nữa. NULL = chưa
+    # sửa → còn quyền sửa. (Tái dùng cột cũ của tính năng "đồng bộ ngày thêm" đã gỡ.)
+    add_date_corrected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     workspace = relationship("Workspace")
     invited_by = relationship("User", foreign_keys=[invited_by_user_id])
+    # Sub-admin (hoặc super-admin) đã GỬI yêu cầu duyệt — phục vụ thông báo "ai gửi".
+    payment_requested_by = relationship(
+        "User", foreign_keys=[payment_requested_by_id]
+    )
+    # Người GỬI yêu cầu đổi hạn dùng — phục vụ thông báo "ai gửi" cho admin duyệt.
+    subscription_requested_by = relationship(
+        "User", foreign_keys=[subscription_requested_by_id]
+    )
+    # Lịch sử CHU KỲ gia hạn (mỗi lần gia hạn = 1 chu kỳ, có trạng thái thanh toán
+    # riêng). Sắp theo cycle_number tăng dần. Xem MemberSubscriptionCycle.
+    subscription_cycles = relationship(
+        "MemberSubscriptionCycle",
+        back_populates="member",
+        cascade="all, delete-orphan",
+        order_by="MemberSubscriptionCycle.cycle_number",
+    )
+
+
+class MemberSubscriptionCycle(Base):
+    """1 CHU KỲ gia hạn của member — nguồn sự thật cho lịch sử thanh toán theo kỳ.
+
+    Mỗi lần GIA HẠN (endpoint renew.py) tạo 1 chu kỳ mới (cycle_number tăng dần từ
+    1). Mỗi chu kỳ có trạng thái thanh toán RIÊNG (duyệt 2 bước giống payment cấp
+    member): unpaid → requested (sub-admin gửi yêu cầu) → paid (super-admin xác nhận).
+    `Member.payment_status` là giá trị TỔNG HỢP suy từ các chu kỳ (unpaid nếu còn
+    kỳ chưa trả) — xem added_members._recompute_member_payment_status.
+    """
+
+    __tablename__ = "member_subscription_cycles"
+    __table_args__ = (
+        UniqueConstraint(
+            "member_id", "cycle_number", name="uq_member_cycle_number"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    member_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("members.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Thứ tự chu kỳ trong 1 member (1-based). Chu kỳ 1 = lần add/mời đầu tiên
+    # (backfill), 2, 3… = các lần gia hạn tiếp theo.
+    cycle_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Mốc bắt đầu/kết thúc chu kỳ (tới giây, UTC). start_at = hạn cũ (nếu còn hiệu
+    # lực) hoặc thời điểm gia hạn; end_at = start_at + months×30.
+    start_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    end_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # unpaid | requested | paid — giống payment cấp member.
+    payment_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unpaid", server_default="unpaid", index=True
+    )
+    payment_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    payment_requested_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    paid_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    paid_marked_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    member = relationship("Member", back_populates="subscription_cycles")
+    payment_requested_by = relationship(
+        "User", foreign_keys=[payment_requested_by_id]
+    )
 
 
 class UiLabel(Base):
@@ -333,7 +491,6 @@ class UiLabel(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=_utcnow
     )
 
-    updated_by = relationship("User")
 
 
 class UiLabelHistory(Base):
@@ -393,4 +550,3 @@ class Invite(Base):
 
     workspace = relationship("Workspace")
     invited_by = relationship("User")
-    queue_item = relationship("QueueItem")

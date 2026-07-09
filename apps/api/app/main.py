@@ -11,12 +11,14 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Member, QueueItem
+from app.routers.members._shared import SUBSCRIPTION_GRACE_AFTER_EXPIRY
 from app.routers import (
     added_members,
     audit_logs,
     auth,
     members,
     queue,
+    subscription_requests,
     ui_labels,
     users,
     workspaces,
@@ -34,23 +36,25 @@ _cleanup_lock = threading.Lock()
 
 
 def _cleanup_expired_subscriptions_once() -> None:
-    """Quét MỌI workspace tìm member có subscription_end_at <= now và status
-    active/pending → enqueue 1 REMOVE_MEMBER task cho mỗi member.
+    """Quét MỌI workspace tìm member đã quá hạn >= 1 GIỜ (subscription_end_at <=
+    now - 1h) và status active/pending → enqueue 1 REMOVE_MEMBER task cho mỗi member.
 
-    Best-effort: lỗi DB không block lifecycle, chỉ log warning. Lock để tránh
-    race condition (vd dev hot reload spawn nhiều timer).
+    Ân hạn 1 giờ (`SUBSCRIPTION_GRACE_AFTER_EXPIRY`): khách hết hạn sau 1 tiếng mà
+    chưa gia hạn mới bị xoá. Best-effort: lỗi DB không block lifecycle, chỉ log
+    warning. Lock để tránh race condition (vd dev hot reload spawn nhiều timer).
     """
     if not _cleanup_lock.acquire(blocking=False):
         return
     try:
         with SessionLocal() as db:
             now = datetime.now(timezone.utc)
+            cutoff = now - SUBSCRIPTION_GRACE_AFTER_EXPIRY
             expired = (
                 db.execute(
                     select(Member).where(
                         Member.status.in_(("active", "pending")),
                         Member.subscription_end_at.isnot(None),
-                        Member.subscription_end_at <= now,
+                        Member.subscription_end_at <= cutoff,
                     )
                 )
                 .scalars()
@@ -209,6 +213,7 @@ def create_app() -> FastAPI:
     app.include_router(workspaces.router)
     app.include_router(members.router)
     app.include_router(added_members.router)
+    app.include_router(subscription_requests.router)
     app.include_router(queue.router)
     app.include_router(audit_logs.router)
     app.include_router(ui_labels.router)

@@ -51,25 +51,45 @@ async function waitForContentChange(prevSig: string): Promise<boolean> {
   }
 }
 
-/** Scroll tới đáy, lặp lại tới khi số row không tăng nữa (xử lý virtualized list). */
-async function scrollUntilAllLoaded(maxIterations = 200): Promise<number> {
+/**
+ * Tìm mọi khung cuộn khả dĩ (window + inner div overflow). PHẢI scan lại mỗi
+ * vòng lặp: lúc "cold start" list mới render vài row → chưa tràn → div cuộn nội
+ * bộ CHƯA lộ ra (scrollHeight ≈ clientHeight). Sau khi vài row đầu tải xong,
+ * container mới xuất hiện → phải scan lại mới bắt được. Đây là gốc bug
+ * "đồng bộ lần 1 chỉ ra 2 member": trước đây scan MỘT LẦN lúc mới vào (chỉ thấy
+ * `window`), window.scrollTo không nhích list cuộn-nội-bộ → không tải thêm row.
+ */
+function findScrollContainers(): Array<HTMLElement | Window> {
+  const containers: Array<HTMLElement | Window> = [window];
+  document
+    .querySelectorAll<HTMLElement>("div, main, section, ul, ol")
+    .forEach((el) => {
+      const style = window.getComputedStyle(el);
+      if (
+        (style.overflowY === "auto" || style.overflowY === "scroll") &&
+        el.scrollHeight > el.clientHeight + 20
+      ) {
+        containers.push(el);
+      }
+    });
+  return containers;
+}
+
+/**
+ * Scroll tới đáy, lặp lại tới khi số row không tăng nữa (xử lý virtualized list).
+ * `expectedTotal` = tổng member header ChatGPT báo (nếu biết): còn thiếu so với
+ * mốc này thì KIÊN NHẪN hơn (list chạy tab nền bị Chrome throttle, tải chậm) —
+ * chỉ bỏ cuộc khi đã kẹt nhiều tick liên tiếp; đạt mốc thì dừng ngay.
+ */
+async function scrollUntilAllLoaded(
+  maxIterations = 200,
+  expectedTotal: number | null = null,
+): Promise<number> {
   let lastCount = 0;
   let stableTicks = 0;
 
-  // Tìm scrollable container — đôi khi list không scroll bằng window mà bằng inner div
-  const scrollContainers: Array<HTMLElement | Window> = [window];
-  document.querySelectorAll<HTMLElement>("div, main, section").forEach((el) => {
-    const style = window.getComputedStyle(el);
-    if (
-      (style.overflowY === "auto" || style.overflowY === "scroll") &&
-      el.scrollHeight > el.clientHeight + 100
-    ) {
-      scrollContainers.push(el);
-    }
-  });
-
   for (let i = 0; i < maxIterations; i++) {
-    for (const c of scrollContainers) {
+    for (const c of findScrollContainers()) {
       if (c === window) {
         window.scrollTo({ top: document.body.scrollHeight, behavior: "auto" });
       } else {
@@ -79,12 +99,17 @@ async function scrollUntilAllLoaded(maxIterations = 200): Promise<number> {
     await sleep(300 + Math.floor(Math.random() * 200));
 
     const currentCount = scrapeAllRows().length;
-    if (currentCount === lastCount) {
-      stableTicks += 1;
-      if (stableTicks >= 3) break; // 3 lần liên tiếp không tăng → đã hết
-    } else {
+    if (expectedTotal && currentCount >= expectedTotal) return currentCount;
+
+    if (currentCount > lastCount) {
       stableTicks = 0;
       lastCount = currentCount;
+    } else {
+      stableTicks += 1;
+      // Chưa đủ mốc header → chờ lâu hơn (8 tick ~ 3.6s không tăng) trước khi bỏ;
+      // đã đủ/không có mốc → 3 tick là đủ kết luận "hết row".
+      const patience = expectedTotal && lastCount < expectedTotal ? 8 : 3;
+      if (stableTicks >= patience) break;
     }
   }
   return lastCount;
@@ -105,25 +130,31 @@ async function collectRowsByScrolling(
   collected: Map<string, ScrapedMember>,
   isOverTime: () => boolean,
   pageLabel?: string,
+  expectedTotal: number | null = null,
 ): Promise<boolean> {
   const tag = pageLabel ? `${label} ${pageLabel}` : label;
 
   window.scrollTo({ top: 0, behavior: "auto" });
   await sleep(400);
 
-  const totalAfterScroll = await scrollUntilAllLoaded();
-  console.log(`[autogpt-sync] [${tag}] scroll xong: ~${totalAfterScroll} rows`);
+  const totalAfterScroll = await scrollUntilAllLoaded(200, expectedTotal);
+  console.log(
+    `[autogpt-sync] [${tag}] scroll xong: ~${totalAfterScroll} rows` +
+      (expectedTotal ? ` (mốc header ${expectedTotal})` : ""),
+  );
 
   window.scrollTo({ top: 0, behavior: "auto" });
   await sleep(400);
 
+  let stalledPasses = 0;
   for (let scrollPass = 0; scrollPass < 200; scrollPass++) {
     if (isOverTime()) return true;
+
+    const before = collected.size;
 
     const visible = scrapeAllRows();
     for (const m of visible) collected.set(m.email, { ...m, status });
 
-    const before = collected.size;
     window.scrollBy({ top: window.innerHeight * 0.8, behavior: "auto" });
     await sleep(250 + Math.floor(Math.random() * 200));
 
@@ -136,10 +167,27 @@ async function collectRowsByScrolling(
       message: `[${tag}] Đã thu ${collected.size} (pass ${scrollPass + 1})`,
     });
 
-    if (collected.size === before && scrollPass > 3) {
-      const atBottom =
-        window.innerHeight + window.scrollY >= document.body.scrollHeight - 50;
-      if (atBottom) break;
+    stalledPasses = collected.size === before ? stalledPasses + 1 : 0;
+
+    const atBottom =
+      window.innerHeight + window.scrollY >= document.body.scrollHeight - 50;
+    const reachedTarget = !expectedTotal || collected.size >= expectedTotal;
+    // Dừng khi: tới đáy + vài pass liên tiếp không thêm row mới + (đã đủ mốc
+    // header HOẶC đã kẹt quá lâu dù chưa đủ — escape tránh treo vô hạn khi mốc
+    // header không bao giờ đạt được). Chưa tới đáy/chưa đủ mốc → cứ cuộn tiếp.
+    if (
+      atBottom &&
+      stalledPasses >= 3 &&
+      (reachedTarget || stalledPasses >= 12)
+    ) {
+      break;
+    }
+
+    // Chưa đủ mốc mà đã kẹt ở đáy → nhảy lên đầu để kích virtualized list
+    // render lại từ trên xuống (bắt các row bị unmount khi cuộn nhanh).
+    if (!reachedTarget && atBottom && stalledPasses > 0 && stalledPasses % 4 === 0) {
+      window.scrollTo({ top: 0, behavior: "auto" });
+      await sleep(400);
     }
   }
 
@@ -151,7 +199,11 @@ export async function scrapeCurrentTab(
   status: "active" | "pending",
   label: string,
   isOverTime: () => boolean,
-): Promise<{ members: ScrapedMember[]; timedOut: boolean }> {
+): Promise<{
+  members: ScrapedMember[];
+  timedOut: boolean;
+  expectedTotal: number | null;
+}> {
   await reportProgress(
     taskId,
     { phase: "discover", message: `[${label}] Đang quét...` },
@@ -244,14 +296,18 @@ export async function scrapeCurrentTab(
       await sleep(400);
     }
   } else {
+    // List cuộn vô hạn (không phân trang): truyền mốc header để scroll KIÊN NHẪN
+    // tới khi đủ, không dừng sớm ở vài row đầu (fix bug "lần 1 chỉ ra 2 member").
     timedOut = await collectRowsByScrolling(
       taskId,
       status,
       label,
       collected,
       isOverTime,
+      undefined,
+      expectedTotal,
     );
   }
 
-  return { members: Array.from(collected.values()), timedOut };
+  return { members: Array.from(collected.values()), timedOut, expectedTotal };
 }

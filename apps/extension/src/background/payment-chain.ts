@@ -22,6 +22,7 @@
 import type {
   ExecuteActionRequest,
   ExecuteActionResponse,
+  ScrapedInvoiceDetail,
 } from "../shared/messages";
 
 const STRIPE_HOST = "invoice.stripe.com";
@@ -177,6 +178,66 @@ function findContentScriptFiles(matchHostname: string): string[] {
     (cs.matches ?? []).some((m) => m.includes(matchHostname)),
   );
   return entry?.js ?? [];
+}
+
+/**
+ * Mở 1 tab tới trang chi tiết hoá đơn Stripe, đọc CHÍNH XÁC số lượng seat / đơn
+ * giá / subtotal / VAT / tổng / khoảng chu kỳ, rồi ĐÓNG tab. Trả
+ * `ScrapedInvoiceDetail` hoặc `null` nếu không đọc được (fail an toàn — caller
+ * đánh dấu detail_scraped=false, KHÔNG đoán). Tái dùng bởi luồng SYNC_BILLING.
+ */
+export async function scrapeInvoiceDetailInTab(
+  invoiceUrl: string,
+  taskId: string,
+): Promise<ScrapedInvoiceDetail | null> {
+  let tab: chrome.tabs.Tab;
+  try {
+    tab = await chrome.tabs.create({ url: invoiceUrl, active: false });
+  } catch (e) {
+    console.warn("[autogpt-billing] mở tab hoá đơn fail:", e);
+    return null;
+  }
+  const tabId = tab.id;
+  if (tabId === undefined) return null;
+  try {
+    const loaded = await waitForTabComplete(tabId, STRIPE_TAB_OPEN_TIMEOUT_MS);
+    if (!loaded?.url?.includes(STRIPE_HOST)) {
+      console.warn(`[autogpt-billing] tab không tới ${STRIPE_HOST}: ${loaded?.url}`);
+      return null;
+    }
+    const ready = await waitForContentReady(
+      tabId,
+      STRIPE_CONTENT_READY_TIMEOUT_MS,
+      findContentScriptFiles(STRIPE_HOST),
+    );
+    if (!ready) {
+      console.warn("[autogpt-billing] stripe content script không ready");
+      return null;
+    }
+    let resp: ExecuteActionResponse;
+    try {
+      resp = await chrome.tabs.sendMessage(tabId, {
+        kind: "STRIPE_SCRAPE_INVOICE_DETAIL",
+        taskId,
+        invoiceUrl,
+      } satisfies ExecuteActionRequest);
+    } catch (e) {
+      console.warn("[autogpt-billing] sendMessage scrape fail:", e);
+      return null;
+    }
+    if (!resp.ok) {
+      console.warn("[autogpt-billing] scrape detail fail:", resp.error_message);
+      return null;
+    }
+    const detail = (
+      resp.data as { invoice_detail?: ScrapedInvoiceDetail } | undefined
+    )?.invoice_detail;
+    return detail ?? null;
+  } finally {
+    try {
+      await chrome.tabs.remove(tabId);
+    } catch {}
+  }
 }
 
 export async function runPaymentChain(

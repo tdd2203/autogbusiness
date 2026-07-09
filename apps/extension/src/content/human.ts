@@ -7,7 +7,9 @@
  * này — đổi 1 chỗ áp dụng toàn bộ.
  *
  * - KHÔNG dùng .click() trực tiếp, phải mousedown → mouseup → click
- * - Nhập liệu gõ từng ký tự (keypress events) — vẫn realistic nhưng nhanh hơn
+ * - Nhập liệu: set value 1 LẦN + 1 chuỗi event (KHÔNG gõ từng ký tự kèm
+ *   setTimeout). Tab admin chạy NỀN (active:false) bị Chrome throttle mọi
+ *   setTimeout về ~1000ms → gõ từng ký tự = ~1s/ký tự. Xem `humanType`.
  */
 
 const DELAY_MULTIPLIER = 0.18;
@@ -97,7 +99,6 @@ export async function humanClick(el: HTMLElement): Promise<void> {
 export async function humanType(input: HTMLInputElement | HTMLTextAreaElement, text: string): Promise<void> {
   input.focus();
   await microDelay();
-  // Clear existing
   const nativeSetter = Object.getOwnPropertyDescriptor(
     input instanceof HTMLTextAreaElement
       ? window.HTMLTextAreaElement.prototype
@@ -105,18 +106,29 @@ export async function humanType(input: HTMLInputElement | HTMLTextAreaElement, t
     "value",
   )?.set;
 
+  // Clear giá trị cũ — React controlled input đọc lại qua native setter + 'input'.
   nativeSetter?.call(input, "");
   input.dispatchEvent(new Event("input", { bubbles: true }));
 
-  const typeBase = Math.max(8, Math.floor(40 * DELAY_MULTIPLIER));
-  const typeSpan = Math.max(12, Math.floor(80 * DELAY_MULTIPLIER));
-  for (const ch of text) {
-    nativeSetter?.call(input, input.value + ch);
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: ch, bubbles: true }));
-    input.dispatchEvent(new KeyboardEvent("keypress", { key: ch, bubbles: true }));
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.dispatchEvent(new KeyboardEvent("keyup", { key: ch, bubbles: true }));
-    await sleep(typeBase + Math.floor(Math.random() * typeSpan));
+  // 🔴 FIX TỐC ĐỘ "nhập email ~1s/ký tự" (2026-06-29, đo thực từ progress.history):
+  //   Tab admin ChatGPT do runner mở/reuse với `active:false` → chạy NỀN. Chrome
+  //   THROTTLE mọi setTimeout của tab nền (không visible) về tối thiểu ~1000ms
+  //   (background timer throttling). Code cũ gõ TỪNG ký tự với `await sleep(8-22ms)`
+  //   → mỗi sleep hoá ~1000ms → nhập 1 email = ~N giây (dashboard đo: typing_s ≈
+  //   1.0×số_ký_tự + ~7s; per-char ~1.3s khi nền vs ~0.07s khi tab foreground).
+  //   Giảm DELAY_MULTIPLIER KHÔNG cứu được vì clamp là 1000ms bất kể giá trị yêu cầu.
+  //   Tab nền KHÔNG AI nhìn → cadence "gõ từng phím" vô nghĩa. → SET GIÁ TRỊ 1 LẦN
+  //   (như thao tác DÁN của người dùng) + 1 chuỗi event đại diện, KHÔNG còn
+  //   setTimeout nào trong vòng gõ → không phụ thuộc throttle. Foreground vẫn nhanh.
+  nativeSetter?.call(input, text);
+  const lastKey = text.slice(-1);
+  if (lastKey) {
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: lastKey, bubbles: true }));
+    input.dispatchEvent(new KeyboardEvent("keypress", { key: lastKey, bubbles: true }));
+  }
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  if (lastKey) {
+    input.dispatchEvent(new KeyboardEvent("keyup", { key: lastKey, bubbles: true }));
   }
   input.dispatchEvent(new Event("change", { bubbles: true }));
 }

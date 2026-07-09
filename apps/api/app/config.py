@@ -19,10 +19,6 @@ class Settings(BaseSettings):
     super_admin_username: str = Field(..., alias="SUPER_ADMIN_USERNAME")
     super_admin_password: str = Field(..., alias="SUPER_ADMIN_PASSWORD")
 
-    # DEPRECATED kể từ Tuần 2.4 — extension API key giờ là per-workspace, sinh từ DB.
-    # Giữ optional để không phá .env cũ.
-    extension_api_key: str | None = Field(default=None, alias="EXTENSION_API_KEY")
-
 
 @lru_cache
 def get_settings() -> Settings:

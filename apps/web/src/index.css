@@ -3,33 +3,42 @@
 @tailwind utilities;
 
 /* ============================================================
- * AutoGPT Admin — Design tokens (redesign 2026-05)
- * Tham khảo mockup: autogpt-admin-redesign (1).html.
- * IBM Plex Sans/Mono + bảng màu cream/beige nhạt, viền ấm.
+ * AutoGPT Admin — Design tokens (redesign 2026-07)
+ * Tham khảo mockup: "Workspace Members.html".
+ * IBM Plex Sans/Mono + bảng màu cream/beige ẤM, bo góc mềm (thẻ 14px,
+ * control 9px), viền ấm + đổ bóng nhẹ. Xanh lá active #22975a, hổ phách
+ * cảnh báo #e0a04a, đỏ #b02a1e. Toàn bộ app dùng các token này nên đổi ở
+ * đây là đổi đồng bộ cả web.
  * ============================================================ */
 :root {
-  --bg: #fafaf9;
+  --bg: #f7f5f1;
   --surface: #ffffff;
-  --surface-2: #f4f4f2;
-  --border: #ebe9e4;
-  --border-strong: #d8d5cd;
-  --ink: #18181b;
-  --ink-2: #52525b;
-  --ink-3: #a1a1aa;
-  --ink-4: #d4d4d8;
-  --accent: #1c1917;
-  --success: #15803d;
-  --success-bg: #f0fdf4;
-  --success-border: #bbf7d0;
-  --warning: #a16207;
-  --warning-bg: #fefce8;
-  --danger: #b91c1c;
-  --danger-bg: #fef2f2;
+  --surface-2: #f0ece5;
+  --sidebar: #fbfaf8;
+  --border: #e8e3db;
+  --border-strong: #ddd7cd;
+  --ink: #1c1a17;
+  --ink-2: #5b554c;
+  --ink-3: #9b9489;
+  --ink-4: #cfc8bc;
+  --accent: #1c1a17;
+  --success: #1a7a48;
+  --success-strong: #22975a;
+  --success-bg: #e8f3ec;
+  --success-border: #bfe3cd;
+  --warning: #8a6d1f;
+  --warning-accent: #e0a04a;
+  --warning-bg: #fdf6e3;
+  --warning-border: #f0e4c0;
+  --danger: #b02a1e;
+  --danger-bg: #fbecea;
   --info: #1d4ed8;
-  --info-bg: #eff6ff;
-  --info-border: #dbeafe;
-  --radius: 6px;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --info-bg: #eef4fb;
+  --info-border: #d6e4f5;
+  --radius: 9px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 2px rgba(28, 26, 23, 0.04);
+  --shadow-card: 0 1px 2px rgba(28, 26, 23, 0.03);
   --font-display: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
@@ -60,6 +69,28 @@ body {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes toast-in-down {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
   }
 }
 
@@ -243,12 +274,14 @@ body {
   .surface-card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
   }
   .table-card {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
     overflow: hidden;
   }
   .table-head {
@@ -306,6 +339,21 @@ body {
     font-size: 12.5px;
     color: var(--ink);
   }
+  /* Email bấm được → mở modal chi tiết thành viên (lịch sử hoạt động). */
+  .cell-email-link {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+    text-decoration: none;
+  }
+  .cell-email-link:hover {
+    color: var(--accent, #2563eb);
+    text-decoration: underline;
+  }
   .cell-muted {
     color: var(--ink-3);
   }
@@ -314,53 +362,67 @@ body {
      nằm trên 1 hàng ngang, không co/xuống dòng. Tràn ngang → scroll (khung bảng
      đã bọc overflow-x:auto). */
   .data-table-compact thead th {
-    padding: 8px 12px;
-    font-size: 10px;
-    letter-spacing: 0.06em;
+    padding: 10px 8px;
+    font-size: 13px;
+    letter-spacing: 0.04em;
     white-space: nowrap;
+    /* Dải tiêu đề cột = 1 băng có viền trên + dưới (nền var(--bg) sẵn có) → thay
+       vai trò vạch phân cách mà .table-head trước đây đảm nhiệm. */
+    border-top: 1px solid var(--border);
   }
   .data-table-compact tbody td {
-    padding: 8px 12px;
-    font-size: 12px;
+    padding: 12px 8px;
+    font-size: 13.5px;
     white-space: nowrap;
   }
+  /* Email dùng font mono nên GIỮ cùng cỡ với các ô khác để cả hàng đồng đều
+     (mono ở cùng px trông nhỉnh hơn sans nhưng chấp nhận được, ưu tiên đồng nhất). */
   .data-table-compact .cell-email {
-    font-size: 11.5px;
+    font-size: 13.5px;
+  }
+  /* Chip vai trò / trạng thái (.role-tag, .badge) là component DÙNG CHUNG toàn app
+     (cỡ mặc định 11.5px). Chỉ override CỠ trong phạm vi bảng thành viên để mọi cột
+     đồng đều 13.5px — KHÔNG đụng cỡ chip ở các trang khác. */
+  .data-table-compact tbody .role-tag,
+  .data-table-compact tbody .badge {
+    font-size: 13.5px;
   }
 
   /* ---------- Metrics ---------- */
+  /* Thẻ rời bo góc mềm (mockup 2026-07): mỗi thẻ có viền + bóng nhẹ, cách nhau
+     16px — thay lưới liền mạch gap:1px cũ. */
   .metrics {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 1px;
-    background: var(--border);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
+    gap: 16px;
   }
   .metric {
     background: var(--surface);
-    padding: 20px 24px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+    padding: 18px 20px 16px;
   }
   .metric-label {
+    font-family: var(--font-mono);
     font-size: 11px;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     color: var(--ink-3);
     font-weight: 500;
   }
   .metric-value {
-    margin-top: 8px;
+    margin-top: 12px;
     font-family: var(--font-display);
-    font-size: 28px;
-    font-weight: 500;
-    letter-spacing: -0.02em;
+    font-size: 34px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
     color: var(--ink);
     line-height: 1;
   }
   .metric-delta {
-    margin-top: 8px;
-    font-size: 12px;
+    margin-top: 10px;
+    font-size: 12.5px;
     font-family: var(--font-mono);
     color: var(--ink-3);
   }
@@ -369,6 +431,95 @@ body {
   }
   .metric-delta.down {
     color: var(--danger);
+  }
+  /* Header trong thẻ: nhãn trái + chấm trạng thái phải. */
+  .metric-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  .metric-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ink-4);
+    flex: none;
+  }
+  .metric-dot.warn {
+    background: var(--warning-accent);
+  }
+  .metric-dot.danger {
+    background: var(--danger);
+  }
+  .metric-dot.live {
+    width: 8px;
+    height: 8px;
+    background: var(--success-strong);
+    position: relative;
+  }
+  .metric-dot.live::after {
+    content: "";
+    position: absolute;
+    inset: -3px;
+    border-radius: 50%;
+    background: var(--success-strong);
+    opacity: 0.25;
+    animation: pulse-dot 2s infinite;
+  }
+  /* Thẻ "Đang active" nổi bật: viền + nền gradient xanh, số xanh đậm. */
+  .metric.metric-active {
+    border-color: var(--success-border);
+    box-shadow: 0 4px 14px rgba(34, 151, 90, 0.08);
+    background: linear-gradient(
+        180deg,
+        rgba(34, 151, 90, 0.06),
+        rgba(34, 151, 90, 0)
+      ),
+      var(--surface);
+  }
+  .metric-active .metric-label {
+    color: var(--success);
+    font-weight: 600;
+  }
+  .metric-active .metric-value {
+    color: #14663b;
+  }
+  .metric-row {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+  }
+  .metric-pct {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--success-strong);
+  }
+  .metric-bar {
+    margin-top: 12px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--success-bg);
+    overflow: hidden;
+  }
+  .metric-bar > i {
+    display: block;
+    height: 100%;
+    background: var(--success-strong);
+    border-radius: 999px;
+  }
+  .metric-errpill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--danger-bg);
+    color: var(--danger);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    border-radius: 6px;
+    padding: 3px 7px;
   }
   @media (max-width: 960px) {
     .metrics {
@@ -417,19 +568,19 @@ body {
   /* ---------- Tabs ---------- */
   .tabs-bar {
     display: flex;
-    gap: 4px;
+    gap: 22px;
     border-bottom: 1px solid var(--border);
     margin-bottom: 28px;
   }
   .tab {
-    padding: 10px 14px;
-    font-size: 13.5px;
+    padding: 10px 4px 12px;
+    font-size: 14.5px;
     color: var(--ink-3);
     cursor: pointer;
-    border-bottom: 1.5px solid transparent;
+    border-bottom: 2px solid transparent;
     margin-bottom: -1px;
     transition: color 0.15s;
-    font-weight: 400;
+    font-weight: 500;
     text-decoration: none;
     background: transparent;
     border-top: 0;
@@ -443,7 +594,7 @@ body {
   .tab.active {
     color: var(--ink);
     border-bottom-color: var(--ink);
-    font-weight: 500;
+    font-weight: 600;
   }
 
   /* ---------- Filter chips ---------- */
@@ -480,8 +631,8 @@ body {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 3px 8px;
-    border-radius: 4px;
+    padding: 3px 9px;
+    border-radius: 6px;
     font-size: 11.5px;
     font-weight: 500;
     font-family: var(--font-mono);
@@ -492,6 +643,10 @@ body {
     width: 5px;
     height: 5px;
     border-radius: 50%;
+  }
+  /* Badge dùng icon (✓/✗) thay cho chấm tròn — tắt indicator mặc định. */
+  .badge-plain::before {
+    content: none;
   }
   .badge-success {
     background: var(--success-bg);
@@ -530,9 +685,9 @@ body {
   }
   .role-tag {
     display: inline-block;
-    padding: 2px 8px;
+    padding: 3px 10px;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 7px;
     font-size: 11.5px;
     color: var(--ink-2);
     font-family: var(--font-mono);
@@ -595,11 +750,11 @@ body {
   }
   .notice.warn {
     background: var(--warning-bg);
-    border-color: #fde68a;
+    border-color: var(--warning-border);
   }
   .notice.danger {
     background: var(--danger-bg);
-    border-color: #fecaca;
+    border-color: #f0c9c4;
   }
   .notice.success {
     background: var(--success-bg);
@@ -781,7 +936,8 @@ body {
   .settings-section {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
     padding: 28px;
     margin-bottom: 20px;
   }

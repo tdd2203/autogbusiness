@@ -26,9 +26,23 @@ function visibleRowCount(): number {
 }
 
 export async function filterAndFindRow(email: string): Promise<HTMLElement | null> {
-  const input = findMemberFilterInput();
+  // Tab mới (v0.8.13: mỗi action mở /admin/members MỚI) → content chạy NGAY khi
+  // trang vừa load, ô lọc có thể CHƯA render → tra 1 lần sẽ null → fast-path bị bỏ
+  // qua oan, rớt xuống scroll-scan chậm/ồn. POLL chờ ô lọc render tới 8s rồi mới
+  // kết luận "không có ô lọc". Cùng lớp render-wait như clickTabAndWait
+  // (waitForButtonMs) — nhưng cho ô lọc thay vì nút tab.
+  let input = findMemberFilterInput();
   if (!input) {
-    console.warn("[autogpt-locate] KHÔNG tìm được ô lọc — fallback scroll-find");
+    try {
+      input = await waitFor(() => findMemberFilterInput(), 8000, 250);
+    } catch {
+      input = null;
+    }
+  }
+  if (!input) {
+    console.warn(
+      "[autogpt-locate] KHÔNG tìm được ô lọc sau 8s — fallback scroll-find",
+    );
     return findMemberRow(email);
   }
   console.log(

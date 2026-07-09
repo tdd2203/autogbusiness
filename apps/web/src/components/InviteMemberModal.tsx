@@ -278,18 +278,6 @@ export function InviteMemberModal({
                 </ul>
               </details>
             )}
-
-            <div
-              style={{
-                marginTop: "auto",
-                paddingTop: 10,
-                fontSize: 11,
-                color: "var(--ink-3)",
-                lineHeight: 1.5,
-              }}
-            >
-              {t("invite.roleFixedHint")} · {t("invite.autoRemoveHint")}
-            </div>
           </div>
 
           {/* RIGHT — parsed entries table, scroll riêng */}

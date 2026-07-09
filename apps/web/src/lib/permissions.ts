@@ -1,4 +1,4 @@
-export const PERMISSIONS = {
+const PERMISSIONS = {
   USER_MANAGE: "USER_MANAGE",
   EXTENSION_CONFIG: "EXTENSION_CONFIG",
   BILLING_VIEW: "BILLING_VIEW",
@@ -8,6 +8,7 @@ export const PERMISSIONS = {
   MEMBER_VIEW: "MEMBER_VIEW",
   MEMBER_INVITE: "MEMBER_INVITE",
   MEMBER_REMOVE: "MEMBER_REMOVE",
+  MEMBER_SET_USAGE_LIMIT: "MEMBER_SET_USAGE_LIMIT",
   WORKSPACE_SYNC_TRIGGER: "WORKSPACE_SYNC_TRIGGER",
   QUEUE_VIEW: "QUEUE_VIEW",
   AUDIT_LOG_VIEW: "AUDIT_LOG_VIEW",
@@ -15,18 +16,13 @@ export const PERMISSIONS = {
 
 export type PermissionKey = keyof typeof PERMISSIONS;
 
-export const SUPER_ADMIN_ONLY: PermissionKey[] = [
-  "USER_MANAGE",
-  "EXTENSION_CONFIG",
-  "BILLING_PAY",
-  "MEMBER_CHANGE_ROLE",
-  "UI_LABEL_MANAGE",
-];
-
 export const GRANTABLE: PermissionKey[] = [
   "MEMBER_VIEW",
   "MEMBER_INVITE",
   "MEMBER_REMOVE",
+  // MEMBER_SET_USAGE_LIMIT: yêu cầu đặt giới hạn tín dụng (vẫn cần admin DUYỆT +
+  // chỉ trong NGÂN SÁCH cấp riêng từng workspace).
+  "MEMBER_SET_USAGE_LIMIT",
   "WORKSPACE_SYNC_TRIGGER",
   "QUEUE_VIEW",
   "AUDIT_LOG_VIEW",
@@ -45,18 +41,3 @@ export const DEFAULT_SUB_ADMIN_PERMS: PermissionKey[] = [
   "QUEUE_VIEW",
   "WORKSPACE_SYNC_TRIGGER",
 ];
-
-export const PERMISSION_LABEL: Record<PermissionKey, string> = {
-  USER_MANAGE: "Quản lý tài khoản phụ",
-  EXTENSION_CONFIG: "Cấu hình Extension",
-  BILLING_VIEW: "Xem Billing",
-  BILLING_PAY: "Thực hiện thanh toán",
-  MEMBER_CHANGE_ROLE: "Đổi vai trò thành viên ChatGPT",
-  UI_LABEL_MANAGE: "Quản lý label UI ChatGPT",
-  MEMBER_VIEW: "Xem danh sách thành viên",
-  MEMBER_INVITE: "Mời thành viên mới",
-  MEMBER_REMOVE: "Xoá thành viên",
-  WORKSPACE_SYNC_TRIGGER: "Kích hoạt sync workspace",
-  QUEUE_VIEW: "Xem queue task",
-  AUDIT_LOG_VIEW: "Xem Audit Log",
-};

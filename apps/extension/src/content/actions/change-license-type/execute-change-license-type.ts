@@ -103,13 +103,23 @@ export async function executeChangeLicenseType(
     };
   }
 
-  // 1) Tab Người dùng (đổi giấy phép chỉ làm trên active list).
+  // 1) Tab Người dùng (đổi giấy phép chỉ làm trên active list). Render-wait thanh
+  // tab (waitForButtonMs=12000): tab vừa F5/navigate (ensureAdminTab tái dùng tab)
+  // → thanh tab có thể chưa render → tra 1 lần sẽ trượt → kẹt ở tab hiện tại (vd
+  // ?tab=invites action trước để lại) → lọc nhầm tab Lời mời → UI_ELEMENT_NOT_FOUND
+  // oan. Cùng cơ chế sync-member/revoke (bug 2026-06-29).
   await reportProgress(
     taskId,
     { phase: "navigating", message: "Chuyển tab Người dùng..." },
     true,
   );
-  await clickTabAndWait("tab_active_members", TEXT_FALLBACKS.tabActiveMembers, 800);
+  await clickTabAndWait(
+    "tab_active_members",
+    TEXT_FALLBACKS.tabActiveMembers,
+    800,
+    undefined,
+    12_000,
+  );
 
   // 2) Lọc theo email → định vị row (lật trang nếu cần).
   await reportProgress(

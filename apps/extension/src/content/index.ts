@@ -5,9 +5,10 @@ import type {
 import { loadBundleFromStorage } from "../shared/ui-labels";
 import { executeInvite, executeVerifyPendingInvite } from "./actions/invite";
 import { executeRemove } from "./actions/remove";
-import { executeSyncMember } from "./actions/sync-member";
+import { executeSyncMember, executeSyncMembersBatch } from "./actions/sync-member";
 import { executeChangeRole } from "./actions/change-role";
 import { executeChangeLicenseType } from "./actions/change-license-type";
+import { executeSetUsageLimit } from "./actions/set-usage-limit";
 import { executeSync } from "./actions/sync";
 import { executeSyncBilling } from "./actions/sync-billing";
 import { executeRevokeInvites } from "./actions/revoke";
@@ -15,6 +16,11 @@ import { executeHarvestLabels } from "./actions/harvest-labels";
 import { executePurchaseSeat } from "./actions/purchase-seat";
 
 console.log("[autogpt-content] injected vào", location.href);
+
+// Lưu ý: KHÔNG hiện toast kết quả trên trang chatgpt.com nữa. Thông báo kết quả
+// lệnh chỉ hiển thị ở web app (dashboard) để người thực thi theo dõi — tránh
+// nhân đôi thông báo (xem yêu cầu user 2026-06-21). Content script chỉ trả
+// ExecuteActionResponse về background; web app tự báo qua recent-tasks.
 
 // Load calibrated UI label bundle ngay khi content script khởi động — actions
 // dùng sync access (`dbLabelsFor`) nên cache phải sẵn trước khi dispatch task.
@@ -54,11 +60,12 @@ chrome.runtime.onMessage.addListener(
         sendResponse(result);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        sendResponse({
+        const errResult: ExecuteActionResponse = {
           ok: false,
           error_code: "UNKNOWN",
           error_message: message,
-        } satisfies ExecuteActionResponse);
+        };
+        sendResponse(errResult);
       }
     })();
     return true; // async response
@@ -72,13 +79,28 @@ async function dispatch(
     case "PING":
       return { ok: true, data: { url: location.href } };
     case "INVITE_MEMBER":
-      return executeInvite(msg.taskId, msg.emails, msg.role, msg.verifiedDomain ?? null);
+      return executeInvite(
+        msg.taskId,
+        msg.emails,
+        msg.role,
+        msg.verifiedDomain ?? null,
+        msg.externalReady ?? false,
+      );
     case "VERIFY_PENDING_INVITE":
       return executeVerifyPendingInvite(msg.taskId, msg.emails, msg.role);
     case "REMOVE_MEMBER":
       return executeRemove(msg.taskId, msg.email);
+    case "SET_USAGE_LIMIT":
+      return executeSetUsageLimit(
+        msg.taskId,
+        msg.email,
+        msg.limit_credits,
+        msg.old_limit_credits ?? null,
+      );
     case "SYNC_MEMBER":
       return executeSyncMember(msg.taskId, msg.email);
+    case "SYNC_MEMBERS_BATCH":
+      return executeSyncMembersBatch(msg.taskId, msg.emails);
     case "CHANGE_ROLE":
       return executeChangeRole(msg.taskId, msg.email, msg.new_role, msg.old_role ?? null);
     case "CHANGE_LICENSE_TYPE":
@@ -102,6 +124,7 @@ async function dispatch(
     case "PURCHASE_SEAT":
       return executePurchaseSeat(msg.taskId, msg.quantity, msg.skipToPayment === true);
     case "STRIPE_CLICK_LINK":
+    case "STRIPE_SCRAPE_INVOICE_DETAIL":
     case "LINK_CONFIRM_PAYMENT":
       // Các message này dành cho content/stripe-invoice.ts + content/link-checkout.ts
       // (matches invoice.stripe.com / checkout.link.com). Nếu gửi nhầm vào

@@ -50,10 +50,6 @@ export async function saveBundleToStorage(bundle: UiLabelBundle): Promise<void> 
   await chrome.storage.local.set({ [STORAGE_KEY]: bundle });
 }
 
-export function getCachedBundle(): UiLabelBundle | null {
-  return cached;
-}
-
 export function normalizeLocale(raw: string | null | undefined): UiLabelLocale {
   const l = (raw ?? "").toLowerCase();
   if (l.startsWith("vi")) return "vi";

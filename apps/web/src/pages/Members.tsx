@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useOutletContext, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
+import { LICENSE_FEATURE_ENABLED } from "../lib/featureFlags";
 import { useAuth } from "../hooks/useAuth";
 import { useFormatDate, useFormatDateTime, useT } from "../i18n";
 import type { Member, QueueItem, WorkspaceMemberStats } from "../types";
@@ -10,7 +11,11 @@ import { useRemoveMembers } from "../hooks/useRemoveMembers";
 import { useMemberMutations } from "../hooks/useMemberMutations";
 import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
 import { WorkspaceTaskRail } from "../components/WorkspaceTaskRail";
-import { confirm } from "../components/Toast";
+import { RowActionsMenu } from "../components/RowActionsMenu";
+import { ChangeEmailModal } from "../components/ChangeEmailModal";
+import { ChangeSubscriptionModal } from "../components/ChangeSubscriptionModal";
+import { MemberDetailModal } from "../components/MemberDetailModal";
+import { confirm, toast } from "../components/Toast";
 import { Chip } from "./Queue";
 
 // Tab lọc theo trạng thái tham gia workspace (giống ChatGPT):
@@ -37,21 +42,64 @@ const STATUS_BADGE: Record<string, string> = {
   removed: "badge badge-danger",
 };
 
+// Cột "Ngày gia hạn" / "Ngày hết hạn" hiển thị chi tiết tới giây (khớp trang
+// "Email đã add" — xem AddedEmails.tsx).
+const PRECISE_TIME: Intl.DateTimeFormatOptions = {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+};
+
+/** "DD/MM/YYYY - HH:MM:SS" — dấu "-" ngăn giữa ngày và giờ. Ngày dạng số
+ *  (vi-VN/zh-CN) không chứa space nên thay space đầu tiên là an toàn. */
+function fmtRenewExpiry(
+  formatDateTime: ReturnType<typeof useFormatDateTime>,
+  value: string | Date,
+): string {
+  return formatDateTime(value, undefined, PRECISE_TIME).replace(" ", " - ");
+}
+
+/** Tài khoản phụ (sub-admin) — đổ vào dropdown lọc theo chủ sở hữu (super-admin). */
+type SubAccount = {
+  id: string;
+  email: string;
+  username: string;
+  is_super_admin: boolean;
+};
+
+// Giá trị sentinel cho mục lọc "Chưa có chủ" (member từ SYNC, invited_by null).
+const NO_OWNER = "__none__";
+
 export default function Members() {
   const t = useT();
   const formatDate = useFormatDate();
   const formatDateTime = useFormatDateTime();
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const { hasPermission, user } = useAuth();
+  const isSuper = user?.is_super_admin === true;
   const qc = useQueryClient();
 
   // Invite form đã được lift sang InviteMemberModal (WorkspaceLayout header).
   // Members.tsx chỉ còn hiển thị danh sách + filter + progress.
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("active");
+  // Lọc theo chủ sở hữu (super-admin): "" = tất cả, NO_OWNER = chưa có chủ,
+  // còn lại = id sub-admin/super đã invite. KHÔNG hiển thị cột chủ sở hữu —
+  // chỉ dùng để lọc danh sách (yêu cầu: không bày chủ sở hữu trên mỗi mail).
+  const [ownerFilter, setOwnerFilter] = useState<string>("");
   // Xoá hàng loạt qua checkbox chọn nhiều dòng. Modal dán email nằm ở
   // WorkspaceLayout header (cạnh nút Mời) — đồng bộ với flow mời thành viên.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Member đang mở modal "Đổi email" (null = đóng). Đổi email = xoá cũ + mời mới,
+  // giữ nguyên hạn dùng — xem components/ChangeEmailModal + hooks/useChangeEmail.md.
+  const [changeEmailMember, setChangeEmailMember] = useState<Member | null>(null);
+  // Member đang mở modal "Đổi hạn dùng" (null = đóng). Đổi hạn CÓ DUYỆT: super-admin
+  // áp ngay, sub-admin tạo yêu cầu — xem hooks/useSubscriptionApprovals.md.
+  const [changeSubMember, setChangeSubMember] = useState<Member | null>(null);
+  // Member đang mở modal "Chi tiết" (null = đóng). Click vào email ở bảng → mở
+  // panel thông tin + lịch sử hoạt động — xem components/MemberDetailModal.
+  const [detailMember, setDetailMember] = useState<Member | null>(null);
+  // Banner "sắp hết hạn": click để bung DANH SÁCH ĐẦY ĐỦ (mặc định chỉ hiện 5 +N).
 
   const { data: members = [], isLoading } = useQuery({
     queryKey: ["members", workspaceId],
@@ -59,6 +107,37 @@ export default function Members() {
       api<Member[]>(`/api/v1/workspaces/${workspaceId}/members`),
     enabled: !!workspaceId,
   });
+
+  // Super-admin: danh sách tài khoản phụ để lọc member theo chủ sở hữu (id →
+  // tên hiển thị trong dropdown). Sub-admin chỉ thấy member của mình → không cần.
+  const { data: subAccounts = [] } = useQuery({
+    queryKey: ["users"],
+    queryFn: () => api<SubAccount[]>("/api/v1/users"),
+    enabled: isSuper,
+    select: (rows) => rows.filter((u) => !u.is_super_admin),
+  });
+
+  // Chỉ liệt kê chủ sở hữu THỰC SỰ có member trong workspace này (id → tên),
+  // tránh dropdown đầy sub-admin không liên quan. hasNoOwner = có member từ
+  // SYNC (invited_by null) → thêm mục "Chưa có chủ".
+  const ownerOptions = useMemo(() => {
+    if (!isSuper) return { opts: [] as { value: string; label: string }[], hasNoOwner: false };
+    const nameById = new Map<string, string>(
+      subAccounts.map((u) => [u.id, u.username]),
+    );
+    if (user) nameById.set(user.id, t("member.ownerSelf"));
+    let hasNoOwner = false;
+    const present = new Set<string>();
+    for (const m of members) {
+      if (m.invited_by_user_id) present.add(m.invited_by_user_id);
+      else hasNoOwner = true;
+    }
+    const opts = Array.from(present, (id) => ({
+      value: id,
+      label: nameById.get(id) ?? id,
+    })).sort((a, b) => a.label.localeCompare(b.label));
+    return { opts, hasNoOwner };
+  }, [isSuper, subAccounts, members, user, t]);
 
   // Thống kê workspace: tổng member toàn workspace + seat. Để sub-admin (chỉ
   // thấy member mình mời trong bảng) vẫn biết TỔNG số người + còn bao seat trống.
@@ -91,33 +170,53 @@ export default function Members() {
   //
   // Track bằng ref: set các (id, status) đã xử lý — chỉ invalidate cho task
   // mới chuyển sang terminal (tránh invalidate liên tục khi task đã terminal).
-  const seenTerminalRef = useRef<Set<string>>(new Set());
+  // Theo dõi status LẦN TRƯỚC của từng task (theo id) để chỉ phản ứng khi task
+  // VỪA chuyển từ đang-chạy (PENDING/IN_PROGRESS) → terminal (COMPLETED/FAILED)
+  // NGAY TRƯỚC MẮT user. Lần đầu thấy 1 task (kể cả task lịch sử đã COMPLETED khi
+  // mới mở trang) chỉ ghi nhận status, KHÔNG toast → tránh spam toast cho mọi task
+  // cũ / lịch sử. Nhờ vậy chỉ "đúng task user vừa trigger" (đi qua PENDING ở tab
+  // này rồi hoàn tất) mới hiện thông báo.
+  const lastStatusRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
     const memberMutatingTypes = new Set([
       "INVITE_MEMBER",
       "REMOVE_MEMBER",
       "CHANGE_ROLE",
       "CHANGE_LICENSE_TYPE",
+      "SET_USAGE_LIMIT",
       "REVOKE_INVITES",
       "SYNC_DATA",
       // SYNC_MEMBER (đồng bộ 1 tài khoản lẻ): khi extension hoàn tất → member có
       // thể chuyển pending→active → invalidate để list tự cập nhật, KHỎI reload tay.
       "SYNC_MEMBER",
+      // SYNC_MEMBERS_BATCH (đồng bộ hàng loạt): cùng lý do — nhiều member có thể
+      // chuyển pending→active sau 1 mẻ → invalidate để list refresh.
+      "SYNC_MEMBERS_BATCH",
     ]);
-    let shouldInvalidate = false;
+    const justFinished: typeof recentTasks = [];
     for (const task of recentTasks) {
       if (!memberMutatingTypes.has(task.type)) continue;
-      if (task.status !== "COMPLETED" && task.status !== "FAILED") continue;
-      const key = `${task.id}:${task.status}`;
-      if (seenTerminalRef.current.has(key)) continue;
-      seenTerminalRef.current.add(key);
-      shouldInvalidate = true;
+      const prev = lastStatusRef.current.get(task.id);
+      lastStatusRef.current.set(task.id, task.status);
+      const isTerminal = task.status === "COMPLETED" || task.status === "FAILED";
+      // Chỉ tính là "vừa hoàn tất" khi LẦN TRƯỚC còn đang chạy. prev===undefined
+      // = lần đầu thấy (task lịch sử) → bỏ qua, không toast/không invalidate.
+      const wasActive = prev === "PENDING" || prev === "IN_PROGRESS";
+      if (isTerminal && wasActive) justFinished.push(task);
     }
-    if (shouldInvalidate) {
+    if (justFinished.length > 0) {
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
       qc.invalidateQueries({ queryKey: ["member-stats", workspaceId] });
+      for (const task of justFinished) {
+        const typeLabel = t(`taskType.${task.type}`);
+        if (task.status === "COMPLETED") {
+          toast.success(t("task.completedToast", { type: typeLabel }));
+        } else {
+          toast.error(t("task.failedToast", { type: typeLabel }));
+        }
+      }
     }
-  }, [recentTasks, qc, workspaceId]);
+  }, [recentTasks, qc, workspaceId, t]);
 
   // activeSyncTask: theo dõi để (1) phát hiện rogue pending sau sync, (2) invalidate
   // members khi sync xong. Tiến trình/huỷ các task đang chạy (sync/mời/thao tác)
@@ -174,11 +273,13 @@ export default function Members() {
   const {
     changeLicenseType,
     bulkChangeLicense,
+    bulkSetOwner,
     revokeInvites,
     syncMember,
     bulkSyncMembers,
   } = useMemberMutations(workspaceId, {
     onBulkChangeLicenseCleared: () => setSelectedIds(new Set()),
+    onBulkSetOwnerCleared: () => setSelectedIds(new Set()),
   });
 
   useEffect(() => {
@@ -222,18 +323,49 @@ export default function Members() {
   );
 
   const canRemove = hasPermission("MEMBER_REMOVE");
-  // Đổi license type chỉ super-admin (tái dùng quyền như đổi role).
-  const canChangeLicense = user?.is_super_admin === true;
+  // Đổi email sinh ra cả thao tác xoá lẫn mời → cần cả 2 quyền (khớp backend).
+  const canChangeEmail = canRemove && hasPermission("MEMBER_INVITE");
+  // Đổi hạn dùng cần quyền mời (sub-admin gửi yêu cầu chờ duyệt, super-admin áp ngay).
+  const canChangeSubscription = hasPermission("MEMBER_INVITE");
+  // Đổi license type chỉ super-admin (tái dùng quyền như đổi role). Đã ẩn toàn bộ
+  // qua cờ LICENSE_FEATURE_ENABLED (xem lib/featureFlags.ts) — ChatGPT mặc định
+  // "ChatGPT" nên cơ chế đổi giấy phép không còn khớp; cờ = false ⇒ canChangeLicense
+  // luôn false ⇒ mọi UI đổi giấy phép (dropdown đơn + option hàng loạt) tự ẩn.
+  const canChangeLicense =
+    LICENSE_FEATURE_ENABLED && user?.is_super_admin === true;
+  // Đặt giới hạn tín dụng: quyền MEMBER_SET_USAGE_LIMIT (super-admin luôn có).
+  const canSetUsageLimit = hasPermission("MEMBER_SET_USAGE_LIMIT");
   // Có thể thao tác hàng loạt (checkbox + thanh "Cập nhật hàng loạt") khi có ít
-  // nhất 1 trong 2 quyền: xoá hoặc đổi giấy phép.
-  const canBulk = canRemove || canChangeLicense;
+  // nhất 1 trong các quyền: xoá / đổi giấy phép / đặt giới hạn tín dụng.
+  const canBulk = canRemove || canChangeLicense || canSetUsageLimit;
+  // Mở modal Cập nhật hàng loạt (đặt giới hạn) với email điền sẵn — do
+  // WorkspaceLayout cung cấp qua Outlet context.
+  const { openBulkUpdate } = useOutletContext<{
+    openBulkUpdate: (action?: string, emails?: string[]) => void;
+  }>();
 
+  // Số liệu tổng quan cho KHỐI 4 THẺ TO ở đầu trang (theo mockup).
   const total = members.length;
   const activeCount = members.filter((m) => m.status === "active").length;
   const pendingCount = members.filter((m) => m.status === "pending").length;
-  const queueCount = recentTasks.length;
-  const recentFailed = recentTasks.filter((t) => t.status === "FAILED").length;
   const activeRate = total > 0 ? Math.round((activeCount / total) * 100) : 0;
+
+  // Số đếm cho 2 TAB "Đang hoạt động / Chờ tham gia" trong danh sách: TÔN TRỌNG
+  // bộ lọc chủ sở hữu (super-admin) để khớp danh sách đang xem — chọn 1 chủ thì
+  // badge tab hiện đúng số của chủ đó. KHÔNG phụ thuộc ô tìm kiếm (search chỉ thu
+  // hẹp trong tab). Các thẻ tổng quan ở đầu trang vẫn là số TOÀN workspace.
+  const ownerScopedMembers = useMemo(() => {
+    if (!isSuper || !ownerFilter) return members;
+    return ownerFilter === NO_OWNER
+      ? members.filter((m) => !m.invited_by_user_id)
+      : members.filter((m) => m.invited_by_user_id === ownerFilter);
+  }, [members, isSuper, ownerFilter]);
+  const tabActiveCount = ownerScopedMembers.filter(
+    (m) => m.status === "active",
+  ).length;
+  const tabPendingCount = ownerScopedMembers.filter(
+    (m) => m.status === "pending",
+  ).length;
 
   // Subscription tracking: phân loại theo subscription_end_at.
   //   - expired: end_at đã qua + status active/pending → cần remove
@@ -253,9 +385,20 @@ export default function Members() {
       new Date(m.subscription_end_at).getTime() > now &&
       new Date(m.subscription_end_at).getTime() - now <= SEVEN_DAYS_MS,
   );
+  // "Đến hạn gia hạn" (thẻ tổng quan #4): gộp đã hết hạn + sắp hết hạn ≤7 ngày
+  // = tập cần gia hạn (khớp badge tab "Gia hạn"). Chỉ hiện SỐ LƯỢNG, không liệt kê
+  // email.
+  const dueMembers = [...expiredMembers, ...expiringSoonMembers];
 
   const filteredMembers = useMemo(() => {
     let rows = members.filter((m) => m.status === statusFilter);
+    // Lọc theo chủ sở hữu (client-side; super-admin đã nhận toàn bộ member).
+    if (isSuper && ownerFilter) {
+      rows =
+        ownerFilter === NO_OWNER
+          ? rows.filter((m) => !m.invited_by_user_id)
+          : rows.filter((m) => m.invited_by_user_id === ownerFilter);
+    }
     const s = search.trim().toLowerCase();
     if (s) {
       rows = rows.filter(
@@ -269,7 +412,7 @@ export default function Members() {
     const addedAt = (m: Member) =>
       new Date(m.last_invited_at ?? m.created_at).getTime();
     return [...rows].sort((a, b) => addedAt(b) - addedAt(a));
-  }, [members, search, statusFilter]);
+  }, [members, search, statusFilter, isSuper, ownerFilter]);
 
   // Xoá hàng loạt: chỉ chọn được member active/pending (removed thì bỏ qua) khi
   // có quyền MEMBER_REMOVE. Select-all chỉ áp lên các dòng đang hiển thị (đã lọc).
@@ -357,6 +500,19 @@ export default function Members() {
       return;
     }
 
+    if (value === "set-usage-limit") {
+      // Option LUÔN hiển thị; chưa được cấp quyền thì báo liên hệ admin (không chạy).
+      if (!canSetUsageLimit) {
+        toast.error(t("usageLimit.needPermission"));
+        return;
+      }
+      // Mở modal Cập nhật hàng loạt ở chế độ đặt giới hạn, điền sẵn email đã chọn.
+      // Modal lo nhập số + ngân sách + (sub-admin) gửi chờ duyệt.
+      openBulkUpdate("set-usage-limit", emails);
+      setSelectedIds(new Set());
+      return;
+    }
+
     if (value.startsWith("license:")) {
       const licenseType = value.slice("license:".length) as LicenseType;
       const ok = await confirm(
@@ -368,10 +524,37 @@ export default function Members() {
         },
       );
       if (ok) bulkChangeLicense.mutate({ memberIds: ids, licenseType });
+      return;
+    }
+
+    if (value.startsWith("owner:")) {
+      // "Chuyển chủ nhanh" (super-admin): value = "owner:<userId>" | "owner:self"
+      // | "owner:" (thu hồi → chưa có chủ). Đổi thuần dữ liệu, không có task.
+      const raw = value.slice("owner:".length);
+      const targetUserId = raw === "" ? null : raw === "self" ? user!.id : raw;
+      const targetName =
+        raw === ""
+          ? t("bulkTransferOwner.noOwner")
+          : raw === "self"
+            ? t("member.ownerSelf")
+            : subAccounts.find((u) => u.id === raw)?.username ?? raw;
+      const ok = await confirm(
+        t("bulkTransferOwner.confirmBody", { n: ids.length, name: targetName }),
+        {
+          title: t("bulkTransferOwner.confirmTitle", { n: ids.length }),
+          okText: t("bulkTransferOwner.confirmOk", { name: targetName }),
+          cancelText: t("common.cancel"),
+          danger: raw === "",
+        },
+      );
+      if (ok) bulkSetOwner.mutate({ memberIds: ids, targetUserId, targetName });
     }
   }
 
-  const colCount = canBulk ? 8 : 7;
+  // Cột cố định (email, role, status, subscription, joinedAt, actions) = 6, cộng
+  // checkbox (nếu canBulk) + cột "Giấy phép" (nếu bật cờ license).
+  const colCount =
+    6 + (canBulk ? 1 : 0) + (LICENSE_FEATURE_ENABLED ? 1 : 0);
 
   return (
     <div>
@@ -447,68 +630,101 @@ export default function Members() {
           </button>
         </div>
       )}
-      {expiringSoonMembers.length > 0 && expiredMembers.length === 0 && (
-        <div
-          className="notice warn"
-          style={{ marginBottom: 16 }}
-        >
-          <div className="notice-icon">⚠</div>
-          <div style={{ flex: 1 }}>
-            <div className="notice-title">
-              {t("member.expiringSoonBannerTitle", { n: expiringSoonMembers.length })}
+      {/* Banner "sắp hết hạn (≤7 ngày)" đã GỠ — thông tin này giờ nằm ở thẻ tổng
+         quan "Đến hạn thanh toán" (liệt kê email). Banner ĐỎ "đã hết hạn" (kèm nút
+         dọn) vẫn giữ vì có hành động cleanup. */}
+
+      {/* KHỐI 4 THẺ TỔNG QUAN (theo mockup): Tổng · Active (nổi bật xanh, có thanh
+          tỉ lệ) · Lời mời chờ · Đến hạn thanh toán (email cần gia hạn). */}
+      <div className="metrics" style={{ marginBottom: 22 }}>
+        {/* Tổng thành viên — phụ đề seat / tổng workspace chỉ super-admin có. */}
+        <div className="metric">
+          <div className="metric-head">
+            <span className="metric-label">{t("metrics.totalMembers")}</span>
+            <span className="metric-dot" />
+          </div>
+          <div className="metric-value">{total}</div>
+          {isSuper && stats && (
+            <div className="metric-delta">
+              {stats.seat_total != null
+                ? t("members.seatUsage", {
+                    used: stats.seat_used ?? stats.total,
+                    total: stats.seat_total,
+                  })
+                : t("members.totalInWorkspace", { n: stats.total })}
             </div>
-            <div style={{ marginTop: 4, fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--ink-2)" }}>
-              {expiringSoonMembers
-                .slice(0, 5)
-                .map((m) =>
-                  `${m.email} (${m.subscription_end_at ? formatDate(m.subscription_end_at) : "?"})`,
-                )
-                .join(", ")}
-              {expiringSoonMembers.length > 5 ? ` +${expiringSoonMembers.length - 5}` : ""}
-            </div>
+          )}
+        </div>
+
+        {/* Đang active — thẻ nổi bật: số + % + thanh tỉ lệ, chấm nhịp. */}
+        <div className="metric metric-active">
+          <div className="metric-head">
+            <span className="metric-label">{t("metrics.activeMembers")}</span>
+            <span className="metric-dot live" />
+          </div>
+          <div className="metric-row">
+            <span className="metric-value">{activeCount}</span>
+            <span className="metric-pct">{activeRate}%</span>
+          </div>
+          <div className="metric-bar">
+            <i style={{ width: `${activeRate}%` }} />
+          </div>
+          <div className="metric-delta">{t("metrics.activeSub")}</div>
+        </div>
+
+        {/* Lời mời đang chờ. */}
+        <div className="metric">
+          <div className="metric-head">
+            <span className="metric-label">{t("metrics.pendingInvites")}</span>
+            <span className={pendingCount > 0 ? "metric-dot warn" : "metric-dot"} />
+          </div>
+          <div className="metric-value">{pendingCount}</div>
+          <div className="metric-delta">{t("metrics.pendingSub")}</div>
+        </div>
+
+        {/* Đến hạn thanh toán — email thành viên sắp/đã hết hạn cần gia hạn.
+            Chấm đỏ nếu đã có người quá hạn, hổ phách nếu chỉ sắp tới hạn. */}
+        <div className="metric">
+          <div className="metric-head">
+            <span className="metric-label">{t("metrics.duePayment")}</span>
+            <span
+              className={
+                dueMembers.length === 0
+                  ? "metric-dot"
+                  : expiredMembers.length > 0
+                    ? "metric-dot danger"
+                    : "metric-dot warn"
+              }
+            />
+          </div>
+          <div className="metric-row">
+            <span className="metric-value">{dueMembers.length}</span>
+            {expiredMembers.length > 0 && (
+              <span className="metric-errpill">
+                {t("metrics.dueExpired", { n: expiredMembers.length })}
+              </span>
+            )}
           </div>
         </div>
-      )}
-
-      <div className="metrics" style={{ marginBottom: 24 }}>
-        <Metric label={t("metrics.totalMembers")} value={total} />
-        <Metric
-          label={t("metrics.activeMembers")}
-          value={activeCount}
-          delta={t("metrics.activeRate", { n: activeRate })}
-        />
-        <Metric
-          label={t("metrics.pendingInvites")}
-          value={pendingCount}
-          delta={pendingCount > 0 ? t("metrics.pendingHint") : ""}
-        />
-        <Metric
-          label={t("metrics.queueTasks")}
-          value={queueCount}
-          delta={
-            recentFailed > 0
-              ? t("metrics.failureRate", {
-                  n: Math.round((recentFailed / Math.max(queueCount, 1)) * 100),
-                })
-              : ""
-          }
-          deltaKind={recentFailed > 0 ? "down" : undefined}
-        />
       </div>
 
-      {/* Panel "Hàng đợi tác vụ" — nằm giữa phần tổng quan (metrics) và bảng danh
-          sách thành viên. Desktop-only (tự ẩn <1024px), cần quyền QUEUE_VIEW. */}
+      {/* Panel "Hàng đợi tác vụ" — nằm trên bảng danh sách thành viên.
+          Desktop-only (tự ẩn <1024px), cần quyền QUEUE_VIEW. */}
       {workspaceId && hasPermission("QUEUE_VIEW") && (
         <WorkspaceTaskRail workspaceId={workspaceId} tasks={recentTasks} />
       )}
 
       <div className="table-card">
-        <div className="table-head">
+        {/* Header danh sách KHÔNG kẻ vạch dưới — để header + chip lọc liền mạch
+            (theo mockup). Vạch phân cách nằm ở dải tiêu đề cột bên dưới chip. */}
+        <div className="table-head" style={{ borderBottom: "none", paddingBottom: 8 }}>
           <div>
             <div className="table-title">{t("member.listTitle")}</div>
             <div className="table-meta" style={{ marginTop: 2 }}>
               {t("members.countLabel", { n: total })}
-              {stats && (
+              {/* Tổng toàn workspace + seat CHỈ super-admin. Tài khoản phụ chỉ thấy
+                 số thành viên CỦA HỌ ("121 thành viên"), không thấy tổng workspace. */}
+              {isSuper && stats && (
                 <>
                   {" · "}
                   {t("members.totalInWorkspace", { n: stats.total })}
@@ -531,6 +747,30 @@ export default function Members() {
               onChange={setSearch}
               placeholder={t("members.searchPlaceholder")}
             />
+            {/* Lọc theo chủ sở hữu — super-admin: KHÔNG hiển thị chủ sở hữu trên
+                từng mail, chỉ lọc danh sách. Chỉ hiện khi có >1 nguồn để lọc. */}
+            {isSuper && (ownerOptions.opts.length > 0 || ownerOptions.hasNoOwner) && (
+              <select
+                value={ownerFilter}
+                onChange={(e) => {
+                  setOwnerFilter(e.target.value);
+                  setSelectedIds(new Set());
+                }}
+                className="form-input"
+                style={{ padding: "6px 10px", fontSize: 13, width: "auto" }}
+                title={t("member.ownerFilterAll")}
+              >
+                <option value="">{t("member.ownerFilterAll")}</option>
+                {ownerOptions.opts.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+                {ownerOptions.hasNoOwner && (
+                  <option value={NO_OWNER}>{t("bulkUpdate.noOwner")}</option>
+                )}
+              </select>
+            )}
             {canBulk && selectedCount > 0 && (
               <select
                 className="form-input"
@@ -538,6 +778,7 @@ export default function Members() {
                 disabled={
                   bulkRemoveSelected.isPending ||
                   bulkChangeLicense.isPending ||
+                  bulkSetOwner.isPending ||
                   bulkSyncMembers.isPending ||
                   revokeInvites.isPending
                 }
@@ -551,6 +792,7 @@ export default function Members() {
                 <option value="">
                   {bulkRemoveSelected.isPending ||
                   bulkChangeLicense.isPending ||
+                  bulkSetOwner.isPending ||
                   bulkSyncMembers.isPending ||
                   revokeInvites.isPending
                     ? t("bulkRemove.submitBusy")
@@ -577,10 +819,33 @@ export default function Members() {
                         {t("bulkAction.licenseCodex")}
                       </option>
                     )}
+                    {/* LUÔN hiển thị — chưa có quyền thì bấm sẽ báo liên hệ admin. */}
+                    <option value="set-usage-limit">
+                      {t("bulkAction.setUsageLimit")}
+                    </option>
                     {canRemove && (
                       <option value="remove">{t("bulkAction.remove")}</option>
                     )}
                   </>
+                )}
+                {/* Chuyển chủ NHANH (chỉ super-admin) — áp dụng cho cả 2 tab vì
+                    "chủ sở hữu" độc lập với trạng thái active/pending. Chọn 1 tài
+                    khoản phụ để gán, "Tôi" để kéo về mình, hoặc "Thu hồi" (về chưa
+                    có chủ). Là thay đổi thuần dữ liệu, không tạo task extension. */}
+                {isSuper && (
+                  <optgroup label={t("bulkTransferOwner.group")}>
+                    <option value="owner:self">
+                      {t("bulkTransferOwner.toSelf")}
+                    </option>
+                    {subAccounts.map((u) => (
+                      <option key={u.id} value={`owner:${u.id}`}>
+                        {u.username}
+                      </option>
+                    ))}
+                    <option value="owner:">
+                      {t("bulkTransferOwner.revoke")}
+                    </option>
+                  </optgroup>
                 )}
               </select>
             )}
@@ -597,13 +862,13 @@ export default function Members() {
             active={statusFilter === "active"}
             onClick={() => setStatusFilter("active")}
             label={t("member.statusActive")}
-            count={activeCount}
+            count={tabActiveCount}
           />
           <Chip
             active={statusFilter === "pending"}
             onClick={() => setStatusFilter("pending")}
             label={t("member.statusPending")}
-            count={pendingCount}
+            count={tabPendingCount}
           />
         </div>
 
@@ -626,10 +891,14 @@ export default function Members() {
                 )}
                 <th>{t("member.colEmail")}</th>
                 <th style={{ textAlign: "center" }}>{t("member.colRole")}</th>
-                <th style={{ textAlign: "center" }}>{t("member.colLicenseType")}</th>
+                {LICENSE_FEATURE_ENABLED && (
+                  <th style={{ textAlign: "center" }}>
+                    {t("member.colLicenseType")}
+                  </th>
+                )}
                 <th style={{ textAlign: "center" }}>{t("member.colStatus")}</th>
-                <th>{t("member.colSubscription")}</th>
-                <th>{t("member.colJoinedAt")}</th>
+                <th>{t("addedEmails.colRenewedAt")}</th>
+                <th>{t("addedEmails.colExpiry")}</th>
                 <th style={{ textAlign: "right" }}>{t("common.actions")}</th>
               </tr>
             </thead>
@@ -666,7 +935,17 @@ export default function Members() {
                       )}
                     </td>
                   )}
-                  <td className="cell-email">{m.email}</td>
+                  <td className="cell-email">
+                    {/* Click email → mở modal chi tiết + lịch sử hoạt động. */}
+                    <button
+                      type="button"
+                      className="cell-email-link"
+                      onClick={() => setDetailMember(m)}
+                      title={t("memberDetail.openHint")}
+                    >
+                      {m.email}
+                    </button>
+                  </td>
                   <td style={{ textAlign: "center" }}>
                     {m.chatgpt_role ? (
                       <span className="role-tag">
@@ -680,36 +959,38 @@ export default function Members() {
                       <span className="cell-muted">—</span>
                     )}
                   </td>
-                  <td style={{ textAlign: "center" }}>
-                    {canChangeLicense && m.status === "active" ? (
-                      <select
-                        value={m.license_type ?? ""}
-                        onChange={(e) =>
-                          changeLicenseType.mutate({
-                            memberId: m.id,
-                            licenseType: e.target.value as LicenseType,
-                          })
-                        }
-                        className="form-input"
-                        style={{ padding: "4px 8px", fontSize: 12, width: "auto" }}
-                      >
-                        {!m.license_type && (
-                          <option value="" disabled>
-                            —
-                          </option>
-                        )}
-                        {LICENSE_TYPES.map((lt) => (
-                          <option key={lt} value={lt}>
-                            {lt}
-                          </option>
-                        ))}
-                      </select>
-                    ) : m.license_type ? (
-                      <span className="role-tag">{m.license_type}</span>
-                    ) : (
-                      <span className="cell-muted">—</span>
-                    )}
-                  </td>
+                  {LICENSE_FEATURE_ENABLED && (
+                    <td style={{ textAlign: "center" }}>
+                      {canChangeLicense && m.status === "active" ? (
+                        <select
+                          value={m.license_type ?? ""}
+                          onChange={(e) =>
+                            changeLicenseType.mutate({
+                              memberId: m.id,
+                              licenseType: e.target.value as LicenseType,
+                            })
+                          }
+                          className="form-input"
+                          style={{ padding: "4px 8px", fontSize: 12, width: "auto" }}
+                        >
+                          {!m.license_type && (
+                            <option value="" disabled>
+                              —
+                            </option>
+                          )}
+                          {LICENSE_TYPES.map((lt) => (
+                            <option key={lt} value={lt}>
+                              {lt}
+                            </option>
+                          ))}
+                        </select>
+                      ) : m.license_type ? (
+                        <span className="role-tag">{m.license_type}</span>
+                      ) : (
+                        <span className="cell-muted">—</span>
+                      )}
+                    </td>
+                  )}
                   <td style={{ textAlign: "center" }}>
                     <span className={STATUS_BADGE[m.status] ?? "badge badge-neutral"}>
                       {t(
@@ -719,11 +1000,25 @@ export default function Members() {
                       )}
                     </span>
                   </td>
-                  <td style={{ fontSize: 12 }}>
-                    <SubscriptionCell member={m} t={t} formatDate={formatDate} />
+                  {/* Ngày gia hạn = MỐC NEO subscription_purchased_at (set = giờ mời
+                      khi invite, hoặc ngày mua khi đổi hạn) → "Ngày hết hạn" = mốc + 30
+                      luôn khớp. Fallback last_invited_at ?? created_at cho row legacy
+                      chưa có mốc. Khớp cột cùng tên ở trang "Email đã add". */}
+                  <td className="cell-muted" style={{ fontSize: 13.5 }}>
+                    {fmtRenewExpiry(
+                      formatDateTime,
+                      m.subscription_purchased_at ??
+                        m.last_invited_at ??
+                        m.created_at,
+                    )}
                   </td>
-                  <td className="cell-muted" style={{ fontSize: 12 }}>
-                    {formatDateTime(m.last_invited_at ?? m.created_at)}
+                  <td style={{ fontSize: 13.5 }}>
+                    <SubscriptionCell
+                      member={m}
+                      t={t}
+                      formatDate={formatDate}
+                      formatDateTime={formatDateTime}
+                    />
                   </td>
                   <td style={{ textAlign: "right" }}>
                     <div
@@ -762,25 +1057,55 @@ export default function Members() {
                           {t("member.revokeAction")}
                         </button>
                       )}
-                      {canRemove && m.status === "active" && (
-                        <button
-                          onClick={async () => {
-                            const ok = await confirm(
-                              t("member.confirmRemove", { email: m.email }),
-                              {
-                                title: t("member.confirmRemoveTitle"),
-                                okText: t("member.removeAction"),
-                                cancelText: t("common.cancel"),
-                                danger: true,
-                              },
-                            );
-                            if (ok) remove.mutate(m.id);
-                          }}
-                          className="row-action"
-                        >
-                          {t("member.removeAction")}
-                        </button>
-                      )}
+                      {m.status === "active" &&
+                        (canRemove || canChangeEmail || canChangeSubscription) && (
+                          <RowActionsMenu
+                            ariaLabel={t("common.actions")}
+                            items={[
+                              ...(canChangeSubscription
+                                ? [
+                                    {
+                                      key: "change-subscription",
+                                      label: t("subscription.changeAction"),
+                                      onClick: () => setChangeSubMember(m),
+                                    },
+                                  ]
+                                : []),
+                              ...(canChangeEmail
+                                ? [
+                                    {
+                                      key: "change-email",
+                                      label: t("member.changeEmailAction"),
+                                      onClick: () => setChangeEmailMember(m),
+                                    },
+                                  ]
+                                : []),
+                              ...(canRemove
+                                ? [
+                                    {
+                                      key: "remove",
+                                      label: t("member.removeAction"),
+                                      danger: true,
+                                      onClick: async () => {
+                                        const ok = await confirm(
+                                          t("member.confirmRemove", {
+                                            email: m.email,
+                                          }),
+                                          {
+                                            title: t("member.confirmRemoveTitle"),
+                                            okText: t("member.removeAction"),
+                                            cancelText: t("common.cancel"),
+                                            danger: true,
+                                          },
+                                        );
+                                        if (ok) remove.mutate(m.id);
+                                      },
+                                    },
+                                  ]
+                                : []),
+                            ]}
+                          />
+                        )}
                     </div>
                   </td>
                 </tr>
@@ -790,38 +1115,32 @@ export default function Members() {
           </table>
         </div>
       </div>
-    </div>
-  );
-}
 
-function Metric({
-  label,
-  value,
-  delta,
-  deltaKind,
-}: {
-  label: string;
-  value: number | string;
-  delta?: string;
-  deltaKind?: "up" | "down";
-}) {
-  return (
-    <div className="metric">
-      <div className="metric-label">{label}</div>
-      <div className="metric-value">{value}</div>
-      {delta && (
-        <div
-          className={
-            "metric-delta" +
-            (deltaKind === "up"
-              ? " up"
-              : deltaKind === "down"
-              ? " down"
-              : "")
-          }
-        >
-          {delta}
-        </div>
+      {changeEmailMember && workspaceId && (
+        <ChangeEmailModal
+          workspaceId={workspaceId}
+          member={changeEmailMember}
+          onClose={() => setChangeEmailMember(null)}
+        />
+      )}
+
+      {changeSubMember && workspaceId && (
+        <ChangeSubscriptionModal
+          workspaceId={workspaceId}
+          member={changeSubMember}
+          onClose={() => setChangeSubMember(null)}
+        />
+      )}
+
+      {detailMember && workspaceId && (
+        <MemberDetailModal
+          workspaceId={workspaceId}
+          // Lấy bản MỚI NHẤT từ list (đã refetch sau mutation) theo id, fallback
+          // snapshot lúc mở → sửa trong modal (vd đổi Ngày gia hạn) hiển thị NGAY
+          // sau khi lưu, KHỎI reload tay. Luật: mutation phải kèm làm mới dữ liệu.
+          member={members.find((m) => m.id === detailMember.id) ?? detailMember}
+          onClose={() => setDetailMember(null)}
+        />
       )}
     </div>
   );
@@ -935,9 +1254,9 @@ function InviteFailedRow({ task }: { task: QueueItem }) {
  *
  * Logic:
  *   - subscription_end_at = null: hiển thị "—" (không giới hạn).
- *   - end_at < now: badge ĐỎ "Hết hạn DD/MM" + days expired.
+ *   - end_at < now: badge ĐỎ "Hết hạn N ngày" + days expired.
  *   - end_at < now + 7 days: badge VÀNG "Còn N ngày" — admin chú ý.
- *   - else: badge XÁM nhạt "DD/MM (N ngày)".
+ *   - else: "DD/MM/YYYY - HH:MM:SS (còn Nd)" — ngày hết hạn chi tiết tới giây.
  *
  * Tooltip kèm `subscription_months` để admin biết originally bao nhiêu tháng.
  */
@@ -945,57 +1264,92 @@ function SubscriptionCell({
   member,
   t,
   formatDate,
+  formatDateTime,
 }: {
   member: Member;
   t: ReturnType<typeof useT>;
   formatDate: (value: string | Date, options?: Intl.DateTimeFormatOptions) => string;
+  formatDateTime: ReturnType<typeof useFormatDateTime>;
 }) {
+  // Chỉ báo "chờ duyệt" khi có yêu cầu đổi hạn đang chờ super-admin duyệt. Hiện
+  // cạnh hạn HIỆN TẠI (chưa áp dụng) + tooltip cho biết hạn đề xuất.
+  const pending =
+    member.subscription_request_status === "requested" ? (
+      <span
+        className="badge badge-warning"
+        style={{ marginRight: 4 }}
+        title={
+          member.pending_subscription_end_at
+            ? t("subscription.pendingTooltip", {
+                date: formatDate(member.pending_subscription_end_at),
+              })
+            : t("subscription.pendingUnlimitedTooltip")
+        }
+      >
+        ⏳ {t("subscription.pendingBadge")}
+      </span>
+    ) : null;
+
   if (!member.subscription_end_at) {
-    return <span className="cell-muted">—</span>;
+    return (
+      <span>
+        {pending}
+        <span className="cell-muted">—</span>
+      </span>
+    );
   }
   const endMs = new Date(member.subscription_end_at).getTime();
   const nowMs = Date.now();
   const diffDays = Math.round((endMs - nowMs) / (24 * 60 * 60 * 1000));
-  const endStr = formatDate(member.subscription_end_at, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  const endStr = fmtRenewExpiry(formatDateTime, member.subscription_end_at);
   const monthsLabel = member.subscription_months
     ? t("member.subscriptionMonths", { n: member.subscription_months })
     : "";
   const tooltip = monthsLabel ? `${endStr} · ${monthsLabel}` : endStr;
 
-  if (diffDays <= 0) {
-    return (
-      <span
-        className="badge badge-danger"
-        title={tooltip}
-        style={{ fontFamily: "var(--font-mono)" }}
-      >
-        ⏰ {t("member.subExpired", { n: -diffDays })}
-      </span>
-    );
-  }
-  if (diffDays <= 7) {
-    return (
-      <span
-        className="badge badge-warning"
-        title={tooltip}
-        style={{ fontFamily: "var(--font-mono)" }}
-      >
-        ⚠ {t("member.subDaysLeft", { n: diffDays })}
-      </span>
-    );
-  }
+  // LUÔN hiển thị RÕ ngày hết hạn (mono, tới giây); kèm chip số ngày đổi màu theo
+  // mức khẩn: đỏ = đã hết hạn, vàng = còn ≤7 ngày, xám = còn xa. (Trước đây ca
+  // hết hạn / ≤7 ngày chỉ hiện "Còn N ngày" mà giấu mất ngày — user report 2026-07-06.)
+  // Chip số ngày = TEXT THUẦN (không badge → không dấu chấm, không emoji), format
+  // "(còn Nd)". Chỉ đổi MÀU text theo mức khẩn (user 2026-07-06):
+  //   < 3 ngày → ĐỎ · < 7 ngày → VÀNG · còn xa → xám.
+  const urgencyColor =
+    diffDays < 3
+      ? "var(--danger)"
+      : diffDays < 7
+        ? "var(--warning)"
+        : "var(--ink-3)";
+  // Đang còn hạn: "(còn Nd)". Đã hết hạn: "Hết hạn N ngày".
+  const daysLabel =
+    diffDays <= 0
+      ? t("member.subExpired", { n: -diffDays })
+      : `(${t("member.subDaysLeftShort", { n: diffDays })})`;
   return (
     <span
-      style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-2)" }}
+      style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}
       title={tooltip}
     >
-      {endStr}
-      <span style={{ color: "var(--ink-3)", marginLeft: 4 }}>
-        ({t("member.subDaysLeftShort", { n: diffDays })})
+      {pending}
+      {/* CẢ Ô đổi màu theo mức khẩn: < 7 ngày → ngày hết hạn cũng nhuộm màu cảnh
+          báo (đỏ/vàng), không chỉ riêng "(còn Nd)" — user report 2026-07-06. */}
+      <span
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 13.5,
+          color: diffDays < 7 ? urgencyColor : "var(--ink-2)",
+          fontWeight: diffDays < 7 ? 600 : 400,
+        }}
+      >
+        {endStr}
+      </span>
+      <span
+        style={{
+          fontSize: 12.5,
+          color: urgencyColor,
+          fontWeight: diffDays < 7 ? 600 : 400,
+        }}
+      >
+        {daysLabel}
       </span>
     </span>
   );

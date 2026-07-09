@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -24,7 +24,7 @@ from app.deps import (
     get_session,
     require_extension_workspace,
 )
-from app.models import QueueItem, Workspace
+from app.models import QueueItem, Workspace, WorkspaceSettings
 from app.schemas import QueueOut, QueueProgressUpdate
 
 from ._shared import router
@@ -59,11 +59,15 @@ def pick_next(
         "REMOVE_MEMBER": timedelta(minutes=3),
         "CHANGE_ROLE": timedelta(minutes=3),
         "CHANGE_LICENSE_TYPE": timedelta(minutes=3),
+        "SET_USAGE_LIMIT": timedelta(minutes=3),
         "REVOKE_INVITES": timedelta(minutes=3),
         # SYNC_MEMBER: tìm 1 email ở tab Lời mời rồi fallback lật trang tab Người
         # dùng (như remove) → cho 4 phút (giữa UI-op 3' và SYNC_DATA full 6').
         "SYNC_MEMBER": timedelta(minutes=4),
         "SYNC_BILLING": timedelta(minutes=4),
+        # Batch quét TOÀN BỘ tab Lời mời 1 lần + check N email còn lại ở tab Người
+        # dùng → cùng ngân sách với full-sync (extension content timeout 330s).
+        "SYNC_MEMBERS_BATCH": timedelta(minutes=6),
         "SYNC_DATA": timedelta(minutes=6),
         "HARVEST_LABELS": timedelta(minutes=6),
         "PURCHASE_SEAT": timedelta(minutes=8),
@@ -122,6 +126,12 @@ def pick_next(
             .where(
                 QueueItem.status == "PENDING",
                 QueueItem.workspace_id == workspace.id,
+                # Task chờ super-admin duyệt (approval_status='pending') KHÔNG được
+                # pick. NULL (không cần duyệt) hoặc 'approved' mới chạy.
+                or_(
+                    QueueItem.approval_status.is_(None),
+                    QueueItem.approval_status == "approved",
+                ),
             )
             .order_by(QueueItem.created_at.asc())
             .limit(1)
@@ -147,6 +157,15 @@ def pick_next(
     )
     db.commit()
     db.refresh(item)
+    # ---- DRY-RUN: báo extension BỎ QUA thao tác thật ----
+    # `dry_run_mode` nằm ở bảng WorkspaceSettings (không có row = mặc định False).
+    # Đính cờ vào payload của RESPONSE để extension short-circuit task phá huỷ
+    # (invite/remove/change-role/...). Dùng expunge để KHÔNG persist thay đổi này
+    # vào DB — payload gốc của task giữ nguyên (nguồn sự thật không đổi).
+    settings = db.get(WorkspaceSettings, workspace.id)
+    if settings is not None and settings.dry_run_mode:
+        item.payload = {**(item.payload or {}), "dry_run": True}
+        db.expunge(item)
     return item
 
 

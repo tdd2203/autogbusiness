@@ -1,10 +1,9 @@
 /**
  * Toast notification system thay cho window.alert().
  *
- * 2 API:
- *   - Imperative singleton `toast.info(msg) | toast.success | toast.warning | toast.error`
- *     dùng từ event handler, non-React code (vd useExtensionTrigger.ts).
- *   - Hook `useToast()` cho component muốn dismiss thủ công hoặc lấy ID toast.
+ * API: imperative singleton `toast.info(msg) | toast.success | toast.warning |
+ * toast.error` (và `confirm`) dùng từ event handler, non-React code
+ * (vd useExtensionTrigger.ts).
  *
  * ToastProvider phải wrap app (xem main.tsx). Provider sẽ register handler
  * cho singleton; nếu chưa wrap thì singleton calls thành no-op (an toàn).
@@ -13,7 +12,6 @@
 import {
   createContext,
   useCallback,
-  useContext,
   useEffect,
   useRef,
   useState,
@@ -24,7 +22,7 @@ import { useT } from "../i18n";
 export type ToastKind = "info" | "success" | "warning" | "error";
 
 export type ToastOptions = {
-  /** ms tự đóng. 0 = không auto-dismiss. Default: 5000 (info/success), 8000 (warning/error). */
+  /** ms tự đóng. 0 = không auto-dismiss. Default: 2000 (success), 5000 (info), 8000 (warning/error). */
   durationMs?: number;
 };
 
@@ -33,7 +31,12 @@ type ToastItem = {
   kind: ToastKind;
   message: string;
   durationMs: number;
+  /** true khi đang chạy animation fade-out trước lúc bị gỡ khỏi DOM. */
+  exiting?: boolean;
 };
+
+/** Thời lượng animation fade-out (ms) — phải khớp keyframes `toast-out` trong index.css. */
+const EXIT_MS = 200;
 
 type EnqueueFn = (kind: ToastKind, message: string, opts?: ToastOptions) => number;
 type DismissFn = (id: number) => void;
@@ -59,7 +62,9 @@ let _dismiss: DismissFn | null = null;
 let _confirm: ConfirmFn | null = null;
 
 function defaultDuration(kind: ToastKind): number {
-  return kind === "warning" || kind === "error" ? 8000 : 5000;
+  if (kind === "warning" || kind === "error") return 8000;
+  if (kind === "success") return 2000;
+  return 5000;
 }
 
 /** Imperative singleton API — gọi từ non-React code. */
@@ -102,27 +107,32 @@ type ConfirmState = {
 
 const Ctx = createContext<ToastCtx | null>(null);
 
-/** Hook trong component — cùng API như singleton nhưng có scope React. */
-export function useToast(): ToastCtx {
-  const ctx = useContext(Ctx);
-  if (!ctx) {
-    return {
-      show: () => -1,
-      dismiss: () => undefined,
-      confirm: (m) => Promise.resolve(window.confirm(m)),
-    };
-  }
-  return ctx;
-}
-
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const nextIdRef = useRef(1);
 
-  const dismiss = useCallback((id: number) => {
+  // Gỡ hẳn khỏi DOM (sau khi fade-out xong).
+  const remove = useCallback((id: number) => {
     setItems((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  // Bắt đầu fade-out: đánh dấu exiting để chạy animation `toast-out`, rồi gỡ
+  // sau EXIT_MS. Gọi lại trên cùng id (vd auto-dismiss trùng user-click) là no-op.
+  const dismiss = useCallback(
+    (id: number) => {
+      let alreadyExiting = false;
+      setItems((prev) =>
+        prev.map((t) => {
+          if (t.id !== id) return t;
+          if (t.exiting) alreadyExiting = true;
+          return { ...t, exiting: true };
+        }),
+      );
+      if (!alreadyExiting) setTimeout(() => remove(id), EXIT_MS);
+    },
+    [remove],
+  );
 
   const show = useCallback<EnqueueFn>(
     (kind, message, opts) => {
@@ -172,7 +182,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={{ show, dismiss, confirm: confirmFn }}>
       {children}
-      <ToastContainer items={items} onDismiss={dismiss} />
+      {/* Success → toast nổi chính giữa trên đầu trang (auto-ẩn 2s, fade-out).
+          Các kind khác → góc dưới phải như cũ. */}
+      <ToastContainer
+        items={items.filter((t) => t.kind === "success")}
+        onDismiss={dismiss}
+        position="top-center"
+      />
+      <ToastContainer
+        items={items.filter((t) => t.kind !== "success")}
+        onDismiss={dismiss}
+        position="bottom-right"
+      />
       <ConfirmDialog state={confirmState} onAnswer={handleConfirmAnswer} />
     </Ctx.Provider>
   );
@@ -304,18 +325,30 @@ function ConfirmDialog({
 function ToastContainer({
   items,
   onDismiss,
+  position,
 }: {
   items: ToastItem[];
   onDismiss: (id: number) => void;
+  position: "top-center" | "bottom-right";
 }) {
   const tt = useT();
   const ariaDismissLabel = tt("common.dismiss");
+  const containerCls =
+    position === "top-center"
+      ? "fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 max-w-[90vw] pointer-events-none"
+      : "fixed bottom-4 right-4 left-4 sm:left-auto z-50 flex flex-col gap-2 max-w-[90vw] sm:max-w-sm sm:ml-auto pointer-events-none";
+  const enterAnim =
+    position === "top-center"
+      ? "animate-[toast-in-down_180ms_ease-out]"
+      : "animate-[toast-in_180ms_ease-out]";
   return (
-    <div className="fixed bottom-4 right-4 left-4 sm:left-auto z-50 flex flex-col gap-2 max-w-[90vw] sm:max-w-sm sm:ml-auto pointer-events-none">
+    <div className={containerCls}>
       {items.map((t) => (
         <div
           key={t.id}
-          className={`pointer-events-auto rounded-md border shadow-lg px-3 py-2 text-sm flex items-start gap-2 animate-[toast-in_180ms_ease-out] ${KIND_STYLE[t.kind]}`}
+          className={`pointer-events-auto rounded-md border shadow-lg px-3 py-2 text-sm flex items-start gap-2 ${
+            t.exiting ? "animate-[toast-out_200ms_ease-in_forwards]" : enterAnim
+          } ${KIND_STYLE[t.kind]}`}
           role="status"
         >
           <span

@@ -4,16 +4,19 @@
 Docs ghi lịch sử lỗi, business rule và ý tưởng cải tiến — code chỉ là "how".
 
 Endpoints (đăng ký lên router dùng chung từ `_shared`):
-  - POST /                  → create_task
-  - GET  /                  → list_tasks
-  - POST /{item_id}/cancel  → cancel_task
+  - POST /                        → create_task
+  - GET  /                        → list_tasks
+  - POST /{item_id}/cancel        → cancel_task
+  - GET  /pending-approval-count  → pending_approval_count  (super-admin: badge)
+  - POST /{item_id}/approve       → approve_task            (super-admin)
+  - POST /{item_id}/reject        → reject_task             (super-admin)
 """
 
 from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.audit import log_event
@@ -22,10 +25,12 @@ from app.deps import (
     get_current_user,
     get_session,
     require_permission,
+    require_super_admin,
 )
 from app.models import QueueItem, User
 from app.permissions import Permission
 from app.schemas import QueueCreate, QueueOut
+from app.sse import publish_task_event
 
 from ._shared import router
 
@@ -35,6 +40,7 @@ _TYPE_TO_PERMISSION = {
     "REMOVE_MEMBER": Permission.MEMBER_REMOVE,
     "CHANGE_ROLE": Permission.MEMBER_CHANGE_ROLE,
     "CHANGE_LICENSE_TYPE": Permission.MEMBER_CHANGE_ROLE,
+    "SET_USAGE_LIMIT": Permission.MEMBER_REMOVE,
     "SYNC_DATA": Permission.WORKSPACE_SYNC_TRIGGER,
     "SYNC_BILLING": Permission.WORKSPACE_SYNC_TRIGGER,
     "REVOKE_INVITES": Permission.MEMBER_REMOVE,
@@ -178,3 +184,104 @@ def cancel_task(
     )
     db.commit()
     return {"id": str(item.id), "status": "FAILED"}
+
+
+@router.get("/pending-approval-count")
+def pending_approval_count(
+    db: Session = Depends(get_session),
+    _: User = Depends(require_super_admin),
+    workspace_id: UUID | None = Query(default=None),
+) -> dict:
+    """Số task đang chờ super-admin duyệt (badge). Lọc theo workspace nếu truyền."""
+    stmt = select(func.count()).select_from(QueueItem).where(
+        QueueItem.approval_status == "pending",
+        QueueItem.status == "PENDING",
+    )
+    if workspace_id is not None:
+        stmt = stmt.where(QueueItem.workspace_id == workspace_id)
+    return {"count": int(db.execute(stmt).scalar_one())}
+
+
+@router.post("/{item_id}/approve", status_code=status.HTTP_202_ACCEPTED)
+def approve_task(
+    item_id: UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_super_admin),
+) -> dict:
+    """Super-admin DUYỆT 1 task chờ duyệt → approval_status='approved', task PENDING
+    sẵn sàng cho extension pick. Chỉ tác động khi đang 'pending'."""
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task không tồn tại"
+        )
+    if item.approval_status != "pending" or item.status != "PENDING":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Task không ở trạng thái chờ duyệt (approval_status={item.approval_status}, status={item.status}).",
+        )
+    item.approval_status = "approved"
+    item.approved_by_id = user.id
+    item.approved_at = datetime.now(timezone.utc)
+    db.add(item)
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.email,
+        action=f"QUEUE_APPROVED:{item.type}",
+        result="SUCCESS",
+        target_type="QUEUE_ITEM",
+        target_id=str(item.id),
+        data={"payload": item.payload},
+        commit=False,
+    )
+    db.commit()
+    if item.workspace_id is not None:
+        publish_task_event(
+            item.workspace_id,
+            {"type": "task-available", "task_id": str(item.id), "task_type": item.type},
+        )
+    return {"id": str(item.id), "status": item.status, "approval_status": "approved"}
+
+
+@router.post("/{item_id}/reject", status_code=status.HTTP_202_ACCEPTED)
+def reject_task(
+    item_id: UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_super_admin),
+) -> dict:
+    """Super-admin TỪ CHỐI 1 task chờ duyệt → approval_status='rejected', status
+    FAILED (không bao giờ chạy). Chỉ tác động khi đang 'pending'."""
+    item = db.get(QueueItem, item_id)
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task không tồn tại"
+        )
+    if item.approval_status != "pending" or item.status != "PENDING":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Task không ở trạng thái chờ duyệt (approval_status={item.approval_status}, status={item.status}).",
+        )
+    item.approval_status = "rejected"
+    item.approved_by_id = user.id
+    item.approved_at = datetime.now(timezone.utc)
+    item.status = "FAILED"
+    item.error_code = "APPROVAL_REJECTED"
+    item.error_message = f"Bị từ chối bởi {user.email}"
+    item.completed_at = datetime.now(timezone.utc)
+    db.add(item)
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.email,
+        action=f"QUEUE_REJECTED:{item.type}",
+        result="FAILED",
+        target_type="QUEUE_ITEM",
+        target_id=str(item.id),
+        data={"payload": item.payload},
+        commit=False,
+    )
+    db.commit()
+    return {"id": str(item.id), "status": "FAILED", "approval_status": "rejected"}

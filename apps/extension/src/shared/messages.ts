@@ -21,8 +21,24 @@ export type ExecuteActionRequest =
        * thuộc domain này → KHÔNG cần bật toggle "mời ngoài tên miền". null/thiếu
        * → coi như chưa cấu hình, vẫn bật toggle cho an toàn. */
       verifiedDomain?: string | null;
+      /** v0.8.14: cờ do BACKGROUND set ở lần gọi INVITE_MEMBER thứ 2 (sau khi
+       * Phase A bật toggle external + background HARD-RELOAD /admin/members để
+       * refetch org-config). true → content BỎ QUA bước bật toggle, mở dialog mời
+       * ngay trên trang config đã fresh (banner 'ngoài miền' không còn). false/thiếu
+       * → lần gọi đầu (Phase A): bật toggle rồi trả `awaiting_external_reload`. */
+      externalReady?: boolean;
     }
   | { kind: "REMOVE_MEMBER"; taskId: string; email: string }
+  | {
+      /** Đặt giới hạn tín dụng/tháng cho 1 member trên trang
+       * /admin/billing/manage_member_usage_limit ("Ghi đè mỗi người dùng"). Lọc
+       * theo tên → mở dialog "Đặt giới hạn sử dụng tùy chỉnh" → nhập số → Lưu. */
+      kind: "SET_USAGE_LIMIT";
+      taskId: string;
+      email: string;
+      limit_credits: number;
+      old_limit_credits: number | null;
+    }
   | {
       /** "Đồng bộ 1 tài khoản lẻ" — tìm 1 email ở tab Lời mời rồi fallback tab
        * Người dùng để xác nhận đã tham gia chưa. Trả data.found_in ∈
@@ -30,6 +46,18 @@ export type ExecuteActionRequest =
       kind: "SYNC_MEMBER";
       taskId: string;
       email: string;
+    }
+  | {
+      /** "Đồng bộ hàng loạt" — kiểm tra 1 DANH SÁCH email cùng lúc. Quét tab
+       * "Lời mời đang chờ xử lý" ĐÚNG MỘT LẦN (lấy trọn set pending); email nào
+       * có trong set = pending. Các email CÒN LẠI mới sang tab "Người dùng" kiểm
+       * tra (thấy = active/đã tham gia, không = none). Thay cho việc fan-out N
+       * task SYNC_MEMBER (mỗi task lại quét lại toàn bộ pending — thừa). Trả
+       * data.results: Array<{email, found_in: "pending"|"active"|"none"}>.
+       * Read-only, không thao tác phá huỷ. */
+      kind: "SYNC_MEMBERS_BATCH";
+      taskId: string;
+      emails: string[];
     }
   | {
       kind: "CHANGE_ROLE";
@@ -82,6 +110,15 @@ export type ExecuteActionRequest =
       expectedAmountText: string;
     }
   | {
+      /** Mở trang chi tiết hoá đơn (invoice.stripe.com) để đọc CHÍNH XÁC số
+       * lượng seat + đơn giá + subtotal/VAT/tổng + khoảng chu kỳ dịch vụ. Thay
+       * cho việc đoán số seat bằng phép chia tổng tiền. Background điều hướng tab
+       * tới invoiceUrl rồi gửi kind này cho content stripe-invoice.ts. */
+      kind: "STRIPE_SCRAPE_INVOICE_DETAIL";
+      taskId: string;
+      invoiceUrl: string;
+    }
+  | {
       /** Phase 2 của INVITE_MEMBER sau khi background F5 tab → content fresh.
        * Chỉ scrape pending list để verify email vừa mời có xuất hiện không.
        * Không submit lại invite. */
@@ -92,12 +129,19 @@ export type ExecuteActionRequest =
     }
   | { kind: "PING"; taskId?: string };
 
-export type ScrapedBilling = {
-  plan: string | null;
-  seat_total: number | null;
-  seat_used: number | null;
-  billing_status: "PAID" | "UNPAID" | "UNKNOWN" | null;
-  renewal_date: string | null;
+/** Kết quả scrape trang chi tiết hoá đơn Stripe (STRIPE_SCRAPE_INVOICE_DETAIL).
+ * Mọi field null nếu không đọc được (Stripe đổi UI) — caller đánh dấu
+ * detail_scraped=false, KHÔNG đoán. Tiền là integer VND. */
+export type ScrapedInvoiceDetail = {
+  quantity: number | null;
+  unit_price_vnd: number | null;
+  subtotal_vnd: number | null;
+  vat_vnd: number | null;
+  total_vnd: number | null;
+  period_start: string | null; // ISO date
+  period_end: string | null; // ISO date
+  invoice_number: string | null;
+  status: "paid" | "unpaid" | "void" | "unknown" | null;
 };
 
 export type ScrapedMember = {
@@ -117,10 +161,21 @@ export type ExecuteActionResponse =
       ok: false;
       error_code:
         | "UI_ELEMENT_NOT_FOUND"
+        // REMOVE: ô lọc tab Người dùng tìm KHÔNG ra email → coi như member không
+        // còn trong business ChatGPT. Backend dùng riêng code này để mark removed
+        // ở dashboard (KHÁC UI_ELEMENT_NOT_FOUND = member có nhưng menu/nút lỗi).
+        | "MEMBER_NOT_IN_WORKSPACE"
         | "NOT_LOGGED_IN_CHATGPT"
         | "TIMEOUT"
         | "VERIFY_FAILED"
         | "PAGE_NOT_ADMIN"
+        // DOM/UX ChatGPT thay đổi ngoài dự kiến: phần tử CẤU TRÚC bắt buộc phải
+        // có (nút mở dialog mời, dropdown vai trò trên row ĐÃ tìm thấy, nút menu
+        // "…", nút xác nhận xoá…) KHÔNG xuất hiện dù đang đúng trang/ngữ cảnh.
+        // Fail-Fast (Hiến pháp III) thay vì đoán mò → dashboard cảnh báo riêng để
+        // cập nhật selector. KHÁC UI_ELEMENT_NOT_FOUND (thao tác lỗi lẻ) và
+        // MEMBER_NOT_IN_WORKSPACE (member đã rời — được phép mark removed).
+        | "FAILED_UI_CHANGED"
         | "LANGUAGE_MISMATCH"
         | "CONTENT_NOT_INJECTED"
         | "CONTENT_TIMEOUT"

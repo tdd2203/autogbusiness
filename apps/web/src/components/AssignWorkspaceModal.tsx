@@ -6,10 +6,11 @@
  * theo các assignment này (xem routers/workspaces.py:list_workspaces).
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useT } from "../i18n";
+import { toast } from "./Toast";
 import type { Workspace, WorkspaceAssignment } from "../types";
 
 type UserItem = {
@@ -47,6 +48,38 @@ export function AssignWorkspaceModal({
     () => new Set((assignments.data ?? []).map((a) => a.user_id)),
     [assignments.data],
   );
+  // Ngân sách hiện tại theo user_id (để khởi tạo input).
+  const budgetById = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const a of assignments.data ?? []) m.set(a.user_id, a.credit_budget ?? 0);
+    return m;
+  }, [assignments.data]);
+
+  // Giá trị đang sửa trong từng ô nhập ngân sách (string để cho phép gõ dở).
+  const [budgetDraft, setBudgetDraft] = useState<Record<string, string>>({});
+  useEffect(() => {
+    // Đồng bộ draft khi assignments tải xong / đổi (chỉ điền ô chưa sửa).
+    setBudgetDraft((prev) => {
+      const next = { ...prev };
+      for (const [uid, b] of budgetById) {
+        if (next[uid] === undefined) next[uid] = String(b);
+      }
+      return next;
+    });
+  }, [budgetById]);
+
+  const setBudget = useMutation({
+    mutationFn: ({ userId, budget }: { userId: string; budget: number }) =>
+      api(`/api/v1/workspaces/${workspace.id}/assignments`, {
+        method: "POST",
+        body: JSON.stringify({ user_id: userId, credit_budget: budget }),
+      }),
+    onSuccess: () => {
+      toast.success(t("assign.budgetSaved"));
+      qc.invalidateQueries({ queryKey: ["assignments", workspace.id] });
+    },
+    onError: () => toast.error(t("assign.budgetError")),
+  });
 
   const subAdmins = useMemo(
     () => (users.data ?? []).filter((u) => !u.is_super_admin),
@@ -145,9 +178,41 @@ export function AssignWorkspaceModal({
                       </div>
                     </div>
                     {assigned && (
-                      <span className="badge badge-success">
-                        {t("assign.assigned")}
-                      </span>
+                      <div
+                        className="flex items-center"
+                        style={{ gap: 6 }}
+                        onClick={(e) => e.preventDefault()}
+                      >
+                        <input
+                          type="number"
+                          min={0}
+                          title={t("assign.budgetLabel")}
+                          value={budgetDraft[u.id] ?? ""}
+                          disabled={setBudget.isPending}
+                          onChange={(e) =>
+                            setBudgetDraft((d) => ({ ...d, [u.id]: e.target.value }))
+                          }
+                          className="form-input"
+                          style={{ width: 96 }}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-ghost"
+                          disabled={
+                            setBudget.isPending ||
+                            !/^\d+$/.test((budgetDraft[u.id] ?? "").trim()) ||
+                            Number(budgetDraft[u.id]) === budgetById.get(u.id)
+                          }
+                          onClick={() =>
+                            setBudget.mutate({
+                              userId: u.id,
+                              budget: Number(budgetDraft[u.id]),
+                            })
+                          }
+                        >
+                          {t("assign.budgetSave")}
+                        </button>
+                      </div>
                     )}
                   </label>
                 );

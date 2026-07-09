@@ -5,7 +5,9 @@
       "PowerShell(docker version --format '{{.Server.Version}}')",
       "PowerShell(Invoke-RestMethod -Uri \"http://127.0.0.1:18000/health\" -Method Get)",
       "PowerShell(Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object OwningProcess, @{Name='Name';Expression={\\(Get-Process -Id $_.OwningProcess\\).ProcessName}})",
-      "Bash(./.venv/Scripts/python.exe -c \"from app.main import app; routes=[r for r in app.routes if hasattr\\(r,'methods'\\) and '/ui-labels' in r.path]; [print\\(sorted\\(r.methods\\), r.path\\) for r in routes]\")"
+      "Bash(./.venv/Scripts/python.exe -c \"from app.main import app; routes=[r for r in app.routes if hasattr\\(r,'methods'\\) and '/ui-labels' in r.path]; [print\\(sorted\\(r.methods\\), r.path\\) for r in routes]\")",
+      "Bash(docker info *)",
+      "Bash(lsof -nP -iTCP -sTCP:LISTEN)"
     ]
   }
 }
