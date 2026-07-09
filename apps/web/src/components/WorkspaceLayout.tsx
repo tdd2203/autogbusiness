@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, NavLink, Outlet, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
@@ -8,17 +8,25 @@ import { useExtensionStatus, triggerExtensionRun } from "../hooks/useExtensionTr
 import { useBillingActions } from "../hooks/useBillingActions";
 import { useI18n, useT } from "../i18n";
 import { dashboardLangToChatGPTLocale } from "../lib/chatgpt-locale";
-import type { QueueItem, Workspace } from "../types";
-import { WorkspaceBillingPanel } from "./WorkspaceBillingPanel";
+import type { Member, QueueItem, Workspace } from "../types";
 import { TaskCompletionBanner } from "./TaskCompletionBanner";
 import { InviteMemberModal } from "./InviteMemberModal";
 import { BulkRemoveModal } from "./BulkRemoveModal";
 import { toast } from "./Toast";
 
-type Tab = { to: string; labelKey: string; superAdminOnly?: boolean };
+type Tab = {
+  to: string;
+  labelKey: string;
+  superAdminOnly?: boolean;
+  permission?: string;
+};
 
 const TABS: Tab[] = [
   { to: "members", labelKey: "workspace.tabMembers" },
+  // "Gia hạn": gom thành viên sắp/đã hết hạn để quản lý gia hạn. Cùng quyền xem
+  // với tab Thành viên (MEMBER_VIEW đã gate ở route cha) — không set thêm gì.
+  { to: "renewals", labelKey: "workspace.tabRenewals" },
+  { to: "billing", labelKey: "workspace.tabBilling", permission: "BILLING_VIEW" },
   { to: "queue", labelKey: "workspace.tabQueue" },
   { to: "extension", labelKey: "workspace.tabExtension", superAdminOnly: true },
   { to: "settings", labelKey: "workspace.tabSettings", superAdminOnly: true },
@@ -32,7 +40,20 @@ export default function WorkspaceLayout() {
   const qc = useQueryClient();
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [showBulkRemoveModal, setShowBulkRemoveModal] = useState(false);
+  // Giá trị mở sẵn cho modal Cập nhật hàng loạt (khi mở từ dropdown inline trong
+  // Members: chọn hành động + điền sẵn email đã tích). null = mở rỗng từ header.
+  const [bulkInitial, setBulkInitial] = useState<{
+    action?: string;
+    emails?: string[];
+  } | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
+
+  // Cho phép trang con (Members) mở modal Cập nhật hàng loạt với hành động + email
+  // điền sẵn — truyền xuống qua Outlet context.
+  function openBulkUpdate(action?: string, emails?: string[]) {
+    setBulkInitial(action || emails ? { action, emails } : null);
+    setShowBulkRemoveModal(true);
+  }
 
   const { data: workspace } = useQuery({
     queryKey: ["workspace", workspaceId],
@@ -71,7 +92,34 @@ export default function WorkspaceLayout() {
     setLastBillingTaskId,
   } = useBillingActions(workspaceId, workspace, recentTasks);
 
-  const tabs = TABS.filter((tab) => !tab.superAdminOnly || user?.is_super_admin);
+  const tabs = TABS.filter(
+    (tab) =>
+      (!tab.superAdminOnly || user?.is_super_admin) &&
+      (!tab.permission || hasPermission(tab.permission)),
+  );
+
+  // Số thành viên CẦN GIA HẠN (sắp ≤7 ngày HOẶC đã hết hạn) → badge đỏ cạnh tab
+  // "Gia hạn". Cùng queryKey ["members"] với trang Members/Renewals (react-query
+  // dedupe) + cùng điều kiện lọc như WorkspaceRenewals.tsx.
+  const { data: members = [] } = useQuery({
+    queryKey: ["members", workspaceId],
+    queryFn: () => api<Member[]>(`/api/v1/workspaces/${workspaceId}/members`),
+    enabled: !!workspaceId,
+  });
+  const renewalCount = useMemo(() => {
+    const now = Date.now();
+    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+    return members.filter((m) => {
+      if (m.status !== "active" && m.status !== "pending") return false;
+      if (m.subscription_end_at == null) return false;
+      const end = new Date(m.subscription_end_at).getTime();
+      return end <= now || end - now <= SEVEN_DAYS_MS;
+    }).length;
+  }, [members]);
+
+  // Số liệu tổng quan (tổng/active/chờ/hàng đợi) hiển thị bằng KHỐI 4 THẺ TO ở
+  // đầu trang Thành viên (Members.tsx) — theo mockup. Không còn cụm gọn trên hàng
+  // tab nữa; hàng tab chỉ còn tab + nút hành động.
 
   // ---- Đồng bộ TOÀN BỘ (full-sync) từ ChatGPT về DB ----
   // Mở modal 3 lựa chọn scope: members / invites / both → tạo task SYNC_DATA,
@@ -105,7 +153,9 @@ export default function WorkspaceLayout() {
     setShowInviteModal(true);
   }
 
-  const canSync = hasPermission("WORKSPACE_SYNC_TRIGGER");
+  // Full-sync toàn workspace (nút "Đồng bộ từ ChatGPT") CHỈ super-admin — ẩn hẳn
+  // với tài khoản phụ. (Đồng bộ pending lẻ ở tab "Chờ tham gia" là tính năng khác.)
+  const canSync = user?.is_super_admin === true;
   const canInvite = hasPermission("MEMBER_INVITE");
   const canRemove = hasPermission("MEMBER_REMOVE");
   const alreadySyncedBilling = !!workspace?.last_billing_synced_at;
@@ -123,7 +173,6 @@ export default function WorkspaceLayout() {
             {workspace?.name ?? "..."}
           </div>
           <h1 className="display-h1">{workspace?.name ?? t("nav.workspaces")}</h1>
-          <p className="page-sub">{t("workspace.detailPageSub")}</p>
         </div>
         {workspace && <ConnectionInfo workspace={workspace} />}
       </div>
@@ -150,6 +199,24 @@ export default function WorkspaceLayout() {
                   className={({ isActive }) => (isActive ? "tab active" : "tab")}
                 >
                   {t(tab.labelKey)}
+                  {/* Badge đỏ = số thành viên cần gia hạn (chỉ tab "Gia hạn"). */}
+                  {tab.to === "renewals" && renewalCount > 0 && (
+                    <span
+                      style={{
+                        marginLeft: 6,
+                        fontSize: 11,
+                        fontWeight: 600,
+                        color: "#fff",
+                        background: "var(--danger)",
+                        borderRadius: 999,
+                        padding: "1px 7px",
+                        lineHeight: 1.5,
+                        verticalAlign: "middle",
+                      }}
+                    >
+                      {renewalCount}
+                    </span>
+                  )}
                 </NavLink>
               ))}
             </div>
@@ -189,7 +256,7 @@ export default function WorkspaceLayout() {
               )}
               {(canRemove || user?.is_super_admin) && (
                 <button
-                  onClick={() => setShowBulkRemoveModal(true)}
+                  onClick={() => openBulkUpdate()}
                   className="btn btn-sm btn-ghost"
                 >
                   {t("bulkUpdate.openModalBtn")}
@@ -211,13 +278,10 @@ export default function WorkspaceLayout() {
         </div>
       )}
 
-      {/* Nội dung chính. Panel "Hàng đợi tác vụ" đã chuyển VÀO trang Thành viên
-          (Members.tsx) — nằm giữa phần tổng quan (metrics) và bảng danh sách. */}
+      {/* Panel billing đã chuyển sang tab riêng "Thanh toán"
+          (pages/WorkspaceBilling.tsx) — không còn chèn trên đầu các tab khác. */}
       <div>
-        {workspace && hasPermission("BILLING_VIEW") && (
-          <WorkspaceBillingPanel workspace={workspace} />
-        )}
-        <Outlet />
+        <Outlet context={{ openBulkUpdate }} />
       </div>
 
       {syncOpen && (
@@ -287,7 +351,12 @@ export default function WorkspaceLayout() {
       {showBulkRemoveModal && workspaceId && (
         <BulkRemoveModal
           workspaceId={workspaceId}
-          onClose={() => setShowBulkRemoveModal(false)}
+          initialAction={bulkInitial?.action}
+          initialEmails={bulkInitial?.emails}
+          onClose={() => {
+            setShowBulkRemoveModal(false);
+            setBulkInitial(null);
+          }}
           onDone={() => {
             qc.invalidateQueries({ queryKey: ["members", workspaceId] });
             qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });

@@ -45,9 +45,10 @@ export async function executeInvite(
   emails: string[],
   role: ChatGPTRole,
   verifiedDomain: string | null = null,
+  externalReady = false,
 ): Promise<ExecuteActionResponse> {
   console.log(
-    `[autogpt-invite] START ${emails.length} email(s) role=${role} verifiedDomain=${verifiedDomain ?? "(chưa cấu hình)"} pathname=${location.pathname}`,
+    `[autogpt-invite] START ${emails.length} email(s) role=${role} verifiedDomain=${verifiedDomain ?? "(chưa cấu hình)"} externalReady=${externalReady} pathname=${location.pathname}`,
   );
 
   if (!location.pathname.includes("/admin")) {
@@ -70,7 +71,7 @@ export async function executeInvite(
   //      - Nếu OFF → bật ON.
   //      - Nếu đã ON → skip click (giữ nguyên cho invite).
   //   2. Navigate /admin/members + mời thành viên (executeInviteInner).
-  //   3. SAU KHI INVITE XONG (finally của withExternalInvitesEnabled):
+  //   3. SAU KHI INVITE XONG (finally, gọi setExternalInvites(false)):
   //      LUÔN tắt toggle về OFF — KỂ CẢ prev=ON (user bật vĩnh viễn). Đây
   //      là spec bảo mật user xác nhận: external invites là rủi ro → sau
   //      mỗi invite extension phải về OFF, user bật lại thủ công nếu cần.
@@ -90,21 +91,35 @@ export async function executeInvite(
   // TỐI ƯU (theo user): nếu MỌI email thuộc tên miền đã xác minh của workspace
   // thì KHÔNG cần bật toggle "mời ngoài tên miền" → bỏ qua 2 lần navigate
   // /admin/identity (nhanh hơn + không để workspace mở external). Chỉ khi
-  // domain chưa cấu hình HOẶC có email ngoài domain mới dùng wrapper.
+  // domain chưa cấu hình HOẶC có email ngoài domain mới cần bật toggle.
+  const needExternal = !allEmailsInVerifiedDomain(emails, verifiedDomain);
+
   let inviteResult: ExecuteActionResponse;
-  if (allEmailsInVerifiedDomain(emails, verifiedDomain)) {
+  if (!needExternal) {
     console.log(
       `[autogpt-invite] mọi email thuộc domain xác minh "${verifiedDomain}" → BỎ QUA toggle external invites`,
     );
     // executeInviteInner yêu cầu đang ở /admin/members → điều hướng trước.
     await navigateTo(MEMBERS_PATH, membersPageReady, 10_000);
     inviteResult = await executeInviteInner(taskId, emails, role);
-  } else {
+  } else if (!externalReady) {
+    // ─── PHASE A (lần gọi INVITE_MEMBER thứ 1) ───────────────────────────────
     // Có email NGOÀI domain xác minh (hoặc domain chưa cấu hình) → BẮT BUỘC bật
     // toggle "Cho phép lời mời ngoài tên miền" trước khi mời. Nếu KHÔNG xác nhận
-    // được toggle về ON → KHÔNG mời (return FAIL). Lý do (user yêu cầu): nếu mời
-    // khi toggle vẫn OFF, ChatGPT từ chối email ngoài domain silently → dashboard
-    // tạo phantom "đang chờ" cho email chưa thực sự được mời. Thà fail rõ ràng.
+    // được toggle về ON → KHÔNG mời (return FAIL): mời khi toggle OFF → ChatGPT
+    // từ chối email ngoài domain silently → dashboard tạo phantom "đang chờ".
+    //
+    // QUAN TRỌNG (fix v0.8.14, user 2026-06-19 "luôn bị EXTERNAL_TOGGLE_FAILED"):
+    // sau khi bật toggle ở /admin/identity, KHÔNG mở dialog mời ngay trong cùng
+    // context. Lý do gốc: `navigateTo` dùng SPA-nav (click <a>/pushState) →
+    // ChatGPT KHÔNG refetch org-config/verified-domains → dialog Mời vẫn validate
+    // theo config CŨ (external=OFF) → hiện banner "ngoài miền" + disable Send →
+    // banner KHÔNG BAO GIỜ tự clear (8s poll vô ích) → EXTERNAL_TOGGLE_FAILED.
+    // Cách chắc chắn 100%: background HARD-RELOAD /admin/members (refetch config)
+    // RỒI mới mở dialog (Phase A'). Content tự reload sẽ chết context →
+    // CONTENT_TIMEOUT, nên reload phải do background điều phối. Ta báo background
+    // qua `awaiting_external_reload` (giống cơ chế `awaiting_reload_verify` của
+    // F5 verify Phase 2).
     const ensured = await setExternalInvites(true);
     if (!ensured.confirmed) {
       console.warn(
@@ -120,14 +135,31 @@ export async function executeInvite(
       };
     }
     console.log(
-      `[autogpt-invite] toggle external invites đã ON (prev=${ensured.prev ? "ON" : "OFF"}) → tiến hành mời`,
+      `[autogpt-invite] PHASE A: toggle external invites đã ON (prev=${ensured.prev ? "ON" : "OFF"}) → yêu cầu background HARD-RELOAD /admin/members rồi gọi lại để mời.`,
+    );
+    return {
+      ok: true,
+      data: {
+        awaiting_external_reload: true,
+        emails,
+        count: emails.length,
+        role,
+      },
+    };
+  } else {
+    // ─── PHASE A' (lần gọi INVITE_MEMBER thứ 2, externalReady=true) ───────────
+    // Toggle external ĐÃ ON ở Phase A + trang /admin/members vừa được background
+    // HARD-RELOAD → org-config đã fresh (external=ON) → dialog Mời không còn
+    // banner "ngoài miền". Giờ mở dialog mời thật sự.
+    console.log(
+      "[autogpt-invite] PHASE A': trang đã hard-reload với external=ON → mở dialog mời.",
     );
     try {
       await navigateTo(MEMBERS_PATH, membersPageReady, 10_000);
       inviteResult = await executeInviteInner(taskId, emails, role);
     } finally {
-      // Spec bảo mật: LUÔN tắt toggle về OFF sau invite (kể cả prev=ON hay
-      // invite throw) + về /admin/members cho task kế tiếp.
+      // Spec bảo mật: LUÔN tắt toggle về OFF sau invite (kể cả invite throw) +
+      // về /admin/members cho task kế tiếp.
       try {
         await setExternalInvites(false);
       } catch (e) {

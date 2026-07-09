@@ -210,3 +210,69 @@ def test_bulk_remove_by_paste_emails_lifecycle(
     after = {m["email"]: m for m in _members(client, ws["id"], auth_header)}
     assert after["kill@example.com"]["status"] == "removed"
     assert after["keep@example.com"]["status"] == "active"
+
+
+def test_remove_member_not_in_workspace_marks_removed(
+    client: TestClient, auth_header: dict
+):
+    """Extension báo FAILED + MEMBER_NOT_IN_WORKSPACE (ô lọc không thấy email) →
+    backend coi như đã rời business: convert COMPLETED + mark Member.removed."""
+    ws = _create_workspace(client, auth_header)
+    _upsert_active(client, ws, ["gone@example.com"])
+
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-remove",
+        json={"emails": ["gone@example.com"]},
+        headers=auth_header,
+    )
+    assert resp.status_code == 202, resp.text
+    task = _remove_tasks(client, ws["id"], auth_header)[0]
+
+    patch = client.patch(
+        f"/api/v1/queue/{task['id']}",
+        json={
+            "status": "FAILED",
+            "error_code": "MEMBER_NOT_IN_WORKSPACE",
+            "error_message": "Ô lọc không thấy gone@example.com",
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert patch.status_code == 200, patch.text
+    # FAILED được convert sang COMPLETED, error_code xoá.
+    assert patch.json()["status"] == "COMPLETED"
+    assert patch.json()["error_code"] is None
+
+    after = {m["email"]: m for m in _members(client, ws["id"], auth_header)}
+    assert after["gone@example.com"]["status"] == "removed"
+
+
+def test_remove_ui_element_not_found_stays_failed(
+    client: TestClient, auth_header: dict
+):
+    """UI_ELEMENT_NOT_FOUND = member CÓ nhưng menu/nút lỗi → KHÔNG tự xoá: task
+    vẫn FAILED, Member giữ active (không phải MEMBER_NOT_IN_WORKSPACE)."""
+    ws = _create_workspace(client, auth_header)
+    _upsert_active(client, ws, ["stay@example.com"])
+
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-remove",
+        json={"emails": ["stay@example.com"]},
+        headers=auth_header,
+    )
+    assert resp.status_code == 202, resp.text
+    task = _remove_tasks(client, ws["id"], auth_header)[0]
+
+    patch = client.patch(
+        f"/api/v1/queue/{task['id']}",
+        json={
+            "status": "FAILED",
+            "error_code": "UI_ELEMENT_NOT_FOUND",
+            "error_message": "Menu '...' không mở",
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["status"] == "FAILED"
+
+    after = {m["email"]: m for m in _members(client, ws["id"], auth_header)}
+    assert after["stay@example.com"]["status"] == "active"

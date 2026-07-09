@@ -20,6 +20,9 @@ class Permission(StrEnum):
     MEMBER_VIEW = "MEMBER_VIEW"
     MEMBER_INVITE = "MEMBER_INVITE"
     MEMBER_REMOVE = "MEMBER_REMOVE"
+    # Quyền yêu cầu đặt giới hạn tín dụng/tháng cho member. Sub-admin có quyền này
+    # vẫn phải được super-admin DUYỆT từng lệnh + chỉ đặt trong ngân sách được cấp.
+    MEMBER_SET_USAGE_LIMIT = "MEMBER_SET_USAGE_LIMIT"
     WORKSPACE_SYNC_TRIGGER = "WORKSPACE_SYNC_TRIGGER"
     QUEUE_VIEW = "QUEUE_VIEW"
     AUDIT_LOG_VIEW = "AUDIT_LOG_VIEW"
@@ -40,6 +43,7 @@ GRANTABLE: frozenset[Permission] = frozenset(
         Permission.MEMBER_VIEW,
         Permission.MEMBER_INVITE,
         Permission.MEMBER_REMOVE,
+        Permission.MEMBER_SET_USAGE_LIMIT,
         Permission.WORKSPACE_SYNC_TRIGGER,
         Permission.QUEUE_VIEW,
         Permission.AUDIT_LOG_VIEW,

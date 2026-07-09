@@ -23,14 +23,30 @@ function findTabButton(
  * "tab=invites") → sau click poll `location.search` tới khi khớp; chưa khớp thì
  * RETRY click; hết retry vẫn sai → return false (caller bỏ qua, KHÔNG scrape
  * nhầm). Không truyền `verifyTabParam` → giữ hành vi cũ (click + sleep).
+ *
+ * `waitForButtonMs` (mặc định 0 = giữ hành vi cũ): nếu > 0 và CHƯA thấy nút tab,
+ * POLL chờ nút render tới `waitForButtonMs` rồi mới bỏ cuộc. Từ v0.8.13 mỗi action
+ * mở tab /admin/members MỚI → content chạy NGAY khi trang vừa load → findTabButton
+ * (tra 1 lần) có thể chạy TRƯỚC khi React render thanh tab → null. Gom bước "chờ
+ * render" vào đây để MỌI caller chỉ cần truyền `waitForButtonMs`, KHỎI tự nhớ
+ * `waitFor` thủ công ở từng action (trước đây lặp ở revoke + sync-member và đã 2
+ * lần quên → regression UI_ELEMENT_NOT_FOUND).
  */
 export async function clickTabAndWait(
   controlKey: string,
   tabTexts: readonly string[],
   postClickWaitMs = 1500,
   verifyTabParam?: string,
+  waitForButtonMs = 0,
 ): Promise<boolean> {
   let btn = findTabButton(controlKey, tabTexts);
+  if (!btn && waitForButtonMs > 0) {
+    const deadline = Date.now() + waitForButtonMs;
+    while (!btn && Date.now() < deadline) {
+      await sleep(300);
+      btn = findTabButton(controlKey, tabTexts);
+    }
+  }
   if (!btn) {
     console.warn(`[autogpt-sync] tab not found: ${tabTexts[0]}`);
     return false;

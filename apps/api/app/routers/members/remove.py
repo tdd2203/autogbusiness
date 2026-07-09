@@ -30,6 +30,7 @@ from app.sse import publish_task_event
 
 from ._shared import (
     router,
+    SUBSCRIPTION_GRACE_AFTER_EXPIRY,
     _get_workspace_or_404,
     _member_or_404_visible,
     _visibility_filter,
@@ -42,23 +43,25 @@ def cleanup_expired_members(
     db: Session = Depends(get_session),
     user: User = Depends(require_permission(Permission.MEMBER_REMOVE)),
 ) -> dict:
-    """Tìm các member có `subscription_end_at <= now` (active/pending) trong
-    workspace → enqueue 1 REMOVE_MEMBER task cho mỗi email + audit log.
+    """Tìm các member đã quá hạn >= 1 GIỜ (`subscription_end_at <= now - 1h`,
+    active/pending) trong workspace → enqueue 1 REMOVE_MEMBER task cho mỗi email + audit.
 
-    Trả về list email đã enqueue. Dashboard có thể gọi endpoint này để admin
-    "1 click remove tất cả expired". Cũng được scheduler ở `main.py` gọi định
-    kỳ (background timer) để tự động dọn cho mọi workspace.
+    Ân hạn 1 giờ (`SUBSCRIPTION_GRACE_AFTER_EXPIRY`): email vừa hết hạn trong vòng 1
+    giờ chưa bị xoá — cho khách thời gian gia hạn. Trả về list email đã enqueue.
+    Dashboard có thể gọi để admin "1 click remove tất cả expired". Cùng rule với
+    scheduler ở `main.py` (background timer dọn định kỳ mọi workspace).
     """
     _get_workspace_or_404(db, workspace_id)
     assert_workspace_access(db, user, workspace_id)
     now = datetime.now(timezone.utc)
+    cutoff = now - SUBSCRIPTION_GRACE_AFTER_EXPIRY
     expired = (
         db.execute(
             select(Member).where(
                 Member.workspace_id == workspace_id,
                 Member.status.in_(("active", "pending")),
                 Member.subscription_end_at.isnot(None),
-                Member.subscription_end_at <= now,
+                Member.subscription_end_at <= cutoff,
             )
         )
         .scalars()

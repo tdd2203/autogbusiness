@@ -7,8 +7,10 @@ import Settings from "./pages/Settings";
 import Billing from "./pages/Billing";
 import Workspaces from "./pages/Workspaces";
 import Members from "./pages/Members";
+import WorkspaceRenewals from "./pages/WorkspaceRenewals";
 import AddedEmails from "./pages/AddedEmails";
 import WorkspaceQueue from "./pages/WorkspaceQueue";
+import WorkspaceBilling from "./pages/WorkspaceBilling";
 import WorkspaceExtension from "./pages/WorkspaceExtension";
 import WorkspaceSettings from "./pages/WorkspaceSettings";
 import Layout from "./components/Layout";
@@ -45,6 +47,15 @@ export default function App() {
         >
           <Route index element={<Navigate to="members" replace />} />
           <Route path="members" element={<Members />} />
+          <Route path="renewals" element={<WorkspaceRenewals />} />
+          <Route
+            path="billing"
+            element={
+              <ProtectedRoute requirePermission="BILLING_VIEW">
+                <WorkspaceBilling />
+              </ProtectedRoute>
+            }
+          />
           <Route
             path="queue"
             element={

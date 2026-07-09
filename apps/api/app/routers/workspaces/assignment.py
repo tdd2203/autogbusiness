@@ -43,6 +43,7 @@ def list_workspace_assignments(
             email=u.email,
             username=u.username,
             is_active=u.is_active,
+            credit_budget=a.credit_budget,
             created_at=a.created_at,
         )
         for a, u in rows
@@ -80,11 +81,37 @@ def assign_user_to_workspace(
         )
     ).scalar_one_or_none()
     if existing:
+        # Re-POST = cập nhật ngân sách (nếu body.credit_budget có giá trị); nếu None
+        # giữ nguyên (chỉ là gán lại idempotent).
+        if body.credit_budget is not None and body.credit_budget != existing.credit_budget:
+            old_budget = existing.credit_budget
+            existing.credit_budget = body.credit_budget
+            db.add(existing)
+            log_event(
+                db,
+                actor_type="ADMIN",
+                actor_id=actor.id,
+                actor_label=actor.email,
+                action="WORKSPACE_CREDIT_BUDGET_SET",
+                result="SUCCESS",
+                target_type="WORKSPACE",
+                target_id=str(workspace_id),
+                data={
+                    "user_id": str(target.id),
+                    "user_email": target.email,
+                    "old_budget": old_budget,
+                    "credit_budget": body.credit_budget,
+                },
+                commit=False,
+            )
+            db.commit()
+            db.refresh(existing)
         return WorkspaceAssignmentOut(
             user_id=target.id,
             email=target.email,
             username=target.username,
             is_active=target.is_active,
+            credit_budget=existing.credit_budget,
             created_at=existing.created_at,
         )
 
@@ -92,6 +119,7 @@ def assign_user_to_workspace(
         workspace_id=workspace_id,
         user_id=target.id,
         assigned_by_id=actor.id,
+        credit_budget=body.credit_budget or 0,
     )
     db.add(assignment)
     db.flush()
@@ -104,7 +132,11 @@ def assign_user_to_workspace(
         result="SUCCESS",
         target_type="WORKSPACE",
         target_id=str(workspace_id),
-        data={"user_id": str(target.id), "user_email": target.email},
+        data={
+            "user_id": str(target.id),
+            "user_email": target.email,
+            "credit_budget": assignment.credit_budget,
+        },
         commit=False,
     )
     db.commit()
@@ -114,6 +146,7 @@ def assign_user_to_workspace(
         email=target.email,
         username=target.username,
         is_active=target.is_active,
+        credit_budget=assignment.credit_budget,
         created_at=assignment.created_at,
     )
 

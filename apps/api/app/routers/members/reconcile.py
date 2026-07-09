@@ -22,7 +22,7 @@ from app.deps import get_session, require_extension_workspace
 from app.models import Invite, Member, Workspace
 from app.schemas import InviteVerifyReconcileIn, MemberBulkUpsert
 
-from ._shared import router, _compute_subscription_end
+from ._shared import router, _end_from_purchase
 
 
 @router.post("/bulk-upsert", response_model=dict)
@@ -47,11 +47,13 @@ def bulk_upsert_members(
     created = 0
     updated = 0
     # Default subscription cho member scrape-only (chưa từng invite qua dashboard):
-    # 1 tháng = 30 ngày từ thời điểm tạo row. Theo yêu cầu user 2026-05-19.
-    # KHÔNG đụng tới row đã có subscription_months (admin đã chỉnh) — chỉ backfill
-    # khi NULL.
+    # 1 tháng = 30 ngày. Theo yêu cầu user 2026-05-19.
+    # Mốc neo "Ngày gia hạn" = ngày thêm hiển thị trên dashboard = last_invited_at ??
+    # created_at (KHÁC joined_at scrape ChatGPT). Lưu vào subscription_purchased_at để
+    # cột "Ngày gia hạn" khớp; hạn = neo + tháng×30 CHÍNH XÁC (hết hạn = gia hạn + 30).
+    # Chỉ THIẾT LẬP khi CHƯA có hạn (subscription_end_at IS NULL) — KHÔNG bao giờ đè
+    # hạn đã set (gia hạn/bulk-set-expiry đã set end_at dù months có thể = None).
     default_sub_months = 1
-    default_sub_end = _compute_subscription_end(now, default_sub_months)
 
     for m in body.members:
         email = m.email.lower()
@@ -69,18 +71,28 @@ def bulk_upsert_members(
                 m.license_type if m.license_type is not None else existing.license_type
             )
             existing.status = m.status
-            if m.joined_at:
-                existing.joined_at = m.joined_at
+            # NGÀY THAM GIA = thời điểm MỜI (có giờ) nếu có. Scrape ChatGPT chỉ trả
+            # NGÀY (00:00) → KHÔNG ghi đè joined_at đã có bằng giá trị kém chính xác
+            # hơn. Chỉ đặt lần đầu (joined_at IS NULL), ưu tiên last_invited_at.
+            # Yêu cầu user 2026-07-06 ("ngày tham gia lấy từ thời gian mời, cả giờ").
+            if existing.joined_at is None:
+                existing.joined_at = existing.last_invited_at or m.joined_at
             existing.last_synced_at = now
-            # Backfill subscription nếu chưa có (legacy rows trước v0.4.4 hoặc
-            # row mới được scrape mà chưa từng invite). Dùng created_at làm base.
-            if existing.subscription_months is None:
+            # Owner (chủ sở hữu workspace) mặc định VÔ HẠN — KHÔNG cấp gói (user
+            # 2026-07-06). Member thường: backfill subscription CHỈ khi chưa từng có
+            # hạn (end_at IS NULL) — legacy / row mới scrape. KHÔNG đụng hạn đã set.
+            if existing.chatgpt_role != "owner" and existing.subscription_end_at is None:
+                anchor = existing.last_invited_at or existing.created_at or now
                 existing.subscription_months = default_sub_months
-                existing.subscription_end_at = _compute_subscription_end(
-                    existing.created_at or now, default_sub_months
+                existing.subscription_purchased_at = anchor
+                existing.subscription_end_at = _end_from_purchase(
+                    anchor, default_sub_months
                 )
             updated += 1
         else:
+            # Owner mới scrape lần đầu → vô hạn (không gói). Member thường → gói mặc định.
+            # Mốc neo = now (giờ ghi nhận trên dashboard ≈ created_at); hạn = neo + 30.
+            is_owner = m.chatgpt_role == "owner"
             db.add(
                 Member(
                     workspace_id=workspace_id,
@@ -91,8 +103,11 @@ def bulk_upsert_members(
                     status=m.status,
                     joined_at=m.joined_at,
                     last_synced_at=now,
-                    subscription_months=default_sub_months,
-                    subscription_end_at=default_sub_end,
+                    subscription_months=None if is_owner else default_sub_months,
+                    subscription_purchased_at=None if is_owner else now,
+                    subscription_end_at=None
+                    if is_owner
+                    else _end_from_purchase(now, default_sub_months),
                 )
             )
             created += 1
@@ -119,7 +134,59 @@ def bulk_upsert_members(
     else:
         incoming_emails = {m.email.lower() for m in body.members}
 
-    if scopes and incoming_emails:
+    # ⚠️ GUARD "SYNC THIẾU" — đối chiếu TRƯỚC khi mark-removed để không phá dữ
+    # liệu lịch sử khi scrape lỗi (vd bug list chưa render hết → chỉ ra 2/49 member).
+    # Nếu bỏ qua: reconcile sẽ mark 47 member còn lại 'removed' oan.
+    #
+    # Nguồn sự thật = expected_total (header count ChatGPT tự báo). Nếu ChatGPT nói
+    # có N active mà lần scrape này chỉ thấy ≪ N → chắc chắn scrape THIẾU → BỎ QUA
+    # reconcile. Phân biệt với "admin xoá thật còn ít": khi đó header cũng = số ít
+    # → expected_total ≈ scrape → KHÔNG skip (reconcile chạy bình thường).
+    #
+    # Chỉ áp cho scope 'active' (nơi có nguy cơ xoá hàng loạt). Member đã upsert ở
+    # bước trên VẪN được lưu — chỉ bước xoá bị hoãn tới lần sync đủ.
+    reconcile_skipped = False
+    skip_reason: str | None = None
+    if scopes and incoming_emails and "active" in scopes:
+        # Số email active trong lần scrape này.
+        if body.reconcile_emails is not None:
+            pending_lower = {
+                e.lower() for e in (body.reconcile_pending_emails or [])
+            }
+            incoming_active_count = len(incoming_emails - pending_lower)
+        else:
+            incoming_active_count = sum(
+                1 for m in body.members if m.status == "active"
+            )
+        existing_active_count = db.execute(
+            select(func.count())
+            .select_from(Member)
+            .where(
+                Member.workspace_id == workspace_id,
+                Member.status == "active",
+            )
+        ).scalar_one()
+
+        if body.expected_total is not None and body.expected_total > 0:
+            # Cho phép sai lệch nhỏ (member đang xử lý giữa lúc đọc header và
+            # scrape). Thiếu > 10% so với header = scrape chưa đủ → skip.
+            if incoming_active_count < body.expected_total * 0.9:
+                reconcile_skipped = True
+                skip_reason = (
+                    f"partial_scrape: active scrape được {incoming_active_count} "
+                    f"< header ChatGPT báo {body.expected_total}"
+                )
+        elif existing_active_count >= 10 and incoming_active_count <= 2:
+            # Fallback khi extension cũ KHÔNG gửi expected_total: chỉ chặn đúng
+            # chữ ký của bug (roster ≥10 mà sync sập còn ≤2) để không cản trở
+            # việc xoá hợp lệ ở workspace nhỏ.
+            reconcile_skipped = True
+            skip_reason = (
+                f"partial_scrape_no_header: active scrape được "
+                f"{incoming_active_count} nhưng DB đang có {existing_active_count}"
+            )
+
+    if scopes and incoming_emails and not reconcile_skipped:
         # Safety: KHÔNG reconcile member vừa invite qua dashboard trong 10 phút
         # gần đây (ChatGPT thường mất 1-30s để index pending invite vào tab "Lời
         # mời"; nếu extension verify trong khoảng đó, scrape chưa thấy thì backend
@@ -200,9 +267,25 @@ def bulk_upsert_members(
             "removed_missing": removed_count,
             "total": len(body.members),
             "is_full_sync": body.is_full_sync,
+            "reconcile_skipped": reconcile_skipped,
+            "expected_total": body.expected_total,
         },
         commit=False,
     )
+    # Sự kiện đáng chú ý: reconcile bị chặn vì nghi sync thiếu → log riêng để
+    # admin/monitoring thấy (member cũ được GIỮ, không mark removed).
+    if reconcile_skipped:
+        log_event(
+            db,
+            actor_type="EXTENSION",
+            actor_label=f"workspace:{workspace.name}",
+            action="MEMBER_RECONCILE_SKIPPED",
+            result="SKIPPED",
+            target_type="WORKSPACE",
+            target_id=str(workspace_id),
+            data={"reason": skip_reason, "expected_total": body.expected_total},
+            commit=False,
+        )
     db.commit()
     return {
         "created": created,
@@ -210,6 +293,8 @@ def bulk_upsert_members(
         "removed_missing": removed_count,
         "total": len(body.members),
         "rogue_pending_emails": rogue_pending_emails,
+        "reconcile_skipped": reconcile_skipped,
+        "reconcile_skip_reason": skip_reason,
     }
 
 

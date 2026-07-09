@@ -41,6 +41,10 @@ export async function executeSyncMember(
   }
 
   // ----- Bước 1: tab "Lời mời đang chờ xử lý" -----
+  // `waitForButtonMs=12000`: chờ thanh tab render TRƯỚC khi click. Từ v0.8.13 mỗi
+  // action mở tab /admin/members MỚI → content chạy ngay khi trang vừa load, nút
+  // tab có thể chưa render → nếu không chờ sẽ kẹt ở tab Người dùng → UI_ELEMENT_NOT_FOUND
+  // (bug user 2026-06-20). Bước chờ render đã gom vào clickTabAndWait (waitForButtonMs).
   await reportProgress(
     taskId,
     { phase: "searching", message: `Tìm ${target} ở tab Lời mời đang chờ xử lý...` },
@@ -51,6 +55,7 @@ export async function executeSyncMember(
     TEXT_FALLBACKS.tabPendingInvites,
     1500,
     "tab=invites",
+    12_000,
   );
   if (onPending) {
     const pendingRow = await scrollScanForRow(target);

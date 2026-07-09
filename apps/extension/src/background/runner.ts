@@ -15,7 +15,7 @@ import {
 } from "../shared/api";
 import { getConfig } from "../shared/storage";
 import type { ExtensionConfig, QueueItem } from "../shared/types";
-import { runPaymentChain } from "./payment-chain";
+import { runPaymentChain, scrapeInvoiceDetailInTab } from "./payment-chain";
 
 const RATE_LIMIT = {
   /** Min delay giữa 2 task bất kỳ (anti-detection). 5000→2000→1200→840 (-30%). */
@@ -29,17 +29,27 @@ const RATE_LIMIT = {
 
 const CHATGPT_TAB_MATCH = "https://chatgpt.com/admin/*";
 const CHATGPT_ADMIN_URL = "https://chatgpt.com/admin/members";
+// Trang "Ghi đè mỗi người dùng" — SET_USAGE_LIMIT thao tác ở đây (KHÁC /admin/members).
+const CHATGPT_USAGE_LIMIT_URL =
+  "https://chatgpt.com/admin/billing/manage_member_usage_limit";
 const TAB_LOAD_TIMEOUT_MS = 30_000;
 
 /**
- * Quy tắc quản lý tab chatgpt.com/admin (yêu cầu user 2026-06-19):
- *   - TÁI SỬ DỤNG tab admin sẵn có (tab mới nhất). CHỈ mở tab mới khi action
- *     không chạy được trên tab cũ — việc đó do `ensureContentInjected` xử lý
- *     (Step 3 NUCLEAR: đóng tab hỏng + tạo tab mới).
- *   - Khi đang có >ADMIN_TAB_MAX tab trùng → tự đóng bớt tab cũ, chỉ giữ
- *     lại ADMIN_TAB_MAX tab mới nhất.
+ * Quy tắc quản lý tab chatgpt.com/admin (yêu cầu user 2026-06-19, REVISED
+ * 2026-06-22, REVISED 2026-06-23 — TÁI DÙNG mặc định):
+ *   - TÁI DÙNG tab MỚI NHẤT cho MỌI action khi đã có ≥1 tab admin. Trước khi dùng
+ *     thì F5 (reload nếu đang ở `/admin/members`, hoặc nav về `/admin/members`
+ *     nếu ở sub-page khác) để lấy DOM/server-state sạch + re-inject content script.
+ *     KHÔNG mở tab mới, KHÔNG đóng tab.
+ *   - Chỉ mở tab MỚI khi KHÔNG còn tab admin nào (0 tab).
+ *   - Backstop chống phình: > ADMIN_TAB_HARD_MAX (≥4 tab — user chủ động mở quá
+ *     nhiều) → tự đóng các tab CŨ nhất cho còn ADMIN_TAB_HARD_MAX (=3), rồi tái
+ *     dùng tab mới nhất (F5).
+ *   Lý do bỏ "≤2 tab → mở tab mới mỗi action" (v0.8.13–v0.8.20): batch nhiều lệnh
+ *   GIỐNG NHAU (vd 30+ REMOVE_MEMBER) khiến mỗi task mở+đóng 1 tab → spam tab liên
+ *   tục, vô ích. F5 tab cũ cho kết quả sạch tương đương tab mới mà không spam tab.
  */
-const ADMIN_TAB_MAX = 5;
+const ADMIN_TAB_HARD_MAX = 3;
 
 /**
  * Hard-cap cho vòng VERIFY_PENDING_INVITE (Phase 2 sau F5). Verify scrape có thể
@@ -93,11 +103,14 @@ const CONTENT_TIMEOUTS: Record<string, number> = {
   REMOVE_MEMBER: 150_000,
   CHANGE_ROLE: 150_000,
   CHANGE_LICENSE_TYPE: 150_000,
+  SET_USAGE_LIMIT: 150_000,
   REVOKE_INVITES: 150_000,
   // Backend 240s (4') → 210s.
   SYNC_MEMBER: 210_000,
   SYNC_BILLING: 210_000,
-  // Backend 360s (6') → 330s.
+  // Backend 360s (6') → 330s. Batch quét TOÀN BỘ tab Lời mời 1 lần + check N
+  // email còn lại ở tab Người dùng → cùng ngân sách với SYNC_DATA.
+  SYNC_MEMBERS_BATCH: 330_000,
   SYNC_DATA: 330_000,
   HARVEST_LABELS: 330_000,
   // Backend 480s (8') → 450s.
@@ -302,19 +315,21 @@ async function queryAdminTabs(): Promise<chrome.tabs.Tab[]> {
 }
 
 /**
- * Khi có >ADMIN_TAB_MAX tab admin → đóng bớt các tab CŨ nhất, chỉ giữ lại
- * ADMIN_TAB_MAX tab mới nhất. Không throw nếu đóng lỗi (tab có thể đã đóng).
+ * Đóng bớt các tab admin CŨ nhất sao cho chỉ còn tối đa `keep` tab. Dùng trước
+ * khi mở tab mới để giữ tổng số tab trong giới hạn. Không throw nếu đóng lỗi
+ * (tab có thể đã đóng). Trả về danh sách tab còn lại (đã query lại).
  */
 async function pruneStaleAdminTabs(
   tabs: chrome.tabs.Tab[],
+  keep: number,
 ): Promise<chrome.tabs.Tab[]> {
-  if (tabs.length <= ADMIN_TAB_MAX) return tabs;
-  const stale = tabs.slice(0, tabs.length - ADMIN_TAB_MAX);
+  if (tabs.length <= keep) return tabs;
+  const stale = tabs.slice(0, tabs.length - keep);
   const staleIds = stale
     .map((t) => t.id)
     .filter((id): id is number => id !== undefined);
   console.log(
-    `[autogpt-runner] ${tabs.length} admin tab (>${ADMIN_TAB_MAX}) — tự đóng ${staleIds.length} tab cũ: ${staleIds.join(",")}`,
+    `[autogpt-runner] ${tabs.length} admin tab — tự đóng ${staleIds.length} tab cũ (giữ ${keep}): ${staleIds.join(",")}`,
   );
   try {
     await chrome.tabs.remove(staleIds);
@@ -362,37 +377,70 @@ function waitForTabComplete(
 }
 
 /**
- * Đảm bảo có tab chatgpt.com/admin/* sẵn sàng cho action, theo quy tắc tab của
- * user (2026-06-19): CHỈ mở tab mới khi action không chạy được trên tab cũ.
+ * Đảm bảo có tab chatgpt.com/admin/members sạch cho action, theo quy tắc tab của
+ * user (2026-06-19, REVISED 2026-06-23 — TÁI DÙNG mặc định, chỉ mở mới khi 0 tab):
  *   1. Đếm tab admin đang mở (sắp xếp cũ → mới).
- *   2. >ADMIN_TAB_MAX tab → tự đóng bớt tab cũ, chỉ giữ ADMIN_TAB_MAX tab mới nhất.
- *   3. Còn ≥1 tab → TÁI SỬ DỤNG tab MỚI NHẤT (không mở thêm). Nếu content script
- *      không chạy được trên tab này, `ensureContentInjected` sẽ tự reload/đẻ tab
- *      mới (Step 3 NUCLEAR) — đó mới là lúc mở tab mới.
- *   4. Không có tab nào → mở tab MỚI tới /admin/members (background tab, không
- *      steal focus), đợi load xong, verify URL vẫn ở /admin (nếu bị redirect tới
- *      login = chưa đăng nhập ChatGPT) → trả null.
+ *   2. > ADMIN_TAB_HARD_MAX (≥4 tab) → đóng các tab CŨ nhất cho còn 3 (backstop
+ *      chống phình khi user chủ động mở quá nhiều). ≤3 → KHÔNG đóng gì.
+ *   3. Còn ≥1 tab → TÁI DÙNG tab MỚI NHẤT + F5 (reload nếu đang ở /admin/members,
+ *      hoặc nav về /admin/members nếu ở sub-page khác), đợi load, verify /admin.
+ *      KHÔNG mở tab mới, KHÔNG đóng tab. Đây là đường đi mặc định cho mọi action
+ *      → batch nhiều lệnh giống nhau (vd 30+ REMOVE) KHÔNG còn spam mở/đóng tab.
+ *   4. 0 tab → mở tab MỚI tới /admin/members.
+ *   5. Tab dùng cho action verify URL vẫn ở /admin (redirect tới login = chưa
+ *      đăng nhập ChatGPT) → trả null.
  *
  * Trả về tab dùng được hoặc null nếu user chưa đăng nhập ChatGPT.
  */
 async function ensureAdminTab(): Promise<chrome.tabs.Tab | null> {
   let tabs = await queryAdminTabs();
 
-  // >ADMIN_TAB_MAX → tự đóng bớt tab cũ
-  tabs = await pruneStaleAdminTabs(tabs);
-
-  // Còn tab → tái sử dụng tab mới nhất, KHÔNG mở thêm
-  if (tabs.length > 0) {
-    const newest = tabs[tabs.length - 1];
-    console.log(
-      `[autogpt-runner] ${tabs.length} admin tab — tái sử dụng tab mới nhất ${newest.id} (chỉ mở mới khi action fail)`,
-    );
-    return newest;
+  // (2) Backstop chống phình: chỉ tự đóng khi VƯỢT hard-max (≥4) → còn 3.
+  if (tabs.length > ADMIN_TAB_HARD_MAX) {
+    tabs = await pruneStaleAdminTabs(tabs, ADMIN_TAB_HARD_MAX);
   }
 
-  // Không có tab nào → mở tab MỚI
+  // (3) Có ≥1 tab → tái dùng tab MỚI NHẤT + F5 (không mở mới, không đóng). Đây là
+  // hành vi MẶC ĐỊNH: tránh spam mở/đóng tab khi chạy batch nhiều lệnh giống nhau.
+  if (tabs.length >= 1) {
+    const newest = tabs[tabs.length - 1];
+    if (newest?.id !== undefined) {
+      const reusedId = newest.id;
+      const onMembers = newest.url?.includes("/admin/members") ?? false;
+      console.log(
+        `[autogpt-runner] ${tabs.length} tab admin — tái dùng tab mới nhất ${reusedId} + F5 (onMembers=${onMembers}), KHÔNG mở tab mới`,
+      );
+      if (onMembers) {
+        // Đang đúng trang → F5 thật để lấy DOM/server-state sạch.
+        await chrome.tabs.reload(reusedId);
+      } else {
+        // Ở sub-page khác → nav về /admin/members (chính là 1 lần load mới).
+        await chrome.tabs.update(reusedId, {
+          url: CHATGPT_ADMIN_URL,
+          active: false,
+        });
+      }
+      const loaded = await waitForTabComplete(reusedId, TAB_LOAD_TIMEOUT_MS);
+      if (!loaded || !loaded.url) {
+        console.warn("[autogpt-runner] tab tái dùng không load được sau F5");
+        return null;
+      }
+      if (!loaded.url.includes("/admin")) {
+        console.warn(
+          `[autogpt-runner] tab tái dùng bị redirect khỏi /admin: ${loaded.url} — user chưa login ChatGPT`,
+        );
+        return null;
+      }
+      console.log(
+        `[autogpt-runner] admin tab tái dùng OK: tab ${reusedId} ${loaded.url}`,
+      );
+      return loaded;
+    }
+  }
+
+  // (4) 0 tab admin → mở tab MỚI cho action này
   console.log(
-    `[autogpt-runner] không có admin tab — mở tab MỚI ${CHATGPT_ADMIN_URL} (background)`,
+    `[autogpt-runner] mở tab admin MỚI ${CHATGPT_ADMIN_URL} (background) cho action`,
   );
   const created = await chrome.tabs.create({
     url: CHATGPT_ADMIN_URL,
@@ -716,6 +764,22 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
         taskId: task.id,
         email: String(p.email ?? ""),
       };
+    case "SYNC_MEMBERS_BATCH": {
+      const rawEmails = (p.emails as unknown) ?? [];
+      const emails = Array.isArray(rawEmails)
+        ? rawEmails.filter((e): e is string => typeof e === "string")
+        : [];
+      return { kind: "SYNC_MEMBERS_BATCH", taskId: task.id, emails };
+    }
+    case "SET_USAGE_LIMIT":
+      return {
+        kind: "SET_USAGE_LIMIT",
+        taskId: task.id,
+        email: String(p.email ?? ""),
+        limit_credits: Number(p.limit_credits ?? 0),
+        old_limit_credits:
+          p.old_limit_credits == null ? null : Number(p.old_limit_credits),
+      };
     case "CHANGE_ROLE":
       return {
         kind: "CHANGE_ROLE",
@@ -784,6 +848,178 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
 
 const CHUNK_SIZE = 200;
 
+/** Độ dài 1 chu kỳ billing (ngày) — dùng suy cycle_start khi có renewal_date. */
+const BILLING_CYCLE_DAYS = 30;
+/** Trần số hoá đơn mở chi tiết mỗi lần sync (chống phát hiện + giới hạn thời gian). */
+const MAX_INVOICE_DETAILS_PER_SYNC = 12;
+
+type BillingInvoiceWire = {
+  date: string;
+  amount_vnd: number;
+  status: string;
+  detail_url?: string | null;
+  detail_scraped?: boolean;
+  quantity?: number | null;
+  unit_price_vnd?: number | null;
+  subtotal_vnd?: number | null;
+  vat_vnd?: number | null;
+  total_vnd?: number | null;
+  period_start?: string | null;
+  period_end?: string | null;
+  invoice_number?: string | null;
+};
+
+type BillingWire = {
+  plan?: string | null;
+  seat_total?: number | null;
+  seat_used?: number | null;
+  billing_status?: "PAID" | "UNPAID" | "UNKNOWN" | null;
+  renewal_date?: string | null;
+  invoices?: BillingInvoiceWire[];
+};
+
+function randDelayMs(min: number, max: number): number {
+  return Math.floor(min + Math.random() * (max - min));
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function invoiceDateMs(inv: BillingInvoiceWire): number {
+  const d = new Date(inv.date);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** Đọc chi tiết 1 hoá đơn (mở tab Stripe) và gộp vào phần tử invoice. */
+async function openAndMergeDetail(
+  inv: BillingInvoiceWire,
+  taskId: string,
+): Promise<void> {
+  const detail = await scrapeInvoiceDetailInTab(inv.detail_url as string, taskId);
+  if (detail && detail.quantity !== null) {
+    inv.detail_scraped = true;
+    inv.quantity = detail.quantity;
+    inv.unit_price_vnd = detail.unit_price_vnd;
+    inv.subtotal_vnd = detail.subtotal_vnd;
+    inv.vat_vnd = detail.vat_vnd;
+    inv.total_vnd = detail.total_vnd;
+    inv.period_start = detail.period_start;
+    inv.period_end = detail.period_end;
+    inv.invoice_number = detail.invoice_number;
+    if (detail.status) inv.status = detail.status;
+  } else {
+    inv.detail_scraped = false;
+  }
+}
+
+/**
+ * Đọc chi tiết CHỈ các hoá đơn Paid thuộc CHU KỲ 30 NGÀY HIỆN TẠI (không mở tràn
+ * lan gây rối). Chiến lược xác định chu kỳ để tối thiểu số lần mở:
+ *   1. Nếu tab Kế hoạch đã cho `renewal_date` → cửa sổ chu kỳ = [renewal−30d,
+ *      renewal). KHÔNG tốn lần mở nào để xác định chu kỳ.
+ *   2. Nếu thiếu renewal → mở ĐÚNG 1 hoá đơn Paid MỚI NHẤT, đọc `period` của nó
+ *      làm biên chu kỳ.
+ * Sau đó chỉ mở các hoá đơn Paid có NGÀY (trên list) nằm trong cửa sổ đó.
+ * renewal_date cuối cùng suy từ `period_end` hoá đơn gốc chu kỳ. Mở TUẦN TỰ +
+ * delay ngẫu nhiên; 1 hoá đơn lỗi → detail_scraped=false, không fail task.
+ */
+async function enrichInvoicesWithDetails(
+  config: ExtensionConfig,
+  taskId: string,
+  billing: BillingWire,
+): Promise<void> {
+  const invoices = billing.invoices ?? [];
+  if (invoices.length === 0) return;
+
+  const paid = invoices
+    .filter((inv) => inv.status === "paid" && inv.detail_url)
+    .sort((a, b) => invoiceDateMs(b) - invoiceDateMs(a)); // mới → cũ
+  if (paid.length === 0) return;
+
+  const opened = new Set<BillingInvoiceWire>();
+
+  // Bước 1: LUÔN mở hoá đơn Paid MỚI NHẤT trước để BIẾT CHU KỲ — neo theo
+  // period_END (= renewal, dùng chung cho cả chu kỳ; KHÔNG dùng period_start vì
+  // hoá đơn add-seat giữa kỳ có period_start muộn hơn ngày gốc kỳ). Hoá đơn mới
+  // nhất cũng nằm TRONG chu kỳ nên không phí. Biết chu kỳ rồi → BỎ QUA mọi hoá
+  // đơn ngoài [cycle_start, renewal). Tin cậy hơn renewal đoán từ tab Kế hoạch.
+  const newest = paid[0];
+  await reportRunnerProgress(config, taskId, {
+    phase: "scraping",
+    message: "Xác định chu kỳ: đọc hoá đơn mới nhất...",
+  });
+  await openAndMergeDetail(newest, taskId);
+  opened.add(newest);
+
+  let cycleEnd: number | null = null;
+  let cycleStart: number | null = null;
+  if (newest.detail_scraped && newest.period_end) {
+    cycleEnd = new Date(newest.period_end).setUTCHours(0, 0, 0, 0);
+    cycleStart = cycleEnd - BILLING_CYCLE_DAYS * DAY_MS;
+  } else if (billing.renewal_date) {
+    // Dự phòng: hoá đơn mới nhất không đọc được period → dùng renewal tab Kế hoạch.
+    const r = new Date(billing.renewal_date);
+    r.setUTCHours(0, 0, 0, 0);
+    cycleEnd = r.getTime();
+    cycleStart = cycleEnd - BILLING_CYCLE_DAYS * DAY_MS;
+  }
+
+  // Bước 2: chốt tập hoá đơn cần mở = Paid có NGÀY trong [cycleStart, cycleEnd).
+  let targets: BillingInvoiceWire[];
+  if (cycleStart !== null && cycleEnd !== null) {
+    const cs = cycleStart;
+    const ce = cycleEnd;
+    targets = paid.filter((inv) => {
+      const t = invoiceDateMs(inv);
+      return t >= cs && t < ce;
+    });
+  } else {
+    // Không suy được chu kỳ (hoá đơn mới nhất cũng không đọc được period) → chỉ
+    // giữ hoá đơn mới nhất đã mở, KHÔNG mở thêm để tránh rối.
+    targets = paid.slice(0, 1);
+  }
+
+  const toOpen = targets
+    .filter((inv) => !opened.has(inv))
+    .slice(0, MAX_INVOICE_DETAILS_PER_SYNC);
+  if (targets.length > toOpen.length + opened.size) {
+    console.warn(
+      `[autogpt-billing] ${targets.length} hoá đơn trong chu kỳ, mở ${toOpen.length + opened.size} (trần ${MAX_INVOICE_DETAILS_PER_SYNC}).`,
+    );
+  }
+
+  const total = toOpen.length + opened.size;
+  for (let i = 0; i < toOpen.length; i++) {
+    await reportRunnerProgress(config, taskId, {
+      phase: "scraping",
+      message: `Đọc chi tiết hoá đơn ${opened.size + i + 1}/${total}...`,
+      current: opened.size + i + 1,
+      total,
+    });
+    await openAndMergeDetail(toOpen[i], taskId);
+    opened.add(toOpen[i]);
+    if (i < toOpen.length - 1) {
+      await new Promise((r) => setTimeout(r, randDelayMs(1500, 4000)));
+    }
+  }
+
+  // renewal_date = period_end của hoá đơn gốc chu kỳ = hoá đơn đã đọc được chi
+  // tiết có period_start SỚM NHẤT (hoá đơn gia hạn đầu kỳ). Ưu tiên hơn renewal
+  // đoán từ tab Kế hoạch.
+  const withPeriod = [...opened].filter(
+    (inv) => inv.detail_scraped && inv.period_start && inv.period_end,
+  );
+  if (withPeriod.length > 0) {
+    const base = withPeriod.reduce((a, b) =>
+      new Date(b.period_start as string).getTime() <
+      new Date(a.period_start as string).getTime()
+        ? b
+        : a,
+    );
+    if (base.period_end) billing.renewal_date = base.period_end;
+  }
+}
+
 async function reportToBackend(
   config: ExtensionConfig,
   task: QueueItem,
@@ -792,22 +1028,7 @@ async function reportToBackend(
   if (response.ok) {
     // Special case: SYNC_BILLING mang theo billing → PATCH workspace billing fields.
     if (task.type === "SYNC_BILLING") {
-      const data = response.data as
-        | {
-            billing?: {
-              plan?: string | null;
-              seat_total?: number | null;
-              seat_used?: number | null;
-              billing_status?: "PAID" | "UNPAID" | "UNKNOWN" | null;
-              renewal_date?: string | null;
-              invoices?: Array<{
-                date: string;
-                amount_vnd: number;
-                status: string;
-              }>;
-            };
-          }
-        | undefined;
+      const data = response.data as { billing?: BillingWire } | undefined;
       const billing = data?.billing;
       if (!billing) {
         await updateTask(config, task.id, {
@@ -816,6 +1037,14 @@ async function reportToBackend(
           error_message: "Extension không trả billing data",
         });
         return;
+      }
+      // Mở chi tiết từng hoá đơn Paid trong chu kỳ để lấy số lượng/đơn giá/period
+      // CHÍNH XÁC (thay cho đoán bằng phép chia). Best-effort — lỗi 1 hoá đơn
+      // không làm hỏng cả sync.
+      try {
+        await enrichInvoicesWithDetails(config, task.id, billing);
+      } catch (e) {
+        console.warn("[autogpt-billing] enrich chi tiết hoá đơn lỗi (bỏ qua):", e);
       }
       try {
         const updated = await pushBillingSync(config, billing);
@@ -911,6 +1140,7 @@ async function reportToBackend(
         | {
             members?: Array<Record<string, unknown>>;
             user_info?: { email?: string | null; name?: string | null };
+            expected_total?: number | null;
           }
         | undefined;
       const members = (data?.members ?? []) as Array<{
@@ -920,6 +1150,10 @@ async function reportToBackend(
         license_type?: "ChatGPT" | "Codex" | null;
         status?: "active" | "pending" | "removed";
       }>;
+      // Tổng active header ChatGPT báo — forward về backend làm mốc chống
+      // reconcile khi sync thiếu (xoá oan cả team).
+      const expectedTotal =
+        typeof data?.expected_total === "number" ? data.expected_total : null;
 
       // Update workspace's connected ChatGPT user nếu scrape được
       if (data?.user_info && (data.user_info.email || data.user_info.name)) {
@@ -966,9 +1200,23 @@ async function reportToBackend(
             scrapedStatuses,
             reconcileEmails,
             reconcilePendingEmails,
-          })) as { rogue_pending_emails?: string[] };
+            // Gửi mốc header để backend đối chiếu trước khi mark removed.
+            expectedTotal,
+          })) as {
+            rogue_pending_emails?: string[];
+            reconcile_skipped?: boolean;
+            reconcile_skip_reason?: string | null;
+          };
           if (Array.isArray(result.rogue_pending_emails)) {
             rogueEmailsAggregated.push(...result.rogue_pending_emails);
+          }
+          if (result.reconcile_skipped) {
+            // Backend từ chối reconcile vì nghi sync thiếu → member đã upsert vẫn
+            // được lưu, nhưng KHÔNG mark removed (dữ liệu cũ được giữ nguyên).
+            console.warn(
+              `[autogpt-sync] backend BỎ QUA reconcile (nghi sync thiếu): ` +
+                `${result.reconcile_skip_reason ?? "?"} — sẽ đối chiếu ở lần sync đủ sau.`,
+            );
           }
         }
       } catch (e) {
@@ -1401,6 +1649,19 @@ async function handlePurchaseSeatSkipMode(
   };
 }
 
+// Task PHÁ HUỶ (tạo thay đổi thật trên ChatGPT) → BỎ QUA khi workspace bật
+// dry-run. Task read-only (SYNC_*/HARVEST/PING) KHÔNG nằm đây: vẫn chạy để
+// dashboard có dữ liệu mới.
+const DRY_RUN_BLOCKED_TYPES = new Set<string>([
+  "INVITE_MEMBER",
+  "REMOVE_MEMBER",
+  "CHANGE_ROLE",
+  "CHANGE_LICENSE_TYPE",
+  "SET_USAGE_LIMIT",
+  "REVOKE_INVITES",
+  "PURCHASE_SEAT",
+]);
+
 export async function runOnce(): Promise<{ status: string; detail?: string }> {
   console.log("[autogpt-runner] runOnce: starting");
   const config = await getConfig();
@@ -1426,6 +1687,26 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
   }
 
   console.log(`[autogpt-runner] picked task ${task.type} ${task.id}`);
+
+  // ─── SHORT-CIRCUIT: DRY-RUN (workspace.dry_run_mode) ───────────────────
+  // Backend đính `dry_run:true` vào payload khi workspace bật dry-run. Với task
+  // PHÁ HUỶ, KHÔNG thao tác thật trên ChatGPT: báo COMPLETED kèm result.dry_run
+  // để completion.py BỎ QUA mọi side-effect DB. Đặt TRƯỚC nhánh PURCHASE_SEAT
+  // skip-mode vì mode đó tính tiền thật.
+  if (task.payload?.dry_run === true && DRY_RUN_BLOCKED_TYPES.has(task.type)) {
+    console.log(
+      `[autogpt-runner] DRY-RUN: bỏ qua thao tác thật cho ${task.type} ${task.id}`,
+    );
+    await updateTask(config, task.id, {
+      status: "COMPLETED",
+      result: {
+        dry_run: true,
+        skipped: true,
+        message: `Dry-run: KHÔNG thực thi ${task.type} thật trên ChatGPT.`,
+      },
+    });
+    return { status: "dry-run-skipped", detail: task.type };
+  }
 
   // ─── SHORT-CIRCUIT: PURCHASE_SEAT skip_to_payment mode ─────────────────
   // Mode này bypass content script chatgpt.com (vốn không reliable với CRXJS
@@ -1486,25 +1767,38 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
   console.log(`[autogpt-runner] using admin tab ${tab.id} ${tab.url}`);
 
   // Các action thao tác trên LIST "Người dùng" của /admin/members (định vị row
-  // theo email rồi mở menu "..."/dropdown). ensureAdminTab TÁI SỬ DỤNG tab admin
-  // mới nhất — tab này có thể đang ở /admin/billing, /admin/identity... (sub-page
-  // KHÁC, không có 3 sub-tab Người dùng/Lời mời/Yêu cầu). Khi đó in-page
-  // clickTabAndWait("Người dùng") không thấy nút → no-op → locateMemberRow quét
-  // nhầm trang → UI_ELEMENT_NOT_FOUND dù member đang active (bug user 2026-06-19:
-  // đổi seat type "không tìm thấy ... sau khi lọc + lật mọi trang").
-  // FIX: ép tab về /admin/members trước khi gửi action.
+  // theo email rồi mở menu "..."/dropdown). ensureAdminTab giờ LUÔN mở tab mới ở
+  // /admin/members nên thường đã đúng trang; guard này giữ làm safety-net phòng
+  // tab bị navigate đi đâu đó (vd action trước drift sang /admin/billing,
+  // /admin/identity...). Nếu không ở /admin/members → ép navigate về, vì 3 sub-tab
+  // Người dùng/Lời mời/Yêu cầu chỉ tồn tại trên trang này (nếu sai trang,
+  // clickTabAndWait("Người dùng") no-op → locateMemberRow quét nhầm →
+  // UI_ELEMENT_NOT_FOUND).
   const MEMBER_LIST_TASKS = new Set([
     "REMOVE_MEMBER",
     "CHANGE_ROLE",
     "CHANGE_LICENSE_TYPE",
   ]);
+  // 3 action này thao tác trên sub-tab "Người dùng". Phải ép về /admin/members SẠCH
+  // (không query) khi tab SAI ở 1 trong 2 dạng:
+  //   (a) KHÔNG ở /admin/members  — drift sang /admin/billing, /admin/identity…
+  //   (b) Ở /admin/members NHƯNG còn ?tab=invites / ?tab=requests do action TRƯỚC
+  //       để lại. ensureAdminTab (v0.8.21) tái dùng tab + chrome.tabs.reload() reload
+  //       NGUYÊN URL → giữ ?tab=invites → reload thẳng vào tab "Lời mời". Check cũ
+  //       `!includes('/admin/members')` KHÔNG bắt được vì URL có ?tab=invites VẪN
+  //       chứa '/admin/members' → REMOVE lọc nhầm danh sách Lời mời, member active
+  //       không có ở đó → REMOVE kết luận "đã rời business" → mark removed OAN
+  //       (bug user 2026-06-29). Navigate về URL sạch luôn rớt về tab Người dùng.
+  const memberTabUrl = tab.url ?? "";
+  const onWrongSubTab = /[?&]tab=(invites|requests)/.test(memberTabUrl);
+  const notOnMembersList = !memberTabUrl.includes("/admin/members");
   if (
     MEMBER_LIST_TASKS.has(task.type) &&
     tab.id !== undefined &&
-    !(tab.url ?? "").includes("/admin/members")
+    (notOnMembersList || onWrongSubTab)
   ) {
     console.log(
-      `[autogpt-runner] ${task.type}: tab đang ở "${tab.url}" (không phải /admin/members) → navigate về ${CHATGPT_ADMIN_URL}`,
+      `[autogpt-runner] ${task.type}: tab đang ở "${tab.url}" (không phải sub-tab Người dùng) → navigate về ${CHATGPT_ADMIN_URL}`,
     );
     await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: false });
     const navigated = await waitForTabComplete(tab.id, 20_000);
@@ -1514,6 +1808,31 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
       );
     }
     await sleep(1500); // chờ list member render xong trước khi locate
+  }
+
+  // SET_USAGE_LIMIT thao tác trên trang "Ghi đè mỗi người dùng"
+  // (/admin/billing/manage_member_usage_limit) — KHÁC /admin/members. Nếu tab chưa
+  // ở đúng trang → navigate tới, đợi render rồi mới dispatch (action sẽ check
+  // pathname + lọc theo tên).
+  if (
+    task.type === "SET_USAGE_LIMIT" &&
+    tab.id !== undefined &&
+    !(tab.url ?? "").includes("manage_member_usage_limit")
+  ) {
+    console.log(
+      `[autogpt-runner] SET_USAGE_LIMIT: tab đang ở "${tab.url}" → navigate tới ${CHATGPT_USAGE_LIMIT_URL}`,
+    );
+    await chrome.tabs.update(tab.id, {
+      url: CHATGPT_USAGE_LIMIT_URL,
+      active: false,
+    });
+    const navigated = await waitForTabComplete(tab.id, 20_000);
+    if (navigated?.url && !navigated.url.includes("/admin")) {
+      console.warn(
+        `[autogpt-runner] sau navigate usage-limit, tab bị redirect khỏi /admin (${navigated.url}) — có thể đã logout ChatGPT`,
+      );
+    }
+    await sleep(1500); // chờ list + ô lọc render xong trước khi locate
   }
 
   if (isLongOp) {
@@ -1561,6 +1880,68 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
   );
   state.lastTaskAt = Date.now();
   state.tasksInBatch += 1;
+
+  // ─── PRE-RELOAD cho INVITE email NGOÀI domain (v0.8.14) ───────────────────
+  // Phase A (content) đã bật toggle 'mời ngoài tên miền' = ON và trả
+  // `awaiting_external_reload`. SPA-nav KHÔNG làm ChatGPT refetch org-config →
+  // dialog Mời vẫn cảnh báo "ngoài miền" + disable Send (user "luôn bị
+  // EXTERNAL_TOGGLE_FAILED"). Background HARD-RELOAD /admin/members (full
+  // navigation) để refetch config với external=ON, rồi gọi lại INVITE_MEMBER với
+  // externalReady=true → content mở dialog mời thật sự (Phase A'). Đảm bảo 100%
+  // setting đã có hiệu lực trước khi mời.
+  if (
+    response.ok &&
+    task.type === "INVITE_MEMBER" &&
+    request.kind === "INVITE_MEMBER" &&
+    (response.data as { awaiting_external_reload?: boolean } | undefined)
+      ?.awaiting_external_reload === true
+  ) {
+    console.log(
+      `[autogpt-runner] INVITE external: Phase A bật toggle xong — HARD-RELOAD ${CHATGPT_ADMIN_URL} (tab ${tab.id}) để refetch org-config rồi mời.`,
+    );
+    await reportRunnerProgress(config, task.id, {
+      phase: "external-reload",
+      message:
+        "Đã bật 'mời ngoài tên miền' — tải lại trang admin để setting có hiệu lực trước khi mời...",
+    });
+    try {
+      await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: false });
+      const reloaded = await waitForTabComplete(tab.id, 20_000);
+      if (!reloaded?.url?.includes("/admin")) {
+        response = {
+          ok: false,
+          error_code: "EXTERNAL_TOGGLE_FAILED",
+          error_message:
+            `Sau khi bật 'mời ngoài tên miền', tải lại /admin/members thì tab bị redirect khỏi /admin (url=${reloaded?.url ?? "?"}) — có thể đã logout ChatGPT. Huỷ mời để tránh phantom.`,
+        };
+      } else {
+        const reinvite: ExecuteActionRequest = { ...request, externalReady: true };
+        response = await withTimeout(
+          sendToContent(tab.id, reinvite),
+          phase1Timeout,
+          `content-${reinvite.kind}-externalReady`,
+        );
+        console.log(
+          `[autogpt-runner] INVITE external Phase A' response: ok=${response.ok}`,
+          response.ok
+            ? ""
+            : `err=${(response as { error_code?: string }).error_code}`,
+        );
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[autogpt-runner] INVITE external Phase A' TIMEOUT/throw: ${msg}`,
+      );
+      response = {
+        ok: false,
+        error_code: "CONTENT_TIMEOUT",
+        error_message:
+          `Sau khi bật 'mời ngoài tên miền' + reload, content không trả kết quả mời trong ` +
+          `${Math.round(phase1Timeout / 1000)}s. Lỗi gốc: ${msg}`,
+      };
+    }
+  }
 
   // ─── PHASE 2 INVITE: F5 + VERIFY ──────────────────────────────────────────
   // Content's Phase 1 (submit) trả `awaiting_reload_verify: true` → background

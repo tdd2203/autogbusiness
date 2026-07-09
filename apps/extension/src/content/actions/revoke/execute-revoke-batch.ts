@@ -4,10 +4,10 @@
  */
 
 import type { ExecuteActionResponse } from "../../../shared/messages";
-import { humanClick, sleep } from "../../human";
-import { findControlByKey } from "../../i18n-ui";
+import { sleep } from "../../human";
 import { TEXT_FALLBACKS } from "../../selectors";
 import { executeRemove } from "../remove";
+import { clickTabAndWait } from "../sync";
 import { revokeInvites } from "./revoke-invites-loop";
 import type { RevokeResult } from "./revoke-invite";
 
@@ -29,23 +29,31 @@ export async function executeRevokeInvites(
     await sleep(PENDING_TAB_LOAD_WAIT_MS);
   }
 
-  // Click tab "Lời mời đang chờ xử lý"
-  const pendingTab = findControlByKey(
+  // Chuyển sang tab "Lời mời đang chờ xử lý":
+  //   - `waitForButtonMs=12000`: chờ thanh tab RENDER trước khi tìm/click. Từ
+  //     v0.8.13 mỗi action mở tab /admin/members MỚI → content chạy ngay khi trang
+  //     vừa load, nút tab có thể chưa render → nếu không chờ sẽ fail tức thì.
+  //   - `verifyTabParam="tab=invites"`: VERIFY URL đã đổi (retry 3 lần) để không
+  //     kẹt ở tab Người dùng khi humanClick không trigger React onClick.
+  // Cả hai bước gom trong clickTabAndWait → caller không phải tự `waitFor` (trước
+  // đây lặp thủ công ở đây, từng quên ở sync-member gây regression v0.8.16).
+  const switched = await clickTabAndWait(
     "tab_pending_invites",
     TEXT_FALLBACKS.tabPendingInvites,
-    { page: "/admin/members" },
+    PENDING_TAB_LOAD_WAIT_MS,
+    "tab=invites",
+    12_000,
   );
-  if (!pendingTab) {
+  if (!switched) {
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
       error_message:
-        "Không tìm thấy tab 'Lời mời đang chờ xử lý' để revoke. URL hiện: " +
-        location.pathname,
+        "Không chuyển được sang tab 'Lời mời đang chờ xử lý' để revoke: không thấy nút tab sau 12s, HOẶC click không đổi URL sang ?tab=invites sau 3 lần thử. URL hiện: " +
+        location.href +
+        ". Kiểm tra /admin/members đã render thanh tab chưa (có thể chưa login hoặc DOM ChatGPT đổi).",
     };
   }
-  await humanClick(pendingTab);
-  await sleep(PENDING_TAB_LOAD_WAIT_MS);
 
   const results = await revokeInvites(emails);
 

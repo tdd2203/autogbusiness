@@ -22,8 +22,11 @@ export type ScrapedInvoice = {
   date: string;
   /** Amount tiền VND (đã trim ký tự ₫ và dấu chấm phân cách hàng nghìn). */
   amount_vnd: number;
-  /** "paid" | "unpaid" | "unknown". */
+  /** "paid" | "unpaid" | "void" | "unknown". */
   status: string;
+  /** URL link "Xem"/"View" trỏ tới invoice.stripe.com — background dùng để mở
+   * chi tiết. null nếu row không có link. */
+  detail_url?: string | null;
 };
 
 export type ScrapedBilling = {
@@ -51,10 +54,13 @@ const SEAT_TOTAL_MAX = 999;
  * khác trên page (vd 11/12 từ invoice / plan section).
  */
 const SEAT_RATIO_PATTERNS: RegExp[] = [
+  // "164/148 người dùng đang sử dụng" — ratio ĐỨNG TRƯỚC, keyword "người dùng"
+  // đứng sau (UI ChatGPT Business VI mới). Đặt ĐẦU vì đặc trưng.
+  /(\d{1,4})\s*\/\s*(\d{1,4})\s*(?:người\s*dùng|thành\s*viên)/i,
   // "Đang dùng 6/8 giấy phép" / "Using 6/8 seats" / "正在使用 6/8"
-  /(?:đang\s*dùng|đang\s*sử\s*dụng|sử\s*dụng|using|正在使用|使用中|已\s*使用|使用)\s*[:：]?\s*(\d{1,3})\s*\/\s*(\d{1,3})/i,
-  // "6/8 giấy phép" / "6/8 seats" / "6/8 个席位" / "6/8 个许可证"
-  /(\d{1,3})\s*\/\s*(\d{1,3})\s*(?:giấy\s*phép|chỗ\s*ngồi|seats?|licenses?|个\s*席位|个\s*许可证|席位|许可证)/i,
+  /(?:đang\s*dùng|đang\s*sử\s*dụng|sử\s*dụng|using|正在使用|使用中|已\s*使用|使用)\s*[:：]?\s*(\d{1,4})\s*\/\s*(\d{1,4})/i,
+  // "6/8 giấy phép" / "6/8 seats" / "6/8 个席位" / "6/8 个许可证" / "6/8 users"
+  /(\d{1,4})\s*\/\s*(\d{1,4})\s*(?:giấy\s*phép|chỗ\s*ngồi|seats?|licenses?|users?|个\s*席位|个\s*许可证|席位|许可证)/i,
   // "6 of 8 seats" / "6 trên 8 giấy phép"
   /(\d{1,3})\s*(?:of|trên)\s*(\d{1,3})\s*(?:giấy\s*phép|chỗ\s*ngồi|seats?|licenses?)/i,
 ];
@@ -147,8 +153,9 @@ function isoFromMonthDay(
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
-/** Bắt 1 ngày ĐƠN (vi/zh/en, year optional) trong 1 đoạn text ngắn. */
-function extractSingleDate(s: string): string | null {
+/** Bắt 1 ngày ĐƠN (vi/zh/en, year optional) trong 1 đoạn text ngắn.
+ * Export để invoice-detail.ts tái dùng (parse ngày trong khoảng chu kỳ dịch vụ). */
+export function extractSingleDate(s: string): string | null {
   // ZH: "2026年7月11日" / "7月11日"
   const zh = s.match(/(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?/);
   if (zh) {
@@ -258,8 +265,9 @@ const CURRENCY_RE_LIST: Array<{ re: RegExp; kind: "vnd" | "usd" | "cny" }> = [
   { re: /^rmb\s+([\d,.]+)$/i, kind: "cny" },
 ];
 
-/** Chỉ parse VND — field DB là `amount_vnd`. USD/CNY parse nhầm scale (×100 cents). */
-function parseVndAmount(text: string): number | null {
+/** Chỉ parse VND — field DB là `amount_vnd`. USD/CNY parse nhầm scale (×100 cents).
+ * Export để invoice-detail.ts tái dùng (đọc "Mỗi X đ", Tổng phụ, VAT, tổng). */
+export function parseVndAmount(text: string): number | null {
   const trimmed = text.trim();
   const m = trimmed.match(CURRENCY_RE_LIST[0].re);
   if (!m) return null;
@@ -334,11 +342,14 @@ function scrapeInvoices(): ScrapedInvoice[] {
         if (d) {
           date = d;
         } else if (
-          // Check UNPAID/VOID TRƯỚC "paid": chuỗi "unpaid" chứa substring "paid"
-          // nên nếu check /paid/ trước sẽ gán nhầm "đã thanh toán". "void" =
-          // hoá đơn bị huỷ/không hợp lệ (vd add-seat huỷ giữa kỳ) → coi như
-          // CHƯA thanh toán; dashboard chỉ tính giá trên hoá đơn paid.
-          /chưa\s*thanh\s*toán|unpaid|past\s*due|overdue|void|đã\s*hủy|đã\s*huỷ|cancell?ed|未\s*付款|未支付|逾期|作废|已作废/i.test(
+          // "void" = hoá đơn bị huỷ/không hợp lệ (vd add-seat huỷ giữa kỳ) —
+          // status riêng để dashboard nhận diện; dashboard chỉ tính giá trên paid.
+          /void|đã\s*hủy|đã\s*huỷ|cancell?ed|作废|已作废/i.test(innerText)
+        ) {
+          status = "void";
+        } else if (
+          // Check UNPAID TRƯỚC "paid": chuỗi "unpaid" chứa substring "paid".
+          /chưa\s*thanh\s*toán|unpaid|past\s*due|overdue|未\s*付款|未支付|逾期/i.test(
             innerText,
           )
         ) {
@@ -355,9 +366,32 @@ function scrapeInvoices(): ScrapedInvoice[] {
     const key = `${date}|${amount}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ date, amount_vnd: amount, status });
+    // Link "Xem"/"View" trong row → URL trang chi tiết hoá đơn Stripe.
+    const detail_url = findInvoiceDetailUrl(row);
+    out.push({ date, amount_vnd: amount, status, detail_url });
   }
   return out;
+}
+
+/** Tìm href trỏ tới trang chi tiết hoá đơn Stripe trong 1 row hoá đơn.
+ * Ưu tiên anchor có host Stripe; nếu không, lấy anchor có text "View"/"Xem"
+ * (đề phòng ChatGPT dùng link tương đối / redirect tới Stripe). */
+function findInvoiceDetailUrl(row: HTMLElement): string | null {
+  const anchors = Array.from(row.querySelectorAll<HTMLAnchorElement>("a[href]"));
+  // 1) Anchor có host Stripe (chắc chắn nhất).
+  for (const a of anchors) {
+    if (/invoice\.stripe\.com|\/i\/acct_|pay\.stripe\.com/i.test(a.href)) {
+      return a.href;
+    }
+  }
+  // 2) Anchor có text "View"/"Xem"/"查看" + href http(s) → coi là link chi tiết.
+  for (const a of anchors) {
+    const text = (a.textContent ?? "").trim();
+    if (/^(xem|view|查看|详情|查看详情)$/i.test(text) && /^https?:/i.test(a.href)) {
+      return a.href;
+    }
+  }
+  return null;
 }
 
 export function scrapeBillingFromDom(options?: { includeInvoices?: boolean }): ScrapedBilling {

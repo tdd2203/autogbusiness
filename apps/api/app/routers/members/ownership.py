@@ -16,7 +16,12 @@ from sqlalchemy.orm import Session
 from app.audit import log_event
 from app.deps import get_session, require_super_admin
 from app.models import Member, User
-from app.schemas import MemberBulkAssignOwnerIn, MemberSetOwnerIn, MemberOut
+from app.schemas import (
+    MemberBulkAssignOwnerIn,
+    MemberBulkSetOwnerIn,
+    MemberSetOwnerIn,
+    MemberOut,
+)
 
 from ._shared import router, _get_workspace_or_404
 
@@ -75,6 +80,78 @@ def set_member_owner(
     db.commit()
     db.refresh(member)
     return member
+
+
+@router.post("/bulk-set-owner", response_model=dict)
+def bulk_set_owner(
+    workspace_id: UUID,
+    body: MemberBulkSetOwnerIn,
+    db: Session = Depends(get_session),
+    actor: User = Depends(require_super_admin),
+) -> dict:
+    """Chuyển chủ NHANH: gán/thu hồi chủ sở hữu cho đúng các member đã chọn (id).
+
+    invited_by_user_id=None → thu hồi (member về "chưa có chủ"). Bỏ qua member role
+    'owner' (chủ workspace không bao giờ thuộc về sub-admin). Chỉ super-admin.
+    """
+    _get_workspace_or_404(db, workspace_id)
+    if body.invited_by_user_id is not None:
+        target = db.get(User, body.invited_by_user_id)
+        if target is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tài khoản gán làm chủ không tồn tại",
+            )
+
+    members = list(
+        db.execute(
+            select(Member).where(
+                Member.workspace_id == workspace_id,
+                Member.id.in_(body.member_ids),
+                Member.status != "removed",
+            )
+        ).scalars()
+    )
+
+    assigned = 0
+    skipped_owner = 0
+    for m in members:
+        if m.chatgpt_role == "owner":
+            skipped_owner += 1
+            continue
+        if m.invited_by_user_id == body.invited_by_user_id:
+            continue
+        m.invited_by_user_id = body.invited_by_user_id
+        assigned += 1
+
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=actor.id,
+        actor_label=actor.email,
+        action="MEMBER_BULK_OWNER_ASSIGN",
+        result="SUCCESS",
+        target_type="WORKSPACE",
+        target_id=str(workspace_id),
+        data={
+            "target_user_id": (
+                str(body.invited_by_user_id) if body.invited_by_user_id else None
+            ),
+            "assigned": assigned,
+            "skipped_owner": skipped_owner,
+            "requested": len(body.member_ids),
+        },
+        commit=False,
+    )
+    db.commit()
+    return {
+        "assigned": assigned,
+        "skipped_owner": skipped_owner,
+        "requested": len(body.member_ids),
+        "target_user_id": (
+            str(body.invited_by_user_id) if body.invited_by_user_id else None
+        ),
+    }
 
 
 @router.post("/assign-owner", response_model=dict)

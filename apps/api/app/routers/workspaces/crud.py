@@ -15,7 +15,7 @@ Endpoints (đăng ký lên router dùng chung từ `_shared`):
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -27,6 +27,7 @@ from app.deps import (
     require_super_admin,
 )
 from app.models import (
+    Member,
     User,
     Workspace,
     WorkspaceAssignment,
@@ -73,6 +74,34 @@ def update_extension_info(
     return workspace
 
 
+def _apply_effective_seat_used(db: Session, workspaces: list[Workspace]) -> None:
+    """Ghi đè `seat_used` (chỉ trong-memory, để hiển thị) = số member THẬT trong DB.
+
+    `Workspace.seat_used` scrape từ trang billing ChatGPT chỉ cập nhật khi chạy
+    SYNC_BILLING nên có thể LỆCH CẢ HAI CHIỀU so với DB: cũ/thấp hơn (vừa mời
+    thêm, chưa kịp sync) hoặc cũ/cao hơn (vừa xoá bớt, chưa kịp sync — vd
+    2026-07-08: billing báo 44 trong khi vừa xoá 3 người chỉ còn 41 active thật).
+    Dùng thẳng số DB (luôn đúng thời gian thực) — KHÔNG blend max() với scrape
+    nữa (max() chỉ chặn được chiều thấp, bỏ sót chiều cao). Đồng bộ với
+    `seat_used` của member stats và `effective_used` trong invite.py.
+
+    KHÔNG persist: các endpoint GET không commit nên thay đổi này bị rollback khi
+    session đóng. Đếm member non-removed (active + pending) khớp `total` ở stats.
+    """
+    if not workspaces:
+        return
+    ws_ids = [ws.id for ws in workspaces]
+    counts = dict(
+        db.execute(
+            select(Member.workspace_id, func.count(Member.id))
+            .where(Member.workspace_id.in_(ws_ids), Member.status != "removed")
+            .group_by(Member.workspace_id)
+        ).all()
+    )
+    for ws in workspaces:
+        ws.seat_used = counts.get(ws.id, 0)
+
+
 @router.get("", response_model=list[WorkspaceOut])
 def list_workspaces(
     db: Session = Depends(get_session),
@@ -85,7 +114,9 @@ def list_workspaces(
             WorkspaceAssignment,
             WorkspaceAssignment.workspace_id == Workspace.id,
         ).where(WorkspaceAssignment.user_id == user.id)
-    return list(db.execute(stmt).scalars())
+    workspaces = list(db.execute(stmt).scalars())
+    _apply_effective_seat_used(db, workspaces)
+    return workspaces
 
 
 @router.post("", response_model=WorkspaceWithKey, status_code=status.HTTP_201_CREATED)
@@ -143,6 +174,7 @@ def get_workspace(
 ) -> Workspace:
     ws = _get_workspace_or_404(db, workspace_id)
     assert_workspace_access(db, user, workspace_id)
+    _apply_effective_seat_used(db, [ws])
     return ws
 
 

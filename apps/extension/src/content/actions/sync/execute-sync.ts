@@ -79,25 +79,31 @@ export async function executeSync(
       history.pushState({}, "", "/admin/members");
       window.dispatchEvent(new PopStateEvent("popstate"));
     }
-    // Đợi SPA route + render tab buttons (best-effort polling)
-    let tabReady = false;
-    for (let i = 0; i < 20; i++) {
-      await sleep(500);
-      if (findTabButton("tab_active_members", TEXT_FALLBACKS.tabActiveMembers)) {
-        tabReady = true;
-        break;
-      }
+  }
+
+  // ĐỢI thanh tab (Người dùng / Lời mời / Yêu cầu) RENDER — chạy DÙ đã ở sẵn
+  // /admin/members hay vừa navigate. FIX 2026-06-20: từ v0.8.13 mỗi action mở tab
+  // /admin/members MỚI → content chạy NGAY khi trang vừa load; nhánh navigate ở
+  // trên bị SKIP (vì path đã đúng) nên TRƯỚC ĐÂY không chờ render → clickTabAndWait
+  // pending chạy trước khi React render thanh tab → kẹt ở tab Người dùng (cùng lớp
+  // bug với sync-member). Poll tới 10s cho thanh tab render rồi mới chuyển tab.
+  let tabReady = false;
+  for (let i = 0; i < 20; i++) {
+    if (findTabButton("tab_active_members", TEXT_FALLBACKS.tabActiveMembers)) {
+      tabReady = true;
+      break;
     }
-    if (!tabReady) {
-      return {
-        ok: false,
-        error_code: "PAGE_NOT_ADMIN",
-        error_message:
-          `Không điều hướng được sang /admin/members sau 10s (path hiện tại: ${location.pathname}, ChatGPT locale='${detectedLocale ?? "unknown"}'). ` +
-          `Mở tab chatgpt.com/admin/members thủ công và thử lại.` +
-          (localeCheck.match ? "" : ` ${localeCheck.hint}`),
-      };
-    }
+    await sleep(500);
+  }
+  if (!tabReady) {
+    return {
+      ok: false,
+      error_code: "PAGE_NOT_ADMIN",
+      error_message:
+        `Không thấy thanh tab /admin/members sau 10s (path hiện tại: ${location.pathname}, ChatGPT locale='${detectedLocale ?? "unknown"}'). ` +
+        `Mở tab chatgpt.com/admin/members thủ công và thử lại.` +
+        (localeCheck.match ? "" : ` ${localeCheck.hint}`),
+    };
   }
 
   const startedAt = Date.now();
@@ -140,17 +146,24 @@ export async function executeSync(
   // ----- Tab 3: Người dùng (active members) — scrape CUỐI để status active
   //         thắng nếu trùng email với 2 tab trên (race condition giữa các sync).
   let tab1Found = false;
+  // Tổng active header ChatGPT báo (vd "49 thành viên") — forward về backend làm
+  // "nguồn sự thật" chống reconcile khi sync THIẾU (xoá oan cả team). null = không
+  // đọc được header → backend dùng heuristic fallback.
+  let activeExpectedTotal: number | null = null;
   if (!scrapeActive) {
     console.log(`[autogpt-sync] scope=${scope} → bỏ qua tab Người dùng`);
   } else if (await clickTabAndWait("tab_active_members", TEXT_FALLBACKS.tabActiveMembers)) {
     tab1Found = true;
-    const { members } = await scrapeCurrentTab(
+    const { members, expectedTotal } = await scrapeCurrentTab(
       taskId,
       "active",
       "Người dùng",
       isOverTime,
     );
-    console.log(`[autogpt-sync] tab Người dùng: ${members.length} entries`);
+    activeExpectedTotal = expectedTotal;
+    console.log(
+      `[autogpt-sync] tab Người dùng: ${members.length} entries (header ${expectedTotal ?? "?"})`,
+    );
     for (const m of members) merged.set(m.email, m);
   } else {
     // Tab buttons không có → có thể trang không phải /admin/members.
@@ -158,12 +171,13 @@ export async function executeSync(
     console.warn(
       "[autogpt-sync] không tìm được tab buttons — scrape DOM hiện tại như Người dùng",
     );
-    const { members } = await scrapeCurrentTab(
+    const { members, expectedTotal } = await scrapeCurrentTab(
       taskId,
       "active",
       "DOM hiện tại",
       isOverTime,
     );
+    activeExpectedTotal = expectedTotal;
     for (const m of members) merged.set(m.email, m);
   }
 
@@ -213,6 +227,10 @@ export async function executeSync(
       members,
       user_info: userInfo,
       elapsed_ms: elapsedMs,
+      // Tổng active ChatGPT báo ở header. Backend so với số active scrape được để
+      // phát hiện sync THIẾU và BỎ QUA reconcile (không mark removed oan). null
+      // khi scope không quét active hoặc không đọc được header.
+      expected_total: activeExpectedTotal,
     },
   };
 }

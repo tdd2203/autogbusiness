@@ -9,6 +9,7 @@
  *   - changeRole          → PATCH …/members/{id}/role
  *   - changeLicenseType   → PATCH …/members/{id}/license-type
  *   - bulkChangeLicense   → POST  …/members/bulk-change-license-type
+ *   - bulkSetOwner        → POST  …/members/bulk-set-owner (chuyển chủ nhanh, super-admin)
  *   - revokeInvites       → POST  …/revoke-invites (thu hồi lời mời pending)
  *   - cancelTask          → POST  …/queue/{id}/cancel (huỷ task đang chạy, vd SYNC)
  *
@@ -29,6 +30,7 @@ export function useMemberMutations(
   workspaceId: string | undefined,
   opts?: {
     onBulkChangeLicenseCleared?: () => void;
+    onBulkSetOwnerCleared?: () => void;
     getCancelTaskType?: () => string | undefined;
   },
 ) {
@@ -119,28 +121,21 @@ export function useMemberMutations(
     },
   });
 
-  // Đồng bộ HÀNG LOẠT các tài khoản pending đã chọn — không có endpoint bulk
-  // riêng, nên fan-out gọi POST …/sync-member cho từng email (Promise.allSettled
-  // để 1 email lỗi không huỷ cả mẻ). Mỗi email = 1 task SYNC_MEMBER; backend tự
-  // dedupe email đang PENDING/IN_PROGRESS. Khác với SYNC_DATA (full-sync ở header)
-  // vốn quét TOÀN workspace — bulk-sync chỉ kiểm tra đúng các email đã chọn.
-  // Gộp 1 toast tổng (thay vì N toast như gọi syncMember lặp tay).
+  // Đồng bộ HÀNG LOẠT các tài khoản pending đã chọn — gom vào ĐÚNG MỘT task
+  // SYNC_MEMBERS_BATCH (POST …/sync-members-batch). Extension quét tab "Lời mời
+  // đang chờ xử lý" 1 LẦN rồi đối chiếu cả danh sách; email nào không có mới sang
+  // tab "Người dùng" kiểm tra → thấy = đã tham gia. Thay cho cách fan-out N task
+  // SYNC_MEMBER cũ (mỗi task lại quay về tab "Lời mời" quét lại toàn bộ — thừa,
+  // user report 2026-07-06). Khác SYNC_DATA (full-sync ở header) vốn quét TOÀN
+  // workspace — bulk-sync chỉ kiểm tra đúng các email đã chọn.
   const bulkSyncMembers = useMutation({
-    mutationFn: async (emails: string[]) => {
-      const results = await Promise.allSettled(
-        emails.map((email) =>
-          api(`/api/v1/workspaces/${workspaceId}/sync-member`, {
-            method: "POST",
-            body: JSON.stringify({ email }),
-          }),
-        ),
-      );
-      const ok = results.filter((r) => r.status === "fulfilled").length;
-      return { ok, failed: results.length - ok };
-    },
-    onSuccess: ({ ok, failed }) => {
-      toast.success(t("bulkSync.resultQueued", { n: ok }));
-      if (failed > 0) toast.error(t("bulkSync.resultPartial", { n: failed }));
+    mutationFn: (emails: string[]) =>
+      api<{ queue_item_id: string; status: string; count: number }>(
+        `/api/v1/workspaces/${workspaceId}/sync-members-batch`,
+        { method: "POST", body: JSON.stringify({ emails }) },
+      ),
+    onSuccess: (_resp, emails) => {
+      toast.success(t("bulkSync.resultQueued", { n: emails.length }));
       qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
       triggerExtensionRun();
@@ -228,10 +223,52 @@ export function useMemberMutations(
     },
   });
 
+  // Chuyển chủ NHANH (super-admin): gán/thu hồi chủ sở hữu cho các member đã chọn.
+  // Đây là thay đổi THUẦN DỮ LIỆU (chỉ đổi invited_by_user_id trong DB) — KHÔNG
+  // enqueue task extension → không cần triggerExtensionRun / poll recent-tasks.
+  // targetUserId = null → thu hồi (member về "chưa có chủ"). targetName chỉ dùng
+  // cho toast (hook không tự tra tên từ id).
+  const bulkSetOwner = useMutation({
+    mutationFn: ({
+      memberIds,
+      targetUserId,
+    }: {
+      memberIds: string[];
+      targetUserId: string | null;
+      targetName: string;
+    }) =>
+      api<{ assigned: number; skipped_owner: number; requested: number }>(
+        `/api/v1/workspaces/${workspaceId}/members/bulk-set-owner`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            member_ids: memberIds,
+            invited_by_user_id: targetUserId,
+          }),
+        },
+      ),
+    onSuccess: (resp, vars) => {
+      toast.success(
+        t("bulkTransferOwner.resultOk", {
+          n: resp.assigned,
+          name: vars.targetName,
+        }),
+      );
+      opts?.onBulkSetOwnerCleared?.();
+      qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      qc.invalidateQueries({ queryKey: ["member-stats", workspaceId] });
+    },
+    onError: (e) => {
+      if (handleCommandBan(e)) return;
+      toast.error(e instanceof Error ? e.message : String(e));
+    },
+  });
+
   return {
     changeRole,
     changeLicenseType,
     bulkChangeLicense,
+    bulkSetOwner,
     revokeInvites,
     syncMember,
     bulkSyncMembers,

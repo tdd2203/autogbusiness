@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.8.11";
+export const VERSION = "0.9.9";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,286 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.9.9",
+    date: "2026-07-07",
+    kind: "fix",
+    summary:
+      "Đọc được hoá đơn TRUE-UP (điều chỉnh seat giữa kỳ, prorated, nhiều dòng +/−, không có 'Mỗi'). Số seat = 'Remaining time on N ×' lớn nhất. Tổng seat chu kỳ = seat hiện tại (hoá đơn mới nhất), KHÔNG cộng dồn.",
+    details: [
+      "USER REPORT: hoá đơn add-seat/true-up (vd 0003) có 4 dòng proration (Remaining/Unused time on N ×), không có dòng 'Mỗi X đ' → parser cũ fail → detail_scraped=false → tổng seat thiếu.",
+      "FIX parser: parseSeatsFromTrueUp lấy N lớn nhất ở 'Remaining time on N ×' (số seat mới sau true-up); isDetailUsable chỉ cần quantity (đơn giá null vẫn hợp lệ). runner merge khi có quantity.",
+      "FIX web billing-math: totalSeats = quantity hoá đơn MỚI NHẤT trong chu kỳ (seat hiện tại, khớp tab Kế hoạch); base giá/seat chỉ lấy từ hoá đơn CÓ đơn giá (loại true-up).",
+      "File: content/scrapers/invoice-detail.ts, background/runner.ts, web billing-math.ts.",
+    ],
+  },
+  {
+    version: "0.9.8",
+    date: "2026-07-06",
+    kind: "fix",
+    summary:
+      "Click 'Xem chi tiết hoá đơn' đáng tin hơn cho các hoá đơn add-seat (số tiền lớn/render chậm) — dùng chuỗi sự kiện chuột thật + chờ tới 14s + log per-invoice. Trước đây một số hoá đơn trong chu kỳ không mở được panel → detail_scraped=false → tổng seat thiếu.",
+    details: [
+      "USER REPORT GPT1: chu kỳ có 3 hoá đơn nhưng chỉ hoá đơn base (11/6) đọc được; 2 hoá đơn add-seat (12/6, 22/6) detail_scraped=false → TỔNG SEAT chỉ = 2.",
+      "FIX: openInvoiceDetailPanel dùng humanClickStripe (pointerdown/up+mousedown/up+click) thay .click(); poll 14s; chỉ click khi toggle 'Xem chi tiết' còn hiện (panel mở → text 'Đóng chi tiết' → dừng click, tránh toggle tắt).",
+      "Log chẩn đoán: '[autogpt-stripe] scrape-detail v0.9.8 ... toggleSeen=.. clicks=.. usable=..' + error_message nêu rõ toggle KHÔNG thấy hay click rồi mà panel không ra số liệu.",
+      "File: content/stripe-invoice.ts.",
+    ],
+  },
+  {
+    version: "0.9.7",
+    date: "2026-07-06",
+    kind: "fix",
+    summary:
+      "Sync billing đọc được seat ratio dạng '164/148 người dùng đang sử dụng' (UI ChatGPT Business tiếng Việt). Trước đây regex chỉ nhận 'giấy phép/seats/licenses' → workspace hiển thị 'người dùng' bị fail 'không scrape được gì'.",
+    details: [
+      "USER REPORT 2026-07-06: workspace 164/148 seat, sync báo 'Không scrape được gì từ /admin/billing — cả seat ratio lẫn invoices list đều trống'.",
+      "FIX: SEAT_RATIO_PATTERNS thêm mẫu '(\\d)/(\\d) người dùng|thành viên' (ratio đứng trước keyword) + 'users?' cho EN; nới \\d{1,3}→\\d{1,4}.",
+      "File: content/scrapers/billing.ts.",
+    ],
+  },
+  {
+    version: "0.9.6",
+    date: "2026-07-06",
+    kind: "feature",
+    summary:
+      "Cập nhật giá & ngày renew: đọc CHÍNH XÁC số lượng seat + đơn giá + chu kỳ từ chi tiết hoá đơn Stripe (không còn đoán). Xác định chu kỳ từ hoá đơn mới nhất rồi chỉ đọc hoá đơn trong chu kỳ đó. Giá/seat hiển thị GỒM VAT.",
+    details: [
+      "SYNC_BILLING: mở hoá đơn Paid mới nhất → đọc period_end = ngày renew → chỉ mở tiếp các hoá đơn có ngày trong [cycle_start, renewal). Bỏ qua hoá đơn ngoài chu kỳ.",
+      "Scraper stripe-invoice: tự click 'Xem chi tiết hoá đơn' (kể cả khi là span/div), đọc Số lượng/Mỗi/Tổng phụ/VAT/Số tiền đến hạn/khoảng chu kỳ.",
+      "Parser chống lỗi textContent nối số ('Số lượng 35'+'9.117.500' → suy quantity = subtotal÷unit), nhãn nhập nhằng ('per'/'thuế'), số hoá đơn nuốt 'Ngày'.",
+      "Web: bỏ đoán seat (inferSlotsPurchased/range 200-400k). Giá/seat gồm VAT = total÷quantity; tổng seat = Σ quantity hoá đơn Paid trong chu kỳ.",
+      "File: content/scrapers/invoice-detail.ts (mới), stripe-invoice.ts, scrapers/billing.ts, background/{runner.ts,payment-chain.ts}, shared/{messages.ts,api.ts}; API schemas.py, routers/workspaces/billing.py; web billing-math.ts, WorkspaceBillingPanel.tsx.",
+    ],
+  },
+  {
+    version: "0.9.5",
+    date: "2026-07-06",
+    kind: "fix",
+    summary:
+      "Đồng bộ HÀNG LOẠT (chọn nhiều pending → 'Cập nhật hàng loạt' → Đồng bộ) không còn quay về tab 'Lời mời đang chờ xử lý' quét lại cho TỪNG email. Nay gom cả danh sách vào 1 task: quét tab Lời mời ĐÚNG 1 lần → đối chiếu → email nào không có mới sang tab 'Người dùng' xác minh 'đã tham gia'.",
+    details: [
+      "USER REPORT 2026-07-06: 'sau khi quét toàn bộ email trong trang đó nếu dưới 1 trang, đối chiếu với list email đồng bộ, không khớp thì check trong Người dùng là được; hiện tại nó cứ quay về Lời mời đang chờ xử lý để thu thập tiếp chả để làm gì cả'.",
+      "ROOT CAUSE: 'đồng bộ hàng loạt' (bulkSyncMembers) trước đây fan-out MỖI email = 1 task SYNC_MEMBER. Mỗi task lại F5 tab + vào tab 'Lời mời' cuộn lại TOÀN BỘ list chỉ để tìm 1 email → chọn N email = N lần quét lại pending (thừa).",
+      "FIX: thêm action SYNC_MEMBERS_BATCH. Extension vào tab 'Lời mời đang chờ xử lý' quét trọn 1 lần (scrapeCurrentTab tự lật trang nếu >1 trang) → build pendingSet → đối chiếu cả danh sách; email không khớp → sang tab 'Người dùng' lọc từng email (không lật hết trang). found_in: pending | active (đã tham gia) | none.",
+      "AN TOÀN: found_in='none' CHỈ để báo — backend completion KHÔNG mark removed (một lần quét sót chỉ làm KHÔNG promote, không xoá oan). 'pending' ưu tiên hơn 'none'.",
+      "Web: bulkSyncMembers gọi 1 POST /sync-members-batch (thay Promise.allSettled fan-out /sync-member). Backend: endpoint trigger_sync_members_batch (dedup 1 mẻ/workspace) + completion reconcile theo result.data.results + STUCK_THRESHOLD 6'.",
+      "File đổi: extension shared/messages.ts, shared/types.ts, content/actions/sync-member/{execute-sync-members-batch.ts,index.ts}, content/index.ts, background/runner.ts, version.ts; API schemas.py, routers/workspaces/triggers.py, routers/queue/{completion.py,execution.py}; web hooks/useMemberMutations.ts.",
+    ],
+  },
+  {
+    version: "0.9.4",
+    date: "2026-07-03",
+    kind: "fix",
+    summary:
+      "Sync lần 1 chỉ ra ~2 member (lần 2 mới đủ) — FIX. Nguyên nhân: khi list mới render vài row, khung cuộn nội bộ chưa lộ ra nên chỉ cuộn window (không nhích list) → không tải thêm. Nay re-scan khung cuộn mỗi vòng + cuộn kiên nhẫn tới đủ mốc header ChatGPT. Kèm lớp bảo vệ backend: sync THIẾU sẽ KHÔNG mark-removed oan (giữ dữ liệu lịch sử).",
+    details: [
+      "USER REPORT 2026-07-03: 'ChatGPT Pro, đồng bộ lần 1 chỉ có 2 thành viên (lỗi), lần 2 mới có đủ'.",
+      "ROOT CAUSE (scrape-current-tab.ts): scrollUntilAllLoaded scan khung cuộn MỘT LẦN lúc mới vào. Cold-start list mới render vài row → chưa tràn → div cuộn nội bộ chưa lộ (scrollHeight ≈ clientHeight) → chỉ còn `window` trong danh sách container. Danh sách member ChatGPT cuộn bằng div nội bộ chứ không phải window → window.scrollTo không tải thêm row → kẹt ở ~2 row; vòng scrape thoát sớm vì window 'atBottom' (list ngắn). Lần 2 trang đã 'nóng' (React/dữ liệu cache) → khung cuộn đã tràn → phát hiện được → đủ.",
+      "FIX 1 (scrape): findScrollContainers() re-scan MỖI vòng lặp (ngưỡng +20px thay vì +100px) → bắt được div cuộn ngay khi vài row đầu tải xong. scrollUntilAllLoaded + collectRowsByScrolling nhận `expectedTotal` (header count) → cuộn kiên nhẫn (8 tick không tăng mới bỏ) tới khi ĐỦ mốc, không dừng sớm; kèm escape tránh treo vô hạn.",
+      "FIX 2 (backend guard — chống phá dữ liệu): executeSync forward `expected_total` (header ChatGPT) → bulk-upsert. reconcile.py: nếu số active scrape < 90% expected_total → BỎ QUA mark-removed (log audit MEMBER_RECONCILE_SKIPPED, trả reconcile_skipped=true). Phân biệt 'admin xoá thật còn ít' (header cũng giảm → không skip). Fallback khi thiếu header: roster ≥10 mà sync còn ≤2 → skip. Member đã scrape VẪN được upsert; chỉ hoãn bước xoá tới lần sync đủ.",
+      "File đổi: extension scrape-current-tab.ts, execute-sync.ts, shared/api.ts, background/runner.ts, version.ts; API schemas.py, routers/members/reconcile.py.",
+    ],
+  },
+  {
+    version: "0.9.3",
+    date: "2026-06-29",
+    kind: "fix",
+    summary:
+      "Nhập email khi mời thành viên NHANH HƠN ~20× trong tab nền: bỏ gõ từng ký tự (mỗi ký tự kèm setTimeout) → set value 1 lần như thao tác dán. Tab admin chạy active:false (nền) bị Chrome throttle setTimeout về ~1000ms nên gõ từng ký tự = ~1s/ký tự (1 email ~26-31s); nay còn dưới 1s.",
+    details: [
+      "USER REPORT 2026-06-29 (kèm 2 ảnh dashboard): phase 'typing-email' của task mời thành viên tốn 26s và 37s — bất thường vì email chỉ ~20 ký tự.",
+      "CHẨN ĐOÁN (đo trực tiếp progress.history trong DB): typing_s ≈ 1.0 × số_ký_tự + ~7 (vd 18 ký tự→25s, 24 ký tự→31s); per-char ~1.3s khi chậm vs ~0.07s khi nhanh. Phase opening-dialog cũng phồng 6-7s (vs 1.4-2s khi nhanh) — CÙNG nguyên nhân. Con số 1000ms/ký tự = đúng mức Chrome CLAMP setTimeout cho tab nền (background timer throttling).",
+      "ROOT CAUSE: runner mở/reuse tab admin với `active:false` (KHÔNG focus — đúng UX user muốn). Tab không visible → Chrome throttle MỌI setTimeout về tối thiểu ~1000ms. `humanType` cũ gõ từng ký tự với `await sleep(8-22ms)` giữa các ký tự → mỗi sleep hoá ~1s → nhập email = ~N giây. randomDelay/microDelay/waitFor poll cũng bị clamp 1s (→ +7s hằng số + opening-dialog 6-7s). Giảm DELAY_MULTIPLIER (0.30→0.18 trước đây) KHÔNG cứu được vì clamp là 1000ms bất kể giá trị yêu cầu.",
+      "FIX (human.ts humanType): bỏ vòng lặp gõ từng ký tự + sleep. Set value đầy đủ 1 LẦN qua native setter (như người dùng DÁN email) + dispatch 1 chuỗi event đại diện (keydown/keypress/input/keyup ký tự cuối + change). Không còn setTimeout trong lúc gõ → không phụ thuộc throttle. Ảnh hưởng MỌI input gõ qua humanType (mời email, ô 'Lọc theo tên' của remove/sync/revoke, số giới hạn usage) → tất cả nhanh lên trong tab nền.",
+      "CÒN LẠI (không trong phạm vi fix này): opening-dialog ~6-7s + vài randomDelay/humanClick vẫn bị throttle ~1s/lần khi tab nền (nhưng nhỏ và không scale theo độ dài email). Muốn triệt để phải giảm số lần setTimeout hoặc chạy tab foreground (đánh đổi UX).",
+      "File đổi: apps/extension/src/content/human.ts, version.ts. Docs: content/human.md.",
+    ],
+  },
+  {
+    version: "0.9.2",
+    date: "2026-06-29",
+    kind: "fix",
+    summary:
+      "XOÁ thành viên hết báo VERIFY_FAILED OAN khi xoá thật sự đã thành công: ChatGPT xoá qua server round-trip + refetch, mạng chậm có thể >10s nên verify cũ (timeout 10s, theo dõi list optimistic) kết luận 'Member vẫn còn' dù đã xoá xong. Nay nới timeout 15s + nếu vẫn nghi ngờ thì LỌC LẠI TỪ SERVER (gõ lại email) để xác nhận dứt khoát.",
+    details: [
+      "USER REPORT 2026-06-29 (kèm ảnh): task 'Xoá thành viên' retoot@rkngov.com → FAILED 'VERIFY_FAILED: Member vẫn còn trong danh sách sau khi confirm Remove' — nhưng thực tế ChatGPT đã xoá thành công; verify chưa chờ xoá xong đã kết luận lỗi.",
+      "ROOT CAUSE: sau khi click confirm 'Xóa', ChatGPT gửi request xoá rồi REFETCH list (không phải optimistic update tức thì). Verify cũ chỉ waitFor row biến mất khỏi list ĐANG LỌC trong 10s; mạng/ChatGPT chậm → row (stale) còn hiển thị >10s dù server đã xoá xong → waitFor timeout → VERIFY_FAILED oan. Member thật sự đã bị xoá (lần F5/sync sau xác nhận).",
+      "FIX (execute-remove.ts): (1) nới timeout verify 10s→15s. (2) Thêm reverifyRemovedViaFilter: khi path nhanh timeout, ÉP ChatGPT lọc lại từ SERVER (clearMemberFilter + gõ lại local-part email) rồi đợi 5s — nếu row KHÔNG xuất hiện trở lại = server đã xoá thật → verifyOk=true (COMPLETED). Server filter là nguồn sự thật, loại trừ DOM stale của list optimistic. Chỉ trả VERIFY_FAILED khi server VẪN trả member (xoá thật bại, vd OTP/2FA challenge).",
+      "Không nới mù timeout quá lớn (tránh chậm khi xoá thất bại thật) — dùng truy vấn lại server làm tín hiệu dứt khoát thay vì chờ lâu hơn.",
+      "File đổi: apps/extension/src/content/actions/remove/execute-remove.ts, version.ts. Docs: remove/README.md.",
+    ],
+  },
+  {
+    version: "0.9.1",
+    date: "2026-06-29",
+    kind: "fix",
+    summary:
+      "XOÁ thành viên hết lỗi tìm nhầm ở tab 'Lời mời' rồi đánh dấu removed OAN: khi tab admin còn ?tab=invites do action trước để lại, REMOVE/CHANGE_ROLE/CHANGE_LICENSE_TYPE bị reload thẳng vào tab Lời mời → lọc không thấy member active. Nay background ép tab về /admin/members sạch (tab Người dùng) trước khi chạy, + REMOVE từ chối kết luận 'đã rời business' khi URL còn ?tab=invites/requests.",
+    details: [
+      "USER REPORT 2026-06-29 (kèm ảnh): task 'Xoá thành viên' nguyenthuhientho@gmail.com COMPLETED nhưng ghi chú 'Ô lọc ChatGPT không thấy email trong tab Người dùng → coi như đã rời business, đánh dấu removed' — thực tế member đang active, action lại tìm ở tab 'Lời mời' chứ không phải 'Người dùng'.",
+      "ROOT CAUSE: v0.8.21 ensureAdminTab TÁI DÙNG tab admin + chrome.tabs.reload() reload NGUYÊN URL. Nếu action trước (SYNC_MEMBER tìm thấy ở pending / REVOKE / SYNC invites) để tab ở chatgpt.com/admin/members?tab=invites thì REMOVE reuse lại reload thẳng vào tab Lời mội. Guard MEMBER_LIST_TASKS trong runOnce chỉ ép navigate khi URL KHÔNG chứa '/admin/members' — nhưng '...?tab=invites' VẪN chứa chuỗi đó nên guard không kích hoạt. REMOVE dùng ô lọc làm nguồn sự thật (pageThrough:false): lọc tab Lời mời không thấy member active → trả MEMBER_NOT_IN_WORKSPACE → backend mark removed OAN.",
+      "FIX 1 (runner.ts MEMBER_LIST_TASKS guard): ép navigate về CHATGPT_ADMIN_URL sạch khi (a) tab không ở /admin/members HOẶC (b) URL còn ?tab=invites/?tab=requests (regex). Navigate URL sạch luôn rớt về sub-tab Người dùng → 3 action REMOVE/CHANGE_ROLE/CHANGE_LICENSE_TYPE luôn bắt đầu đúng tab.",
+      "FIX 2 (execute-remove.ts — chống mark-removed oan, 2 lớp): (a) clickTabAndWait('Người dùng') thêm waitForButtonMs=12000 (render-wait thanh tab như sync-member/revoke) để click về Người dùng đáng tin; (b) TRƯỚC khi trả MEMBER_NOT_IN_WORKSPACE, nếu location.search còn ?tab=invites/requests thì trả UI_ELEMENT_NOT_FOUND (FAILED, member CÒN) thay vì mark removed — URL là nguồn sự thật của tab đang xem.",
+      "FIX 3 (change-license-type, change-role): thêm waitForButtonMs=12000 cho clickTabAndWait('Người dùng'). CHANGE_ROLE TRƯỚC ĐÂY KHÔNG chuyển tab gì cả → thêm hẳn bước clickTabAndWait về tab Người dùng (cùng class bug — lọc nhầm tab Lời mời khi tab còn ?tab=invites).",
+      "File đổi: apps/extension/src/background/runner.ts, content/actions/remove/execute-remove.ts, content/actions/change-license-type/execute-change-license-type.ts, content/actions/change-role/execute-change-role.ts, version.ts. Docs: remove/README.md.",
+    ],
+  },
+  {
+    version: "0.9.0",
+    date: "2026-06-23",
+    kind: "feature",
+    summary:
+      "Action MỚI: SET_USAGE_LIMIT — đặt giới hạn tín dụng/tháng cho thành viên trên trang /admin/billing/manage_member_usage_limit ('Ghi đè mỗi người dùng'). Dashboard có thêm hành động 'Đặt giới hạn tín dụng' trong modal Cập nhật hàng loạt (mức chung cho tất cả, hoặc mức riêng từng người qua cú pháp email=số).",
+    details: [
+      "USER REQUEST 2026-06-23: làm chức năng cho phép admin/sub-admin tuỳ chỉnh giới hạn tín dụng của thành viên (bulk). Trang ChatGPT: mỗi row có nút 'Thêm' (chưa đặt) / 'Chỉnh sửa' (đã đặt) → dialog 'Đặt giới hạn sử dụng tùy chỉnh' (ô số + Lưu + Gỡ bỏ + ×). Có ô 'Lọc theo tên'; phân trang nhiều trang → lọc theo tên cho nhanh.",
+      "EXTENSION: action mới content/actions/set-usage-limit/ (execute + finders + README). Flow: lọc theo email (KHÔNG lật trang, dùng ô lọc làm nguồn sự thật như REMOVE) → click nút Thêm/Chỉnh sửa trên row → dialog → gõ SỐ vào ô input → click 'Lưu'. TUYỆT ĐỐI tránh nút 'Gỡ bỏ' (chỉ ĐẶT số, không gỡ — theo chốt với user).",
+      "RUNNER: thêm kind SET_USAGE_LIMIT vào taskToRequest + CONTENT_TIMEOUTS(150s); nhánh navigation MỚI điều hướng tab tới /admin/billing/manage_member_usage_limit (KHÁC /admin/members) trước khi dispatch.",
+      "BACKEND: cột members.usage_limit_credits (migration 0020), QueueType SET_USAGE_LIMIT, endpoint POST /members/bulk-set-usage-limit (1 task/member, quyền MEMBER_REMOVE + visibility filter), sync DB khi task COMPLETED. WEB: action 'set-usage-limit' trong BulkRemoveModal (mức chung + cú pháp email=số cho mức riêng, cột 'Giới hạn hiện tại → mới').",
+      "i18n đa ngôn ngữ (vi/en/zh) cho nút Thêm/Chỉnh sửa/Lưu/Gỡ bỏ trong TEXT_FALLBACKS.",
+    ],
+  },
+  {
+    version: "0.8.21",
+    date: "2026-06-23",
+    kind: "fix",
+    summary:
+      "Không mở tab mới liên tục khi chạy batch nhiều lệnh giống nhau (vd xoá 30+ thành viên): ensureAdminTab giờ TÁI DÙNG tab admin mới nhất + F5 cho MỌI action khi đã có ≥1 tab, chỉ mở tab mới khi không còn tab admin nào. Backstop: >3 tab vẫn tự đóng tab cũ cho còn 3.",
+    details: [
+      "USER REQUEST 2026-06-23: 'khi đang thực hiện lệnh xoá nó liên tục mở các tab mới để xoá, không cần thiết phải làm vậy với 1 lệnh giống nhau'. Mỗi REMOVE_MEMBER = 1 task = 1 runOnce → ensureAdminTab; rule cũ ≤2 tab LUÔN mở tab /admin/members mới + đóng tab cũ → batch 30+ lệnh xoá spam mở/đóng tab liên tục.",
+      "FIX (background/runner.ts ensureAdminTab): bỏ nhánh '≤2 tab → mở tab mới mỗi action' và hằng ADMIN_TAB_MAX. Logic mới: (1) >ADMIN_TAB_HARD_MAX(3) → prune đóng tab cũ cho còn 3; (2) còn ≥1 tab → TÁI DÙNG tab mới nhất + F5 (reload nếu ở /admin/members, nav về /admin/members nếu sub-page khác) + verify /admin — KHÔNG mở mới/đóng; (3) chỉ khi 0 tab mới chrome.tabs.create tab mới.",
+      "An toàn: tab tái dùng vẫn đi qua ensureContentInjected (inject + 3-step fallback) ở caller; F5 cho DOM/server-state sạch tương đương tab mới (chính là lý do nhánh >2 tab từ v0.8.20 đã reuse+F5 ổn định). Không còn drift context như v0.8.13 (vì v0.8.13 né tab cũ là do KHÔNG F5).",
+      "File đổi: apps/extension/src/background/runner.ts (ensureAdminTab, bỏ ADMIN_TAB_MAX), runner.md, version.ts.",
+    ],
+  },
+  {
+    version: "0.8.20",
+    date: "2026-06-22",
+    kind: "fix",
+    summary:
+      "KHÔNG tự đóng tab khi user đang mở nhiều tab admin ChatGPT: >2 tab → tái dùng tab MỚI NHẤT + F5 (không mở tab mới, không đóng tab nào) thay vì luôn mở tab mới. Chỉ tự đóng khi vượt quá 3 tab (≥4) → đóng tab cũ nhất cho còn 3. ≤2 tab giữ rule cũ (mở tab mới, tổng ≤2).",
+    details: [
+      "USER REQUEST 2026-06-22: 'không tự động đóng nếu nhiều hơn 2 tab chatgpt đang bật' + làm rõ: khi >2 tab thì tái dùng tab mới nhất nhưng PHẢI F5 trước khi dùng; nếu >3 tab thì mới tự đóng. Phạm vi đếm: chỉ tab /admin/* (CHATGPT_TAB_MATCH), tab chat thường không tính.",
+      "BỐI CẢNH: từ v0.8.13 ensureAdminTab LUÔN mở tab /admin/members mới mỗi action + đóng tab cũ giữ tổng ≤2 (ADMIN_TAB_MAX). Khi user chủ động mở nhiều tab admin, rule này đóng nhầm tab user / spam tab.",
+      "FIX (background/runner.ts ensureAdminTab): thêm ADMIN_TAB_HARD_MAX=3. (1) >3 tab → pruneStaleAdminTabs đóng tab cũ nhất cho còn 3. (2) còn >ADMIN_TAB_MAX(2) tab → TÁI DÙNG tab mới nhất: nếu đang ở /admin/members thì chrome.tabs.reload (F5 thật), nếu ở sub-page khác thì chrome.tabs.update về /admin/members (= 1 load mới); đợi load + verify /admin → KHÔNG mở tab mới, KHÔNG đóng tab. (3) ≤2 tab → rule cũ: prune giữ (ADMIN_TAB_MAX-1) + mở tab mới.",
+      "Tab tái dùng vẫn đi qua ensureContentInjected ở caller (inject content script + 3-step fallback) nên ổn định như tab mới; F5 đảm bảo DOM/server-state sạch (lý do v0.8.13 né tab cũ là vì KHÔNG F5 → drift context).",
+      "File đổi: apps/extension/src/background/runner.ts (ensureAdminTab, ADMIN_TAB_HARD_MAX), version.ts.",
+    ],
+  },
+  {
+    version: "0.8.19",
+    date: "2026-06-21",
+    kind: "chore",
+    summary:
+      "Bỏ toast kết quả trên trang chatgpt.com (revert v0.8.17): thông báo lệnh chỉ hiển thị ở web app. REMOVE: chỉ dùng ô lọc — không thấy email thì DỪNG (không lật trang) + báo backend coi như đã rời business → mark removed ở dashboard luôn.",
+    details: [
+      "USER REQUEST 2026-06-21: 'chỉ cần thông báo các lệnh ở web app để người thực thi biết thôi' → gỡ toast ChatGPT, web app vẫn báo qua recent-tasks (độc lập, không đổi).",
+      "FIX 1: xoá content/toast.ts + gỡ notifyActionResult/ACTION_SUCCESS_LABEL/showActionToast khỏi content/index.ts. Content script giờ chỉ dispatch + trả ExecuteActionResponse về background, không vẽ DOM toast nữa.",
+      "FIX 2 (REMOVE): 'nếu email không tìm thấy ở Người dùng khi search thì không lật trang nữa'. locateMemberRow thêm opts.pageThrough; execute-remove gọi {pageThrough:false} → ô lọc là nguồn sự thật, không ra row thì DỪNG ngay (không clear-filter + lật MAX_PAGINATION_PAGES + scroll-scan).",
+      "FIX 3 (REMOVE → auto-removed): 'tìm không thấy tức là không có trong business → xoá luôn ở webapp'. execute-remove trả error_code RIÊNG MEMBER_NOT_IN_WORKSPACE (thêm vào messages.ts) khi ô lọc không thấy. Backend completion.py convert FAILED→COMPLETED + mark Member.removed. KHÁC UI_ELEMENT_NOT_FOUND (menu/nút confirm lỗi = member CÓ → vẫn FAILED, không xoá). An toàn vì ô lọc server-side không sót như scroll-scan (lý do hành vi này từng bị bỏ).",
+      "GIỮ NGUYÊN: change-role / change-license-type / sync-member vẫn dùng locateMemberRow mặc định (pageThrough=true) — lật trang như cũ. scrollScanForRow (revoke tab Lời mời) không đổi.",
+      "File đổi: content/index.ts, content/actions/remove/{locate-member,execute-remove}.ts, shared/messages.ts, version.ts; XOÁ content/toast.ts. API: routers/queue/completion.py(+md), tests/test_bulk_remove.py.",
+    ],
+  },
+  {
+    version: "0.8.18",
+    date: "2026-06-20",
+    kind: "fix",
+    summary:
+      "Rà soát toàn bộ action: bịt nốt cùng lớp regression v0.8.13 (tab mới → DOM chưa render). Xoá/đổi vai trò/đổi license + xác minh lời mời nay CHỜ ô lọc / thanh tab render xong rồi mới thao tác, thay vì tra 1 lần khi trang vừa load.",
+    details: [
+      "BỐI CẢNH: từ v0.8.13 mỗi action mở tab /admin/members MỚI → content chạy NGAY khi trang vừa load. Đã fix render-wait cho REVOKE (v0.8.15) + SYNC_MEMBER/full-sync (v0.8.16); rà soát phần còn lại tìm cùng lỗi.",
+      "FIX 1 (member-filter.ts: filterAndFindRow) — ô lọc 'Lọc theo tên' trước đây tra 1 lần ngay; null trên tab mới → fast-path bị bỏ qua oan, rớt xuống scroll-scan chậm/ồn. Giờ POLL chờ ô lọc render tới 8s rồi mới fallback. Ảnh hưởng MỌI action định vị member: REMOVE, CHANGE_ROLE, CHANGE_LICENSE_TYPE, SYNC_MEMBER (nhánh tab Người dùng).",
+      "FIX 2 (verify-pending-via-filter.ts: VERIFY_PENDING_INVITE) — thêm waitForButtonMs=12000 + verifyTabParam='tab=invites' cho clickTabAndWait (trước đây chỉ click + sleep, không chờ render, không verify URL) → đồng bộ cơ chế với sync-member/revoke; nếu đã ở ?tab=invites (sau F5 từ flow invite) vẫn trả true ngay, không bounce tab.",
+      "ĐÃ RÀ, KHÔNG ĐỔI: INVITE (chuyển tab ở CUỐI flow sau submit, trang đã render + có stable-render poll), SYNC_DATA full (đã hoist render-wait thanh tab ở v0.8.16), SYNC_BILLING / PURCHASE_SEAT (trang /admin/billing có render-delay + waitFor riêng).",
+      "File đổi: content/actions/remove/member-filter.ts, content/actions/invite/verify-pending-via-filter.ts, version.ts.",
+    ],
+  },
+  {
+    version: "0.8.17",
+    date: "2026-06-20",
+    kind: "feature",
+    summary:
+      "Mỗi action chạy xong hiện toast NỔI CHÍNH GIỮA TRÊN ĐẦU trang chatgpt.com: xanh '✓ Đã ...' khi thành công (tự ẩn sau 2s), đỏ kèm nội dung lỗi khi thất bại. Trước đây action chạy âm thầm, không báo gì trên trang.",
+    details: [
+      "USER REPORT 2026-06-20: 'các action khi thực hiện thành công đều không báo thành công' — action chạy trong content script trên chatgpt.com nhưng không có phản hồi trực quan tại trang.",
+      "FIX: thêm content/toast.ts — inject 1 phần tử thuần JS (style inline, z-index tối đa, không bị CSS ChatGPT đè), fade-in rồi auto-ẩn (success 2s, error 5s để kịp đọc). Wrap try/catch nên không bao giờ làm vỡ flow action.",
+      "WIRING: content/index.ts gọi notifyActionResult(msg, result) sau dispatch — ok=true → xanh 'Đã <action>'; batch ok=true nhưng có item failed → đỏ '... nhưng N mục thất bại'; ok=false hoặc throw → đỏ kèm error_message. PING không hiện.",
+      "PHỤ: toast đỏ này cũng hiển thị NGAY lỗi revoke (REVOKE_INVITES) trên trang để chẩn đoán — user báo 'lệnh thu hồi lời mời lỗi' nhưng chưa có text lỗi cụ thể; giờ lỗi sẽ hiện rõ tại chỗ.",
+      "File đổi: content/toast.ts (mới), content/index.ts, version.ts. Docs: content/toast.md, docs/UI_Responsive/Success_Toast_Top_Center.md.",
+    ],
+  },
+  {
+    version: "0.8.16",
+    date: "2026-06-20",
+    kind: "fix",
+    summary:
+      "Đồng bộ 1 tài khoản lẻ ở tab 'Chờ tham gia' hết lỗi 'Không chuyển được sang tab Người dùng' (cứ kẹt ở tab Người dùng, không sang được Lời mời): đợi thanh tab render xong (poll 12s) rồi mới chuyển tab. Cùng lớp regression v0.8.13 như revoke (v0.8.15); fix luôn full-sync.",
+    details: [
+      "USER REPORT 2026-06-20: 'lại tiếp tục lỗi ở chức năng đồng bộ trong chờ tham gia' — SYNC_MEMBER FAILED UI_ELEMENT_NOT_FOUND 'Không chuyển được sang tab Người dùng để xác minh'; thực tế là CỨ kẹt ở tab Người dùng, KHÔNG sang được tab 'Lời mời đang chờ xử lý'.",
+      "ROOT CAUSE: execute-sync-member.ts gọi thẳng clickTabAndWait('tab_pending_invites',...) ngay sau check /admin. Từ v0.8.13 mỗi action mở tab /admin/members MỚI → content chạy NGAY khi trang vừa load, findControlByKey (đồng bộ, tra 1 lần) chạy TRƯỚC khi React render thanh tab → null → clickTabAndWait trả false ngay → onPending=false → rớt xuống bước fallback tab Người dùng cũng chưa render → false → UI_ELEMENT_NOT_FOUND. Đúng regression đã fix cho revoke ở v0.8.15 nhưng sync-member bị bỏ sót.",
+      "FIX (gom render-wait vào clickTabAndWait): thêm tham số `waitForButtonMs` (mặc định 0 = giữ hành vi cũ cho remove/change-role/change-license) — nếu >0 và chưa thấy nút tab thì POLL chờ render tới timeout rồi mới bỏ cuộc. Mọi caller chạm tab non-default chỉ cần truyền waitForButtonMs=12000, KHỎI tự nhớ waitFor thủ công → không thể quên render-wait lần nữa (footgun đã cắn revoke v0.8.15 + sync-member). sync-member + revoke nay dùng chung 1 cơ chế, bỏ block waitFor lặp.",
+      "FIX kèm (execute-sync.ts / full-sync): hoist vòng poll 'tab render' RA NGOÀI nhánh navigate để chạy CẢ khi đã ở sẵn /admin/members (case tab mới v0.8.13) — trước đây chỉ chờ render khi phải navigate → full-sync cũng dính cùng bug khi chạm tab Lời mời.",
+      "Tab 'Lời mời đang chờ xử lý' vốn đã QUÉT TRỰC TIẾP (scrollScanForRow), KHÔNG dùng ô search/filter — 1 trang là tìm thấy ngay ở vòng đầu (đúng yêu cầu user 'chỉ 1 trang thì quét luôn').",
+      "File đổi: content/actions/sync/click-tab-and-wait.ts (tham số waitForButtonMs), content/actions/sync-member/execute-sync-member.ts, content/actions/revoke/execute-revoke-batch.ts (dọn waitFor lặp), content/actions/sync/execute-sync.ts, version.ts. Docs: Sync_Single_Account.md, Sync_Workspace_Data.md.",
+    ],
+  },
+  {
+    version: "0.8.15",
+    date: "2026-06-19",
+    kind: "fix",
+    summary:
+      "Thu hồi lời mời hết lỗi 'Không tìm thấy tab Lời mời đang chờ xử lý': đợi thanh tab render xong (poll 12s) rồi mới tìm + click, thay vì tra cứu 1 lần ngay khi trang vừa load. Regression của v0.8.13 (mỗi action mở tab /admin/members mới).",
+    details: [
+      "USER REPORT 2026-06-19: 'lệnh thu hồi đang bị lỗi ở chờ tham gia' — REVOKE_INVITES FAILED UI_ELEMENT_NOT_FOUND 'Không tìm thấy tab Lời mời đang chờ xử lý để revoke'.",
+      "ROOT CAUSE: execute-revoke-batch.ts chỉ navigate + sleep 1500ms khi CHƯA ở /admin/members, rồi gọi findControlByKey (đồng bộ, tra 1 lần) để tìm tab 'Lời mời'. Từ v0.8.13 mỗi action mở tab /admin/members MỚI → content chạy NGAY khi trang vừa load + đã ở /admin/members → nhánh sleep bị skip → findControlByKey chạy TRƯỚC khi React render xong thanh tab (Người dùng/Lời mời/Yêu cầu) → null → fail. Invite không dính vì nó chuyển sang tab Lời mời SAU khi đã mở dialog + submit (trang đã render lâu).",
+      "FIX (execute-revoke-batch.ts): (1) ĐỢI nút tab render bằng waitFor(findControlByKey, 12s, poll 300ms) — render-aware thay vì sleep cố định; (2) click bằng clickTabAndWait(...,'tab=invites') verify URL chuyển sang ?tab=invites + retry 3 lần (dùng chung cơ chế với sync/invite, không kẹt ở tab Người dùng do humanClick không trigger React onClick).",
+      "File đổi: content/actions/revoke/execute-revoke-batch.ts, version.ts. Docs: revoke/README.md.",
+    ],
+  },
+  {
+    version: "0.8.14",
+    date: "2026-06-19",
+    kind: "fix",
+    summary:
+      "Mời email NGOÀI tên miền hết lỗi 'Dialog vẫn cảnh báo email ngoài miền đã xác minh': sau khi bật toggle 'Cho phép lời mời ngoài tên miền', background HARD-RELOAD trang admin để ChatGPT refetch org-config (external=ON) RỒI mới mở dialog mời. Đảm bảo 100% setting đã có hiệu lực trước khi mời.",
+    details: [
+      "USER REPORT 2026-06-19: mời email ngoài domain LUÔN fail EXTERNAL_TOGGLE_FAILED — 'Dialog vẫn cảnh báo email ngoài miền đã xác minh sau khi bật Cho phép lời mời ngoài tên miền... Setting có thể chưa kịp có hiệu lực'. Poll 8s (v0.8.12) không bao giờ clear được banner.",
+      "ROOT CAUSE: navigateTo() dùng SPA-navigation (click <a> sidebar / pushState). Sau khi setExternalInvites bật toggle ON ở /admin/identity rồi SPA-nav về /admin/members, ChatGPT KHÔNG refetch org-config/verified-domains (React Query cache) → dialog Mời validate email theo config CŨ (external=OFF lúc tab load) → hiện banner đỏ 'not part of verified domains' + DISABLE nút Send invites. Banner KHÔNG TỰ clear vì không có gì refetch config trong SPA → poll vô ích → fail. Tab mới sạch (v0.8.13) còn làm chắc chắn config lúc load = OFF.",
+      "FIX (v0.8.14): tách INVITE_MEMBER ngoài-domain thành 2 lần gọi giống cơ chế F5 verify Phase 2. PHASE A (execute-invite.ts): bật toggle ON + confirm (aria-checked) rồi TRẢ NGAY data.awaiting_external_reload=true (KHÔNG mở dialog). Background (runner.ts): chrome.tabs.update(/admin/members) HARD-RELOAD full để refetch org-config với external=ON, đợi load + re-inject, rồi gọi lại INVITE_MEMBER với externalReady=true. PHASE A' (execute-invite.ts): trang đã fresh → mở dialog mời (banner không còn) → submit → finally tắt toggle OFF (spec bảo mật) → awaiting_reload_verify → F5 verify Phase 2 như cũ.",
+      "Content tự reload sẽ chết context content-script → CONTENT_TIMEOUT, nên reload BẮT BUỘC do background điều phối. Step 5.5 banner-check (v0.8.12) giữ làm safety-net cuối: sau hard-reload nếu banner VẪN còn (toggle thật sự không có hiệu lực) → fail trung thực thay vì tạo phantom.",
+      "Email TRONG domain xác minh: không đổi — vẫn mời thẳng, không bật toggle, không reload (nhanh).",
+      "File đổi: shared/messages.ts (thêm externalReady), content/index.ts, content/actions/invite/execute-invite.ts, background/runner.ts, version.ts. Docs: invite/README.md, external-invites/README.md.",
+    ],
+  },
+  {
+    version: "0.8.13",
+    date: "2026-06-19",
+    kind: "fix",
+    summary:
+      "Mời thành viên hết CONTENT_TIMEOUT / VERIFY_FAILED do tái dùng tab cũ: đổi quy tắc tab — LUÔN mở tab /admin/members MỚI cho MỖI action thay vì tái sử dụng tab cũ (tab cũ hay bị reload/redirect/drift mất context content script). Giữ tối đa 2 tab admin: trước khi mở tab mới tự đóng tab cũ dư.",
+    details: [
+      "USER REPORT 2026-06-19: hàng loạt 'Mời thành viên' FAILED — CONTENT_TIMEOUT ('Content script không trả kết quả cho INVITE_MEMBER trong 150s, có thể tab ChatGPT bị reload/redirect giữa chừng') và VERIFY_FAILED ('Đã submit email + F5 verify nhưng KHÔNG email nào xuất hiện trong tab Lời mời đang chờ').",
+      "ROOT CAUSE: v0.8.9 đổi ensureAdminTab sang TÁI SỬ DỤNG tab /admin/* mới nhất. Tab cũ này đã sống lâu, hay bị ChatGPT hard-reload / redirect auth / bị action khác kéo sang sub-page → content script mất context giữa chừng → sendResponse không bao giờ gọi (CONTENT_TIMEOUT) hoặc pending list scrape sai trang (VERIFY_FAILED).",
+      "FIX (runner.ts ensureAdminTab): theo yêu cầu user — LUÔN chrome.tabs.create tab MỚI /admin/members (background, active:false) cho MỖI action; không tái dùng tab cũ. ADMIN_TAB_MAX hạ 5→2; pruneStaleAdminTabs nhận tham số keep, trước khi mở tab mới đóng bớt tab CŨ nhất để chỉ giữ (ADMIN_TAB_MAX-1)=1 tab → tổng ≤2 (0 tab→mở 1; 1 tab→giữ+mở=2; nhiều hơn→đóng tab cũ rồi mở 1).",
+      "Trong 1 action, Phase 1 (submit) + F5 verify Phase 2 vẫn dùng CHUNG tab vừa mở — 'tab mới mỗi action', không phải mỗi phase. Guard navigate-về-/admin/members cho REMOVE/CHANGE_ROLE/CHANGE_LICENSE_TYPE giữ làm safety-net (giờ thường no-op vì tab mới đã đúng trang).",
+      "File đổi: apps/extension/src/background/runner.ts (ensureAdminTab, pruneStaleAdminTabs, ADMIN_TAB_MAX), runner.md, version.ts.",
+    ],
+  },
+  {
+    version: "0.8.12",
+    date: "2026-06-19",
+    kind: "fix",
+    summary:
+      "Mời email ngoài domain: sau khi gõ email, KIỂM TRA LẠI banner đỏ 'email không thuộc miền đã xác minh' trong dialog. Bật toggle 'mời ngoài tên miền' cần chút thời gian để có hiệu lực sang dialog — extension đợi banner biến mất rồi mới submit, thay vì submit mù vào nút disabled (timeout 15s) hoặc tạo lời mời ảo.",
+    details: [
+      "USER REPORT 2026-06-19: khi bật 'cho phép ngoài domain đã xác minh' cần một chút thời gian để load; nếu lúc mời tới đoạn nhập email mà dialog vẫn quét ra cảnh báo (ảnh: 'The following emails are not a part of your organization's verified domains') thì cần kiểm tra lại trước khi submit.",
+      "ROOT CAUSE: execute-invite.ts bật toggle ở /admin/identity và xác nhận aria-checked=true TRƯỚC khi mở dialog (set-toggle.ts confirmed). Nhưng hiệu lực của setting cần thời gian PROPAGATE sang dialog Mời — trong cửa sổ đó dialog vẫn render banner đỏ + DISABLE nút 'Send invites'. Submit lúc này = click nút disabled → verify timeout 15s → VERIFY_FAILED, hoặc tệ hơn phantom 'đang chờ'.",
+      "FIX (execute-invite-inner.ts bước 5.5): sau khi gõ email + set role, nếu phát hiện banner (hasVerifiedDomainWarning) thì POLL tới khi banner biến mất (waitForDomainWarningCleared, tối đa 8s, step 400ms) rồi mới submit. Hết 8s vẫn còn → return EXTERNAL_TOGGLE_FAILED (không submit) để tránh phantom; user thử lại sau vài giây khi setting đã có hiệu lực.",
+      "Detection bằng text (lowercase includes) qua EXTERNAL_DOMAIN_WARNING_PATTERNS (i18n-ui.ts, đa ngôn ngữ en/vi/zh) — bền với đổi DOM/locale. Khác EXTERNAL_INVITE_LABEL_PATTERNS (label toggle trên /admin/identity).",
+      "File mới: apps/extension/src/content/actions/invite/finders/find-domain-warning.ts. File đổi: execute-invite-inner.ts, i18n-ui.ts, version.ts. Docs: invite/README.md + external-invites/README.md.",
+    ],
+  },
   {
     version: "0.8.11",
     date: "2026-06-19",

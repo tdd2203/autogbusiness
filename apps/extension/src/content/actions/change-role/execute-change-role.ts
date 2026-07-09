@@ -3,9 +3,10 @@ import type {
   ExecuteActionResponse,
 } from "../../../shared/messages";
 import { humanClick, randomDelay, sleep } from "../../human";
-import { findRoleOption } from "../../i18n-ui";
+import { findRoleOption, TEXT_FALLBACKS } from "../../i18n-ui";
 import { reportProgress } from "../../progress";
 import { findMemberRow, findRowRoleDropdown } from "../member-row";
+import { clickTabAndWait } from "../sync";
 import { clearMemberFilter } from "../remove/member-filter";
 import { locateMemberRow } from "../remove/locate-member";
 
@@ -40,6 +41,20 @@ export async function executeChangeRole(
     };
   }
 
+  // Đảm bảo đang ở tab "Người dùng" trước khi định vị row (đổi vai trò chỉ làm
+  // trên active list). TRƯỚC ĐÂY CHANGE_ROLE KHÔNG chuyển tab — nếu tab còn
+  // ?tab=invites do action trước để lại (ensureAdminTab tái dùng tab + reload giữ
+  // param) thì locateMemberRow lọc nhầm danh sách Lời mời → UI_ELEMENT_NOT_FOUND
+  // oan dù member đang active (bug 2026-06-29). Render-wait thanh tab
+  // (waitForButtonMs=12000) rồi click, cùng cơ chế REMOVE/CHANGE_LICENSE_TYPE.
+  await clickTabAndWait(
+    "tab_active_members",
+    TEXT_FALLBACKS.tabActiveMembers,
+    800,
+    undefined,
+    12_000,
+  );
+
   // Định vị row BỀN VỮNG: lọc theo email (fast path) → fallback lật từng trang
   // + scroll-scan. Trước đây dùng `findMemberRow` trần → member ngoài trang đầu
   // / virtualized chưa render bị fail oan (cùng class bug đã fix ở
@@ -63,7 +78,7 @@ export async function executeChangeRole(
   if (!dropdown) {
     return {
       ok: false,
-      error_code: "UI_ELEMENT_NOT_FOUND",
+      error_code: "FAILED_UI_CHANGED",
       error_message:
         `Không tìm thấy dropdown vai trò trong row của ${email}. ` +
         `UI 2026 có dropdown 'Thành viên ▼' hiển thị inline — kiểm tra DOM cột Vai trò.`,
@@ -84,7 +99,7 @@ export async function executeChangeRole(
   if (!roleOption) {
     return {
       ok: false,
-      error_code: "UI_ELEMENT_NOT_FOUND",
+      error_code: "FAILED_UI_CHANGED",
       error_message:
         `Menu dropdown role mở nhưng KHÔNG tìm thấy option '${newRole}'. ` +
         `Cần thêm role label vào ROLE_LABELS hoặc DB ui_labels.`,

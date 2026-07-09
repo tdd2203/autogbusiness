@@ -339,10 +339,39 @@ function UserRow({ user }: { user: UserItem }) {
     reset.mutate(np);
   }
 
+  // Sửa quyền tài khoản phụ đã tạo — PATCH /users/{id} { permissions } (BE đã hỗ
+  // trợ validate_grantable). Mở modal tick lại GRANTABLE, lưu → invalidate ["users"].
+  const [editing, setEditing] = useState(false);
+  const [editPerms, setEditPerms] = useState<Set<PermissionKey>>(new Set());
+  const savePerms = useMutation({
+    mutationFn: () =>
+      api(`/api/v1/users/${user.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ permissions: Array.from(editPerms) }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["users"] });
+      setEditing(false);
+    },
+  });
+  function openEdit() {
+    setEditPerms(new Set(user.permissions as PermissionKey[]));
+    setEditing(true);
+  }
+  function toggleEdit(p: PermissionKey) {
+    setEditPerms((prev) => {
+      const next = new Set(prev);
+      if (next.has(p)) next.delete(p);
+      else next.add(p);
+      return next;
+    });
+  }
+
   const initial = (user.email || user.username || "?").charAt(0).toUpperCase();
   const sinceDate = formatDate(user.created_at);
 
   return (
+    <>
     <tr>
       <td>
         <div className="actor">
@@ -390,6 +419,9 @@ function UserRow({ user }: { user: UserItem }) {
       <td style={{ textAlign: "right" }}>
         {!user.is_super_admin && (
           <div className="flex items-center justify-end" style={{ gap: 6 }}>
+            <button onClick={openEdit} className="row-action neutral">
+              {t("users.editPerms")}
+            </button>
             <button
               onClick={() => toggleActive.mutate()}
               className="row-action neutral"
@@ -408,5 +440,87 @@ function UserRow({ user }: { user: UserItem }) {
         )}
       </td>
     </tr>
+
+    {/* Modal sửa quyền tài khoản phụ. */}
+    {editing && (
+      <tr>
+        <td colSpan={6} style={{ padding: 0 }}>
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div
+              className="bg-white rounded-lg shadow-xl"
+              style={{ width: "100%", maxWidth: 520 }}
+            >
+              <div style={{ padding: "16px 20px 12px", borderBottom: "1px solid var(--border)" }}>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
+                  {t("users.editPermsTitle", { name: user.username })}
+                </h3>
+              </div>
+              <div style={{ padding: "16px 20px" }}>
+                <div
+                  className="grid"
+                  style={{
+                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                    gap: 8,
+                  }}
+                >
+                  {GRANTABLE.map((p) => (
+                    <label
+                      key={p}
+                      className="flex items-center"
+                      style={{ gap: 8, fontSize: 13 }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={editPerms.has(p)}
+                        onChange={() => toggleEdit(p)}
+                      />
+                      <span>
+                        {t(`perm.${p}`)}{" "}
+                        <code
+                          style={{
+                            fontSize: 11,
+                            color: "var(--ink-3)",
+                            fontFamily: "var(--font-mono)",
+                          }}
+                        >
+                          {p}
+                        </code>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div
+                style={{
+                  padding: "12px 20px",
+                  borderTop: "1px solid var(--border)",
+                  display: "flex",
+                  justifyContent: "flex-end",
+                  gap: 8,
+                }}
+              >
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => setEditing(false)}
+                  disabled={savePerms.isPending}
+                >
+                  {t("common.cancel")}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => savePerms.mutate()}
+                  disabled={savePerms.isPending}
+                >
+                  {savePerms.isPending ? t("common.loading") : t("users.save")}
+                </button>
+              </div>
+            </div>
+          </div>
+        </td>
+      </tr>
+    )}
+    </>
   );
 }

@@ -79,16 +79,33 @@ export async function scrollScanForRow(email: string): Promise<HTMLElement | nul
 /**
  * Định vị row của member một cách BỀN VỮNG:
  *   1. Thử ô lọc (fast path) — list ngắn hoặc filter hoạt động tốt.
- *   2. Không thấy → clear lọc, về trang 1, rồi lật từng trang + scroll-scan
- *      (đúng cách SYNC duyệt hết member). Xử lý list dài / phân trang /
- *      virtualized mà ô lọc bỏ sót.
+ *   2. Không thấy → (mặc định) clear lọc, về trang 1, rồi lật từng trang +
+ *      scroll-scan (đúng cách SYNC duyệt hết member). Xử lý list dài / phân
+ *      trang / virtualized mà ô lọc bỏ sót.
  *
- * Trả row, hoặc null nếu thật sự không có trên ChatGPT (duyệt hết mọi trang).
+ * `opts.pageThrough`: bật/tắt bước (2). REMOVE truyền `false` — ô lọc là nguồn
+ * sự thật: search không ra email thì coi như không có ở tab Người dùng, DỪNG
+ * ngay, không lật trang (yêu cầu user 2026-06-21). Các action khác
+ * (change-role / change-license / sync-member) vẫn lật trang như cũ.
+ *
+ * Trả row, hoặc null nếu không tìm thấy.
  */
-export async function locateMemberRow(email: string): Promise<HTMLElement | null> {
+export async function locateMemberRow(
+  email: string,
+  opts: { pageThrough?: boolean } = {},
+): Promise<HTMLElement | null> {
+  const { pageThrough = true } = opts;
+
   // Fast path: ô lọc.
   const viaFilter = await filterAndFindRow(email);
   if (viaFilter) return viaFilter;
+
+  if (!pageThrough) {
+    console.warn(
+      `[autogpt-locate] ô lọc không ra ${email} → DỪNG (không lật trang theo yêu cầu)`,
+    );
+    return null;
+  }
 
   // Fallback: duyệt toàn bộ list như SYNC. Clear lọc để list về đầy đủ trước.
   console.warn(

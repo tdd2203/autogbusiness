@@ -59,16 +59,65 @@ def update_task(
     #   side-effect. Nguồn chân lý cuối vẫn là SYNC_DATA.
     if item.status in ("COMPLETED", "FAILED"):
         return item
-    # ---- KHÔNG auto-reconcile REMOVE_MEMBER + UI_ELEMENT_NOT_FOUND nữa ----
-    # Trước đây: extension báo không tìm thấy member → backend tự coi là "đã
-    # removed" và convert FAILED → COMPLETED. ĐÃ BỎ: trên workspace đông member
-    # (list phân trang / virtualized), extension có thể TÌM SÓT row dù member
-    # vẫn còn trên ChatGPT → đánh dấu removed NHẦM (silent data corruption:
-    # dashboard báo đã xoá trong khi người đó vẫn trong workspace).
-    # Nay để task FAILED rõ ràng. Nguồn chân lý là SYNC_DATA — bulk_upsert mark
-    # member vắng mặt thật = removed; còn member vẫn hiện diện thì giữ active.
+
+    # ---- DRY-RUN: extension đã BỎ QUA thao tác thật (workspace.dry_run_mode) ----
+    # Extension báo COMPLETED kèm result.dry_run=true cho task phá huỷ. Vì KHÔNG có
+    # gì đổi thật trên ChatGPT, TUYỆT ĐỐI không áp side-effect DB (mark removed,
+    # sync role/license/usage, phantom cleanup invite, revoke…). Chỉ set terminal +
+    # audit riêng để truy vết. Đặt TRƯỚC mọi nhánh side-effect bên dưới.
+    if (
+        body.status == "COMPLETED"
+        and isinstance(body.result, dict)
+        and body.result.get("dry_run") is True
+    ):
+        item.status = "COMPLETED"
+        item.result = body.result
+        item.error_code = None
+        item.error_message = None
+        item.completed_at = datetime.now(timezone.utc)
+        db.add(item)
+        log_event(
+            db,
+            actor_type="EXTENSION",
+            actor_label=f"workspace:{workspace.name}",
+            action=f"QUEUE_DRY_RUN:{item.type}",
+            result="COMPLETED",
+            target_type="QUEUE_ITEM",
+            target_id=str(item.id),
+            data={"dry_run": True},
+            commit=False,
+        )
+        db.commit()
+        db.refresh(item)
+        return item
+
     reconcile_note: str | None = None
     effective_status = body.status
+
+    # ---- REMOVE_MEMBER + MEMBER_NOT_IN_WORKSPACE → coi như đã xoá thành công ----
+    # Extension v0.8.19+: REMOVE chỉ định vị bằng Ô LỌC server-side của ChatGPT
+    # (KHÔNG còn scroll-scan/lật trang dễ sót). Ô lọc không ra email → member
+    # CHẮC CHẮN không còn trong tab Người dùng = đã rời business → convert
+    # FAILED→COMPLETED + mark removed ngay (yêu cầu user: "tìm không thấy tức là
+    # không có trong business rồi, xoá luôn ở webapp").
+    #
+    # LỊCH SỬ: hành vi này từng bị BỎ vì bản cũ dùng scroll-scan trên list
+    # virtualized → TÌM SÓT row dù member vẫn còn → mark removed NHẦM. Nay an
+    # toàn vì:
+    #  - error_code RIÊNG MEMBER_NOT_IN_WORKSPACE chỉ phát từ đường ô lọc (đáng
+    #    tin), KHÁC UI_ELEMENT_NOT_FOUND của "menu/nút confirm lỗi" (member CÓ
+    #    nhưng thao tác hỏng → vẫn để FAILED, KHÔNG xoá).
+    #  - Ô lọc query toàn list phía ChatGPT, không phụ thuộc row đã render.
+    if (
+        body.status == "FAILED"
+        and item.type == "REMOVE_MEMBER"
+        and body.error_code == "MEMBER_NOT_IN_WORKSPACE"
+    ):
+        effective_status = "COMPLETED"
+        reconcile_note = (
+            "Ô lọc ChatGPT không thấy email trong tab Người dùng → coi như đã "
+            "rời business, đánh dấu removed ở dashboard."
+        )
 
     # ---- REVOKE_INVITES COMPLETED → mark các email trong payload là removed ----
     # Extension đã click "Thu hồi lời mời" trên ChatGPT thành công cho danh sách
@@ -177,6 +226,35 @@ def update_task(
                     commit=False,
                 )
 
+    # SET_USAGE_LIMIT COMPLETED → sync Member.usage_limit_credits trong DB.
+    # Giống CHANGE_LICENSE_TYPE: extension đặt trên ChatGPT xong, DB update ngay
+    # chứ không đợi SYNC_DATA.
+    if item.type == "SET_USAGE_LIMIT" and effective_status == "COMPLETED":
+        payload = item.payload or {}
+        target_email = (payload.get("email") or "").lower()
+        limit_credits = payload.get("limit_credits")
+        if target_email and limit_credits is not None:
+            member = db.execute(
+                select(Member).where(
+                    Member.workspace_id == workspace.id,
+                    Member.email == target_email,
+                )
+            ).scalar_one_or_none()
+            if member:
+                member.usage_limit_credits = limit_credits
+                db.add(member)
+                log_event(
+                    db,
+                    actor_type="EXTENSION",
+                    actor_label=f"workspace:{workspace.name}",
+                    action="MEMBER_USAGE_LIMIT_SYNCED",
+                    result="COMPLETED",
+                    target_type="MEMBER",
+                    target_id=str(member.id),
+                    data={"email": target_email, "limit_credits": limit_credits},
+                    commit=False,
+                )
+
     # REMOVE_MEMBER COMPLETED → sync Member.status='removed' trong DB.
     if (
         item.type == "REMOVE_MEMBER"
@@ -244,6 +322,48 @@ def update_task(
                         commit=False,
                     )
                 db.add(member)
+
+    # SYNC_MEMBERS_BATCH COMPLETED → "đồng bộ hàng loạt" reconcile theo MẢNG
+    # `result.data.results` = [{email, found_in}]. Cùng ngữ nghĩa với SYNC_MEMBER
+    # nhưng áp cho nhiều email trong 1 task (extension quét tab Lời mời 1 lần rồi
+    # đối chiếu). found_in='active' → set active + joined_at; 'pending' → giữ,
+    # chạm last_synced_at; 'none' → CHỈ báo, KHÔNG mark removed (an toàn khi scan
+    # sót row — cùng bài học đầu file).
+    if item.type == "SYNC_MEMBERS_BATCH" and effective_status == "COMPLETED":
+        results = ((body.result or {}).get("data") or {}).get("results") or []
+        now = datetime.now(timezone.utc)
+        for entry in results:
+            if not isinstance(entry, dict):
+                continue
+            email = (entry.get("email") or "").lower()
+            found_in = entry.get("found_in")
+            if not email or found_in not in ("active", "pending"):
+                continue
+            member = db.execute(
+                select(Member).where(
+                    Member.workspace_id == workspace.id,
+                    Member.email == email,
+                )
+            ).scalar_one_or_none()
+            if not member:
+                continue
+            member.last_synced_at = now
+            if found_in == "active" and member.status != "active":
+                member.status = "active"
+                if member.joined_at is None:
+                    member.joined_at = now
+                log_event(
+                    db,
+                    actor_type="EXTENSION",
+                    actor_label=f"workspace:{workspace.name}",
+                    action="MEMBER_SYNC_PROMOTED_ACTIVE",
+                    result="COMPLETED",
+                    target_type="MEMBER",
+                    target_id=str(member.id),
+                    data={"email": email, "found_in": found_in, "batch": True},
+                    commit=False,
+                )
+            db.add(member)
 
     # PHANTOM CLEANUP cho INVITE_MEMBER: xoá Member + Invite records mà ChatGPT
     # KHÔNG thực sự nhận → dashboard chỉ hiển thị email đã được mời thật.

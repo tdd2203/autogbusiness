@@ -105,11 +105,15 @@ export function useFormatDate() {
     formatDateForLang(lang, value, options);
 }
 
-/** Định dạng ngày + giờ chi tiết theo ngôn ngữ dashboard. */
+/** Định dạng ngày + giờ chi tiết theo ngôn ngữ dashboard.
+ *  `timeOptions` mặc định giờ:phút; truyền {hour,minute,second} để có giây. */
 export function useFormatDateTime() {
   const { lang } = useI18n();
-  return (value: string | Date, options?: Intl.DateTimeFormatOptions) =>
-    formatDateTimeForLang(lang, value, options);
+  return (
+    value: string | Date,
+    options?: Intl.DateTimeFormatOptions,
+    timeOptions?: Intl.DateTimeFormatOptions,
+  ) => formatDateTimeForLang(lang, value, options, timeOptions);
 }
 
 /** Dịch mã enum (status, task type, …) — key dạng `prefix.VALUE`. */

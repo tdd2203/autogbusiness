@@ -1,8 +1,9 @@
-"""Đồng bộ 1 tài khoản lẻ (SYNC_MEMBER) + rate-limit full-sync.
+"""Đồng bộ 1 tài khoản lẻ (SYNC_MEMBER) + full-sync.
 
 Phủ:
-  - Full-sync (SYNC_DATA): admin phụ 1 lần/ngày → lần 2 429; admin chính không giới hạn.
-  - GET /sync-quota: admin phụ allowed→false sau khi dùng; admin chính luôn true.
+  - Full-sync (SYNC_DATA): CHỈ super-admin (2026-07). Admin phụ → 403; admin chính
+    không giới hạn. (Cooldown 5 tiếng cho admin phụ giờ là dead-path — không tới
+    được endpoint nữa, nên không test.)
   - sync-member chống-spam: 2 lần OK, lần 3 → 429 SYNC_MEMBER_COOLDOWN, còn cooldown.
   - completion reconcile: found_in=active → member 'active'; none → giữ 'pending'.
 """
@@ -67,24 +68,20 @@ def _assign(client: TestClient, auth_header: dict, ws_id: str, user_id: str) -> 
     assert resp.status_code == 201, resp.text
 
 
-# ---------- Full-sync daily limit ----------
+# ---------- Full-sync: chỉ super-admin ----------
 
 
-def test_full_sync_daily_limit_sub_admin(client: TestClient, auth_header: dict) -> None:
-    ws = _ws(client, auth_header, "Daily Limit WS")
+def test_full_sync_forbidden_for_sub_admin(client: TestClient, auth_header: dict) -> None:
+    """Full-sync toàn workspace CHỈ super-admin — admin phụ (kể cả có
+    WORKSPACE_SYNC_TRIGGER) gọi /sync → 403."""
+    ws = _ws(client, auth_header, "Full Sync Forbidden WS")
     sub = _sub(client, auth_header, ["WORKSPACE_SYNC_TRIGGER"])
     _assign(client, auth_header, ws["id"], sub["id"])
 
-    first = client.post(
+    resp = client.post(
         f"/api/v1/workspaces/{ws['id']}/sync", headers=_bearer(sub["token"])
     )
-    assert first.status_code == 202, first.text
-
-    second = client.post(
-        f"/api/v1/workspaces/{ws['id']}/sync", headers=_bearer(sub["token"])
-    )
-    assert second.status_code == 429, second.text
-    assert second.json()["detail"]["code"] == "FULL_SYNC_DAILY_LIMIT"
+    assert resp.status_code == 403, resp.text
 
 
 def test_full_sync_super_admin_unlimited(client: TestClient, auth_header: dict) -> None:
@@ -94,31 +91,6 @@ def test_full_sync_super_admin_unlimited(client: TestClient, auth_header: dict) 
             f"/api/v1/workspaces/{ws['id']}/sync", headers=auth_header
         )
         assert resp.status_code == 202, resp.text
-
-
-def test_sync_quota_reflects_usage(client: TestClient, auth_header: dict) -> None:
-    ws = _ws(client, auth_header, "Quota WS")
-    sub = _sub(client, auth_header, ["WORKSPACE_SYNC_TRIGGER"])
-    _assign(client, auth_header, ws["id"], sub["id"])
-
-    before = client.get(
-        f"/api/v1/workspaces/{ws['id']}/sync-quota", headers=_bearer(sub["token"])
-    )
-    assert before.status_code == 200, before.text
-    assert before.json()["full_sync_allowed"] is True
-
-    client.post(f"/api/v1/workspaces/{ws['id']}/sync", headers=_bearer(sub["token"]))
-
-    after = client.get(
-        f"/api/v1/workspaces/{ws['id']}/sync-quota", headers=_bearer(sub["token"])
-    )
-    assert after.json()["full_sync_allowed"] is False
-
-    # Admin chính luôn cho phép.
-    su = client.get(
-        f"/api/v1/workspaces/{ws['id']}/sync-quota", headers=auth_header
-    )
-    assert su.json()["full_sync_allowed"] is True
 
 
 # ---------- chống spam: cùng (lệnh, email) lặp >3 lần → ban 10 phút ----------

@@ -15,7 +15,7 @@ import type { QueueItem } from "../types";
  * React Query gọi lại callback này sau mỗi lần fetch, nên khi mutation tạo task
  * invalidate query → refetch → data có task PENDING → poll tự bật lại ngay.
  */
-export function hasActiveTask(items: QueueItem[] | undefined): boolean {
+function hasActiveTask(items: QueueItem[] | undefined): boolean {
   return !!items?.some(
     (it) => it.status === "PENDING" || it.status === "IN_PROGRESS",
   );

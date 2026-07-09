@@ -1,11 +1,14 @@
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useAddedEmails } from "../hooks/useAddedEmails";
-import { useFormatDate, useT } from "../i18n";
-import type { AddedMember } from "../types";
+import { useFormatDate, useFormatDateTime, useT } from "../i18n";
+import type { AddedMember, SubscriptionCycle } from "../types";
 import { SearchInput } from "./Members";
+import { BulkUpdateExpiryModal } from "../components/BulkUpdateExpiryModal";
+import { MemberDetailModal } from "../components/MemberDetailModal";
 
 type SubAccount = {
   id: string;
@@ -14,7 +17,7 @@ type SubAccount = {
   is_super_admin: boolean;
 };
 
-type PaymentFilter = "all" | "today" | "unpaid";
+type PaymentFilter = "all" | "today" | "unpaid" | "requested";
 
 function isToday(iso: string): boolean {
   const d = new Date(iso);
@@ -32,19 +35,35 @@ const STATUS_BADGE: Record<string, string> = {
   removed: "badge badge-danger",
 };
 
+// Cột "Ngày gia hạn" / "Ngày hết hạn" hiển thị thời gian chi tiết tới giây.
+const PRECISE_TIME: Intl.DateTimeFormatOptions = {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+};
+
 export default function AddedEmails() {
   const t = useT();
   const formatDate = useFormatDate();
+  const formatDateTime = useFormatDateTime();
   const { user } = useAuth();
   const isSuper = user?.is_super_admin === true;
 
+  // Khởi tạo filter từ ?filter= (chuông thông báo mở thẳng "Chờ xác nhận").
+  const [searchParams] = useSearchParams();
+  const initialFilter: PaymentFilter =
+    searchParams.get("filter") === "requested" ? "requested" : "all";
+
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<PaymentFilter>("all");
+  const [filter, setFilter] = useState<PaymentFilter>(initialFilter);
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [showBulkExpiry, setShowBulkExpiry] = useState(false);
+  // Click email → mở modal chi tiết + lịch sử hoạt động của email đó.
+  const [detailMember, setDetailMember] = useState<AddedMember | null>(null);
 
-  const { markPaid, transferOwner } = useAddedEmails({
+  const { requestPayment, markPaid, transferOwner } = useAddedEmails({
     onCleared: () => setSelected(new Set()),
   });
 
@@ -85,7 +104,9 @@ export default function AddedEmails() {
     if (filter === "today")
       rows = rows.filter((m) => isToday(m.last_invited_at ?? m.created_at));
     else if (filter === "unpaid")
-      rows = rows.filter((m) => m.payment_status !== "paid");
+      rows = rows.filter((m) => m.payment_status === "unpaid");
+    else if (filter === "requested")
+      rows = rows.filter((m) => m.payment_status === "requested");
     if (search.trim()) {
       const s = search.trim().toLowerCase();
       rows = rows.filter(
@@ -100,7 +121,25 @@ export default function AddedEmails() {
 
   const total = members.length;
   const paidCount = members.filter((m) => m.payment_status === "paid").length;
-  const unpaidCount = total - paidCount;
+  const requestedCount = members.filter(
+    (m) => m.payment_status === "requested",
+  ).length;
+  const unpaidCount = members.filter(
+    (m) => m.payment_status === "unpaid",
+  ).length;
+
+  // Nhắc nhở hết hạn cho CHỦ SỞ HỮU email (bản đơn giản, không có nút remove —
+  // remove là việc của admin ở trang Members). Mục đích: nhắc owner liên hệ
+  // khách hàng để gia hạn TRƯỚC khi background scheduler tự xoá email hết hạn.
+  // Tính trên `members` (đã lọc visibility ở backend) chứ không phải `filtered`
+  // để con số phản ánh đúng tổng email hết hạn của owner, không bị filter/search
+  // hiện tại che bớt. Điều kiện khớp Members.tsx: còn active/pending + đã quá hạn.
+  const expiredMembers = members.filter(
+    (m) =>
+      m.subscription_end_at &&
+      (m.status === "active" || m.status === "pending") &&
+      new Date(m.subscription_end_at).getTime() <= Date.now(),
+  );
 
   const allFilteredSelected =
     filtered.length > 0 && filtered.every((m) => selected.has(m.id));
@@ -140,11 +179,75 @@ export default function AddedEmails() {
           <h1 className="display-h1">{t("addedEmails.title")}</h1>
           <p className="page-sub">{t("addedEmails.subtitle")}</p>
         </div>
+        {/* Super-admin: áp ngay. Sub-admin: gửi yêu cầu đổi hạn chờ super-admin duyệt. */}
+        <button
+          className="btn btn-primary"
+          onClick={() => setShowBulkExpiry(true)}
+        >
+          {t("bulkExpiry.openBtn")}
+        </button>
       </div>
+
+      {showBulkExpiry && (
+        <BulkUpdateExpiryModal
+          members={members}
+          isSuper={isSuper}
+          onClose={() => setShowBulkExpiry(false)}
+          onDone={() => setSelected(new Set())}
+        />
+      )}
+
+      {/* Chi tiết + lịch sử thay đổi của 1 email (AddedMember ⊇ Member nên
+          truyền thẳng vào MemberDetailModal; endpoint logs theo workspace_id). */}
+      {detailMember && (
+        <MemberDetailModal
+          workspaceId={detailMember.workspace_id}
+          member={detailMember}
+          onClose={() => setDetailMember(null)}
+        />
+      )}
+
+      {/* Nhắc nhở hết hạn (đơn giản) cho chủ sở hữu — không nút, chỉ nhắc liên
+          hệ khách gia hạn kẻo email tự bị xoá. Bản đầy đủ + nút remove ở Members. */}
+      {expiredMembers.length > 0 && (
+        <div className="notice warn" style={{ marginBottom: 16 }}>
+          <div className="notice-icon">⏰</div>
+          <div style={{ flex: 1 }}>
+            <div className="notice-title">
+              {t("addedEmails.expiredReminderTitle", {
+                n: expiredMembers.length,
+              })}
+            </div>
+            <div className="notice-body" style={{ marginTop: 4 }}>
+              {t("addedEmails.expiredReminderBody")}
+            </div>
+            <div
+              style={{
+                marginTop: 6,
+                fontSize: 11,
+                fontFamily: "var(--font-mono)",
+                color: "var(--ink-2)",
+              }}
+            >
+              {expiredMembers
+                .slice(0, 5)
+                .map((m) => m.email)
+                .join(", ")}
+              {expiredMembers.length > 5
+                ? ` +${expiredMembers.length - 5}`
+                : ""}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="metrics" style={{ marginBottom: 24 }}>
         <Metric label={t("addedEmails.metricTotal")} value={total} />
         <Metric label={t("addedEmails.metricPaid")} value={paidCount} />
+        <Metric
+          label={t("addedEmails.metricRequested")}
+          value={requestedCount}
+        />
         <Metric label={t("addedEmails.metricUnpaid")} value={unpaidCount} />
       </div>
 
@@ -210,6 +313,12 @@ export default function AddedEmails() {
               {t("addedEmails.filterToday")}
             </FilterChip>
             <FilterChip
+              active={filter === "requested"}
+              onClick={() => setFilter("requested")}
+            >
+              {t("addedEmails.filterRequested")}
+            </FilterChip>
+            <FilterChip
               active={filter === "unpaid"}
               onClick={() => setFilter("unpaid")}
             >
@@ -237,30 +346,45 @@ export default function AddedEmails() {
             <span style={{ fontSize: 13, color: "var(--ink-2)" }}>
               {t("addedEmails.selectedCount", { n: selectedIds.length })}
             </span>
-            <button
-              className="btn btn-sm btn-primary"
-              disabled={markPaid.isPending}
-              onClick={() =>
-                markPaid.mutate({ ids: selectedIds, paid: true })
-              }
-            >
-              {t("addedEmails.approvePayment")}
-            </button>
-            <button
-              className="btn btn-sm btn-ghost"
-              disabled={markPaid.isPending}
-              onClick={() =>
-                markPaid.mutate({ ids: selectedIds, paid: false })
-              }
-            >
-              {t("addedEmails.unmarkPayment")}
-            </button>
-            <button
-              className="btn btn-sm btn-ghost"
-              onClick={() => setSelected(new Set())}
-            >
-              {t("addedEmails.clearSelection")}
-            </button>
+            {isSuper ? (
+              <>
+                {/* Bước 2 — super-admin xác nhận / huỷ thanh toán. */}
+                <button
+                  className="btn btn-sm btn-primary"
+                  disabled={markPaid.isPending}
+                  onClick={() =>
+                    markPaid.mutate({ ids: selectedIds, paid: true })
+                  }
+                >
+                  {t("addedEmails.confirmPayment")}
+                </button>
+                <button
+                  className="btn btn-sm btn-ghost"
+                  disabled={markPaid.isPending}
+                  onClick={() =>
+                    markPaid.mutate({ ids: selectedIds, paid: false })
+                  }
+                >
+                  {t("addedEmails.unmarkPayment")}
+                </button>
+              </>
+            ) : (
+              <>
+                {/* Bước 1 — sub-admin gửi yêu cầu duyệt thanh toán. */}
+                <button
+                  className="btn btn-sm btn-primary"
+                  disabled={requestPayment.isPending}
+                  onClick={() =>
+                    requestPayment.mutate({
+                      ids: selectedIds,
+                      requested: true,
+                    })
+                  }
+                >
+                  {t("addedEmails.requestPayment")}
+                </button>
+              </>
+            )}
             {isSuper && (
               <>
                 <span
@@ -330,7 +454,8 @@ export default function AddedEmails() {
                 <th>{t("addedEmails.colWorkspace")}</th>
                 {isSuper && <th>Người sở hữu</th>}
                 <th>{t("member.colStatus")}</th>
-                <th>{t("addedEmails.colAddedAt")}</th>
+                <th>{t("addedEmails.colRenewedAt")}</th>
+                <th>{t("addedEmails.colExpiry")}</th>
                 <th>{t("addedEmails.colPayment")}</th>
               </tr>
             </thead>
@@ -338,7 +463,7 @@ export default function AddedEmails() {
               {isLoading && (
                 <tr>
                   <td
-                    colSpan={isSuper ? 8 : 7}
+                    colSpan={isSuper ? 9 : 8}
                     className="cell-muted"
                     style={{ textAlign: "center", padding: 32 }}
                   >
@@ -349,7 +474,7 @@ export default function AddedEmails() {
               {!isLoading && filtered.length === 0 && (
                 <tr>
                   <td
-                    colSpan={isSuper ? 8 : 7}
+                    colSpan={isSuper ? 9 : 8}
                     className="cell-muted"
                     style={{ textAlign: "center", padding: 32 }}
                   >
@@ -358,7 +483,6 @@ export default function AddedEmails() {
                 </tr>
               )}
               {filtered.map((m) => {
-                const paid = m.payment_status === "paid";
                 return (
                   <tr key={m.id}>
                     <td>
@@ -368,7 +492,17 @@ export default function AddedEmails() {
                         onChange={() => toggleOne(m.id)}
                       />
                     </td>
-                    <td className="cell-email">{m.email}</td>
+                    <td className="cell-email">
+                      {/* Click email → modal chi tiết + lịch sử thay đổi. */}
+                      <button
+                        type="button"
+                        className="cell-email-link"
+                        onClick={() => setDetailMember(m)}
+                        title={t("memberDetail.openHint")}
+                      >
+                        {m.email}
+                      </button>
+                    </td>
                     <td className="cell-muted">{m.name ?? "—"}</td>
                     <td className="cell-muted" style={{ fontSize: 12 }}>
                       {m.workspace_name ?? "—"}
@@ -391,28 +525,36 @@ export default function AddedEmails() {
                         )}
                       </span>
                     </td>
+                    {/* Ngày gia hạn = mốc neo subscription_purchased_at (fallback
+                        last_invited_at ?? created_at cho row legacy) → khớp "Ngày hết
+                        hạn" = mốc + 30. */}
                     <td className="cell-muted" style={{ fontSize: 12 }}>
-                      {formatDate(m.last_invited_at ?? m.created_at)}
+                      {formatDateTime(
+                        m.subscription_purchased_at ??
+                          m.last_invited_at ??
+                          m.created_at,
+                        undefined,
+                        PRECISE_TIME,
+                      )}
+                    </td>
+                    <td className="cell-muted" style={{ fontSize: 12 }}>
+                      {m.subscription_end_at
+                        ? formatDateTime(
+                            m.subscription_end_at,
+                            undefined,
+                            PRECISE_TIME,
+                          )
+                        : t("addedEmails.expiryNone")}
                     </td>
                     <td>
-                      {paid ? (
-                        <span
-                          className="badge badge-success"
-                          title={
-                            m.paid_at
-                              ? t("addedEmails.paidAtTooltip", {
-                                  time: formatDate(m.paid_at),
-                                })
-                              : undefined
-                          }
-                        >
-                          ✓ {t("addedEmails.statusPaid")}
-                        </span>
-                      ) : (
-                        <span className="badge badge-neutral">
-                          {t("addedEmails.statusUnpaid")}
-                        </span>
-                      )}
+                      <PaymentCell
+                        m={m}
+                        isSuper={isSuper}
+                        markPaid={markPaid}
+                        requestPayment={requestPayment}
+                        t={t}
+                        formatDate={formatDate}
+                      />
                     </td>
                   </tr>
                 );
@@ -421,6 +563,151 @@ export default function AddedEmails() {
           </table>
         </div>
       </div>
+    </div>
+  );
+}
+
+type AddedEmailsMutations = ReturnType<typeof useAddedEmails>;
+
+/** Badge trạng thái thanh toán 1 chu kỳ (hoặc member legacy): paid ✓ / requested / unpaid ✗. */
+function PaymentBadge({
+  status,
+  paidAt,
+  requestedAt,
+  t,
+  formatDate,
+}: {
+  status: "unpaid" | "requested" | "paid";
+  paidAt: string | null;
+  requestedAt: string | null;
+  t: ReturnType<typeof useT>;
+  formatDate: ReturnType<typeof useFormatDate>;
+}) {
+  if (status === "paid")
+    return (
+      <span
+        className="badge badge-success badge-plain"
+        title={
+          paidAt
+            ? t("addedEmails.paidAtTooltip", { time: formatDate(paidAt) })
+            : undefined
+        }
+      >
+        ✓ {t("addedEmails.statusPaid")}
+      </span>
+    );
+  if (status === "requested")
+    return (
+      <span
+        className="badge badge-warning badge-plain"
+        title={
+          requestedAt
+            ? t("addedEmails.requestedAtTooltip", {
+                time: formatDate(requestedAt),
+              })
+            : undefined
+        }
+      >
+        {t("addedEmails.statusRequested")}
+      </span>
+    );
+  return (
+    <span className="badge badge-danger badge-plain">
+      ✗ {t("addedEmails.statusUnpaid")}
+    </span>
+  );
+}
+
+/**
+ * Ô "Thanh toán" — hiển thị theo TỪNG CHU KỲ (yêu cầu user 2026-07-08). Mỗi chu kỳ
+ * có trạng thái + hành động riêng: super-admin xác nhận/huỷ, sub-admin gửi yêu cầu.
+ * Member CHƯA gia hạn lần nào (cycles rỗng) → hiện badge cấp member (legacy) như cũ.
+ */
+function PaymentCell({
+  m,
+  isSuper,
+  markPaid,
+  requestPayment,
+  t,
+  formatDate,
+}: {
+  m: AddedMember;
+  isSuper: boolean;
+  markPaid: AddedEmailsMutations["markPaid"];
+  requestPayment: AddedEmailsMutations["requestPayment"];
+  t: ReturnType<typeof useT>;
+  formatDate: ReturnType<typeof useFormatDate>;
+}) {
+  const cycles: SubscriptionCycle[] = m.cycles ?? [];
+  if (cycles.length === 0) {
+    return (
+      <PaymentBadge
+        status={m.payment_status}
+        paidAt={m.paid_at}
+        requestedAt={m.payment_requested_at}
+        t={t}
+        formatDate={formatDate}
+      />
+    );
+  }
+  const busy = markPaid.isPending || requestPayment.isPending;
+  return (
+    <div style={{ display: "grid", gap: 4 }}>
+      {cycles.map((c) => (
+        <div
+          key={c.id}
+          className="flex items-center"
+          style={{ gap: 6, flexWrap: "wrap" }}
+        >
+          <span
+            className="cell-muted"
+            style={{ fontSize: 11, minWidth: 34, fontVariantNumeric: "tabular-nums" }}
+          >
+            {t("addedEmails.cycleLabel", { n: c.cycle_number })}
+          </span>
+          <PaymentBadge
+            status={c.payment_status}
+            paidAt={c.paid_at}
+            requestedAt={c.payment_requested_at}
+            t={t}
+            formatDate={formatDate}
+          />
+          {isSuper ? (
+            c.payment_status === "paid" ? (
+              <button
+                className="btn btn-sm btn-ghost"
+                style={{ padding: "0 6px", fontSize: 11 }}
+                disabled={busy}
+                onClick={() => markPaid.mutate({ cycleIds: [c.id], paid: false })}
+              >
+                {t("addedEmails.unmarkShort")}
+              </button>
+            ) : (
+              <button
+                className="btn btn-sm btn-primary"
+                style={{ padding: "0 6px", fontSize: 11 }}
+                disabled={busy}
+                onClick={() => markPaid.mutate({ cycleIds: [c.id], paid: true })}
+              >
+                {t("addedEmails.confirmShort")}
+              </button>
+            )
+          ) : (
+            c.payment_status === "unpaid" && (
+              <button
+                className="btn btn-sm btn-primary"
+                style={{ padding: "0 6px", fontSize: 11 }}
+                disabled={busy}
+                onClick={() =>
+                  requestPayment.mutate({ cycleIds: [c.id], requested: true })
+                }
+              >
+                {t("addedEmails.requestShort")}
+              </button>
+            )
+          )}
+        </div>
+      ))}
     </div>
   );
 }

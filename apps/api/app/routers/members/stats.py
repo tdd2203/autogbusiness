@@ -53,7 +53,15 @@ def member_stats(
         active=active,
         pending=pending,
         seat_total=ws.seat_total,
-        seat_used=ws.seat_used,
+        # Dùng THẲNG số member active+pending thật trong DB — KHÔNG blend với
+        # `ws.seat_used` (scrape từ trang billing ChatGPT, chỉ cập nhật khi chạy
+        # SYNC_BILLING) vì scrape có thể lệch CẢ HAI CHIỀU: cũ/THẤP hơn (vừa mời
+        # thêm, chưa kịp sync) hoặc cũ/CAO hơn (vừa xoá bớt, chưa kịp sync). DB
+        # luôn là nguồn thật thời gian thực — max() trước đây chỉ chặn chiều thấp,
+        # bỏ sót chiều cao (2026-07-08: "44/35" trong khi thực tế chỉ còn 41 active
+        # sau khi xoá 3 người, do seat_used scrape cũ chưa refresh). Đồng bộ với
+        # `effective_used` (invite.py) + `_apply_effective_seat_used` (crud.py).
+        seat_used=active + pending,
         own_count=own_count,
     )
 

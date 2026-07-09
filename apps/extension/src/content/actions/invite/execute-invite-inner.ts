@@ -15,6 +15,11 @@ import { SELECTORS, TEXT_FALLBACKS } from "../../selectors";
 import { querySelectorFirst } from "../../human";
 import { clickAddMoreIfNeeded } from "./click-add-more";
 import {
+  findVerifiedDomainWarning,
+  hasVerifiedDomainWarning,
+  waitForDomainWarningCleared,
+} from "./finders/find-domain-warning";
+import {
   countDialogEmailInputs,
   findInviteEmailInput,
   findLastEmptyEmailInput,
@@ -70,7 +75,7 @@ export async function executeInviteInner(
   } catch {
     return {
       ok: false,
-      error_code: "UI_ELEMENT_NOT_FOUND",
+      error_code: "FAILED_UI_CHANGED",
       error_message:
         "Không tìm thấy nút 'Mời thành viên' sau 8s. URL hiện tại: " +
         location.pathname +
@@ -159,7 +164,7 @@ export async function executeInviteInner(
     }
     return {
       ok: false,
-      error_code: "UI_ELEMENT_NOT_FOUND",
+      error_code: "FAILED_UI_CHANGED",
       error_message:
         "Dialog Mời thành viên không mở hoặc input email không tìm thấy sau 20s. " +
         diagnostic +
@@ -257,6 +262,50 @@ export async function executeInviteInner(
   await randomDelay(800, 1800);
   await setRole(role);
 
+  // 5.5 KIỂM TRA LẠI banner "email ngoài miền đã xác minh" (v0.8.12).
+  //   ChatGPT validate email LIVE. Nếu có email NGOÀI domain mà setting "Allow
+  //   External Domain Invites" CHƯA có hiệu lực, dialog hiện banner đỏ "...not a
+  //   part of your organization's verified domains..." + DISABLE nút Send invites.
+  //   `execute-invite.ts` đã xác nhận toggle ON (aria-checked) ở /admin/identity
+  //   TRƯỚC khi mở dialog, nhưng hiệu lực cần chút thời gian để PROPAGATE sang
+  //   dialog (user report 2026-06-19). Trong cửa sổ đó nếu submit mù → click nút
+  //   disabled → verify timeout 15s → VERIFY_FAILED, hoặc phantom "đang chờ".
+  //   → ĐỢI banner biến mất (poll, tối đa 8s) rồi mới submit; còn → huỷ rõ ràng.
+  const dialogNow = document.querySelector('[role="dialog"]') as HTMLElement | null;
+  if (hasVerifiedDomainWarning(dialogNow)) {
+    console.log(
+      "[autogpt-invite] phát hiện banner 'email ngoài miền đã xác minh' — đợi setting external-invites propagate (poll tối đa 8s)...",
+    );
+    await reportProgress(
+      taskId,
+      {
+        phase: "verifying",
+        message:
+          "Email ngoài miền đã xác minh — đợi setting 'mời ngoài domain' có hiệu lực...",
+        current: emails.length,
+        total: emails.length,
+      },
+      true,
+    );
+    const cleared = await waitForDomainWarningCleared(dialogNow, 8_000);
+    if (!cleared) {
+      const warnText = findVerifiedDomainWarning(dialogNow) ?? "(banner)";
+      console.warn(
+        "[autogpt-invite] banner 'email ngoài miền đã xác minh' VẪN còn sau 8s — huỷ invite (toggle external-invites chưa có hiệu lực).",
+      );
+      return {
+        ok: false,
+        error_code: "EXTERNAL_TOGGLE_FAILED",
+        error_message:
+          `Dialog vẫn cảnh báo email ngoài miền đã xác minh sau khi bật 'Cho phép lời mời ngoài tên miền' (khớp: "${warnText}"). ` +
+          "Setting có thể chưa kịp có hiệu lực — thử lại sau vài giây. Đã huỷ submit để tránh tạo lời mời ảo.",
+      };
+    }
+    console.log(
+      "[autogpt-invite] banner đã biến mất — setting external-invites đã có hiệu lực, tiếp tục submit.",
+    );
+  }
+
   // 6. Click Submit
   await randomDelay();
   const submitBtn = findInviteSubmitButton();
@@ -308,10 +357,10 @@ export async function executeInviteInner(
   );
 
   // executeInviteInner CHỈ chịu trách nhiệm submit invite. Bước "chuyển tab
-  // Lời mời" được làm ở scope ngoài (executeInvite) SAU khi
-  // withExternalInvitesEnabled finally restore xong toggle — đảm bảo URL không
-  // bị mất ?tab=invites do navigation /admin/identity → /admin/members của
-  // wrapper. (v0.6.4 từng đặt click tab ở đây là SAI thứ tự — fixed ở v0.6.5.)
+  // Lời mời" được làm ở scope ngoài (executeInvite) SAU khi finally đã
+  // setExternalInvites(false) restore xong toggle — đảm bảo URL không bị mất
+  // ?tab=invites do navigation /admin/identity → /admin/members khi tắt toggle.
+  // (v0.6.4 từng đặt click tab ở đây là SAI thứ tự — fixed ở v0.6.5.)
   await reportProgress(
     taskId,
     {

@@ -38,9 +38,8 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 /** true khi viewport ≥ 1024px (bản web máy tính). Tick theo resize.
- * Export để WorkspaceLayout biết rail có render hay không → dựng layout 2 cột
- * (đặt spacer giữ chỗ cột phải) khớp với việc rail tự ẩn <1024px. */
-export function useIsDesktop(): boolean {
+ * Dùng nội bộ để rail tự ẩn <1024px. */
+function useIsDesktop(): boolean {
   const [desktop, setDesktop] = useState(
     () => typeof window !== "undefined" && window.innerWidth >= 1024,
   );
@@ -105,6 +104,28 @@ export function WorkspaceTaskRail({
     },
   });
 
+  // Duyệt / từ chối lệnh chờ duyệt (super-admin). Duyệt → task chạy; từ chối → FAILED.
+  const decideTask = useMutation({
+    mutationFn: ({ task, approve }: { task: QueueItem; approve: boolean }) =>
+      api<{ id: string; status: string }>(
+        `/api/v1/queue/${task.id}/${approve ? "approve" : "reject"}`,
+        { method: "POST" },
+      ),
+    onSuccess: (_resp, vars) => {
+      toast.success(
+        vars.approve ? t("queue.approveOkToast") : t("queue.rejectOkToast"),
+      );
+      qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
+      qc.invalidateQueries({ queryKey: ["queue", workspaceId] });
+    },
+    onError: (e) =>
+      toast.error(
+        t("queue.cancelError", {
+          error: e instanceof Error ? e.message : String(e),
+        }),
+      ),
+  });
+
   // Bản mobile: ẩn panel (dùng tab Queue thay thế).
   if (!isDesktop) return null;
 
@@ -146,6 +167,9 @@ export function WorkspaceTaskRail({
               statusLabel={tStatus(task.status)}
               onCancel={() => cancelTask.mutate(task)}
               canceling={cancelTask.isPending}
+              onApprove={() => decideTask.mutate({ task, approve: true })}
+              onReject={() => decideTask.mutate({ task, approve: false })}
+              deciding={decideTask.isPending}
             />
           ))
         )}
@@ -163,6 +187,9 @@ function TaskRailItem({
   statusLabel,
   onCancel,
   canceling,
+  onApprove,
+  onReject,
+  deciding,
 }: {
   task: QueueItem;
   order?: number;
@@ -172,6 +199,9 @@ function TaskRailItem({
   statusLabel: string;
   onCancel?: () => void;
   canceling?: boolean;
+  onApprove?: () => void;
+  onReject?: () => void;
+  deciding?: boolean;
 }) {
   const t = useT();
   const progress = task.progress;
@@ -180,6 +210,7 @@ function TaskRailItem({
       ? (progress.message as string | undefined) ??
         t(`progress.${progress.phase ?? "IN_PROGRESS"}`)
       : null;
+  const isPendingApproval = task.approval_status === "pending";
   const canCancel =
     !!task.can_cancel &&
     (task.status === "PENDING" || task.status === "IN_PROGRESS");
@@ -212,6 +243,12 @@ function TaskRailItem({
         {statusLabel}
       </span>
 
+      {isPendingApproval && (
+        <span className="badge badge-warning" style={{ flexShrink: 0 }}>
+          {t("queue.awaitingApproval")}
+        </span>
+      )}
+
       <div style={{ fontSize: 11, flexShrink: 0 }}>
         <TaskTimingCell task={task} />
       </div>
@@ -243,12 +280,37 @@ function TaskRailItem({
         </div>
       )}
 
+      {/* Super-admin: duyệt / từ chối lệnh chờ duyệt. */}
+      {isSuper && isPendingApproval && (
+        <div style={{ display: "flex", gap: 6, marginLeft: "auto", flexShrink: 0 }}>
+          <button
+            onClick={onApprove}
+            disabled={deciding}
+            className="btn btn-primary btn-sm"
+          >
+            {t("queue.approve")}
+          </button>
+          <button
+            onClick={onReject}
+            disabled={deciding}
+            className="btn btn-ghost btn-sm"
+            style={{ color: "var(--danger)" }}
+          >
+            {t("queue.reject")}
+          </button>
+        </div>
+      )}
+
       {canCancel && onCancel && (
         <button
           onClick={onCancel}
           disabled={canceling}
           className="btn btn-ghost btn-sm"
-          style={{ marginLeft: "auto", color: "var(--danger)", flexShrink: 0 }}
+          style={{
+            marginLeft: isSuper && isPendingApproval ? 0 : "auto",
+            color: "var(--danger)",
+            flexShrink: 0,
+          }}
         >
           {canceling ? t("queue.cancelOkBusy") : t("queue.cancel")}
         </button>

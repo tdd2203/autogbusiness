@@ -214,6 +214,118 @@ def test_sub_admin_cannot_remove_member_invited_by_super(
     assert resp.status_code == 404
 
 
+def test_member_lookup_returns_info_and_owner(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Panel xem trước modal hàng loạt: lookup theo email trả info + chủ sở hữu;
+    email không khớp rơi vào not_found."""
+    ws_id, sub_id, sub_token = _setup_ws_and_sub_admin(client, auth_header)
+    client.post(
+        f"/api/v1/workspaces/{ws_id}/members/invite",
+        json={"email": "owned-super@example.com", "role": "member"},
+        headers=auth_header,
+    )
+    client.post(
+        f"/api/v1/workspaces/{ws_id}/members/invite",
+        json={"email": "owned-sub@example.com", "role": "member"},
+        headers=_bearer(sub_token),
+    )
+
+    # Super-admin: thấy cả 2 + email lạ vào not_found. Khớp không phân biệt hoa thường.
+    resp = client.post(
+        f"/api/v1/workspaces/{ws_id}/members/lookup",
+        json={
+            "emails": ["OWNED-SUPER@example.com", "owned-sub@example.com", "ghost@x.com"]
+        },
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    found = {r["email"]: r for r in body["found"]}
+    assert set(found) == {"owned-super@example.com", "owned-sub@example.com"}
+    assert body["not_found"] == ["ghost@x.com"]
+    assert found["owned-sub@example.com"]["owner_user_id"] == sub_id
+    assert found["owned-sub@example.com"]["owner_username"] == "subview"
+    assert found["owned-sub@example.com"]["added_at"] is not None
+    assert "member_id" in found["owned-sub@example.com"]
+
+    # Sub-admin chỉ thấy email mình mời; email của super rơi vào not_found.
+    resp_sub = client.post(
+        f"/api/v1/workspaces/{ws_id}/members/lookup",
+        json={"emails": ["owned-super@example.com", "owned-sub@example.com"]},
+        headers=_bearer(sub_token),
+    )
+    assert resp_sub.status_code == 200, resp_sub.text
+    body_sub = resp_sub.json()
+    assert [r["email"] for r in body_sub["found"]] == ["owned-sub@example.com"]
+    assert body_sub["not_found"] == ["owned-super@example.com"]
+
+
+def test_bulk_set_owner_transfers_and_revokes(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Chuyển chủ nhanh: super-admin gán các member đã chọn cho sub-admin, rồi thu
+    hồi (invited_by_user_id=None). Chỉ đụng đúng id truyền vào."""
+    ws_id, sub_id, _ = _setup_ws_and_sub_admin(client, auth_header)
+    ids = []
+    for email in ("bo1@example.com", "bo2@example.com"):
+        inv = client.post(
+            f"/api/v1/workspaces/{ws_id}/members/invite",
+            json={"email": email, "role": "member"},
+            headers=auth_header,
+        ).json()
+        ids.append(inv["id"])
+
+    # Gán cả 2 cho sub-admin.
+    resp = client.post(
+        f"/api/v1/workspaces/{ws_id}/members/bulk-set-owner",
+        json={"member_ids": ids, "invited_by_user_id": sub_id},
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["assigned"] == 2
+    members = {
+        m["id"]: m
+        for m in client.get(
+            f"/api/v1/workspaces/{ws_id}/members", headers=auth_header
+        ).json()
+    }
+    assert all(members[i]["invited_by_user_id"] == sub_id for i in ids)
+
+    # Thu hồi (về "chưa có chủ").
+    resp2 = client.post(
+        f"/api/v1/workspaces/{ws_id}/members/bulk-set-owner",
+        json={"member_ids": ids, "invited_by_user_id": None},
+        headers=auth_header,
+    )
+    assert resp2.status_code == 200, resp2.text
+    assert resp2.json()["assigned"] == 2
+    members2 = {
+        m["id"]: m
+        for m in client.get(
+            f"/api/v1/workspaces/{ws_id}/members", headers=auth_header
+        ).json()
+    }
+    assert all(members2[i]["invited_by_user_id"] is None for i in ids)
+
+
+def test_bulk_set_owner_requires_super_admin(
+    client: TestClient, auth_header: dict
+) -> None:
+    ws_id, sub_id, sub_token = _setup_ws_and_sub_admin(client, auth_header)
+    inv = client.post(
+        f"/api/v1/workspaces/{ws_id}/members/invite",
+        json={"email": "bo3@example.com", "role": "member"},
+        headers=_bearer(sub_token),
+    ).json()
+    resp = client.post(
+        f"/api/v1/workspaces/{ws_id}/members/bulk-set-owner",
+        json={"member_ids": [inv["id"]], "invited_by_user_id": sub_id},
+        headers=_bearer(sub_token),
+    )
+    assert resp.status_code == 403, resp.text
+
+
 def test_sub_admin_cannot_change_role(client: TestClient, auth_header: dict) -> None:
     ws_id, _, sub_token = _setup_ws_and_sub_admin(client, auth_header)
 

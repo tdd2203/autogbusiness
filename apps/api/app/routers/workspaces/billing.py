@@ -46,20 +46,45 @@ def push_billing_sync(
             }
             setattr(workspace, field, new_val)
 
-    if body.invoices is not None:
-        # Lưu list serialized (date thành ISO string) → JSONB
-        workspace.billing_invoices = [
-            {
+    # An toàn dữ liệu (Hiến pháp II): CHỈ ghi đè khi có list không rỗng. None/[]
+    # (scrape lỗi/thiếu) KHÔNG được xoá lịch sử hoá đơn cũ.
+    if body.invoices:
+        serialized: list[dict] = []
+        detailed = 0
+        failed = 0
+        for inv in body.invoices:
+            row: dict = {
                 "date": inv.date.isoformat(),
                 "amount_vnd": inv.amount_vnd,
                 "status": inv.status,
+                "detail_scraped": inv.detail_scraped,
             }
-            for inv in body.invoices
-        ]
-        changes["invoices_count"] = {
-            "before": "?",
-            "after": len(body.invoices),
-        }
+            if inv.detail_url is not None:
+                row["detail_url"] = inv.detail_url
+            for field in (
+                "quantity",
+                "unit_price_vnd",
+                "subtotal_vnd",
+                "vat_vnd",
+                "total_vnd",
+                "invoice_number",
+            ):
+                val = getattr(inv, field)
+                if val is not None:
+                    row[field] = val
+            if inv.period_start is not None:
+                row["period_start"] = inv.period_start.isoformat()
+            if inv.period_end is not None:
+                row["period_end"] = inv.period_end.isoformat()
+            serialized.append(row)
+            if inv.detail_scraped:
+                detailed += 1
+            elif inv.detail_url is not None:
+                failed += 1
+        workspace.billing_invoices = serialized
+        changes["invoices_count"] = {"before": "?", "after": len(serialized)}
+        changes["invoices_detailed_count"] = {"before": "?", "after": detailed}
+        changes["invoices_failed_count"] = {"before": "?", "after": failed}
 
     workspace.last_billing_synced_at = datetime.now(timezone.utc)
     db.add(workspace)

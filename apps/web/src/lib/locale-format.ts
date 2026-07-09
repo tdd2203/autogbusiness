@@ -18,12 +18,17 @@ export function formatDateTimeForLang(
   lang: Lang,
   value: string | Date,
   dateOptions?: Intl.DateTimeFormatOptions,
+  // Mặc định giờ:phút; truyền {hour,minute,second} khi cần thời gian chính xác.
+  timeOptions: Intl.DateTimeFormatOptions = {
+    hour: "2-digit",
+    minute: "2-digit",
+  },
 ): string {
   const d = typeof value === "string" ? new Date(value) : value;
   if (Number.isNaN(d.getTime())) return "—";
   const tag = localeTag(lang);
-  return `${d.toLocaleDateString(tag, dateOptions)} ${d.toLocaleTimeString(tag, {
-    hour: "2-digit",
-    minute: "2-digit",
-  })}`;
+  return `${d.toLocaleDateString(tag, dateOptions)} ${d.toLocaleTimeString(
+    tag,
+    timeOptions,
+  )}`;
 }

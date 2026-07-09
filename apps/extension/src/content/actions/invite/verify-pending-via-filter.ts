@@ -56,12 +56,19 @@ function clearFilter(input: HTMLInputElement): void {
 export async function verifyPendingViaFilter(
   emails: string[],
 ): Promise<ScrapedMember[] | null> {
-  // Bảo đảm đang ở tab "Lời mời đang chờ xử lý". Page vừa F5 → KHÔNG bounce tab,
-  // click trực tiếp (clickTabAndWait tự bỏ qua nếu đã active).
+  // Bảo đảm đang ở tab "Lời mời đang chờ xử lý".
+  //   - Nếu URL đã ?tab=invites (page vừa F5 từ flow invite) → clickTabAndWait
+  //     trả true ngay, KHÔNG bounce tab.
+  //   - `waitForButtonMs=12000`: chờ thanh tab render trước khi tìm/click — tab mới
+  //     (v0.8.13) content chạy ngay khi trang vừa load, nút tab có thể chưa render.
+  //   - `verifyTabParam="tab=invites"`: verify URL đã đổi (retry) để không kẹt ở
+  //     tab Người dùng khi humanClick không trigger React onClick.
   const onTab = await clickTabAndWait(
     "tab_pending_invites",
     TEXT_FALLBACKS.tabPendingInvites,
     1500,
+    "tab=invites",
+    12_000,
   );
   if (!onTab) {
     console.warn(
