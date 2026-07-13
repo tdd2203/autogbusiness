@@ -7,16 +7,26 @@ Mọi sub-module (core.py, remove.py, ...) import `router` và các helper từ 
 Đây KHÔNG phải nơi chứa business logic của 1 chức năng cụ thể — chỉ những thứ
 dùng chung giữa nhiều chức năng (lookup workspace, visibility filter). Mỗi chức
 năng có module + file docs (.md) riêng.
+
+⚠️ 3 HÀM CÔNG THỨC HẠN DÙNG (`_end_from_purchase`, `_extend_subscription_end`,
+`_months_between`) + hằng số 30-ngày/ân-hạn-0 sống ở file này. Quy tắc đầy đủ:
+`EXPIRY_RULES.md` (cùng thư mục) — NGUỒN CHÂN LÝ DUY NHẤT, KHÔNG tự chế công thức.
 """
 
 from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import Select, select
+from sqlalchemy import Select, and_, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import Member, User, Workspace
+from app.models import (
+    Member,
+    MemberSubscriptionCycle,
+    QueueItem,
+    User,
+    Workspace,
+)
 
 router = APIRouter(
     prefix="/api/v1/workspaces/{workspace_id}/members", tags=["members"]
@@ -27,10 +37,10 @@ router = APIRouter(
 # subscription_months cho từng member, end_at = created_at + months × 30 days.
 SUBSCRIPTION_DAYS_PER_MONTH = 30
 
-# Ân hạn sau khi hết hạn: chỉ tự xoá email khi đã quá hạn >= 1 GIỜ mà không gia hạn
-# (theo yêu cầu user). Dùng CHUNG cho cả endpoint `cleanup-expired` (remove.py) lẫn
+# Ân hạn sau khi hết hạn: 0 — hết hạn là xoá NGAY, không chờ (yêu cầu user
+# 2026-07-10). Dùng CHUNG cho cả endpoint `cleanup-expired` (remove.py) lẫn
 # scheduler nền (main.py) để 2 nơi luôn cùng rule — xem remove.md §4.
-SUBSCRIPTION_GRACE_AFTER_EXPIRY = timedelta(hours=1)
+SUBSCRIPTION_GRACE_AFTER_EXPIRY = timedelta(0)
 
 
 def _end_from_purchase(
@@ -63,6 +73,218 @@ def _extend_subscription_end(
     if months is None or months <= 0:
         return None
     return current_end + timedelta(days=months * SUBSCRIPTION_DAYS_PER_MONTH)
+
+
+def _months_between(start_at: datetime, end_at: datetime) -> int:
+    """Số THÁNG (đơn vị 30 ngày) của khoảng [start → end], làm tròn, tối thiểu 1.
+    Dùng khi chỉ biết cửa sổ (đổi hạn theo ngày / vật chất hoá) mà không biết số tháng
+    lần mua."""
+    days = (end_at - start_at).total_seconds() / 86400.0
+    return max(1, round(days / SUBSCRIPTION_DAYS_PER_MONTH))
+
+
+def _append_paid_cycle(
+    member: Member,
+    *,
+    start_at: datetime | None,
+    end_at: datetime | None,
+    months: int | None,
+    actor_id: UUID | None,
+    now: datetime,
+) -> None:
+    """Nối MỘT chu kỳ ĐÃ THANH TOÁN phủ [start_at → end_at].
+
+    Mô hình chu kỳ (chốt user 2026-07-13): **1 LẦN MUA = 1 chu kỳ** — mua gộp N tháng
+    thì gộp cả N vào 1 kỳ (`months=N`), KHÔNG tách thành N kỳ 1-tháng. Phí (ví/QR) luôn
+    thu TRƯỚC nên kỳ sinh ra là 'paid' NGAY (không còn 'chưa thanh toán'/duyệt thủ công).
+    `months` = số tháng lần mua (biết trước) hoặc suy từ cửa sổ. `cycle_number` nối tiếp
+    max hiện có. No-op nếu khoảng rỗng. Xem [[subscription-cycle-model]]."""
+    if start_at is None or end_at is None or end_at <= start_at:
+        return
+    next_number = (
+        max((c.cycle_number for c in member.subscription_cycles), default=0) + 1
+    )
+    member.subscription_cycles.append(
+        MemberSubscriptionCycle(
+            cycle_number=next_number,
+            months=months if months is not None else _months_between(start_at, end_at),
+            start_at=start_at,
+            end_at=end_at,
+            payment_status="paid",
+            paid_at=now,
+            paid_marked_by_id=actor_id,
+        )
+    )
+
+
+def _clamp_future(dt: datetime | None, now: datetime) -> datetime | None:
+    """Kẹp mốc rơi vào TƯƠNG LAI về `now` (dữ liệu chỉnh tay có thể cho mốc > now)
+    để kỳ không bắt đầu sau hôm nay → tránh khoảng còn-hạn không được phủ."""
+    if dt is not None and dt > now:
+        return now
+    return dt
+
+
+def _first_cycle_anchor(member: Member, now: datetime) -> datetime | None:
+    """Mốc bắt đầu KỲ 1 = **ngày tham gia** (`joined_at`) — chốt user 2026-07-13: ngày
+    tham gia đầu tiên CHÍNH LÀ ngày gia hạn đầu tiên, BẤT BIẾN. Fallback khi thiếu
+    joined_at. Kẹp về now nếu lỡ rơi tương lai."""
+    anchor = (
+        member.joined_at
+        or member.subscription_purchased_at
+        or member.last_invited_at
+        or member.created_at
+    )
+    return _clamp_future(anchor, now)
+
+
+def _ensure_cycles_materialized(
+    member: Member, *, now: datetime, actor_id: UUID | None
+) -> None:
+    """Member CÓ hạn nhưng CHƯA có chu kỳ nào (mời trước khi có bảng cycles / vô thời
+    hạn cũ) → vật chất hoá 1 chu kỳ ĐÃ THANH TOÁN phủ [ngày tham gia → hạn] (months suy
+    từ cửa sổ). Gọi TRƯỚC khi nối kỳ mới để lịch sử liền mạch. No-op nếu đã có chu kỳ."""
+    if member.subscription_cycles or member.subscription_end_at is None:
+        return
+    _append_paid_cycle(
+        member,
+        start_at=_first_cycle_anchor(member, now),
+        end_at=member.subscription_end_at,
+        months=None,  # suy từ cửa sổ (không biết ranh giới từng lần mua cũ)
+        actor_id=actor_id,
+        now=now,
+    )
+
+
+def _trim_cycles_to_end(member: Member, end_at: datetime | None) -> None:
+    """Đổi hạn RÚT NGẮN / VÔ THỜI HẠN: bỏ các chu kỳ vượt hạn mới.
+
+    - end_at None (vô thời hạn) → xoá HẾT chu kỳ (vô hạn không có kỳ tính tiền).
+    - Ngược lại: bỏ kỳ bắt đầu từ hạn mới trở đi (start_at ≥ end_at); kỳ còn lại mà
+      kết thúc sau hạn mới → cắt end_at về đúng hạn mới. (delete-orphan tự xoá row.)"""
+    if end_at is None:
+        member.subscription_cycles = []
+        return
+    kept: list[MemberSubscriptionCycle] = []
+    for c in member.subscription_cycles:
+        if c.start_at is not None and c.start_at >= end_at:
+            continue
+        if c.end_at is not None and c.end_at > end_at:
+            c.end_at = end_at
+            # Cắt kỳ → cập nhật lại số tháng cho khớp cửa sổ mới.
+            if c.start_at is not None:
+                c.months = _months_between(c.start_at, end_at)
+        kept.append(c)
+    member.subscription_cycles = kept
+
+
+def _rebuild_paid_cycles(
+    db: Session, member: Member, *, actor_id: UUID | None, now: datetime
+) -> None:
+    """Dựng LẠI 1 chu kỳ ĐÃ THANH TOÁN từ [mốc gia hạn mới → hạn] của member.
+
+    Dùng khi RE-ANCHOR (sửa "Ngày gia hạn"): cả cửa sổ dời theo mốc gia hạn VỪA ĐẶT
+    (`subscription_purchased_at`), nên bỏ hết kỳ cũ rồi dựng lại (months suy từ cửa
+    sổ). Vô thời hạn (hạn None) → không còn kỳ."""
+    _reset_cycles(db, member)
+    anchor = _clamp_future(
+        member.subscription_purchased_at or member.joined_at, now
+    )
+    _append_paid_cycle(
+        member,
+        start_at=anchor,
+        end_at=member.subscription_end_at,
+        months=None,
+        actor_id=actor_id,
+        now=now,
+    )
+
+
+def _mark_member_paid(member: Member, *, now: datetime, actor_id: UUID | None) -> None:
+    """Đồng bộ trạng thái thanh toán TỔNG HỢP cấp member sau khi cycles thay đổi.
+
+    Mô hình mới: mọi chu kỳ đều 'paid' → member 'paid' (còn kỳ) hoặc giữ 'paid' khi
+    vô thời hạn (không kỳ). Dọn mọi dấu vết chờ duyệt cũ (requested)."""
+    member.payment_status = "paid"
+    member.paid_at = now
+    member.paid_marked_by_id = actor_id
+    member.payment_requested_at = None
+    member.payment_requested_by_id = None
+
+
+def _apply_invite_paid_cycle(
+    db: Session,
+    member: Member,
+    *,
+    months: int | None,
+    actor_id: UUID | None,
+    now: datetime,
+) -> None:
+    """MỜI = phí thu TRƯỚC (ví/QR) → member ĐÃ THANH TOÁN NGAY (nhất quán với renew,
+    chốt user 2026-07-13: không còn 'chưa thanh toán'/duyệt thủ công cho email mới mời).
+
+    Dựng LẠI 1 chu kỳ 'paid' phủ [ngày gia hạn → hạn] rồi đồng bộ trạng thái member.
+    Bỏ hết chu kỳ cũ vì mời/mời-lại = một chu kỳ tham gia MỚI (removed→mời lại reset cả
+    cửa sổ; pending mời lại cũng đặt lại hạn). Vô thời hạn (hạn None) → không có chu kỳ
+    nhưng member vẫn 'paid'. Xem [[subscription-cycle-model]]."""
+    _reset_cycles(db, member)
+    _append_paid_cycle(
+        member,
+        start_at=_clamp_future(member.subscription_purchased_at, now),
+        end_at=member.subscription_end_at,
+        months=months,
+        actor_id=actor_id,
+        now=now,
+    )
+    _mark_member_paid(member, now=now, actor_id=actor_id)
+
+
+def _reset_cycles(db: Session, member: Member) -> None:
+    """Xoá HẾT chu kỳ hiện có rồi FLUSH ngay. Bắt buộc flush trước khi nối lại kỳ số 1
+    (dựng lại từ đầu): nếu để delete-orphan cũ và INSERT kỳ mới cùng một flush,
+    SQLAlchemy có thể chèn (member_id, cycle_number=1) TRƯỚC khi xoá dòng cũ → vi phạm
+    unique `uq_member_cycle_number`. No-op nếu member chưa có kỳ nào."""
+    if member.subscription_cycles:
+        member.subscription_cycles = []
+        db.flush()
+
+
+def _has_open_remove_task(db: Session, member: Member) -> bool:
+    """True nếu member ĐÃ có 1 task GỠ đang mở (PENDING/IN_PROGRESS) — bất kể loại:
+    `REMOVE_MEMBER` (payload.member_id, cho member đã tham gia) HOẶC `REVOKE_INVITES`
+    (payload.emails chứa email, cho member chờ tham gia). Backend chọn loại theo status
+    (xem `remove.py::_build_removal_task`) nên guard phải soi cả hai, nếu không member
+    pending sẽ bị enqueue REVOKE trùng mỗi tick cleanup.
+
+    Dùng để enqueue idempotent: cả scheduler nền (main.py) lẫn endpoint
+    `cleanup-expired` (remove.py) enqueue theo trạng thái member, NHƯNG member chỉ
+    chuyển `removed` khi extension hoàn tất task (completion.py). Trong cửa sổ giữa
+    enqueue và completion member vẫn `active`/`pending` + vẫn hết hạn → tick/lần
+    gọi kế tiếp sẽ enqueue LẠI cùng member (đẻ task rác + audit log rác). Guard
+    này chặn việc đó. Không chống được race 2 luồng enqueue ĐỒNG THỜI (không khoá
+    dòng) nhưng đủ cho ca thực tế: 2 tick/2 lần bấm CÁCH NHAU vài giây — xem
+    memory `removed-retention-30d` / remove.md."""
+    return (
+        db.execute(
+            select(QueueItem.id)
+            .where(
+                QueueItem.workspace_id == member.workspace_id,
+                QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
+                or_(
+                    and_(
+                        QueueItem.type == "REMOVE_MEMBER",
+                        QueueItem.payload["member_id"].astext == str(member.id),
+                    ),
+                    and_(
+                        QueueItem.type == "REVOKE_INVITES",
+                        QueueItem.payload.contains({"emails": [member.email.lower()]}),
+                    ),
+                ),
+            )
+            .limit(1)
+        ).first()
+        is not None
+    )
 
 
 def _get_workspace_or_404(db: Session, workspace_id: UUID) -> Workspace:

@@ -1,6 +1,7 @@
 """Chức năng: SỬA "NGÀY GIA HẠN / NGÀY ADD ĐẦU TIÊN" — CHỈ 1 LẦN (super-admin).
 
 ⚠️ ĐỌC `correct_add_date.md` (cùng thư mục) TRƯỚC KHI SỬA FILE NÀY.
+⚠️ Neo-lại + tính hạn tuân theo `EXPIRY_RULES.md` §3 — KHÔNG tự chế công thức.
 
 Endpoint:
   - PATCH /{member_id}/add-date → correct_member_add_date
@@ -29,7 +30,9 @@ from ._shared import (
     router,
     _end_from_purchase,
     _get_workspace_or_404,
+    _mark_member_paid,
     _member_or_404_visible,
+    _rebuild_paid_cycles,
 )
 
 
@@ -99,6 +102,11 @@ def correct_member_add_date(
             member.subscription_end_at = shifted if shifted > now else old_end
     # else: vô thời hạn thật (end None) → chỉ đổi mốc neo.
     member.add_date_corrected_at = now
+
+    # Re-anchor dời CẢ cửa sổ subscription → dựng lại chu kỳ 1-tháng đã thanh toán
+    # theo mốc neo mới (mô hình chốt user 2026-07-13). Xem [[subscription-cycle-model]].
+    _rebuild_paid_cycles(db, member, actor_id=user.id, now=now)
+    _mark_member_paid(member, now=now, actor_id=user.id)
 
     log_event(
         db,
