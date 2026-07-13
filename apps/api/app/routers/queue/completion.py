@@ -12,11 +12,11 @@ Endpoints (đăng ký lên router dùng chung từ `_shared`):
   - PATCH /{item_id} → update_task
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -26,6 +26,7 @@ from app.deps import (
 )
 from app.models import Invite, Member, QueueItem, Workspace
 from app.schemas import QueueOut, QueueUpdate
+from app.services import wallet_service
 
 from ._shared import router
 
@@ -119,32 +120,89 @@ def update_task(
             "rời business, đánh dấu removed ở dashboard."
         )
 
-    # ---- REVOKE_INVITES COMPLETED → mark các email trong payload là removed ----
-    # Extension đã click "Thu hồi lời mời" trên ChatGPT thành công cho danh sách
-    # email; DB phải khớp theo (status='removed') để dashboard không còn hiển
-    # thị các pending record này.
+    # ---- REVOKE_INVITES COMPLETED → CHỈ mark removed email THỰC SỰ thu hồi ----
+    # ⚠️ Trước đây mark removed MÙ theo payload chỉ cần status=COMPLETED → bug: extension
+    # có thể fail 1 phần (vd menu ChatGPT không có mục "Thu hồi lời mời") mà vẫn báo
+    # COMPLETED → member bị removed dù lời mời VẪN CÒN trên ChatGPT (user 2026-07-13).
+    # Giờ đọc `result.data.results[].ok`: chỉ email ok=true (revoke/remove thành công)
+    # mới mark removed + `Invite`→revoked + audit; email fail → GIỮ pending + log cảnh báo.
     if body.status == "COMPLETED" and item.type == "REVOKE_INVITES":
         raw_emails = (item.payload or {}).get("emails") or []
-        revoke_emails = [
+        payload_emails = {
             str(e).strip().lower()
             for e in raw_emails
             if isinstance(e, str) and "@" in e
-        ]
-        if revoke_emails:
+        }
+        per_results = ((body.result or {}).get("data") or {}).get("results")
+        if isinstance(per_results, list):
+            revoked_ok = {
+                str(r.get("email", "")).strip().lower()
+                for r in per_results
+                if isinstance(r, dict) and r.get("ok") is True
+            }
+        else:
+            # Extension cũ không trả `results` → thiếu căn cứ → KHÔNG mark removed
+            # (an toàn: thà để pending còn hơn xoá nhầm khi chưa chắc đã thu hồi).
+            revoked_ok = set()
+        to_remove = payload_emails & revoked_ok
+        failed_emails = payload_emails - revoked_ok
+        if to_remove:
             stale_members = (
                 db.execute(
                     select(Member).where(
                         Member.workspace_id == workspace.id,
-                        Member.email.in_(revoke_emails),
+                        Member.email.in_(to_remove),
                         Member.status.in_(("pending", "active")),
                     )
                 )
                 .scalars()
                 .all()
             )
+            revoked_at = datetime.now(timezone.utc)
             for member in stale_members:
                 member.status = "removed"
+                member.removed_at = revoked_at
                 db.add(member)
+                log_event(
+                    db,
+                    actor_type="EXTENSION",
+                    actor_label=f"workspace:{workspace.name}",
+                    action="MEMBER_INVITE_REVOKED",
+                    result="OK",
+                    target_type="MEMBER",
+                    target_id=str(member.id),
+                    data={
+                        "email": member.email,
+                        "workspace_id": str(workspace.id),
+                    },
+                    commit=False,
+                )
+            db.execute(
+                update(Invite)
+                .where(
+                    Invite.workspace_id == workspace.id,
+                    Invite.email.in_(to_remove),
+                    Invite.status == "pending",
+                )
+                .values(status="revoked")
+            )
+        if failed_emails:
+            # Extension báo COMPLETED nhưng các email này KHÔNG thực sự thu hồi được
+            # → để lại pending + log để admin biết mà xử lý (không âm thầm nuốt).
+            log_event(
+                db,
+                actor_type="EXTENSION",
+                actor_label=f"workspace:{workspace.name}",
+                action="MEMBER_INVITE_REVOKE_FAILED",
+                result="ERROR",
+                target_type="WORKSPACE",
+                target_id=str(workspace.id),
+                data={
+                    "emails": sorted(failed_emails),
+                    "note": "Extension báo COMPLETED nhưng không thu hồi được các email này (giữ pending)",
+                },
+                commit=False,
+            )
 
     item.status = effective_status
     if body.result is not None:
@@ -271,6 +329,7 @@ def update_task(
             ).scalar_one_or_none()
             if member and member.status != "removed":
                 member.status = "removed"
+                member.removed_at = datetime.now(timezone.utc)
                 db.add(member)
                 log_event(
                     db,
@@ -403,6 +462,46 @@ def update_task(
                         if isinstance(e, str) and "@" in e
                     ]
 
+        # GUARD 10 PHÚT (fix 2026-07-13 — xem EXPIRY_RULES.md §9 + sync-reconcile-safety):
+        # COMPLETED + email lọt "unverified" CÓ THỂ do ChatGPT CHƯA index xong lời mời
+        # vừa gửi (trễ vài giây–chục giây), KHÔNG phải mời hỏng. KHÔNG hard-delete
+        # member/invite còn TƯƠI (mời < 10 phút) — kẻo xoá oan lời mời THÀNH CÔNG rồi
+        # sync tạo lại neo sai ngày import (bug ngocsangung). Để member 'pending',
+        # nhường SYNC làm nguồn sự thật. FAILED = cả lệnh hỏng → xoá ngay (không guard).
+        if emails_to_delete and effective_status == "COMPLETED":
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+            fresh = (
+                db.execute(
+                    select(Member.email).where(
+                        Member.workspace_id == workspace.id,
+                        Member.email.in_(emails_to_delete),
+                        func.coalesce(Member.last_invited_at, Member.created_at)
+                        > cutoff,
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            fresh_set = {e.lower() for e in fresh}
+            if fresh_set:
+                deferred = [e for e in emails_to_delete if e in fresh_set]
+                emails_to_delete = [e for e in emails_to_delete if e not in fresh_set]
+                log_event(
+                    db,
+                    actor_type="SYSTEM",
+                    actor_label="system:phantom-cleanup-guard",
+                    action="MEMBER_INVITE_CLEANUP_DEFERRED",
+                    result="OK",
+                    target_type="QUEUE_ITEM",
+                    target_id=str(item.id),
+                    data={
+                        "workspace_id": str(workspace.id),
+                        "deferred_emails": deferred,
+                        "reason": "fresh_invite_within_10min_defer_to_sync",
+                    },
+                    commit=False,
+                )
+
         if emails_to_delete:
             db.execute(
                 delete(Member).where(
@@ -417,6 +516,93 @@ def update_task(
                     Invite.queue_item_id == item.id,
                     Invite.email.in_(emails_to_delete),
                 )
+            )
+
+        # HOÀN PHÍ VÍ (feature 003-wallet-invite-payment) cho lời mời KHÔNG thành:
+        #  - FAILED → hoàn toàn bộ phí đã trừ của task (emails=None).
+        #  - COMPLETED nhưng có email không verify (unverified) → hoàn đúng các
+        #    email đó (emails_to_delete). verify_scrape_failed → không xoá/không hoàn.
+        # Idempotent: cột `reversed` + guard terminal đầu hàm chống hoàn 2 lần.
+        # No-op nếu task này không có giao dịch invite_fee (user non-beta).
+        if effective_status == "FAILED":
+            wallet_service.refund_invite(db, item.id, emails=None)
+        elif effective_status == "COMPLETED" and emails_to_delete:
+            wallet_service.refund_invite(db, item.id, emails=emails_to_delete)
+
+        # ---- TRẠNG THÁI THÀNH CÔNG/THẤT BẠI theo TỪNG member (gắn timeline) ----
+        # Trước đây kết quả cuối của lệnh mời chỉ nằm ở QueueItem; audit
+        # MEMBER_INVITE_QUEUED đóng băng result=PENDING → timeline member mãi
+        # "PENDING". Ghi thêm sự kiện gắn member.id (giống MEMBER_REMOVED_SYNCED) để
+        # timeline hiện đúng, VÀ set joined_at = LẦN VERIFIED THÀNH CÔNG ĐẦU TIÊN.
+        #   - "Thành công" = task COMPLETED + email VERIFIED (có trong tab Lời mời
+        #     HOẶC Người dùng — email unverified đã bị phantom cleanup xoá ở trên).
+        #   - verify_scrape_failed → CHƯA xác minh được → KHÔNG chấm thành công (giữ
+        #     record pending, timeline vẫn PENDING cho tới khi SYNC xác nhận).
+        #   - FAILED → chấm thất bại cho member CÒN SÓT (đã joined nên cleanup giữ).
+        # Nguồn email dùng `payload` (sống sót qua cleanup, khác Invite đã bị xoá).
+        inv_result = body.result or {}
+        scrape_failed = bool(inv_result.get("verify_scrape_failed"))
+        inv_payload = item.payload or {}
+        if isinstance(inv_payload.get("emails"), list):
+            task_emails = {
+                str(e).lower()
+                for e in inv_payload["emails"]
+                if isinstance(e, str) and "@" in e
+            }
+        elif isinstance(inv_payload.get("email"), str):
+            task_emails = {inv_payload["email"].lower()}
+        else:
+            task_emails = set()
+
+        verified_now: set[str] = set()
+        failed_now: set[str] = set()
+        if effective_status == "COMPLETED" and not scrape_failed:
+            verified_now = task_emails - {e.lower() for e in emails_to_delete}
+        elif effective_status == "FAILED":
+            failed_now = task_emails
+
+        now_terminal = datetime.now(timezone.utc)
+
+        def _log_invite_outcome(email: str, *, action: str, result: str) -> None:
+            member = db.execute(
+                select(Member).where(
+                    Member.workspace_id == workspace.id,
+                    Member.email == email,
+                    Member.status.in_(("pending", "active")),
+                )
+            ).scalar_one_or_none()
+            if member is None:
+                return  # phantom pending đã bị xoá → không còn gì để gắn
+            if action == "MEMBER_INVITE_VERIFIED" and member.joined_at is None:
+                # joined_at = lần thành công ĐẦU TIÊN; KHÔNG ghi đè nếu đã có
+                # (mời lại / sync trước đó đã ghi nhận) → giữ mốc thành công đầu.
+                member.joined_at = now_terminal
+                db.add(member)
+            log_event(
+                db,
+                actor_type="EXTENSION",
+                actor_label=f"workspace:{workspace.name}",
+                action=action,
+                result=result,
+                target_type="MEMBER",
+                target_id=str(member.id),
+                data={
+                    "email": email,
+                    "workspace_id": str(workspace.id),
+                    "queue_item_id": str(item.id),
+                    "verified_at": now_terminal.isoformat(),
+                    "error_code": body.error_code,
+                },
+                commit=False,
+            )
+
+        for email in sorted(verified_now):
+            _log_invite_outcome(
+                email, action="MEMBER_INVITE_VERIFIED", result="COMPLETED"
+            )
+        for email in sorted(failed_now):
+            _log_invite_outcome(
+                email, action="MEMBER_INVITE_FAILED", result="FAILED"
             )
 
     # SYNC_BILLING chỉ chạy khi user chủ động trigger từ dashboard (WorkspaceLayout

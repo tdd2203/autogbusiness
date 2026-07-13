@@ -1,6 +1,7 @@
 """Chức năng: SYNC RECONCILE (đồng bộ member từ extension + dọn phantom invite).
 
 ⚠️ ĐỌC `reconcile.md` (cùng thư mục) TRƯỚC KHI SỬA FILE NÀY.
+⚠️ Anchor/hạn tuân theo `EXPIRY_RULES.md` §3, §9 — KHÔNG tự chế công thức.
 
 Đây là API cho EXTENSION gọi (auth bằng X-API-KEY qua require_extension_workspace),
 KHÔNG phải cho dashboard.
@@ -44,13 +45,34 @@ def bulk_upsert_members(
         )
 
     now = datetime.now(timezone.utc)
+    # Fix ③ (EXPIRY_RULES §9): khôi phục GIỜ MỜI cho member dựng/backfill qua sync.
+    # Email đã mời qua dashboard có bản ghi Invite; nếu scrape KHÔNG mang ngày tham gia
+    # (m.joined_at None) → lấy giờ mời SỚM NHẤT làm mốc, thay vì để anchor rơi về ngày
+    # import (bug ngocsangung). Nạp 1 LẦN (batch) tránh N query trong vòng lặp.
+    _incoming = [mm.email.lower() for mm in body.members]
+    invite_times: dict[str, datetime] = {}
+    if _incoming:
+        invite_times = {
+            e.lower(): t
+            for e, t in db.execute(
+                select(Invite.email, func.min(Invite.created_at))
+                .where(
+                    Invite.workspace_id == workspace_id,
+                    func.lower(Invite.email).in_(_incoming),
+                )
+                .group_by(Invite.email)
+            ).all()
+            if t is not None
+        }
     created = 0
     updated = 0
     # Default subscription cho member scrape-only (chưa từng invite qua dashboard):
     # 1 tháng = 30 ngày. Theo yêu cầu user 2026-05-19.
-    # Mốc neo "Ngày gia hạn" = ngày thêm hiển thị trên dashboard = last_invited_at ??
-    # created_at (KHÁC joined_at scrape ChatGPT). Lưu vào subscription_purchased_at để
-    # cột "Ngày gia hạn" khớp; hạn = neo + tháng×30 CHÍNH XÁC (hết hạn = gia hạn + 30).
+    # Mốc neo "Ngày gia hạn" LẦN ĐẦU = NGÀY THAM GIA thật: last_invited_at ?? joined_at
+    # ?? created_at (chốt user 2026-07-13 — xem EXPIRY_RULES.md §3.5, §9). Member đồng bộ
+    # thuần từ ChatGPT vào team TRƯỚC lúc import → neo theo joined_at (ngày vào team),
+    # KHÔNG theo created_at (ngày import — vô nghĩa nghiệp vụ, gây thừa hạn). Lưu vào
+    # subscription_purchased_at; hạn = neo + tháng×30 CHÍNH XÁC (hết hạn = gia hạn + 30).
     # Chỉ THIẾT LẬP khi CHƯA có hạn (subscription_end_at IS NULL) — KHÔNG bao giờ đè
     # hạn đã set (gia hạn/bulk-set-expiry đã set end_at dù months có thể = None).
     default_sub_months = 1
@@ -70,19 +92,47 @@ def bulk_upsert_members(
             existing.license_type = (
                 m.license_type if m.license_type is not None else existing.license_type
             )
-            existing.status = m.status
+            # ⚠️ CHỐT CHẶN chống HẠ CẤP active → pending. Sync scope 'invites' CHỈ
+            # quét tab "Lời mời đang chờ xử lý" → mọi row bị gán cứng pending. Nếu
+            # tab active chưa unmount kịp (React), row active lọt vào lần quét này
+            # sẽ mang nhãn pending → trước đây ghi thẳng khiến member đang active
+            # bị đẩy về "Chờ tham gia" và KẸT (scope invites không quét lại tab
+            # active để promote). Một lần scrape TAB PENDING không đủ căn cứ khẳng
+            # định member đã rời team — cùng triết lý guard chống mark-removed.
+            # Chỉ chặn đúng chiều active→pending; các chuyển khác (pending→active,
+            # →removed…) vẫn cho qua. Nguồn sự thật để hạ active là SYNC_DATA scope
+            # 'both' (quét tab active, active-wins) hoặc REMOVE/REVOKE.
+            if not (existing.status == "active" and m.status == "pending"):
+                existing.status = m.status
+            # TÁI KÍCH HOẠT: member từng bị 'removed' (kể cả removed OAN do verify
+            # lời mời cũ mark nhầm) nay scrape lại thấy active/pending → clear mốc
+            # retention 30 ngày (giống invite.py / change_email.py). Tránh member
+            # active mà vẫn còn removed_at rác + để job hard-delete không dính.
+            if existing.status != "removed" and existing.removed_at is not None:
+                existing.removed_at = None
             # NGÀY THAM GIA = thời điểm MỜI (có giờ) nếu có. Scrape ChatGPT chỉ trả
             # NGÀY (00:00) → KHÔNG ghi đè joined_at đã có bằng giá trị kém chính xác
             # hơn. Chỉ đặt lần đầu (joined_at IS NULL), ưu tiên last_invited_at.
             # Yêu cầu user 2026-07-06 ("ngày tham gia lấy từ thời gian mời, cả giờ").
             if existing.joined_at is None:
-                existing.joined_at = existing.last_invited_at or m.joined_at
+                existing.joined_at = (
+                    existing.last_invited_at
+                    or m.joined_at
+                    or invite_times.get(email)
+                )
             existing.last_synced_at = now
             # Owner (chủ sở hữu workspace) mặc định VÔ HẠN — KHÔNG cấp gói (user
             # 2026-07-06). Member thường: backfill subscription CHỈ khi chưa từng có
             # hạn (end_at IS NULL) — legacy / row mới scrape. KHÔNG đụng hạn đã set.
             if existing.chatgpt_role != "owner" and existing.subscription_end_at is None:
-                anchor = existing.last_invited_at or existing.created_at or now
+                # Anchor lần đầu = NGÀY THAM GIA (joined_at đã set ngay phía trên nếu
+                # trước đó NULL). Xem EXPIRY_RULES.md §3.5.
+                anchor = (
+                    existing.last_invited_at
+                    or existing.joined_at
+                    or existing.created_at
+                    or now
+                )
                 existing.subscription_months = default_sub_months
                 existing.subscription_purchased_at = anchor
                 existing.subscription_end_at = _end_from_purchase(
@@ -91,8 +141,12 @@ def bulk_upsert_members(
             updated += 1
         else:
             # Owner mới scrape lần đầu → vô hạn (không gói). Member thường → gói mặc định.
-            # Mốc neo = now (giờ ghi nhận trên dashboard ≈ created_at); hạn = neo + 30.
+            # Mốc neo lần đầu = NGÀY THAM GIA (m.joined_at), fallback now nếu scrape
+            # thiếu; hạn = neo + 30. Xem EXPIRY_RULES.md §3.5.
             is_owner = m.chatgpt_role == "owner"
+            # Ngày tham gia = scrape ?? GIỜ MỜI (Invite) — không rơi về ngày import.
+            new_joined = m.joined_at or invite_times.get(email)
+            new_anchor = None if is_owner else (new_joined or now)
             db.add(
                 Member(
                     workspace_id=workspace_id,
@@ -101,13 +155,13 @@ def bulk_upsert_members(
                     chatgpt_role=m.chatgpt_role,
                     license_type=m.license_type,
                     status=m.status,
-                    joined_at=m.joined_at,
+                    joined_at=new_joined,
                     last_synced_at=now,
                     subscription_months=None if is_owner else default_sub_months,
-                    subscription_purchased_at=None if is_owner else now,
+                    subscription_purchased_at=new_anchor,
                     subscription_end_at=None
                     if is_owner
-                    else _end_from_purchase(now, default_sub_months),
+                    else _end_from_purchase(new_anchor, default_sub_months),
                 )
             )
             created += 1
@@ -124,6 +178,19 @@ def bulk_upsert_members(
         scopes = ("active", "pending")
     else:
         scopes = ()
+
+    # ⚠️ CHỈ mark 'removed' cho member 'pending' khi lần sync này ĐÃ quét CẢ tab
+    # "Người dùng" (active). Một pending RỜI tab "Lời mời" có 2 nguyên nhân không
+    # phân biệt được nếu chỉ nhìn tab Lời mời: (a) NGƯỜI DÙNG CHẤP NHẬN lời mời →
+    # sang tab "Người dùng" (active), (b) invite bị thu hồi/hết hạn. Sync scope
+    # 'invites' CHỈ quét tab "Lời mời" → không đủ căn cứ → KHÔNG xoá (user report
+    # 2026-07-13: đồng bộ lời mời làm MẤT thành viên đã tham gia). Nguồn sự thật
+    # để xoá pending = sync scope 'both' (quét tab active: thấy email → promote
+    # active; không thấy ở đâu → mới thật sự removed). Cùng triết lý guard
+    # active→pending chỉ hạ khi scope 'both'.
+    removal_scopes = scopes
+    if "pending" in scopes and "active" not in scopes:
+        removal_scopes = tuple(s for s in scopes if s != "pending")
 
     # Tập email "đã scrape" để reconcile. Khi sync lớn chia chunk, extension gửi
     # `reconcile_emails` = TẤT CẢ email đã scrape ở 1 request cuối (members rỗng)
@@ -186,7 +253,7 @@ def bulk_upsert_members(
                 f"{incoming_active_count} nhưng DB đang có {existing_active_count}"
             )
 
-    if scopes and incoming_emails and not reconcile_skipped:
+    if removal_scopes and incoming_emails and not reconcile_skipped:
         # Safety: KHÔNG reconcile member vừa invite qua dashboard trong 10 phút
         # gần đây (ChatGPT thường mất 1-30s để index pending invite vào tab "Lời
         # mời"; nếu extension verify trong khoảng đó, scrape chưa thấy thì backend
@@ -203,7 +270,7 @@ def bulk_upsert_members(
             db.execute(
                 select(Member).where(
                     Member.workspace_id == workspace_id,
-                    Member.status.in_(scopes),
+                    Member.status.in_(removal_scopes),
                     Member.email.notin_(incoming_emails),
                     ~(
                         (Member.invited_by_user_id.isnot(None))
@@ -221,6 +288,7 @@ def bulk_upsert_members(
         )
         for m in stale:
             m.status = "removed"
+            m.removed_at = now
             m.last_synced_at = now
             removed_count += 1
 
@@ -342,6 +410,7 @@ def reconcile_after_invite(
     removed_emails: list[str] = []
     for m in rows:
         m.status = "removed"
+        m.removed_at = now
         m.last_synced_at = now
         removed_emails.append(m.email)
 
