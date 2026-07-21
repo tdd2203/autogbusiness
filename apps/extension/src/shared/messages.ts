@@ -27,6 +27,11 @@ export type ExecuteActionRequest =
        * ngay trên trang config đã fresh (banner 'ngoài miền' không còn). false/thiếu
        * → lần gọi đầu (Phase A): bật toggle rồi trả `awaiting_external_reload`. */
       externalReady?: boolean;
+      /** Action "Mời lại" (re-invite lời mời lỗi). true → content chạy TIỀN TỐ trước
+       * khi mời: (1) tìm tab Người dùng — nếu còn là thành viên → huỷ, báo vẫn trong
+       * workspace; (2) thu hồi lời mời cũ ở tab Lời mời. Chỉ chạy 1 lần (khi
+       * !externalReady). Xem execute-invite.ts. */
+      reinvite?: boolean;
     }
   | { kind: "REMOVE_MEMBER"; taskId: string; email: string }
   | {
@@ -127,6 +132,16 @@ export type ExecuteActionRequest =
       emails: string[];
       role: ChatGPTRole;
     }
+  | {
+      /** Phase 2b của INVITE_MEMBER — kiểm tra các email KHÔNG thấy ở tab "Lời
+       * mời" xem đã sang tab "Người dùng" (active) chưa. Người dùng chấp nhận
+       * lời mời nhanh sẽ rời tab Lời mời → tránh mark 'removed' oan. Trả
+       * data.active_members (ScrapedMember status="active" để upsert) +
+       * data.active_emails. Read-only. */
+      kind: "CHECK_ACTIVE_AFTER_INVITE";
+      taskId: string;
+      emails: string[];
+    }
   | { kind: "PING"; taskId?: string };
 
 /** Kết quả scrape trang chi tiết hoá đơn Stripe (STRIPE_SCRAPE_INVOICE_DETAIL).
@@ -168,6 +183,11 @@ export type ExecuteActionResponse =
         | "NOT_LOGGED_IN_CHATGPT"
         | "TIMEOUT"
         | "VERIFY_FAILED"
+        // REMOVE: đã click xoá + dialog đóng, NHƯNG poll 45s member VẪN còn trong
+        // tab Người dùng → xoá chưa có hiệu lực (ChatGPT chặn/quyền/ghế). Backend
+        // GIỮ member active (KHÔNG mark removed) → tránh xoá-giả; tick sau retry,
+        // loop-guard chốt STUCK nếu lặp mãi (bug user 2026-07-21).
+        | "REMOVE_VERIFY_FAILED"
         | "PAGE_NOT_ADMIN"
         // DOM/UX ChatGPT thay đổi ngoài dự kiến: phần tử CẤU TRÚC bắt buộc phải
         // có (nút mở dialog mời, dropdown vai trò trên row ĐÃ tìm thấy, nút menu
@@ -184,3 +204,18 @@ export type ExecuteActionResponse =
         | "UNKNOWN";
       error_message: string;
     };
+
+/**
+ * Gợi ý khắc phục cho lỗi có dấu hiệu PHIÊN CHATGPT HỎNG/HẾT HẠN — trang admin
+ * redirect/treo/không render (NOT_LOGGED_IN_CHATGPT, CONTENT_TIMEOUT,
+ * CONTENT_NOT_INJECTED, PAGE_NOT_ADMIN, nav/nút Mời không hiện). Extension KHÔNG
+ * tự đăng nhập lại được (nhập credential = việc của user + dễ trip bot-detection),
+ * nên báo rõ để user tự xử lý thay vì đoán mò trước lỗi TIMEOUT mơ hồ.
+ *
+ * Bằng chứng thực tế (user 2026-07-15): phải XOÁ phiên đăng nhập chatgpt.com +
+ * đăng nhập lại thì trang admin mới load bình thường, mời được.
+ */
+export const SESSION_RECOVERY_HINT =
+  "Nếu lặp lại nhiều lần: phiên đăng nhập ChatGPT có thể đã hỏng/hết hạn khiến " +
+  "trang admin không tải được. Hãy XOÁ cookie/đăng xuất chatgpt.com → ĐĂNG NHẬP " +
+  "LẠI (mở chatgpt.com/admin/members kiểm tra vào được bình thường) rồi thử lệnh lại.";

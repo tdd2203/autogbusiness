@@ -14,9 +14,19 @@
  * tham gia tính giá. Không hoá đơn nào có chi tiết → note="no_detail".
  */
 
+import { useEffect, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useFormatDate, useT, useTranslateEnum } from "../i18n";
+import { api } from "../lib/api";
+import { useAuth } from "../hooks/useAuth";
 import type { BillingInvoice, Workspace } from "../types";
-import { computeBillingCycle, cycleStartFromRenewal, daysBetween } from "./billing-math";
+import {
+  computeBillingCycle,
+  cycleStartFromRenewal,
+  daysBetween,
+  invoiceSeatPricing,
+} from "./billing-math";
+import { toast } from "./Toast";
 
 const VND = new Intl.NumberFormat("vi-VN", {
   style: "currency",
@@ -28,6 +38,9 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
   const t = useT();
   const formatDate = useFormatDate();
   const tInvoiceStatus = useTranslateEnum("invoice");
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  const canEditFee = !!user?.is_super_admin;
   const invoices = workspace.billing_invoices ?? [];
 
   const cycle = computeBillingCycle(invoices, workspace.renewal_date);
@@ -38,15 +51,41 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
     daysRemaining,
     fullMonthPerSlot,
     fullMonthPerSlotWithVat,
+    feePerSeat,
+    fullMonthPerSlotWithFee,
     vatRate,
-    todayPriceWithVat,
+    todayPriceWithFee,
     totalSeats,
     totalCyclePaidWithVat,
+    totalCycleFees,
+    totalCyclePaidWithFees,
     projectedNextCycleWithVat,
     cycleInvoices,
     baseInvoice,
   } = cycle;
   const vatPct = vatRate != null ? Math.round(vatRate * 100) : 10;
+
+  // Nhập/xoá phí ngân hàng cho 1 hoá đơn (super-admin). Định danh hoá đơn bằng
+  // invoice_number (fallback date+amount) — khớp logic BE. Xong → invalidate query
+  // workspace để bảng + tổng "thực trả" đọc lại bản sống.
+  const feeMut = useMutation({
+    mutationFn: (vars: { inv: BillingInvoice; fee: number | null }) =>
+      api(`/api/v1/workspaces/${workspace.id}/billing-invoices/fee`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          invoice_number: vars.inv.invoice_number ?? null,
+          date: vars.inv.date,
+          amount_vnd: vars.inv.amount_vnd,
+          service_fee_vnd: vars.fee,
+        }),
+      }),
+    onSuccess: () => {
+      toast.success(t("billing.feeSaved"));
+      qc.invalidateQueries({ queryKey: ["workspace", workspace.id] });
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : String(e)),
+  });
 
   // Fallback hiển thị ngày renew ngay cả khi chỉ có renewal_date đoán.
   const displayRenewal =
@@ -80,9 +119,9 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
           ? t("billing.cycleEndedHint")
           : note === "no_detail"
             ? t("billing.noDetailHint")
-            : baseInvoice && fullMonthPerSlotWithVat !== null && displayDaysRemaining !== null
+            : baseInvoice && fullMonthPerSlotWithFee !== null && displayDaysRemaining !== null
               ? t("billing.todayFromBase", {
-                  base: VND.format(fullMonthPerSlotWithVat),
+                  base: VND.format(fullMonthPerSlotWithFee),
                   days: displayDaysRemaining,
                 })
               : "";
@@ -107,32 +146,47 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
         }}
       >
         <Metric
-          label={t("billing.todaySlotPrice")}
-          value={todayPriceWithVat !== null ? VND.format(todayPriceWithVat) : "—"}
+          label={
+            feePerSeat
+              ? t("billing.remainingDaysPriceWithFee")
+              : t("billing.remainingDaysPrice")
+          }
+          value={todayPriceWithFee !== null ? VND.format(todayPriceWithFee) : "—"}
           hint={
-            todayPriceWithVat !== null && fullMonthPerSlotWithVat !== null && displayDaysRemaining !== null
-              ? t("billing.todaySlotPriceVatHint", {
-                  days: displayDaysRemaining,
-                  full: VND.format(fullMonthPerSlotWithVat),
+            todayPriceWithFee !== null && fullMonthPerSlotWithFee !== null && displayDaysRemaining !== null
+              ? t("billing.remainingDaysPriceHint", {
+                  days: Math.min(displayDaysRemaining, 30),
+                  full: VND.format(fullMonthPerSlotWithFee),
                 })
               : todayHint
           }
         />
         <Metric
-          label={t("billing.fullMonthPerSlot")}
+          label={
+            feePerSeat
+              ? t("billing.fullMonthPerSlotWithFee")
+              : t("billing.fullMonthPerSlot")
+          }
           value={
-            fullMonthPerSlotWithVat !== null
-              ? VND.format(fullMonthPerSlotWithVat)
+            fullMonthPerSlotWithFee !== null
+              ? VND.format(fullMonthPerSlotWithFee)
               : "—"
           }
           hint={
-            fullMonthPerSlot !== null
-              ? t("billing.fullMonthPerSlotVatHint", {
-                  preVat: VND.format(fullMonthPerSlot),
-                  vatPct,
-                  qty: baseInvoice?.quantity ?? "?",
-                })
-              : t("billing.fullMonthPerSlotHintV2")
+            fullMonthPerSlot === null
+              ? t("billing.fullMonthPerSlotHintV2")
+              : feePerSeat
+                ? t("billing.fullMonthPerSlotFeeHint", {
+                    withVat: VND.format(fullMonthPerSlotWithVat ?? 0),
+                    feePerSeat: VND.format(feePerSeat),
+                    totalFees: VND.format(totalCycleFees ?? 0),
+                    seats: totalSeats ?? "?",
+                  })
+                : t("billing.fullMonthPerSlotVatHint", {
+                    preVat: VND.format(fullMonthPerSlot),
+                    vatPct,
+                    qty: baseInvoice?.quantity ?? "?",
+                  })
           }
         />
         <Metric
@@ -175,6 +229,19 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
           hint={t("billing.totalCyclePaidHint", { n: cycleInvoices.length })}
         />
         <Metric
+          label={t("billing.totalCyclePaidWithFees")}
+          value={
+            totalCyclePaidWithFees ? VND.format(totalCyclePaidWithFees) : "—"
+          }
+          hint={
+            totalCycleFees
+              ? t("billing.totalCyclePaidWithFeesHint", {
+                  fees: VND.format(totalCycleFees),
+                })
+              : t("billing.totalCyclePaidWithFeesNoFee")
+          }
+        />
+        <Metric
           label={t("billing.projectedNextCycle")}
           value={
             projectedNextCycleWithVat
@@ -215,7 +282,16 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
                 <th style={{ textAlign: "left" }}>{t("billing.colDate")}</th>
                 <th style={{ textAlign: "right" }}>{t("billing.colAmount")}</th>
                 <th style={{ textAlign: "center" }}>{t("billing.colQty")}</th>
-                <th style={{ textAlign: "right" }}>{t("billing.colPerSlot")}</th>
+                <th style={{ textAlign: "right" }} title={t("billing.colPerSeatMonthTooltip")}>
+                  {t("billing.colPerSeatMonth")}
+                </th>
+                <th style={{ textAlign: "right" }} title={t("billing.colPerSeatRemainingTooltip")}>
+                  {t("billing.colPerSeatRemaining")}
+                </th>
+                <th style={{ textAlign: "right" }}>{t("billing.colFee")}</th>
+                <th style={{ textAlign: "right" }} title={t("billing.colActualTooltip")}>
+                  {t("billing.colActual")}
+                </th>
                 <th style={{ textAlign: "left" }}>{t("billing.colStatus")}</th>
               </tr>
             </thead>
@@ -232,6 +308,13 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
                     formatDate={formatDate}
                     tInvoiceStatus={tInvoiceStatus}
                     notScraped={t("billing.notScrapedShort")}
+                    actualTooltip={t("billing.colActualTooltip")}
+                    monthTooltip={t("billing.colPerSeatMonthTooltip")}
+                    remainingTooltip={t("billing.colPerSeatRemainingTooltip")}
+                    canEditFee={canEditFee}
+                    feePlaceholder={t("billing.feePlaceholder")}
+                    savingFee={feeMut.isPending}
+                    onSaveFee={(fee) => feeMut.mutate({ inv, fee })}
                   />
                 ))}
             </tbody>
@@ -247,15 +330,36 @@ function InvoiceRow({
   formatDate,
   tInvoiceStatus,
   notScraped,
+  actualTooltip,
+  monthTooltip,
+  remainingTooltip,
+  canEditFee,
+  feePlaceholder,
+  savingFee,
+  onSaveFee,
 }: {
   inv: BillingInvoice;
   formatDate: ReturnType<typeof useFormatDate>;
   tInvoiceStatus: (v: string) => string;
   notScraped: string;
+  actualTooltip: string;
+  monthTooltip: string;
+  remainingTooltip: string;
+  canEditFee: boolean;
+  feePlaceholder: string;
+  savingFee: boolean;
+  onSaveFee: (fee: number | null) => void;
 }) {
   const scraped = inv.detail_scraped === true;
   const qty = inv.quantity;
-  const unit = inv.unit_price_vnd;
+  // Thực trả = số tiền hoá đơn (gồm VAT) + phí ngân hàng nhập tay. Khớp logic
+  // totalCyclePaidWithFees ở billing-math (ưu tiên total_vnd, fallback amount_vnd).
+  const actual =
+    (inv.total_vnd ?? inv.amount_vnd ?? 0) + (inv.service_fee_vnd ?? 0);
+  // Giá/seat của RIÊNG hoá đơn này: giá tháng (đơn giá×VAT + phí/seat, loại
+  // proration) + giá cho ngày còn lại (÷30, kẹp ≤ giá tháng). Tự tính theo tỉ giá
+  // của chính hoá đơn. Cập nhật ngay khi nhập phí NH.
+  const { monthlyPerSeat, remainingPerSeat } = invoiceSeatPricing(inv);
   return (
     <tr>
       <td>{formatDate(inv.date)}</td>
@@ -275,11 +379,48 @@ function InvoiceRow({
         style={{
           textAlign: "right",
           fontFamily: "var(--font-mono)",
-          color: unit != null ? "var(--ink-2)" : "var(--ink-3)",
+          color: monthlyPerSeat != null ? "var(--ink-2)" : "var(--ink-3)",
         }}
-        title={!scraped ? notScraped : undefined}
+        title={
+          monthlyPerSeat != null ? monthTooltip : !scraped ? notScraped : undefined
+        }
       >
-        {unit != null ? VND.format(unit) : "—"}
+        {monthlyPerSeat != null ? VND.format(monthlyPerSeat) : "—"}
+      </td>
+      <td
+        style={{
+          textAlign: "right",
+          fontFamily: "var(--font-mono)",
+          color: remainingPerSeat != null ? "var(--ink-2)" : "var(--ink-3)",
+        }}
+        title={
+          remainingPerSeat != null
+            ? remainingTooltip
+            : !scraped
+              ? notScraped
+              : undefined
+        }
+      >
+        {remainingPerSeat != null ? VND.format(remainingPerSeat) : "—"}
+      </td>
+      <td style={{ textAlign: "right" }}>
+        <FeeCell
+          fee={inv.service_fee_vnd ?? null}
+          canEdit={canEditFee}
+          placeholder={feePlaceholder}
+          saving={savingFee}
+          onSave={onSaveFee}
+        />
+      </td>
+      <td
+        style={{
+          textAlign: "right",
+          fontFamily: "var(--font-mono)",
+          fontWeight: 600,
+        }}
+        title={actualTooltip}
+      >
+        {VND.format(actual)}
       </td>
       <td>
         <span
@@ -295,6 +436,78 @@ function InvoiceRow({
         </span>
       </td>
     </tr>
+  );
+}
+
+/**
+ * Ô nhập phí ngân hàng cho 1 hoá đơn. Super-admin → input số (chấp nhận dấu chấm/
+ * phẩy, chỉ giữ chữ số); rỗng = xoá phí. Lưu khi blur/Enter, chỉ gọi API khi đổi.
+ * Người không phải super-admin → chỉ xem.
+ */
+function FeeCell({
+  fee,
+  canEdit,
+  placeholder,
+  saving,
+  onSave,
+}: {
+  fee: number | null;
+  canEdit: boolean;
+  placeholder: string;
+  saving: boolean;
+  onSave: (fee: number | null) => void;
+}) {
+  const [val, setVal] = useState(fee != null ? String(fee) : "");
+  // Đồng bộ lại khi bản sống đổi (sau khi lưu → invalidate refetch workspace).
+  useEffect(() => {
+    setVal(fee != null ? String(fee) : "");
+  }, [fee]);
+
+  if (!canEdit) {
+    return (
+      <span
+        style={{
+          fontFamily: "var(--font-mono)",
+          color: fee != null ? "var(--ink-2)" : "var(--ink-3)",
+        }}
+      >
+        {fee != null ? VND.format(fee) : "—"}
+      </span>
+    );
+  }
+
+  const commit = () => {
+    const digits = val.replace(/[^\d]/g, "");
+    const next = digits === "" ? null : Number(digits);
+    if (next === (fee ?? null)) {
+      // Không đổi → reset hiển thị về giá trị chuẩn (bỏ ký tự phân tách user gõ).
+      setVal(fee != null ? String(fee) : "");
+      return;
+    }
+    onSave(next);
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      value={val}
+      placeholder={placeholder}
+      disabled={saving}
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+      className="form-input"
+      style={{
+        width: 110,
+        padding: "4px 6px",
+        fontSize: 12.5,
+        textAlign: "right",
+        fontFamily: "var(--font-mono)",
+      }}
+    />
   );
 }
 

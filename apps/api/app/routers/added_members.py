@@ -118,6 +118,11 @@ def list_added_members(
 
     rows: list[AddedMemberOut] = []
     for member in db.execute(stmt).scalars():
+        # HARDENING (2026-07-14): payment_status cấp member = TỔNG HỢP TỪ CYCLES (nguồn
+        # sự thật). Cờ lưu có thể lệch nếu một mẻ nền dựng/đổi kỳ mà không recompute
+        # (vd migration cycle 13/7). Tính lại tại đây để hiển thị + đếm LUÔN khớp kỳ,
+        # không bao giờ tái diễn cảnh "chưa thanh toán" mà badge "đã thanh toán".
+        _recompute_member_payment_status(member)
         out = AddedMemberOut.model_validate(member)
         out.workspace_name = member.workspace.name if member.workspace else None
         out.invited_by_username = (
@@ -527,12 +532,35 @@ def transfer_members_owner(
     members = list(
         db.execute(select(Member).where(Member.id.in_(body.member_ids))).scalars()
     )
+    # Chủ cũ khác nhau tuỳ member → tra tên chủ cũ để log "a → b" cho TỪNG email.
+    prev_owner_ids = {
+        m.invited_by_user_id for m in members if m.invited_by_user_id is not None
+    }
+    prev_usernames: dict[UUID, str] = {}
+    if prev_owner_ids:
+        prev_usernames = {
+            u.id: u.username
+            for u in db.execute(
+                select(User).where(User.id.in_(prev_owner_ids))
+            ).scalars()
+        }
     changed_ids: list[str] = []
+    # entries[]: chủ cũ của từng member (member detail khớp theo member_id để hiện
+    # "a → b"). Chủ cũ = None → member trước đó "chưa có chủ".
+    entries: list[dict] = []
     for member in members:
         if member.invited_by_user_id == body.target_user_id:
             continue
+        from_username = (
+            prev_usernames.get(member.invited_by_user_id)
+            if member.invited_by_user_id is not None
+            else None
+        )
         member.invited_by_user_id = body.target_user_id
         changed_ids.append(str(member.id))
+        entries.append(
+            {"member_id": str(member.id), "from_username": from_username}
+        )
 
     if changed_ids:
         log_event(
@@ -549,6 +577,7 @@ def transfer_members_owner(
                 "target_user_id": str(body.target_user_id),
                 "target_username": target.username,
                 "member_ids": changed_ids,
+                "entries": entries,
             },
             commit=False,
         )

@@ -188,7 +188,7 @@ def update_workspace(
     ws = _get_workspace_or_404(db, workspace_id)
     changes: dict = {}
 
-    for field in ("name", "chatgpt_id", "plan", "seat_total"):
+    for field in ("name", "chatgpt_id", "plan", "seat_total", "chatgpt_locale"):
         new_val = getattr(body, field)
         if new_val is not None and new_val != getattr(ws, field):
             changes[field] = {"before": getattr(ws, field), "after": new_val}

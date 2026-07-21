@@ -2,6 +2,7 @@ import type {
   ChatGPTRole,
   ExecuteActionResponse,
 } from "../../../shared/messages";
+import { SESSION_RECOVERY_HINT } from "../../../shared/messages";
 import {
   humanClick,
   humanType,
@@ -27,6 +28,18 @@ import {
 import { findInviteOpenButton } from "./finders/find-invite-open-button";
 import { findInviteSubmitButton } from "./finders/find-submit-button";
 import { setRole } from "./set-role";
+
+/**
+ * Nút bị VÔ HIỆU HOÁ? ChatGPT disable "Gửi lời mời" khi còn banner "ngoài miền"
+ * (hoặc email chưa hợp lệ). Click nút disabled = no-op → verify 15s → VERIFY_FAILED.
+ * Kiểm 3 tín hiệu: thuộc tính `disabled`, `aria-disabled`, `data-disabled` (Radix).
+ */
+function isControlDisabled(el: HTMLElement): boolean {
+  if ((el as HTMLButtonElement).disabled === true) return true;
+  if (el.getAttribute("aria-disabled") === "true") return true;
+  if (el.getAttribute("data-disabled") !== null) return true;
+  return false;
+}
 
 export async function executeInviteInner(
   taskId: string,
@@ -68,19 +81,22 @@ export async function executeInviteInner(
   // 2. Mở dialog Invite. Poll-wait button render — wrap external-invites điều
   //    hướng từ /admin/identity → /admin/members chỉ đợi URL đổi (5s), nhưng
   //    SPA render content sau navigation cần thêm vài trăm ms tới vài giây.
-  //    Nếu invite button chưa render thì retry tới 8s.
+  //    Nếu invite button chưa render thì retry tới 20s (FIX B 2026-07-15: tăng
+  //    từ 8s — tab tái dùng vừa F5, ChatGPT React rehydrate + fetch org-config
+  //    có khi >8s → "Không tìm thấy nút Mời" oan; 20s khớp poll ô email bên dưới).
   let openBtn: HTMLElement | null = null;
   try {
-    openBtn = await waitFor(() => findInviteOpenButton(), 8_000);
+    openBtn = await waitFor(() => findInviteOpenButton(), 20_000);
   } catch {
     return {
       ok: false,
       error_code: "FAILED_UI_CHANGED",
       error_message:
-        "Không tìm thấy nút 'Mời thành viên' sau 8s. URL hiện tại: " +
+        "Không tìm thấy nút 'Mời thành viên' sau 20s. URL hiện tại: " +
         location.pathname +
         ". Kiểm tra (a) đang ở /admin/members, (b) đã click tab Người dùng, " +
-        "(c) sidebar có hiển thị tab '+Mời thành viên' ở góc phải.",
+        "(c) sidebar có hiển thị tab '+Mời thành viên' ở góc phải. " +
+        SESSION_RECOVERY_HINT,
     };
   }
   await randomDelay();
@@ -262,19 +278,23 @@ export async function executeInviteInner(
   await randomDelay(800, 1800);
   await setRole(role);
 
-  // 5.5 KIỂM TRA LẠI banner "email ngoài miền đã xác minh" (v0.8.12).
-  //   ChatGPT validate email LIVE. Nếu có email NGOÀI domain mà setting "Allow
-  //   External Domain Invites" CHƯA có hiệu lực, dialog hiện banner đỏ "...not a
-  //   part of your organization's verified domains..." + DISABLE nút Send invites.
-  //   `execute-invite.ts` đã xác nhận toggle ON (aria-checked) ở /admin/identity
-  //   TRƯỚC khi mở dialog, nhưng hiệu lực cần chút thời gian để PROPAGATE sang
-  //   dialog (user report 2026-06-19). Trong cửa sổ đó nếu submit mù → click nút
-  //   disabled → verify timeout 15s → VERIFY_FAILED, hoặc phantom "đang chờ".
-  //   → ĐỢI banner biến mất (poll, tối đa 8s) rồi mới submit; còn → huỷ rõ ràng.
+  // 5.5 KIỂM TRA LẠI banner "email ngoài miền đã xác minh" (v0.8.12 + "làm chậm
+  //   mà chắc" 2026-07-15).
+  //   ChatGPT validate email LIVE, BẤT ĐỒNG BỘ sau khi gõ. Nếu có email NGOÀI
+  //   domain mà setting "Allow External Domain Invites" CHƯA có hiệu lực, dialog
+  //   hiện banner đỏ "...not a part of your organization's verified domains..." +
+  //   DISABLE nút Send invites. `execute-invite.ts` đã xác nhận toggle ON + để
+  //   server chốt (settleServerCommit) + background HARD-RELOAD refetch config,
+  //   nhưng banner vẫn có thể tới TRỄ vài trăm ms–vài giây.
+  //   ⚠️ Bài học 2026-07-15 (VERIFY_FAILED): check banner NGAY sau setRole có thể
+  //   thấy "không banner" oan (banner chưa render) → submit mù → ChatGPT từ chối
+  //   silently. → ĐỢI 1 nhịp cho validation kịp render TRƯỚC khi kết luận, rồi mới
+  //   check + poll banner biến mất (tối đa 15s), còn → huỷ rõ ràng.
+  await sleep(1_500);
   const dialogNow = document.querySelector('[role="dialog"]') as HTMLElement | null;
   if (hasVerifiedDomainWarning(dialogNow)) {
     console.log(
-      "[autogpt-invite] phát hiện banner 'email ngoài miền đã xác minh' — đợi setting external-invites propagate (poll tối đa 8s)...",
+      "[autogpt-invite] phát hiện banner 'email ngoài miền đã xác minh' — đợi setting external-invites propagate (poll tối đa 15s)...",
     );
     await reportProgress(
       taskId,
@@ -287,11 +307,11 @@ export async function executeInviteInner(
       },
       true,
     );
-    const cleared = await waitForDomainWarningCleared(dialogNow, 8_000);
+    const cleared = await waitForDomainWarningCleared(dialogNow, 15_000);
     if (!cleared) {
       const warnText = findVerifiedDomainWarning(dialogNow) ?? "(banner)";
       console.warn(
-        "[autogpt-invite] banner 'email ngoài miền đã xác minh' VẪN còn sau 8s — huỷ invite (toggle external-invites chưa có hiệu lực).",
+        "[autogpt-invite] banner 'email ngoài miền đã xác minh' VẪN còn sau 15s — huỷ invite (toggle external-invites chưa có hiệu lực).",
       );
       return {
         ok: false,
@@ -302,11 +322,18 @@ export async function executeInviteInner(
       };
     }
     console.log(
-      "[autogpt-invite] banner đã biến mất — setting external-invites đã có hiệu lực, tiếp tục submit.",
+      "[autogpt-invite] banner đã biến mất — setting external-invites đã có hiệu lực, chờ nút Send enable rồi submit.",
     );
+    // Banner vừa ẩn → React cập nhật nút Send từ disabled→enabled TRỄ 1 nhịp.
+    await sleep(1_000);
   }
 
-  // 6. Click Submit
+  // 6. Click Submit — CHỜ nút Send THỰC SỰ enable trước khi click.
+  //   Banner-text không phải tín hiệu duy nhất: có lúc banner đã ẩn nhưng nút Send
+  //   còn disabled 1 nhịp (React trễ), hoặc setting chưa hiệu lực làm Send disabled
+  //   dù không có banner text. Click nút disabled = no-op → verify 15s →
+  //   VERIFY_FAILED. → poll tới 6s cho nút enable; còn disabled → EXTERNAL_TOGGLE_FAILED
+  //   (huỷ rõ ràng thay vì click chết → tạo lời mời ảo).
   await randomDelay();
   const submitBtn = findInviteSubmitButton();
   if (!submitBtn) {
@@ -321,7 +348,26 @@ export async function executeInviteInner(
         TEXT_FALLBACKS.inviteSubmitButton.join(", "),
     };
   }
-  await humanClick(submitBtn);
+  const enabledBtn = await waitFor(() => {
+    const b = findInviteSubmitButton();
+    return b && !isControlDisabled(b) ? b : null;
+  }, 6_000).catch(() => null);
+  if (!enabledBtn) {
+    const warnText =
+      findVerifiedDomainWarning(document.querySelector('[role="dialog"]')) ??
+      "(nút Gửi lời mời vẫn bị mờ)";
+    console.warn(
+      "[autogpt-invite] nút 'Gửi lời mời' VẪN disabled sau 6s — huỷ invite (setting external chưa hiệu lực).",
+    );
+    return {
+      ok: false,
+      error_code: "EXTERNAL_TOGGLE_FAILED",
+      error_message:
+        `Nút "Gửi lời mời" vẫn bị vô hiệu hoá sau khi chờ (dấu hiệu: "${warnText}") — ` +
+        "setting 'mời ngoài tên miền' chưa có hiệu lực server-side. Đã huỷ submit để tránh lời mời ảo.",
+    };
+  }
+  await humanClick(enabledBtn);
   console.log("[autogpt-invite] submit clicked, verifying...");
 
   await reportProgress(

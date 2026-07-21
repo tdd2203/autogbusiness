@@ -59,7 +59,18 @@ def _invite(client: TestClient, headers: dict, ws_id: str, email: str) -> dict:
     return resp.json()
 
 
-def test_added_members_listing_and_default_unpaid(
+def _reset_unpaid(client: TestClient, auth_header: dict, member_id: str) -> None:
+    """Mời giờ auto 'paid' (phí thu trước). Super-admin đặt lại 'unpaid' để các test
+    dưới còn kiểm được luồng duyệt tay 2 bước (legacy, dùng cho dữ liệu cũ)."""
+    resp = client.post(
+        "/api/v1/added-members/mark-paid",
+        json={"member_ids": [member_id], "paid": False},
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_added_members_listing_and_default_paid(
     client: TestClient, auth_header: dict
 ) -> None:
     ws, _sub = _setup_workspace_with_sub(client, auth_header, username="subpay1")
@@ -71,8 +82,9 @@ def test_added_members_listing_and_default_unpaid(
     rows = resp.json()
     assert len(rows) == 1
     assert rows[0]["email"] == "buyer1@example.com"
-    assert rows[0]["payment_status"] == "unpaid"
-    assert rows[0]["paid_at"] is None
+    # Mời = phí thu trước → ĐÃ THANH TOÁN ngay, không cần duyệt thủ công.
+    assert rows[0]["payment_status"] == "paid"
+    assert rows[0]["paid_at"] is not None
     assert rows[0]["workspace_name"] == ws["name"]
 
 
@@ -82,6 +94,7 @@ def test_sub_admin_request_and_withdraw(
     ws, _sub = _setup_workspace_with_sub(client, auth_header, username="subpay2")
     sub_h = _login(client, "subpay2")
     m = _invite(client, sub_h, ws["id"], "buyer2@example.com")
+    _reset_unpaid(client, auth_header, m["id"])
 
     # Bước 1: gửi yêu cầu duyệt → 'requested'
     req = client.post(
@@ -137,6 +150,7 @@ def test_super_admin_confirms_payment(
     ws, _sub = _setup_workspace_with_sub(client, auth_header, username="subpay6")
     sub_h = _login(client, "subpay6")
     m = _invite(client, sub_h, ws["id"], "buyer6@example.com")
+    _reset_unpaid(client, auth_header, m["id"])
 
     # Sub gửi yêu cầu
     client.post(
@@ -180,6 +194,7 @@ def test_sub_admin_cannot_request_others_email(
     ws, _suba = _setup_workspace_with_sub(client, auth_header, username="subpayA")
     suba_h = _login(client, "subpayA")
     m = _invite(client, suba_h, ws["id"], "buyerA@example.com")
+    _reset_unpaid(client, auth_header, m["id"])  # cô lập kiểm tra quyền sở hữu
 
     # Sub B (khác workspace) không được gửi yêu cầu cho email của Sub A → count 0.
     _wsb, _subb = _setup_workspace_with_sub(client, auth_header, username="subpayB")
@@ -201,6 +216,7 @@ def test_pending_count_badge(client: TestClient, auth_header: dict) -> None:
     ws, _sub = _setup_workspace_with_sub(client, auth_header, username="subpayC")
     sub_h = _login(client, "subpayC")
     m = _invite(client, sub_h, ws["id"], "buyerC@example.com")
+    _reset_unpaid(client, auth_header, m["id"])
 
     # Chưa có yêu cầu nào → super-admin thấy 0.
     resp = client.get("/api/v1/added-members/pending-count", headers=auth_header)
@@ -245,6 +261,7 @@ def test_pending_requests_notice(client: TestClient, auth_header: dict) -> None:
     ws, _sub = _setup_workspace_with_sub(client, auth_header, username="subpayD")
     sub_h = _login(client, "subpayD")
     m = _invite(client, sub_h, ws["id"], "buyerD@example.com")
+    _reset_unpaid(client, auth_header, m["id"])
 
     # Chưa gửi → rỗng.
     assert (

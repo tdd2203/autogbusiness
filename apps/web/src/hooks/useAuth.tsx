@@ -20,6 +20,9 @@ export type UserProfile = {
   username: string;
   is_super_admin: boolean;
   is_active: boolean;
+  // Cờ thử nghiệm Ví (feature 003) — bật menu Ví + enforcement mời. Optional để
+  // tương thích ngược nếu backend cũ chưa trả field này.
+  wallet_beta?: boolean;
   permissions: string[];
   created_at: string;
   updated_at: string;

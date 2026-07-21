@@ -62,6 +62,67 @@ def _end_from_purchase(
     return purchased_at + timedelta(days=months * SUBSCRIPTION_DAYS_PER_MONTH)
 
 
+def _is_paid_period_active(member: Member, now: datetime) -> bool:
+    """CÒN HẠN: member có mốc hết hạn CỤ THỂ còn ở tương lai (`subscription_end_at`
+    không None và > now). Ân hạn = 0 (mirror rule cleanup-expired/scheduler).
+
+    Dùng để quyết định MỜI LẠI MIỄN PHÍ: email còn hạn bị xoá → mời lại KHÔNG tính
+    phí và GIỮ NGUYÊN cửa sổ hạn + chu kỳ đã thanh toán (đã trả tiền cho kỳ này rồi,
+    xoá không hoàn tiền → mời lại chỉ là tiếp tục kỳ cũ, không phải chu kỳ mới).
+
+    VÔ THỜI HẠN (`subscription_end_at` None) KHÔNG tính là "còn hạn" — 'vô hạn' là
+    khái niệm khác 'còn hạn', giữ hành vi mời-lại cũ (reset cửa sổ + tính phí 1 kỳ)."""
+    return member.subscription_end_at is not None and member.subscription_end_at > now
+
+
+def find_movable_paid_members(
+    db: Session,
+    *,
+    emails: list[str],
+    exclude_workspace_id: UUID,
+    owner_id: UUID,
+    now: datetime,
+) -> dict[str, "Member"]:
+    """Tìm member CÓ THỂ CHUYỂN WORKSPACE miễn phí: cùng email, CÙNG CHỦ SỞ HỮU
+    (`invited_by_user_id == owner_id`), đã `removed` khỏi workspace KHÁC, và CÒN HẠN
+    (`subscription_end_at` > now).
+
+    Ca dùng — "add nhầm workspace" (user 2026-07-16): email đã THANH TOÁN, bị gỡ khỏi
+    ws SAI, giờ mời sang ws ĐÚNG. Vì MỌI truy vấn member đều lọc theo `workspace_id`
+    nên nếu không có helper này, mời sang ws khác bị coi là email MỚI → TÍNH PHÍ LẠI
+    oan. Caller (`perform_invite_core`) sẽ CHUYỂN nguyên record sang ws mới (đổi
+    `workspace_id`, giữ `member.id` → cửa sổ hạn + chu kỳ đã thanh toán gắn theo
+    `member_id` tự đi theo), đặt `pending`, KHÔNG tính phí. Xem
+    [[cross-workspace-move-keeps-paid]] / [[reinvite-still-valid-is-free]].
+
+    Chỉ xét `removed` — KHÔNG đụng email đang `active`/`pending` ở ws khác (đang dùng /
+    đang mời dở nơi khác, không được "cướp" đi). Cơ chế chủ sở hữu (`_assert_email_
+    ownership`) đã chặn email của tài khoản KHÁC trước khi tới đây. Nhiều ứng viên →
+    chọn kỳ hạn XA NHẤT (`order_by end desc`). Trả {email_lowercase: member}."""
+    if not emails:
+        return {}
+    rows = (
+        db.execute(
+            select(Member)
+            .where(
+                Member.email.in_([e.lower() for e in emails]),
+                Member.invited_by_user_id == owner_id,
+                Member.workspace_id != exclude_workspace_id,
+                Member.status == "removed",
+                Member.subscription_end_at.isnot(None),
+                Member.subscription_end_at > now,
+            )
+            .order_by(Member.subscription_end_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    out: dict[str, Member] = {}
+    for m in rows:
+        out.setdefault(m.email, m)  # kỳ hạn xa nhất (order desc) thắng
+    return out
+
+
 def _extend_subscription_end(
     current_end: datetime, months: int | None
 ) -> datetime | None:
@@ -247,6 +308,58 @@ def _reset_cycles(db: Session, member: Member) -> None:
     if member.subscription_cycles:
         member.subscription_cycles = []
         db.flush()
+
+
+def void_refunded_invite_periods(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    emails: list[str],
+    now: datetime,
+) -> list[str]:
+    """HOÀN PHÍ lời mời ⇒ kỳ đã trả cho lời mời đó KHÔNG còn hiệu lực → clear hạn +
+    xoá chu kỳ để `_is_paid_period_active` KHÔNG đọc "hạn ma" (đã hoàn tiền) rồi cho
+    mời lại MIỄN PHÍ oan.
+
+    Bug gốc (user 2026-07-16, thuylinhtctbg): lần 1 mời removed→tính phí đặt joined_at
+    = lúc mời (invite.py) nên khi lời mời hỏng, `reconcile_failed_invite` KHÔNG xoá được
+    phantom (bộ lọc joined_at IS NULL) — member sống sót với `subscription_end_at` còn
+    hạn dù phí ĐÃ HOÀN. Lần 2 mời lại → còn-hạn → miễn phí → mất tiền. Bất biến sửa:
+    **hoàn phí thì phải void kỳ**. Xem [[invite-timeout-reconciles-like-failed]].
+
+    CHỈ đụng member `pending`/`removed` (chưa thực sự dùng dịch vụ). KHÔNG đụng
+    `active`: active = đang trong team, phí gia hạn đi luồng khác (kind != invite_fee)
+    nên không bao giờ bị hoàn qua đây. Member mời-mới/mời-lại-tính-phí có ĐÚNG 1 chu
+    kỳ = lời mời này (`_apply_invite_paid_cycle` reset về 1) nên xoá sạch an toàn.
+
+    Trả list email đã void (để caller log). KHÔNG commit — caller commit."""
+    if not emails:
+        return []
+    lowered = [e.lower() for e in emails]
+    members = (
+        db.execute(
+            select(Member).where(
+                Member.workspace_id == workspace_id,
+                Member.email.in_(lowered),
+                Member.status.in_(("pending", "removed")),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    voided: list[str] = []
+    for m in members:
+        if m.subscription_end_at is None and not m.subscription_cycles:
+            continue  # đã sạch (vô hạn / chưa có kỳ) → bỏ qua
+        _reset_cycles(db, m)
+        m.subscription_end_at = None
+        m.subscription_months = None
+        m.subscription_purchased_at = None
+        m.payment_status = "unpaid"
+        m.paid_at = None
+        m.paid_marked_by_id = None
+        voided.append(m.email)
+    return voided
 
 
 def _has_open_remove_task(db: Session, member: Member) -> bool:

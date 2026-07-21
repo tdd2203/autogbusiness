@@ -5,12 +5,12 @@ import {
   useAddedEmails,
   usePendingPaymentCount,
   usePendingPaymentRequests,
+  useRenewalDueCount,
 } from "../hooks/useAddedEmails";
 import { usePendingSubscriptionCount } from "../hooks/useSubscriptionApprovals";
+import { useIsMobile } from "../hooks/useIsMobile";
 import { SubscriptionNotificationBell } from "./SubscriptionNotificationBell";
 import { useFormatDate, useI18n, useT, type Lang } from "../i18n";
-import { dashboardLangToChatGPTLocale } from "../lib/chatgpt-locale";
-import { toast } from "./Toast";
 import type { ReactNode } from "react";
 import type { PaymentRequestNotice } from "../types";
 
@@ -20,12 +20,23 @@ type NavEntry = {
   perm?: string;
   icon: ReactNode;
   section: "manage" | "org";
+  // Ví (feature 003): mục chỉ hiện với user bật cờ wallet_beta.
+  requireWalletBeta?: boolean;
+  // Quản trị Ví: chỉ super-admin.
+  requireSuperAdmin?: boolean;
 };
 
 const ICONS = {
   workspaces: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
       <path d="M3 7h18M3 12h18M3 17h18" />
+    </svg>
+  ),
+  invite: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M19 8v6M22 11h-6" />
     </svg>
   ),
   queue: (
@@ -40,6 +51,12 @@ const ICONS = {
       <path d="M3 8l7.89 4.26a2 2 0 0 0 2.22 0L21 8" />
       <rect x="3" y="5" width="18" height="14" rx="2" />
       <path d="M16 16l2 2 3-3" />
+    </svg>
+  ),
+  renewals: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M23 4v6h-6" />
+      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
     </svg>
   ),
   audit: (
@@ -68,16 +85,44 @@ const ICONS = {
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
   ),
+  wallet: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M3 7a2 2 0 0 1 2-2h13a1 1 0 0 1 1 1v2" />
+      <path d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7a1 1 0 0 0-1-1H5a2 2 0 0 1-2-2z" />
+      <circle cx="16" cy="13" r="1.4" />
+    </svg>
+  ),
+  report: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M3 3v18h18" />
+      <rect x="7" y="12" width="3" height="5" rx="0.5" />
+      <rect x="12" y="8" width="3" height="9" rx="0.5" />
+      <rect x="17" y="5" width="3" height="12" rx="0.5" />
+    </svg>
+  ),
 };
 
 const NAV: NavEntry[] = [
-  { to: "/workspaces", labelKey: "nav.workspaces", perm: "MEMBER_VIEW", icon: ICONS.workspaces, section: "manage" },
+  // Trang "Mời thành viên" phía người dùng — hiện cho user có quyền MEMBER_INVITE
+  // (super-admin luôn có). Đích workspace do super-admin cấu hình qua nút ⚙️.
+  { to: "/invite", labelKey: "nav.inviteMembers", perm: "MEMBER_INVITE", icon: ICONS.invite, section: "manage" },
   { to: "/added-emails", labelKey: "nav.addedEmails", perm: "MEMBER_VIEW", icon: ICONS.addedEmails, section: "manage" },
+  // "Gia hạn" tách khỏi sub-tab trong "Email đã add" → mục riêng ở sidebar.
+  { to: "/renewals", labelKey: "nav.renewals", perm: "MEMBER_VIEW", icon: ICONS.renewals, section: "manage" },
+  // Ví (feature 003) — chỉ hiện với user bật cờ thử nghiệm wallet_beta.
+  { to: "/wallet", labelKey: "nav.wallet", icon: ICONS.wallet, section: "manage", requireWalletBeta: true },
   // Queue toàn cục đã BỎ khỏi sidebar (2026-06-17): dư thừa vì mỗi workspace đã có
   // tab "Hàng đợi" riêng. Route /queue + page Queue.tsx vẫn còn nhưng không còn nav.
   { to: "/audit-logs", labelKey: "nav.auditLog", perm: "AUDIT_LOG_VIEW", icon: ICONS.audit, section: "manage" },
+  // "Không gian làm việc" chuyển xuống ĐẦU nhóm Tổ chức + CHỈ super-admin thấy
+  // (sub-admin quản lý qua "Email đã thêm", không thao tác trực tiếp workspace).
+  { to: "/workspaces", labelKey: "nav.workspaces", icon: ICONS.workspaces, section: "org", requireSuperAdmin: true },
   { to: "/billing", labelKey: "nav.billing", perm: "BILLING_VIEW", icon: ICONS.billing, section: "org" },
   { to: "/users", labelKey: "nav.users", perm: "USER_MANAGE", icon: ICONS.users, section: "org" },
+  // Quản trị Ví (feature 003) — chỉ super-admin: cấu hình phí/bank, cờ beta, duyệt rút.
+  { to: "/admin/wallet", labelKey: "nav.walletAdmin", icon: ICONS.wallet, section: "org", requireSuperAdmin: true },
+  // Báo cáo tài chính (feature 003) — chỉ super-admin: THU/CHI/lợi nhuận + theo đại lý.
+  { to: "/admin/report", labelKey: "nav.report", icon: ICONS.report, section: "org", requireSuperAdmin: true },
   { to: "/settings", labelKey: "nav.settings", icon: ICONS.settings, section: "org" },
 ];
 
@@ -87,31 +132,35 @@ export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [navOpen, setNavOpen] = useState(false);
+  // Thu gọn sidebar (desktop): tự ẩn khi màn hình hẹp (≤1200px) để nội dung đủ chỗ;
+  // nút mũi tên cho phép tự bật/tắt. Mobile (≤768) dùng drawer riêng, không tính ở đây.
+  const isMobile = useIsMobile(768);
+  const isNarrowDesktop = useIsMobile(1200);
+  const [collapsed, setCollapsed] = useState<boolean>(isNarrowDesktop);
+  // Tự thu/mở khi VƯỢT ngưỡng 1200 (đổi isNarrowDesktop) — vẫn cho toggle tay giữa 2 lần.
+  useEffect(() => {
+    if (!isMobile) setCollapsed(isNarrowDesktop);
+  }, [isNarrowDesktop, isMobile]);
+  const sidebarCollapsed = !isMobile && collapsed;
   // Số email đang "Chờ xác nhận" → badge thông báo cho super-admin (0 với sub-admin).
   const pendingPayments = usePendingPaymentCount();
   // Số yêu cầu đổi hạn dùng đang chờ duyệt → badge chuông thứ 2 (0 với sub-admin).
   const pendingSubscriptions = usePendingSubscriptionCount();
+  // Số thành viên sắp/đã hết hạn → badge trên mục "Gia hạn" ở sidebar.
+  const renewalDueCount = useRenewalDueCount();
 
   // Đóng drawer mỗi khi chuyển trang (mobile).
   useEffect(() => {
     setNavOpen(false);
   }, [location.pathname]);
 
+  // Đổi ngôn ngữ HIỂN THỊ dashboard (per-user, localStorage). CHỈ ảnh hưởng giao
+  // diện — KHÔNG liên quan "ngôn ngữ hệ thống" (locale ChatGPT của workspace, do
+  // super-admin đặt ở Cài đặt). Trước đây đổi hiển thị còn bắn toast nhắc đổi
+  // ChatGPT → gây hiểu nhầm 2 thứ dính nhau; nay đã tách hẳn.
   function onDashboardLangChange(next: Lang) {
     if (next === lang) return;
     setLang(next);
-    const chatgptLangKey =
-      dashboardLangToChatGPTLocale(next) === "zh"
-        ? "lang.chatgptLangZh"
-        : "lang.chatgptLangVi";
-    const dashboardLangKey = next === "zh-CN" ? "lang.zh-CN" : "lang.vi";
-    toast.info(
-      t("lang.switchNotify", {
-        dashboardLang: t(dashboardLangKey),
-        chatgptLang: t(chatgptLangKey),
-      }),
-      { durationMs: 12_000 },
-    );
   }
 
   function onLogout() {
@@ -121,15 +170,61 @@ export default function Layout() {
 
   const initial = (user?.username ?? user?.email ?? "?").charAt(0).toUpperCase();
   const sidebarLabel = user?.username ?? user?.email ?? "";
-  const manageItems = NAV.filter(
-    (n) => n.section === "manage" && (!n.perm || hasPermission(n.perm)),
-  );
-  const orgItems = NAV.filter(
-    (n) => n.section === "org" && (!n.perm || hasPermission(n.perm)),
-  );
+  const navVisible = (n: NavEntry): boolean => {
+    if (n.requireWalletBeta && !(user?.wallet_beta || user?.is_super_admin)) return false;
+    if (n.requireSuperAdmin && !user?.is_super_admin) return false;
+    if (n.perm && !hasPermission(n.perm)) return false;
+    return true;
+  };
+  const manageItems = NAV.filter((n) => n.section === "manage" && navVisible(n));
+  const orgItems = NAV.filter((n) => n.section === "org" && navVisible(n));
 
   return (
-    <div className="app-shell min-h-screen">
+    <div
+      className={`app-shell min-h-screen${sidebarCollapsed ? " sidebar-collapsed" : ""}`}
+    >
+      {/* Nút mũi tên thu/mở sidebar (chỉ desktop; mobile dùng hamburger ở topbar). */}
+      {!isMobile && (
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          aria-label={collapsed ? t("nav.showMenu") : t("nav.hideMenu")}
+          title={collapsed ? t("nav.showMenu") : t("nav.hideMenu")}
+          style={{
+            position: "fixed",
+            top: 96,
+            left: collapsed ? 10 : 227,
+            zIndex: 60,
+            width: 26,
+            height: 26,
+            borderRadius: "50%",
+            border: "1px solid var(--border)",
+            background: "var(--surface)",
+            color: "var(--ink-2)",
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            boxShadow: "var(--shadow-card)",
+            transition: "left 0.2s ease",
+          }}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            style={{
+              width: 15,
+              height: 15,
+              transform: collapsed ? "none" : "rotate(180deg)",
+            }}
+          >
+            <path d="M9 18l6-6-6-6" />
+          </svg>
+        </button>
+      )}
+
       <header className="app-topbar">
         <button
           type="button"
@@ -142,7 +237,9 @@ export default function Layout() {
             <path d="M3 6h18M3 12h18M3 18h18" />
           </svg>
         </button>
-        <Link to="/workspaces" className="app-topbar-title">
+        {/* Logo về trang chủ "/" → HomeRedirect định tuyến theo vai trò
+            (super → Không gian làm việc, sub-admin → Email đã thêm). */}
+        <Link to="/" className="app-topbar-title">
           {t("app.name")}
         </Link>
         <span
@@ -185,7 +282,7 @@ export default function Layout() {
           }}
         >
           <Link
-            to="/workspaces"
+            to="/"
             aria-label="AutoGPT home"
             style={{
               display: "inline-block",
@@ -233,7 +330,12 @@ export default function Layout() {
         <nav className="flex-1" style={{ padding: "0 12px" }}>
           <SidebarSection label={t("nav.sectionManage")}>
             {manageItems.map((n) => (
-              <SidebarItem key={n.to} to={n.to} icon={n.icon}>
+              <SidebarItem
+                key={n.to}
+                to={n.to}
+                icon={n.icon}
+                badge={n.to === "/renewals" ? renewalDueCount : 0}
+              >
                 {t(n.labelKey)}
               </SidebarItem>
             ))}
@@ -250,7 +352,12 @@ export default function Layout() {
         </nav>
 
         <div
-          style={{ padding: 16, borderTop: "1px solid var(--border)" }}
+          className="app-sidebar-footer"
+          style={{
+            padding: 16,
+            borderTop: "1px solid var(--border)",
+            background: "var(--sidebar)",
+          }}
         >
           <div className="flex items-center" style={{ gap: 10 }}>
             <div
@@ -294,68 +401,107 @@ export default function Layout() {
               </div>
             </div>
           </div>
-          <label
+          <div
             style={{
-              display: "block",
               marginTop: 12,
-              fontSize: 10.5,
-              fontWeight: 500,
-              color: "var(--ink-3)",
-              textTransform: "uppercase",
-              letterSpacing: "0.06em",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
             }}
           >
-            {t("lang.switch")}
-          </label>
-          <select
-            value={lang}
-            onChange={(e) => onDashboardLangChange(e.target.value as Lang)}
-            style={{
-              marginTop: 6,
-              width: "100%",
-              padding: "7px 10px",
-              border: "1px solid var(--border)",
-              borderRadius: "var(--radius)",
-              background: "var(--bg)",
-              fontFamily: "inherit",
-              fontSize: 12.5,
-              color: "var(--ink)",
-              cursor: "pointer",
-            }}
-          >
-            <option value="vi">{t("lang.viOption")}</option>
-            <option value="zh-CN">{t("lang.zhOption")}</option>
-          </select>
-          <p
-            style={{
-              marginTop: 6,
-              fontSize: 10.5,
-              color: "var(--ink-3)",
-              lineHeight: 1.45,
-            }}
-          >
-            {t("lang.dashboardOnlyHint")}
-          </p>
-          <button
-            onClick={onLogout}
-            style={{
-              marginTop: 10,
-              display: "block",
-              fontSize: 12,
-              color: "var(--ink-3)",
-              background: "transparent",
-              border: "none",
-              cursor: "pointer",
-              padding: 0,
-              fontFamily: "inherit",
-              textAlign: "left",
-              transition: "color 0.12s",
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.color = "var(--danger)")}
-            onMouseLeave={(e) => (e.currentTarget.style.color = "var(--ink-3)")}
-          >
-            {t("auth.logout")} →
-          </button>
+            {/* Ngôn ngữ HIỂN THỊ: nút mã chữ VI / 中, bấm đổi qua lại (chỉ 2 ngôn
+                ngữ). Thuần giao diện — không dính "ngôn ngữ hệ thống". */}
+            <button
+              type="button"
+              onClick={() =>
+                onDashboardLangChange(lang === "vi" ? "zh-CN" : "vi")
+              }
+              aria-label={t("lang.switch")}
+              title={`${t("lang.switch")}: ${
+                lang === "vi" ? t("lang.viOption") : t("lang.zhOption")
+              }`}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+                flex: 1,
+                height: 36,
+                fontSize: 12.5,
+                fontWeight: 600,
+                color: "var(--ink-2)",
+                background: "var(--bg)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                transition: "color 0.12s, border-color 0.12s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = "var(--ink)";
+                e.currentTarget.style.borderColor = "var(--ink-2)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = "var(--ink-2)";
+                e.currentTarget.style.borderColor = "var(--border)";
+              }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.6}
+                style={{ width: 16, height: 16, flexShrink: 0 }}
+                aria-hidden
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18" />
+              </svg>
+              {lang === "vi" ? "VI" : "中"}
+            </button>
+            {/* Đăng xuất: nút icon SVG (cửa + mũi tên ra), đồng bộ style icon app. */}
+            <button
+              type="button"
+              onClick={onLogout}
+              aria-label={t("auth.logout")}
+              title={t("auth.logout")}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 36,
+                height: 36,
+                flexShrink: 0,
+                color: "var(--ink-2)",
+                background: "var(--bg)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                cursor: "pointer",
+                transition: "color 0.12s, border-color 0.12s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.color = "var(--danger)";
+                e.currentTarget.style.borderColor = "var(--danger)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.color = "var(--ink-2)";
+                e.currentTarget.style.borderColor = "var(--border)";
+              }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.6}
+                style={{ width: 17, height: 17 }}
+                aria-hidden
+              >
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <path d="M16 17l5-5-5-5" />
+                <path d="M21 12H9" />
+              </svg>
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -703,10 +849,12 @@ function SidebarItem({
   to,
   icon,
   children,
+  badge = 0,
 }: {
   to: string;
   icon: ReactNode;
   children: ReactNode;
+  badge?: number;
 }) {
   return (
     <NavLink
@@ -740,7 +888,28 @@ function SidebarItem({
       >
         {icon}
       </span>
-      {children}
+      <span style={{ flex: 1, minWidth: 0 }}>{children}</span>
+      {/* Badge số lượng cần gia hạn — nền đỏ để nổi bật, ẩn khi = 0. */}
+      {badge > 0 && (
+        <span
+          aria-hidden
+          style={{
+            flexShrink: 0,
+            minWidth: 18,
+            height: 18,
+            padding: "0 5px",
+            borderRadius: 9,
+            background: "var(--danger)",
+            color: "#fff",
+            fontSize: 11,
+            fontWeight: 600,
+            lineHeight: "18px",
+            textAlign: "center",
+          }}
+        >
+          {badge > 99 ? "99+" : badge}
+        </span>
+      )}
     </NavLink>
   );
 }

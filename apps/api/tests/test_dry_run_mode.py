@@ -119,9 +119,10 @@ def test_no_dry_run_flag_when_disabled_and_real_remove_applies(
     assert "dry_run" not in task["payload"]
 
     # COMPLETED thật (không có result.dry_run) → member bị mark removed như cũ.
+    # CONTRACT v0.9.22: mark removed cần bằng chứng đã rời (result.data.verified).
     done = client.patch(
         f"/api/v1/queue/{task['id']}",
-        json={"status": "COMPLETED", "result": {"ok": True}},
+        json={"status": "COMPLETED", "result": {"data": {"verified": True}}},
         headers={"X-API-KEY": ws["extension_api_key"]},
     )
     assert done.status_code == 200, done.text

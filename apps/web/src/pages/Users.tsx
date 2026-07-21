@@ -3,7 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import {
   DEFAULT_SUB_ADMIN_PERMS,
-  GRANTABLE,
+  PERM_GROUPS,
+  SENSITIVE_PERMS,
   type PermissionKey,
 } from "../lib/permissions";
 import { useFormatDate, useT } from "../i18n";
@@ -18,6 +19,60 @@ type UserItem = {
   permissions: string[];
   created_at: string;
 };
+
+/**
+ * Bộ chọn quyền theo nhóm — chip có ô tick, nhãn tiếng Việt + mã, và dấu
+ * "Nhạy cảm" cho các quyền phá hoại. Dùng chung cho form tạo mới và modal sửa
+ * quyền để hai chỗ luôn đồng bộ.
+ */
+function PermGroupPicker({
+  selected,
+  onToggle,
+}: {
+  selected: Set<PermissionKey>;
+  onToggle: (p: PermissionKey) => void;
+}) {
+  const t = useT();
+  return (
+    <>
+      {PERM_GROUPS.map((g) => (
+        <div key={g.id} className={`perm-group ${g.id}`}>
+          <div className="perm-group-label">
+            <span className="dot" />
+            {t(`permGroup.${g.id}`)}
+          </div>
+          <div className="perm-chips">
+            {g.codes.map((p) => {
+              const on = selected.has(p);
+              const sensitive = SENSITIVE_PERMS.has(p);
+              return (
+                <label key={p} className={`perm-chip${on ? " on" : ""}`}>
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    onChange={() => onToggle(p)}
+                  />
+                  <span className="perm-chip-box">{on ? "✓" : ""}</span>
+                  <span>
+                    <span className="perm-chip-text">
+                      {t(`permShort.${p}`)}
+                      {sensitive && (
+                        <span className="perm-chip-sensitive">
+                          {t("users.sensitiveTag")}
+                        </span>
+                      )}
+                    </span>
+                    <span className="perm-chip-code">{p}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
 
 export default function Users() {
   const t = useT();
@@ -56,21 +111,27 @@ export default function Users() {
             {t("nav.users")}
           </div>
           <h1 className="display-h1">{t("users.title")}</h1>
-          <p className="page-sub">{t("users.subtitle")}</p>
         </div>
         <button
           onClick={() => setShowForm((v) => !v)}
           className="btn btn-primary"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-            <path d="M12 5v14M5 12h14" />
-          </svg>
+          {showForm ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          )}
           {showForm ? t("users.close") : t("users.create")}
         </button>
       </div>
 
       {showForm && (
         <CreateUserForm
+          onCancel={() => setShowForm(false)}
           onCreated={() => {
             setShowForm(false);
             qc.invalidateQueries({ queryKey: ["users"] });
@@ -81,7 +142,7 @@ export default function Users() {
       <div className="table-card">
         <div className="table-head">
           <div>
-            <div className="table-title">{t("users.title")}</div>
+            <div className="table-title">{t("users.listTitle")}</div>
             <div className="table-meta" style={{ marginTop: 2 }}>
               {t("users.countLabel", { n: data.length })}
             </div>
@@ -96,11 +157,10 @@ export default function Users() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t("users.email")}</th>
-                <th>{t("users.username")}</th>
+                <th>{t("users.accountCol")}</th>
                 <th>{t("users.typeCol")}</th>
-                <th>{t("users.permissionsCol")}</th>
                 <th>{t("users.statusCol")}</th>
+                <th>{t("users.permissionsCol")}</th>
                 <th style={{ textAlign: "right" }}>{t("users.actionsCol")}</th>
               </tr>
             </thead>
@@ -110,7 +170,7 @@ export default function Users() {
               ))}
               {!users.isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
+                  <td colSpan={5} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
                     {t("common.empty")}
                   </td>
                 </tr>
@@ -178,7 +238,13 @@ export default function Users() {
   );
 }
 
-function CreateUserForm({ onCreated }: { onCreated: () => void }) {
+function CreateUserForm({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: () => void;
+  onCancel: () => void;
+}) {
   const t = useT();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -226,88 +292,74 @@ function CreateUserForm({ onCreated }: { onCreated: () => void }) {
     <form
       onSubmit={onSubmit}
       className="surface-card"
-      style={{ padding: 20, marginBottom: 20 }}
+      style={{ padding: 24, marginBottom: 26 }}
     >
-      <div className="display-h3" style={{ marginBottom: 12 }}>
-        {t("users.create")}
+      <div className="display-h3" style={{ marginBottom: 16 }}>
+        {t("users.createFormTitle")}
       </div>
       <div
         className="grid gap-3"
         style={{
           gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-          marginBottom: 16,
+          marginBottom: 22,
         }}
       >
-        <input
-          placeholder={t("users.username")}
-          required
-          minLength={3}
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          className="form-input"
-        />
-        <input
-          placeholder={t("users.password")}
-          required
-          minLength={8}
-          type="text"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="form-input"
-        />
+        <div>
+          <label className="form-label" style={{ marginBottom: 6, display: "block" }}>
+            {t("users.username")}
+          </label>
+          <input
+            placeholder="username"
+            required
+            minLength={3}
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            className="form-input mono"
+          />
+        </div>
+        <div>
+          <label className="form-label" style={{ marginBottom: 6, display: "block" }}>
+            {t("users.password")}
+          </label>
+          <input
+            placeholder="••••••••"
+            required
+            minLength={8}
+            type="text"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="form-input mono"
+          />
+        </div>
       </div>
 
-      <div style={{ marginBottom: 16 }}>
-        <div
-          className="form-label"
-          style={{ fontWeight: 500, marginBottom: 8 }}
-        >
-          {t("users.grantTitle")}
-        </div>
-        <div
-          className="grid"
-          style={{
-            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-            gap: 8,
-          }}
-        >
-          {GRANTABLE.map((p) => (
-            <label
-              key={p}
-              className="flex items-center"
-              style={{ gap: 8, fontSize: 13 }}
-            >
-              <input
-                type="checkbox"
-                checked={perms.has(p)}
-                onChange={() => toggle(p)}
-              />
-              <span>
-                {t(`perm.${p}`)}{" "}
-                <code
-                  style={{
-                    fontSize: 11,
-                    color: "var(--ink-3)",
-                    fontFamily: "var(--font-mono)",
-                  }}
-                >
-                  {p}
-                </code>
-              </span>
-            </label>
-          ))}
-        </div>
+      <div className="form-label" style={{ fontWeight: 500, marginBottom: 12 }}>
+        {t("users.grantTitle")}
       </div>
+      <PermGroupPicker selected={perms} onToggle={toggle} />
 
       {err && (
-        <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>
+        <div style={{ color: "var(--danger)", fontSize: 12.5, marginTop: 14 }}>
           {err}
         </div>
       )}
 
-      <button disabled={mut.isPending} className="btn btn-primary">
-        {mut.isPending ? t("users.createBusy") : t("users.createSubmit")}
-      </button>
+      <div className="perm-picker-foot">
+        <button disabled={mut.isPending} className="btn btn-primary">
+          {mut.isPending ? t("users.createBusy") : t("users.createSubmit")}
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={onCancel}
+          disabled={mut.isPending}
+        >
+          {t("common.cancel")}
+        </button>
+        <span className="perm-picker-count">
+          {t("users.selectedCount", { n: perms.size })}
+        </span>
+      </div>
     </form>
   );
 }
@@ -340,7 +392,7 @@ function UserRow({ user }: { user: UserItem }) {
   }
 
   // Sửa quyền tài khoản phụ đã tạo — PATCH /users/{id} { permissions } (BE đã hỗ
-  // trợ validate_grantable). Mở modal tick lại GRANTABLE, lưu → invalidate ["users"].
+  // trợ validate_grantable). Mở modal tick lại theo nhóm, lưu → invalidate ["users"].
   const [editing, setEditing] = useState(false);
   const [editPerms, setEditPerms] = useState<Set<PermissionKey>>(new Set());
   const savePerms = useMutation({
@@ -372,41 +424,32 @@ function UserRow({ user }: { user: UserItem }) {
 
   return (
     <>
-    <tr>
+    <tr style={user.is_super_admin ? { background: "var(--surface-2)" } : undefined}>
       <td>
         <div className="actor">
-          <div className="actor-avatar">{initial}</div>
-          <div>
+          <div
+            className="actor-avatar"
+            style={
+              user.is_super_admin
+                ? { background: "var(--ink)", color: "var(--surface)" }
+                : undefined
+            }
+          >
+            {initial}
+          </div>
+          <div style={{ minWidth: 0 }}>
             <div className="actor-name">{user.email}</div>
             <div className="actor-sub">
-              {t("users.ownerSince", { date: sinceDate })}
+              {t("users.accountSub", { username: user.username, date: sinceDate })}
             </div>
           </div>
         </div>
       </td>
-      <td className="cell-muted mono" style={{ fontSize: 12.5 }}>
-        {user.username}
-      </td>
       <td>
         {user.is_super_admin ? (
-          <span className="badge badge-info">{t("role.super")}</span>
+          <span className="role-super">{t("role.super")}</span>
         ) : (
           <span className="role-tag">{t("role.sub")}</span>
-        )}
-      </td>
-      <td style={{ maxWidth: 320 }}>
-        {user.is_super_admin ? (
-          <span className="cell-muted">{t("users.fullPerms")}</span>
-        ) : user.permissions.length === 0 ? (
-          <span className="cell-muted">{t("users.noPerms")}</span>
-        ) : (
-          <div className="flex flex-wrap" style={{ gap: 4 }}>
-            {user.permissions.map((p) => (
-              <span key={p} className="role-tag" style={{ fontSize: 11 }}>
-                {p}
-              </span>
-            ))}
-          </div>
         )}
       </td>
       <td>
@@ -414,6 +457,27 @@ function UserRow({ user }: { user: UserItem }) {
           <span className="badge badge-success">{t("users.active")}</span>
         ) : (
           <span className="badge badge-danger">{t("users.disabled")}</span>
+        )}
+      </td>
+      <td style={{ maxWidth: 380 }}>
+        {user.is_super_admin ? (
+          <span className="perm-full">{t("users.fullPerms")}</span>
+        ) : user.permissions.length === 0 ? (
+          <span className="cell-muted">{t("users.noPerms")}</span>
+        ) : (
+          <div className="flex flex-wrap" style={{ gap: 6 }}>
+            {user.permissions.map((p) => {
+              const sensitive = SENSITIVE_PERMS.has(p as PermissionKey);
+              return (
+                <span
+                  key={p}
+                  className={`perm-pill${sensitive ? " sensitive" : ""}`}
+                >
+                  {t(`permShort.${p}`)}
+                </span>
+              );
+            })}
+          </div>
         )}
       </td>
       <td style={{ textAlign: "right" }}>
@@ -444,61 +508,32 @@ function UserRow({ user }: { user: UserItem }) {
     {/* Modal sửa quyền tài khoản phụ. */}
     {editing && (
       <tr>
-        <td colSpan={6} style={{ padding: 0 }}>
+        <td colSpan={5} style={{ padding: 0 }}>
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
             <div
-              className="bg-white rounded-lg shadow-xl"
-              style={{ width: "100%", maxWidth: 520 }}
+              className="surface-card"
+              style={{ width: "100%", maxWidth: 560, background: "var(--surface)" }}
             >
-              <div style={{ padding: "16px 20px 12px", borderBottom: "1px solid var(--border)" }}>
-                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
+              <div style={{ padding: "18px 22px 14px", borderBottom: "1px solid var(--border)" }}>
+                <h3 className="display-h3" style={{ margin: 0 }}>
                   {t("users.editPermsTitle", { name: user.username })}
                 </h3>
               </div>
-              <div style={{ padding: "16px 20px" }}>
-                <div
-                  className="grid"
-                  style={{
-                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-                    gap: 8,
-                  }}
-                >
-                  {GRANTABLE.map((p) => (
-                    <label
-                      key={p}
-                      className="flex items-center"
-                      style={{ gap: 8, fontSize: 13 }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={editPerms.has(p)}
-                        onChange={() => toggleEdit(p)}
-                      />
-                      <span>
-                        {t(`perm.${p}`)}{" "}
-                        <code
-                          style={{
-                            fontSize: 11,
-                            color: "var(--ink-3)",
-                            fontFamily: "var(--font-mono)",
-                          }}
-                        >
-                          {p}
-                        </code>
-                      </span>
-                    </label>
-                  ))}
-                </div>
+              <div style={{ padding: "20px 22px" }}>
+                <PermGroupPicker selected={editPerms} onToggle={toggleEdit} />
               </div>
               <div
                 style={{
-                  padding: "12px 20px",
+                  padding: "14px 22px",
                   borderTop: "1px solid var(--border)",
                   display: "flex",
-                  justifyContent: "flex-end",
+                  alignItems: "center",
                   gap: 8,
                 }}
               >
+                <span className="perm-picker-count" style={{ marginLeft: 0, marginRight: "auto" }}>
+                  {t("users.selectedCount", { n: editPerms.size })}
+                </span>
                 <button
                   type="button"
                   className="btn btn-ghost"

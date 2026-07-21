@@ -1,68 +1,108 @@
-"""Scheduler tự xoá email hết hạn — kiểm tra ÂN HẠN 1 GIỜ.
+"""Hết hạn subscription — TỰ ĐỘNG xoá qua scheduler nền (user 2026-07-13).
 
-Chỉ enqueue REMOVE_MEMBER khi đã quá hạn >= 1 giờ (subscription_end_at <= now - 1h).
-Member vừa hết hạn (trong vòng 1 giờ) chưa bị xoá — cho khách thời gian gia hạn.
+Khi 1 email hết hạn (`subscription_end_at <= now`, active/pending) thì scheduler nền
+`_enqueue_expired_removals_once` (main.py) tự enqueue task gỡ, KHÔNG cần admin confirm
+tay. Nút "Dọn member hết hạn" (POST /cleanup-expired) vẫn còn để remove NGAY thay vì
+chờ tick kế. File này kiểm: (a) scheduler auto-enqueue task gỡ cho member hết hạn +
+idempotent, (b) mốc tính hạn = neo + 30 ngày.
 """
 
-import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 
 from app.db import SessionLocal
-from app.main import _cleanup_expired_subscriptions_once
-from app.models import Member, QueueItem
+from app.models import AuditLog, Member, QueueItem
 
 
-def _ws(client: TestClient, auth_header: dict, name: str) -> dict:
-    return client.post(
-        "/api/v1/workspaces",
-        json={"name": name, "plan": "business", "seat_total": 25},
-        headers=auth_header,
-    ).json()
-
-
-def _invite(client: TestClient, auth_header: dict, ws_id: str, email: str) -> dict:
-    resp = client.post(
-        f"/api/v1/workspaces/{ws_id}/members/invite",
-        json={"email": email, "role": "member"},
-        headers=auth_header,
-    )
-    assert resp.status_code == 201, resp.text
-    return resp.json()
-
-
-def test_cleanup_respects_one_hour_grace(
-    client: TestClient, auth_header: dict
-) -> None:
-    ws = _ws(client, auth_header, "WS cleanup")
-    m_recent = _invite(client, auth_header, ws["id"], "recent@example.com")
-    m_old = _invite(client, auth_header, ws["id"], "old@example.com")
-
-    now = datetime.now(timezone.utc)
+def _expire_member(email: str) -> None:
+    """Ép member `email` hết hạn: đặt subscription_end_at về quá khứ."""
     with SessionLocal() as db:
-        # Vừa hết hạn 30 phút trước → trong ân hạn 1 giờ → GIỮ.
-        db.get(Member, uuid.UUID(m_recent["id"])).subscription_end_at = (
-            now - timedelta(minutes=30)
-        )
-        # Hết hạn 2 giờ trước → quá ân hạn → XOÁ.
-        db.get(Member, uuid.UUID(m_old["id"])).subscription_end_at = (
-            now - timedelta(hours=2)
-        )
+        member = db.query(Member).filter(Member.email == email).one()
+        member.subscription_end_at = datetime.now(timezone.utc) - timedelta(days=1)
         db.commit()
 
-    _cleanup_expired_subscriptions_once()
+
+def test_scheduler_auto_enqueues_removal_for_expired(
+    client: TestClient, auth_header: dict
+) -> None:
+    """GUARD chính: member active hết hạn → tick nền tự enqueue REMOVE_MEMBER +
+    audit MEMBER_EXPIRED_REMOVE_QUEUED, không cần admin bấm gì; chạy lần 2 KHÔNG
+    đẻ task trùng (idempotent nhờ _has_open_remove_task)."""
+    import app.main as m
+
+    assert hasattr(m, "_enqueue_expired_removals_once"), (
+        "Scheduler auto-remove khi hết hạn (user 2026-07-13) — đừng gỡ"
+    )
+
+    ws = client.post(
+        "/api/v1/workspaces",
+        json={"name": "WS auto-expire", "plan": "business", "seat_total": 25},
+        headers=auth_header,
+    ).json()
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-upsert",
+        json={
+            "members": [{"email": "expired@example.com", "status": "active"}],
+            "is_full_sync": False,
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert resp.status_code in (200, 201), resp.text
+    _expire_member("expired@example.com")
+
+    m._enqueue_expired_removals_once()
 
     with SessionLocal() as db:
-        removed = {
-            qi.payload.get("member_id")
-            for qi in db.execute(
-                select(QueueItem).where(QueueItem.type == "REMOVE_MEMBER")
-            ).scalars()
-        }
-    assert m_old["id"] in removed, "email quá hạn >1h phải bị enqueue xoá"
-    assert m_recent["id"] not in removed, "email mới hết hạn <1h chưa được xoá (ân hạn)"
+        tasks = (
+            db.query(QueueItem)
+            .filter(QueueItem.type == "REMOVE_MEMBER")
+            .all()
+        )
+        assert len(tasks) == 1, [t.payload for t in tasks]
+        assert tasks[0].payload["email"] == "expired@example.com"
+        audits = (
+            db.query(AuditLog)
+            .filter(AuditLog.action == "MEMBER_EXPIRED_REMOVE_QUEUED")
+            .all()
+        )
+        assert len(audits) == 1
+        assert audits[0].actor_type == "SYSTEM"
+
+    # Idempotent: tick lần 2 (member vẫn active tới khi extension xong) không đẻ trùng.
+    m._enqueue_expired_removals_once()
+    with SessionLocal() as db:
+        tasks = db.query(QueueItem).filter(QueueItem.type == "REMOVE_MEMBER").all()
+        assert len(tasks) == 1, "tick lần 2 không được đẻ task trùng"
+
+
+def test_pending_expired_enqueues_revoke_not_remove(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Member `pending` hết hạn → REVOKE_INVITES (tab Lời mời trước), KHÔNG REMOVE_MEMBER."""
+    import app.main as m
+
+    ws = client.post(
+        "/api/v1/workspaces",
+        json={"name": "WS pending-expire", "plan": "business", "seat_total": 25},
+        headers=auth_header,
+    ).json()
+    client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-upsert",
+        json={
+            "members": [{"email": "pend@example.com", "status": "pending"}],
+            "is_full_sync": False,
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    _expire_member("pend@example.com")
+
+    m._enqueue_expired_removals_once()
+
+    with SessionLocal() as db:
+        types = {t.type for t in db.query(QueueItem).all()}
+        assert "REVOKE_INVITES" in types
+        assert "REMOVE_MEMBER" not in types
 
 
 def test_synced_email_expiry_is_anchor_plus_30(

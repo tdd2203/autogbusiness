@@ -11,34 +11,44 @@
  * đây là đổi đồng bộ cả web.
  * ============================================================ */
 :root {
-  --bg: #f7f5f1;
+  /* Emerald Fresh (mockup 2026-07-19): palette LẠNH xanh-xám thay cream ấm, accent
+     xanh lá #059669 cho CTA/greens toàn app, nav-active vẫn ĐEN. Đổi ở :root là đổi
+     đồng bộ cả web. */
+  --bg: #f1f4f2;
   --surface: #ffffff;
-  --surface-2: #f0ece5;
-  --sidebar: #fbfaf8;
-  --border: #e8e3db;
-  --border-strong: #ddd7cd;
-  --ink: #1c1a17;
-  --ink-2: #5b554c;
-  --ink-3: #9b9489;
-  --ink-4: #cfc8bc;
-  --accent: #1c1a17;
-  --success: #1a7a48;
-  --success-strong: #22975a;
-  --success-bg: #e8f3ec;
-  --success-border: #bfe3cd;
+  --surface-2: #f7faf8;
+  --sidebar: #ffffff;
+  --border: #e6e9e6;
+  --border-strong: #d7dbd7;
+  --ink: #171a17;
+  --ink-2: #565c56;
+  --ink-3: #8b918b;
+  --ink-4: #c4ccc4;
+  --accent: #171a17;
+  --success: #059669;
+  --success-strong: #059669;
+  --success-bg: #e6f6ee;
+  --success-border: #bce5d1;
   --warning: #8a6d1f;
   --warning-accent: #e0a04a;
   --warning-bg: #fdf6e3;
   --warning-border: #f0e4c0;
   --danger: #b02a1e;
   --danger-bg: #fbecea;
+  --danger-border: #f0c9c4;
   --info: #1d4ed8;
   --info-bg: #eef4fb;
   --info-border: #d6e4f5;
+  /* Màu nhấn nhóm quyền + vai trò quản trị tổng (trang Tài khoản phụ) */
+  --perm-member: #3a5bd0;
+  --perm-view: #0a6b3b;
+  --perm-system: #b5822a;
+  --role-super: #6a3fb0;
+  --role-super-bg: #efe9fb;
   --radius: 9px;
   --radius-lg: 14px;
-  --shadow-sm: 0 1px 2px rgba(28, 26, 23, 0.04);
-  --shadow-card: 0 1px 2px rgba(28, 26, 23, 0.03);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 16, 0.05);
+  --shadow-card: 0 1px 2px rgba(16, 24, 16, 0.04);
   --font-display: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
@@ -123,6 +133,52 @@ body {
   }
 }
 
+@keyframes nap-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.75);
+  }
+}
+
+/* Ẩn hẳn thanh cuộn modal QR (vẫn cuộn được bằng chuột/touch, chỉ giấu thanh). */
+.qr-modal-scroll {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge cũ */
+}
+.qr-modal-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none; /* Chrome/Safari */
+}
+
+/* Báo cáo tài chính: cột biểu đồ mọc lên + vòng donut vẽ dần. */
+@keyframes fr-rise-bar {
+  from {
+    transform: scaleY(0);
+  }
+  to {
+    transform: scaleY(1);
+  }
+}
+@keyframes fr-draw-ring {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.fr-bar {
+  transform-origin: bottom;
+  animation: fr-rise-bar 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
+}
+.fr-ring {
+  stroke-dashoffset: var(--len);
+  animation: fr-draw-ring 0.9s ease-out 0.25s forwards;
+}
+
 @layer components {
   /* ---------- Typography ---------- */
   .display-h1 {
@@ -202,11 +258,11 @@ body {
     cursor: not-allowed;
   }
   .btn-primary {
-    background: var(--ink);
-    color: var(--surface);
+    background: var(--success);
+    color: #fff;
   }
   .btn-primary:hover:not(:disabled) {
-    background: #000;
+    filter: brightness(1.07);
   }
   .btn-ghost {
     background: var(--surface);
@@ -333,6 +389,111 @@ body {
   }
   .data-table tbody tr:hover {
     background: var(--bg);
+  }
+
+  /* ---------- Email cards (danh sách email trên mobile) ----------
+     Trên mobile, bảng "Email đã thêm" đổi sang danh sách thẻ (mỗi email 1 thẻ):
+     dòng đầu = checkbox + email + menu ⋯; dòng 2 = chip không gian + trạng thái +
+     thanh toán; dòng 3 = 2 cột Ngày gia hạn / Ngày hết hạn (mono). */
+  .email-card-list {
+    display: flex;
+    flex-direction: column;
+  }
+  .email-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .email-card:last-child {
+    border-bottom: none;
+  }
+  .email-card-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .email-card-email {
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    font-family: inherit;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--ink);
+    text-align: left;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .email-card-email:hover {
+    color: var(--success);
+  }
+  .email-card-badges {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .email-card-ws {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px;
+    border-radius: 6px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--ink-2);
+    background: var(--surface-2);
+  }
+  .email-card-ws::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--success);
+  }
+  .email-card-dates {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3px 12px;
+  }
+  .email-card-date-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-3);
+  }
+  .email-card-date-val {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--ink-2);
+  }
+  /* Hàng lọc (select không gian + chip) trên mobile: xuống dòng để hiện ĐỦ mọi
+     mục, không cuộn ngang (tránh khuất "Chờ xác nhận / Chưa thanh toán" + không có
+     thanh cuộn xám xấu trên desktop). */
+  .ae-filter-scroll {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .wallet-admin-row {
+    transition: background 0.1s;
+  }
+  .wallet-admin-row:hover {
+    background: var(--w-bg, var(--surface-2));
+  }
+  /* Quản trị Ví: 2 cột (bảng + cột phải 360px) → xếp dọc trên màn hẹp. */
+  @media (max-width: 1080px) {
+    .wallet-admin-grid {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
   }
   .cell-email {
     font-family: var(--font-mono);
@@ -867,6 +1028,130 @@ body {
     background: var(--surface-2);
   }
 
+  /* ---------- Kebab dropdown (RowActionsMenu) ---------- */
+  .kebab-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    font-size: 17px;
+    line-height: 1;
+    color: var(--ink-3);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition:
+      background 0.14s ease,
+      color 0.14s ease,
+      border-color 0.14s ease;
+  }
+  .kebab-btn:hover,
+  .kebab-btn[aria-expanded="true"] {
+    color: var(--ink);
+    background: var(--surface-2);
+    border-color: var(--border);
+  }
+  .kebab-btn:focus-visible {
+    outline: none;
+    border-color: var(--ink);
+  }
+
+  .row-menu {
+    min-width: 212px;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    box-shadow:
+      0 12px 32px rgba(28, 26, 23, 0.15),
+      0 2px 6px rgba(28, 26, 23, 0.08);
+    padding: 6px;
+    text-align: left;
+    transform-origin: top right;
+    animation: rowMenuPop 0.13s ease-out;
+  }
+  @keyframes rowMenuPop {
+    from {
+      opacity: 0;
+      transform: scale(0.96) translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
+  }
+
+  .row-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 11px;
+    border: none;
+    background: transparent;
+    border-radius: 7px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink-2);
+    cursor: pointer;
+    text-align: left;
+    transition:
+      background 0.12s ease,
+      color 0.12s ease;
+  }
+  .row-menu-item:hover:not(:disabled),
+  .row-menu-item:focus-visible {
+    background: var(--surface-2);
+    color: var(--ink);
+    outline: none;
+  }
+  .row-menu-item:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+  .row-menu-item.danger {
+    color: var(--danger);
+  }
+  .row-menu-item.danger:hover:not(:disabled),
+  .row-menu-item.danger:focus-visible {
+    background: var(--danger-bg);
+    color: var(--danger);
+  }
+  .row-menu-ic {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ink-3);
+    transition: color 0.12s ease;
+  }
+  .row-menu-item:hover:not(:disabled) .row-menu-ic {
+    color: var(--ink-2);
+  }
+  .row-menu-item.danger .row-menu-ic {
+    color: var(--danger);
+  }
+  .row-menu-sep {
+    height: 1px;
+    margin: 5px 8px;
+    background: var(--border);
+  }
+  /* Nhãn nhóm trong menu (vd "Chuyển chủ nhanh") — không bấm được. */
+  .row-menu-heading {
+    padding: 8px 11px 4px;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    user-select: none;
+  }
+
   /* ---------- Actor (avatar + name) ---------- */
   .actor {
     display: flex;
@@ -898,6 +1183,179 @@ body {
     font-size: 11px;
     color: var(--ink-3);
     font-family: var(--font-mono);
+  }
+
+  /* ---------- Cấp quyền theo nhóm (Tài khoản phụ) ---------- */
+  .perm-group {
+    margin-bottom: 16px;
+  }
+  .perm-group:last-child {
+    margin-bottom: 0;
+  }
+  .perm-group-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 9px;
+    color: var(--ink-3);
+  }
+  .perm-group-label .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 2px;
+    display: inline-block;
+    background: var(--ink-3);
+  }
+  .perm-group.member .perm-group-label,
+  .perm-group.member .dot {
+    color: var(--perm-member);
+    background: var(--perm-member);
+  }
+  .perm-group.member .perm-group-label {
+    background: none;
+  }
+  .perm-group.view .perm-group-label,
+  .perm-group.view .dot {
+    color: var(--perm-view);
+    background: var(--perm-view);
+  }
+  .perm-group.view .perm-group-label {
+    background: none;
+  }
+  .perm-group.system .perm-group-label,
+  .perm-group.system .dot {
+    color: var(--perm-system);
+    background: var(--perm-system);
+  }
+  .perm-group.system .perm-group-label {
+    background: none;
+  }
+  .perm-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+  }
+  .perm-chip {
+    display: inline-flex;
+    align-items: flex-start;
+    gap: 9px;
+    cursor: pointer;
+    user-select: none;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 11px;
+    padding: 9px 13px 9px 11px;
+    transition:
+      border-color 0.12s,
+      background 0.12s;
+  }
+  .perm-chip:hover {
+    border-color: var(--border-strong);
+  }
+  .perm-chip.on {
+    border-color: var(--ink);
+    background: var(--surface-2);
+  }
+  .perm-chip input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .perm-chip-box {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    margin-top: 1px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    color: #fff;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    transition: all 0.12s;
+  }
+  .perm-chip.on .perm-chip-box {
+    border-color: var(--ink);
+    background: var(--ink);
+  }
+  .perm-chip-text {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink);
+  }
+  .perm-chip-code {
+    display: block;
+    font-size: 10.5px;
+    color: var(--ink-3);
+    font-family: var(--font-mono);
+    margin-top: 1px;
+  }
+  .perm-chip-sensitive {
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 9.5px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--danger);
+    vertical-align: middle;
+  }
+  .perm-picker-foot {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 20px;
+  }
+  .perm-picker-count {
+    font-size: 12.5px;
+    color: var(--ink-3);
+    margin-left: auto;
+  }
+
+  /* Pill quyền trên bảng danh sách tài khoản */
+  .perm-pill {
+    display: inline-flex;
+    align-items: center;
+    white-space: nowrap;
+    font-size: 11.5px;
+    font-weight: 500;
+    border-radius: 7px;
+    padding: 3px 9px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--ink-2);
+  }
+  .perm-pill.sensitive {
+    border-color: var(--danger-border);
+    background: var(--danger-bg);
+    color: var(--danger);
+  }
+  .role-super {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 7px;
+    padding: 4px 11px;
+    background: var(--role-super-bg);
+    color: var(--role-super);
+  }
+  .perm-full {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--role-super);
   }
 
   /* ---------- Settings ---------- */
@@ -1001,6 +1459,15 @@ body {
     top: 0;
     height: 100vh;
   }
+  /* Vùng nav cuộn được để footer (đổi ngôn ngữ + đăng xuất) luôn ghim đáy,
+     không bị đẩy tràn khỏi màn hình khi viewport thấp (nhất là mobile). */
+  .app-sidebar > nav {
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .app-sidebar-footer {
+    flex-shrink: 0;
+  }
   .app-main {
     padding: 32px 48px 64px;
     /* Không giới hạn bề ngang: trên màn hình rộng (>1440px) nội dung trước đây
@@ -1009,6 +1476,17 @@ body {
     width: 100%;
     overflow: auto;
   }
+  /* Sidebar THU GỌN trên desktop (màn hình hẹp / bấm nút mũi tên): ẩn sidebar,
+     nội dung tràn full bề ngang. Chỉ áp desktop (mobile dùng drawer riêng). */
+  @media (min-width: 769px) {
+    .app-shell.sidebar-collapsed {
+      grid-template-columns: 1fr;
+    }
+    .app-shell.sidebar-collapsed .app-sidebar {
+      display: none;
+    }
+  }
+
   /* Top bar + hamburger: ẩn trên desktop, chỉ hiện ở mobile */
   .app-topbar {
     display: none;
@@ -1109,12 +1587,24 @@ body {
       font-size: 13px;
     }
 
-    /* Metrics: 1 cột */
+    /* Metrics: giữ lưới 2×2 trên mobile (khớp mockup Email đã thêm) */
     .metrics {
-      grid-template-columns: 1fr;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
     }
     .metric {
       padding: 16px 18px;
+    }
+
+    /* Header bảng "Email đã thêm" / "Gia hạn": xếp dọc, ô tìm chiếm trọn bề ngang. */
+    .added-emails-card .table-head,
+    .renewals-card .table-head {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .added-emails-card .table-head .search-wrap,
+    .renewals-card .table-head .search-wrap {
+      width: 100%;
     }
     .metric-value {
       font-size: 24px;

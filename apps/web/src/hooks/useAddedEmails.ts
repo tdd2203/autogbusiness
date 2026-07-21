@@ -16,7 +16,8 @@ import { api } from "../lib/api";
 import { useAuth } from "./useAuth";
 import { useT } from "../i18n";
 import { toast } from "../components/Toast";
-import type { PaymentRequestNotice } from "../types";
+import { isRenewalDue } from "../components/RenewalsPanel";
+import type { AddedMember, PaymentRequestNotice } from "../types";
 
 /**
  * Đếm số email đang "Chờ xác nhận" (payment_status='requested') để hiện badge
@@ -36,6 +37,29 @@ export function usePendingPaymentCount() {
     refetchOnWindowFocus: true,
   });
   return enabled ? (query.data?.count ?? 0) : 0;
+}
+
+/**
+ * Đếm số thành viên "cần gia hạn" (sắp/đã hết hạn — cùng điều kiện `isRenewalDue`
+ * mà RenewalsPanel dùng) để hiện badge trên mục "Gia hạn" ở sidebar. Dùng CHUNG
+ * queryKey ["added-members", "self"] với trang Gia hạn → react-query tái dùng
+ * cache, không gọi API thừa. Bật cho mọi ai xem được member (MEMBER_VIEW).
+ *
+ * Phục vụ TỪ CACHE (staleTime=Infinity) — KHÔNG còn poll 60s / refetch khi focus tab
+ * (badge sidebar luôn mounted nên trước đây kéo TOÀN BỘ list mỗi 60s liên tục). Badge
+ * chỉ cập nhật khi ["added-members"] bị invalidate bởi mutation hoặc watcher task nền.
+ * (User 2026-07-20: dữ liệu lấy cache, chỉ khi thay đổi mới get từ DB.)
+ */
+export function useRenewalDueCount() {
+  const { hasPermission } = useAuth();
+  const enabled = hasPermission("MEMBER_VIEW");
+  const query = useQuery({
+    queryKey: ["added-members", "self"],
+    queryFn: () => api<AddedMember[]>("/api/v1/added-members"),
+    enabled,
+    staleTime: Infinity,
+  });
+  return enabled ? (query.data ?? []).filter(isRenewalDue).length : 0;
 }
 
 /**
@@ -113,6 +137,11 @@ export function useAddedEmails(opts?: { onCleared?: () => void }) {
       );
       opts?.onCleared?.();
       qc.invalidateQueries({ queryKey: ["added-members"] });
+      // Nút "Huỷ" (đánh dấu chưa thanh toán) nằm trong modal Chi tiết thành viên,
+      // mở từ Members (["members"]) lẫn Email đã add / sub-tab Gia hạn. Làm mới cả
+      // danh sách thành viên + lịch sử để trạng thái phản ánh ngay.
+      qc.invalidateQueries({ queryKey: ["members"] });
+      qc.invalidateQueries({ queryKey: ["member-logs"] });
     },
     onError: (e) => {
       toast.error(e instanceof Error ? e.message : String(e));

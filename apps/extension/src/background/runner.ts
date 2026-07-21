@@ -2,6 +2,7 @@ import type {
   ExecuteActionRequest,
   ExecuteActionResponse,
 } from "../shared/messages";
+import { SESSION_RECOVERY_HINT } from "../shared/messages";
 import {
   ApiError,
   bulkUpsertMembers,
@@ -695,7 +696,8 @@ async function sendToContent(
       error_message:
         "Tab chatgpt.com/admin không thể inject content script sau 3 bước fallback (executeScript / reload / recreate tab). " +
         "Cách khắc phục thường gặp: (1) F5 ChatGPT tab thủ công, (2) chrome://extensions/ → reload AutoGPT, " +
-        "(3) đảm bảo extension + ChatGPT cùng browser profile + đã login." +
+        "(3) đảm bảo extension + ChatGPT cùng browser profile + đã login. " +
+        SESSION_RECOVERY_HINT +
         diagText,
     };
   }
@@ -750,6 +752,8 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
         emails,
         role: (p.role as "owner" | "admin" | "member") ?? "member",
         verifiedDomain,
+        // Action "Mời lại": chạy tiền tố tìm-thu-hồi trước khi mời (payload.reinvite).
+        reinvite: p.reinvite === true,
       };
     }
     case "REMOVE_MEMBER":
@@ -848,8 +852,6 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
 
 const CHUNK_SIZE = 200;
 
-/** Độ dài 1 chu kỳ billing (ngày) — dùng suy cycle_start khi có renewal_date. */
-const BILLING_CYCLE_DAYS = 30;
 /** Trần số hoá đơn mở chi tiết mỗi lần sync (chống phát hiện + giới hạn thời gian). */
 const MAX_INVOICE_DETAILS_PER_SYNC = 12;
 
@@ -882,12 +884,21 @@ function randDelayMs(min: number, max: number): number {
   return Math.floor(min + Math.random() * (max - min));
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 function invoiceDateMs(inv: BillingInvoiceWire): number {
   const d = new Date(inv.date);
   d.setUTCHours(0, 0, 0, 0);
   return d.getTime();
+}
+
+/**
+ * cycle_start = cùng ngày-trong-tháng nhưng LÙI 1 THÁNG LỊCH (không phải trừ 30
+ * ngày cứng). Khớp `cycleStartFromRenewal` ở web billing-math. Quan trọng: chu kỳ
+ * dài 31 ngày (vd 11/7→11/8) — trừ 30 ngày sẽ ra 12/7, đẩy hoá đơn GỐC chu kỳ ngày
+ * 11/7 ra ngoài cửa sổ → không mở được chi tiết. Lùi 1 tháng lịch cho ra đúng 11/7.
+ */
+function cycleStartMs(cycleEndMs: number): number {
+  const d = new Date(cycleEndMs);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, d.getUTCDate());
 }
 
 /** Đọc chi tiết 1 hoá đơn (mở tab Stripe) và gộp vào phần tử invoice. */
@@ -955,13 +966,13 @@ async function enrichInvoicesWithDetails(
   let cycleStart: number | null = null;
   if (newest.detail_scraped && newest.period_end) {
     cycleEnd = new Date(newest.period_end).setUTCHours(0, 0, 0, 0);
-    cycleStart = cycleEnd - BILLING_CYCLE_DAYS * DAY_MS;
+    cycleStart = cycleStartMs(cycleEnd);
   } else if (billing.renewal_date) {
     // Dự phòng: hoá đơn mới nhất không đọc được period → dùng renewal tab Kế hoạch.
     const r = new Date(billing.renewal_date);
     r.setUTCHours(0, 0, 0, 0);
     cycleEnd = r.getTime();
-    cycleStart = cycleEnd - BILLING_CYCLE_DAYS * DAY_MS;
+    cycleStart = cycleStartMs(cycleEnd);
   }
 
   // Bước 2: chốt tập hoá đơn cần mở = Paid có NGÀY trong [cycleStart, cycleEnd).
@@ -1522,7 +1533,8 @@ async function handlePurchaseSeatSkipMode(
       status: "FAILED",
       error_code: "NOT_LOGGED_IN_CHATGPT",
       error_message:
-        "Không mở được tab chatgpt.com/admin — user chưa đăng nhập ChatGPT trong browser này.",
+        "Không mở được tab chatgpt.com/admin — user chưa đăng nhập ChatGPT trong browser này. " +
+        SESSION_RECOVERY_HINT,
     });
     return { status: "no-admin-tab" };
   }
@@ -1760,7 +1772,8 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
       status: "FAILED",
       error_code: "NOT_LOGGED_IN_CHATGPT",
       error_message:
-        "Đã thử mở chatgpt.com/admin/members nhưng bị redirect — user chưa đăng nhập ChatGPT trong browser này. Hãy login rồi thử lại.",
+        "Đã thử mở chatgpt.com/admin/members nhưng bị redirect — user chưa đăng nhập ChatGPT trong browser này. " +
+        SESSION_RECOVERY_HINT,
     });
     return { status: "no-admin-tab" };
   }
@@ -1871,7 +1884,9 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
         `Content script không trả kết quả cho ${request.kind} trong ` +
         `${Math.round(phase1Timeout / 1000)}s. Có thể tab ChatGPT bị reload/redirect ` +
         `giữa chừng (mất context content script) hoặc thao tác treo. Task được fail ` +
-        `sớm để giải phóng hàng đợi thay vì kẹt tới auto-cleanup. Lỗi gốc: ${msg}`,
+        `sớm để giải phóng hàng đợi thay vì kẹt tới auto-cleanup. ` +
+        SESSION_RECOVERY_HINT +
+        ` Lỗi gốc: ${msg}`,
     };
   }
   console.log(
@@ -1938,7 +1953,9 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
         error_code: "CONTENT_TIMEOUT",
         error_message:
           `Sau khi bật 'mời ngoài tên miền' + reload, content không trả kết quả mời trong ` +
-          `${Math.round(phase1Timeout / 1000)}s. Lỗi gốc: ${msg}`,
+          `${Math.round(phase1Timeout / 1000)}s. ` +
+          SESSION_RECOVERY_HINT +
+          ` Lỗi gốc: ${msg}`,
       };
     }
   }
@@ -2040,6 +2057,77 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
         console.warn(`[autogpt-runner] F5+verify vòng ${round} FAILED — fallback ok với scrape failed:`, e);
         response = scrapeFailedFallback;
         break;
+      }
+    }
+
+    // Phase 2b: các email vẫn KHÔNG thấy trong tab "Lời mời" (scrape OK) có thể
+    // đã được người dùng CHẤP NHẬN NHANH → rời tab Lời mời, sang tab "Người dùng"
+    // (active). Kiểm tra CHÍNH các email đó ở tab Người dùng TRƯỚC khi reconcile
+    // mark 'removed' — nếu không, email đã tham gia bị xoá oan (user report: lần
+    // đồng bộ lời mời mới nhất). Chạy MỘT lần, ngoài vòng F5 (không làm chậm reload).
+    if (response.ok && request.kind === "INVITE_MEMBER") {
+      const vdata = (response.data as Record<string, unknown> | undefined) ?? {};
+      const stillUnverified = (vdata.unverified_emails as string[] | undefined) ?? [];
+      const scrapeFailed = vdata.verify_scrape_failed === true;
+      if (!scrapeFailed && stillUnverified.length > 0) {
+        try {
+          const ready = await ensureContentInjected(tab.id);
+          if (ready.ok) {
+            const activeResp = (await withTimeout(
+              chrome.tabs.sendMessage(ready.tabId, {
+                kind: "CHECK_ACTIVE_AFTER_INVITE",
+                taskId: task.id,
+                emails: stillUnverified,
+              } satisfies ExecuteActionRequest),
+              VERIFY_ROUNDTRIP_TIMEOUT_MS,
+              "check-active-after-invite",
+            )) as ExecuteActionResponse;
+            if (activeResp?.ok) {
+              const adata =
+                (activeResp.data as
+                  | {
+                      active_members?: Array<Record<string, unknown>>;
+                      active_emails?: string[];
+                    }
+                  | undefined) ?? {};
+              const activeEmails = (adata.active_emails ?? []).map((e) =>
+                e.toLowerCase(),
+              );
+              if (activeEmails.length > 0) {
+                const activeSet = new Set(activeEmails);
+                const d = response.data as Record<string, unknown>;
+                const prevVerified = (d.verified_emails as string[] | undefined) ?? [];
+                const prevPending =
+                  (d.pending_members as Array<Record<string, unknown>> | undefined) ?? [];
+                // active → verified (upsert đúng status); loại khỏi unverified
+                // (reconcile KHÔNG mark removed); gộp scraped member để upsert active.
+                d.verified_emails = [...prevVerified, ...activeEmails];
+                d.unverified_emails = stillUnverified.filter(
+                  (e) => !activeSet.has(e.toLowerCase()),
+                );
+                d.pending_members = [...prevPending, ...(adata.active_members ?? [])];
+                console.log(
+                  `[autogpt-runner] Phase 2b: ${activeEmails.length} email đã sang tab Người dùng (active) — loại khỏi unverified, upsert active:`,
+                  activeEmails,
+                );
+              } else {
+                console.log(
+                  `[autogpt-runner] Phase 2b: ${stillUnverified.length} email unverified KHÔNG có ở tab Người dùng → reconcile như cũ`,
+                );
+              }
+            } else {
+              console.warn(
+                "[autogpt-runner] Phase 2b CHECK_ACTIVE_AFTER_INVITE không ok — giữ nguyên unverified:",
+                activeResp?.error_code,
+              );
+            }
+          }
+        } catch (e) {
+          console.warn(
+            "[autogpt-runner] Phase 2b check active FAILED — giữ nguyên unverified:",
+            e,
+          );
+        }
       }
     }
   }

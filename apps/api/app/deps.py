@@ -144,12 +144,27 @@ def require_super_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def require_wallet_enabled(user: User = Depends(get_current_user)) -> User:
+    """Chỉ cho phép user đã bật cờ thử nghiệm Ví (feature 003). Super-admin luôn
+    được truy cập (để xem/thao tác ví của chính họ nếu cần), nhưng KHÔNG bị trừ
+    phí khi mời — enforcement mời kiểm riêng `wallet_beta and not is_super_admin`.
+    """
+    if not (user.wallet_beta or user.is_super_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "WALLET_NOT_ENABLED", "message": "Tính năng Ví chưa được bật cho tài khoản này"},
+        )
+    return user
+
+
 def user_can_access_workspace(db: Session, user: User, workspace_id: UUID) -> bool:
     """True nếu user được phép thao tác trên workspace.
 
-    Super-admin: luôn True. Sub-admin: phải có row WorkspaceAssignment tương ứng.
+    Super-admin: luôn True. User bật cờ `invite_all_workspaces` (cấu hình "Toàn bộ"
+    ở trang Mời thành viên): True cho mọi workspace — nếu không bulk-invite sẽ 404.
+    Sub-admin còn lại: phải có row WorkspaceAssignment tương ứng.
     """
-    if user.is_super_admin:
+    if user.is_super_admin or user.invite_all_workspaces:
         return True
     row = db.execute(
         select(WorkspaceAssignment.id).where(

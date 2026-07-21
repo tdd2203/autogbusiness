@@ -11,7 +11,6 @@ export default function Billing() {
           {t("nav.billing")}
         </div>
         <h1 className="display-h1">{t("billing.title")}</h1>
-        <p className="page-sub">{t("billing.subtitle")}</p>
       </div>
       <div className="empty-state surface-card">
         <h4>{t("billing.comingSoon")}</h4>

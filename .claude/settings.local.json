@@ -7,7 +7,10 @@
       "PowerShell(Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object OwningProcess, @{Name='Name';Expression={\\(Get-Process -Id $_.OwningProcess\\).ProcessName}})",
       "Bash(./.venv/Scripts/python.exe -c \"from app.main import app; routes=[r for r in app.routes if hasattr\\(r,'methods'\\) and '/ui-labels' in r.path]; [print\\(sorted\\(r.methods\\), r.path\\) for r in routes]\")",
       "Bash(docker info *)",
-      "Bash(lsof -nP -iTCP -sTCP:LISTEN)"
+      "Bash(lsof -nP -iTCP -sTCP:LISTEN)",
+      "WebFetch(domain:tempmail.lovevn.org)",
+      "Bash(curl -s -m 20 -H 'Authorization: Bearer __TRACKED_VAR__' https://tempmail.lovevn.org/api/v1/domains)",
+      "Bash(curl -s -m 20 -H 'Authorization: Bearer hm_I4y2ox65tthaERZ35Hr2BNEI-U0u2R9gmasjtBdsYeQ' https://tempmail.lovevn.org/api/v1/messages/admin@amev.lovevn.org)"
     ]
   }
 }

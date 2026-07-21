@@ -2,28 +2,23 @@ import type { ExecuteActionResponse } from "../../../shared/messages";
 import { reportProgress } from "../../progress";
 import { TEXT_FALLBACKS } from "../../selectors";
 import { clickTabAndWait } from "../sync";
-import { locateMemberRow, scrollScanForRow } from "../remove/locate-member";
+import { locateMemberRow } from "../remove/locate-member";
 
 const LOG = "[autogpt-sync-member]";
 
 /**
  * "Đồng bộ 1 tài khoản lẻ" — kiểm tra đúng 1 email đã tham gia workspace chưa.
  *
- * Luồng (mô phỏng fallback của REVOKE → REMOVE):
- *   1. Tab "Lời mời đang chờ xử lý" (pending): scroll-scan tìm email. Thấy →
- *      vẫn đang chờ (`found_in:"pending"`).
- *   2. Không thấy → fallback tab "Người dùng" (active): lọc + lật trang tìm email.
- *      Thấy → người này ĐÃ CHẤP NHẬN lời mời → đã tham gia (`found_in:"active"`);
- *      backend completion sẽ set member.status='active'.
- *   3. Không thấy ở cả 2 tab (đã duyệt hết) → `found_in:"none"`; backend báo
- *      "email không tồn tại trong workspace" (KHÔNG mark removed).
+ * Logic MỚI (user 2026-07-15), ĐƠN GIẢN — KHÔNG quét tab "Lời mời đang chờ xử lý"
+ * nữa. Lời mời đã xác minh thành công lúc mời, nên 1 email pending chỉ có 2 khả
+ * năng: ĐÃ tham gia (có ở tab "Người dùng" → active) hoặc CHƯA (không có → pending).
  *
- * READ-ONLY: chỉ scroll/lọc/đọc DOM, KHÔNG click thao tác phá huỷ → không cần
- * confirm dialog (khác REMOVE/REVOKE).
+ * Luồng: vào tab "Người dùng" → `locateMemberRow` (ô search là nguồn sự thật).
+ * Thấy → found_in="active" (đã tham gia; backend set status='active'). Không thấy
+ * → found_in="pending" (chưa tham gia; giữ nguyên).
  *
- * Trả `ok:true` cho cả 3 outcome (đều là kết quả nghiệp vụ hợp lệ). Chỉ trả
- * `ok:false` khi KHÔNG vào được tab cần thiết để kiểm tra (không đủ căn cứ kết
- * luận "không tồn tại" → để task FAILED rõ ràng, tránh promote/ báo sai).
+ * READ-ONLY: chỉ lọc/đọc DOM. `ok:false` (UI_ELEMENT_NOT_FOUND) chỉ khi KHÔNG vào
+ * được tab "Người dùng" để xác minh (không đủ căn cứ → để task FAILED rõ ràng).
  */
 export async function executeSyncMember(
   taskId: string,
@@ -40,65 +35,46 @@ export async function executeSyncMember(
     };
   }
 
-  // ----- Bước 1: tab "Lời mời đang chờ xử lý" -----
-  // `waitForButtonMs=12000`: chờ thanh tab render TRƯỚC khi click. Từ v0.8.13 mỗi
-  // action mở tab /admin/members MỚI → content chạy ngay khi trang vừa load, nút
-  // tab có thể chưa render → nếu không chờ sẽ kẹt ở tab Người dùng → UI_ELEMENT_NOT_FOUND
-  // (bug user 2026-06-20). Bước chờ render đã gom vào clickTabAndWait (waitForButtonMs).
   await reportProgress(
     taskId,
-    { phase: "searching", message: `Tìm ${target} ở tab Lời mời đang chờ xử lý...` },
-    true,
-  );
-  const onPending = await clickTabAndWait(
-    "tab_pending_invites",
-    TEXT_FALLBACKS.tabPendingInvites,
-    1500,
-    "tab=invites",
-    12_000,
-  );
-  if (onPending) {
-    const pendingRow = await scrollScanForRow(target);
-    if (pendingRow) {
-      console.log(`${LOG} thấy ${target} ở tab Lời mời → pending`);
-      return { ok: true, data: { email: target, found_in: "pending" } };
-    }
-  } else {
-    console.warn(`${LOG} không vào được tab Lời mời — bỏ qua, thử tab Người dùng`);
-  }
-
-  // ----- Bước 2: fallback tab "Người dùng" (active) -----
-  await reportProgress(
-    taskId,
-    { phase: "searching", message: `Không thấy ở Lời mời — tìm ${target} ở tab Người dùng...` },
+    { phase: "searching", message: `Tìm ${target} ở tab Người dùng...` },
     true,
   );
   const onActive = await clickTabAndWait(
     "tab_active_members",
     TEXT_FALLBACKS.tabActiveMembers,
     800,
+    undefined,
+    12_000,
   );
   if (!onActive) {
-    // Không vào được tab Người dùng → KHÔNG đủ căn cứ kết luận "không tồn tại".
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
       error_message:
-        "Không chuyển được sang tab Người dùng để xác minh. Mở chatgpt.com/admin/members và thử lại.",
+        "Không vào được tab Người dùng để xác minh. Mở chatgpt.com/admin/members và thử lại.",
     };
   }
-  const activeRow = await locateMemberRow(target);
-  if (activeRow) {
+
+  const row = await locateMemberRow(target, {
+    pageThrough: false,
+    preferFilter: true,
+  });
+  if (row) {
     console.log(`${LOG} thấy ${target} ở tab Người dùng → đã tham gia (active)`);
+    await reportProgress(
+      taskId,
+      { phase: "verifying", message: `${target} đã tham gia workspace.` },
+      true,
+    );
     return { ok: true, data: { email: target, found_in: "active" } };
   }
 
-  // ----- Bước 3: không thấy ở cả 2 tab -----
-  console.log(`${LOG} ${target} KHÔNG có ở cả 2 tab → none`);
+  console.log(`${LOG} ${target} KHÔNG có ở tab Người dùng → chưa tham gia (pending)`);
   await reportProgress(
     taskId,
-    { phase: "verifying", message: `${target} không tồn tại trong workspace.` },
+    { phase: "verifying", message: `${target} chưa tham gia (vẫn đang chờ).` },
     true,
   );
-  return { ok: true, data: { email: target, found_in: "none" } };
+  return { ok: true, data: { email: target, found_in: "pending" } };
 }

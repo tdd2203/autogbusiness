@@ -91,26 +91,18 @@ export async function verifyPendingViaFilter(
   const matched = new Map<string, ScrapedMember>();
   for (const email of emails) {
     const lower = email.toLowerCase();
-    // local-part trước (tránh maxlength input), rồi full email — needle nào ra
-    // row thì dừng. humanType tự clear input trước khi gõ nên gọi lại an toàn.
-    const local = email.includes("@") ? email.split("@")[0] : email;
-    const needles = local === email ? [local] : [local, email];
-
+    // Gõ CHÍNH XÁC email đầy đủ 1 LẦN (user 2026-07-13: không gõ nửa rồi full = 2 lần).
     let hit: ScrapedMember | undefined;
-    for (const needle of needles) {
-      await humanType(input, needle);
-      await sleep(600); // chờ React Query / debounce filter
-      try {
-        hit = await waitFor(
-          () =>
-            scrapeAllRows().find((m) => m.email.toLowerCase() === lower) ?? null,
-          3000,
-          200,
-        );
-      } catch {
-        hit = undefined;
-      }
-      if (hit) break;
+    await humanType(input, email);
+    await sleep(600); // chờ React Query / debounce filter
+    try {
+      hit = await waitFor(
+        () => scrapeAllRows().find((m) => m.email.toLowerCase() === lower) ?? null,
+        3000,
+        200,
+      );
+    } catch {
+      hit = undefined;
     }
 
     if (hit) {

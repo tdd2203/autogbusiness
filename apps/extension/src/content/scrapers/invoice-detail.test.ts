@@ -67,6 +67,27 @@ describe("invoice-detail scraper (regression 2026-07-06)", () => {
     expect(parseInvoiceNumber(trueUp)).toBe("M96E9GXY-0003");
   });
 
+  it("hoá đơn gia hạn kèm proration: period = khoảng END MUỘN NHẤT (11/7→11/8, KHÔNG phải 10/7-11/7)", () => {
+    // Tái hiện hoá đơn 0005 (chu kỳ mới 11/7): dòng proration 10/7-11/7 ĐỨNG TRƯỚC
+    // dòng dịch vụ chính 11/7-11/8. Bug cũ (.match lấy dòng đầu) → period_end=11/7
+    // → dashboard tưởng "chu kỳ đã kết thúc".
+    const renew =
+      "Đã thanh toán vào ngày 11 thg 7, 2026 Số M96E9GXY-0005 " +
+      "10 THÁNG 7 - 11 THÁNG 7, 2026 " +
+      "Remaining time on 183 × ChatGPT Business Subscription after 10 Jul 2026 2.636.315 đ Số lượng 183 " +
+      "Unused time on 176 × ChatGPT Business Subscription after 10 Jul 2026 -2.535.472 đ Số lượng 176 " +
+      "11 THÁNG 7 - 11 THÁNG 8, 2026 " +
+      "ChatGPT Business Subscription (per seat) 47.671.500 đ Số lượng 183 Mỗi 260.500 đ " +
+      "Tổng phụ 47.772.343 đ Tổng không bao gồm thuế 47.772.343 đ VAT – Vietnam (10%) 4.777.235 đ " +
+      "Số tiền đến hạn 52.549.578 đ Số tiền đã thanh toán 52.549.578 đ";
+    const p = parsePeriod(renew);
+    expect(p.start).toContain("2026-07-11");
+    expect(p.end).toContain("2026-08-11");
+    // đơn giá + số lượng vẫn đọc đúng.
+    expect(parseUnitPrice(renew)).toBe(260500);
+    expect(parseQuantity(renew, parseSubtotal(renew), parseUnitPrice(renew))).toBe(183);
+  });
+
   it("đơn giá EN 'each' và số lượng suy vẫn hoạt động", () => {
     const en =
       "ChatGPT Business Subscription (per seat) 260,500 đ each Subtotal 1.302.500 đ Amount due 1.432.750 đ";

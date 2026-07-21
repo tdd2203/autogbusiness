@@ -144,6 +144,64 @@ def test_unassign_revokes_access(client: TestClient, auth_header: dict) -> None:
     assert sub_list == []
 
 
+def test_unassigned_sub_admin_still_manages_own_members(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Gán workspace CHỈ giới hạn việc ADD (mời). Sau khi bị gỡ khỏi workspace,
+    sub-admin VẪN gia hạn / xoá được thành viên do CHÍNH MÌNH đã add (trang
+    "Email đã thêm"/"Gia hạn" gom xuyên workspace). Chỉ endpoint ADD + view cấp
+    workspace mới bị chặn 404."""
+    ws = _create_ws(client, auth_header, "Manage WS", seat_total=10)
+    sub = _sub(client, auth_header, ["MEMBER_VIEW", "MEMBER_INVITE", "MEMBER_REMOVE"])
+    _assign(client, auth_header, ws["id"], sub["id"])
+
+    invited = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "mine@example.com", "role": "member", "subscription_months": 1},
+        headers=_bearer(sub["token"]),
+    )
+    assert invited.status_code == 201, invited.text
+    member_id = invited.json()["id"]
+
+    # Gỡ sub-admin khỏi workspace.
+    unassign = client.delete(
+        f"/api/v1/workspaces/{ws['id']}/assignments/{sub['id']}", headers=auth_header
+    )
+    assert unassign.status_code == 204
+
+    sub_h = _bearer(sub["token"])
+
+    # Việc ADD + view cấp workspace vẫn bị chặn (gán workspace = giới hạn ADD).
+    assert (
+        client.post(
+            f"/api/v1/workspaces/{ws['id']}/members/invite",
+            json={"email": "blocked@example.com", "role": "member"},
+            headers=sub_h,
+        ).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            f"/api/v1/workspaces/{ws['id']}/members", headers=sub_h
+        ).status_code
+        == 404
+    )
+
+    # Nhưng QUẢN LÝ thành viên mình đã add thì KHÔNG bị chặn:
+    # gia hạn (áp ngay) …
+    renew = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{member_id}/renew",
+        json={"months": 1},
+        headers=sub_h,
+    )
+    assert renew.status_code == 200, renew.text
+    # … và xoá.
+    removed = client.delete(
+        f"/api/v1/workspaces/{ws['id']}/members/{member_id}", headers=sub_h
+    )
+    assert removed.status_code == 202, removed.text
+
+
 # ---------- Assignment CRUD rules ----------
 
 

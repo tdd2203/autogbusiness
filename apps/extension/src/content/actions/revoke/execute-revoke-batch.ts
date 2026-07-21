@@ -92,6 +92,23 @@ export async function executeRevokeInvites(
   const revoked = results.filter((r) => r.ok && !r.viaRemove).length;
   const failed = results.filter((r) => !r.ok).length;
 
+  // Nếu KHÔNG thu hồi/xoá được email nào mà CÓ lỗi → báo task FAILED (đừng nuốt lỗi
+  // thành COMPLETED). Trước đây luôn ok:true dù revoked=0 → backend mark member
+  // 'removed' oan dù lời mời vẫn còn trên ChatGPT (user 2026-07-13). Backend vẫn đọc
+  // `data.results[].ok` để chỉ mark những email thực sự thành công (khi partial).
+  const anySuccess = revoked + removedViaFallback > 0;
+  if (!anySuccess && failed > 0) {
+    const reasons = results
+      .filter((r) => !r.ok)
+      .map((r) => `${r.email}: ${r.reason ?? "unknown"}`)
+      .join("; ");
+    return {
+      ok: false,
+      error_code: "FAILED_UI_CHANGED",
+      error_message: `Không thu hồi được lời mời nào (${failed} lỗi). ${reasons}`,
+    };
+  }
+
   return {
     ok: true,
     data: { revoked, removed: removedViaFallback, failed, results },

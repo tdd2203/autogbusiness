@@ -9,6 +9,9 @@ import { useFormatDate, useFormatDateTime, useT } from "../i18n";
 import type { Member, QueueItem, WorkspaceMemberStats } from "../types";
 import { useRemoveMembers } from "../hooks/useRemoveMembers";
 import { useMemberMutations } from "../hooks/useMemberMutations";
+import { useReinvite } from "../hooks/useReinvite";
+import OrderQrModal from "../components/OrderQrModal";
+import type { OrderQr } from "../lib/wallet";
 import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
 import { WorkspaceTaskRail } from "../components/WorkspaceTaskRail";
 import { RowActionsMenu } from "../components/RowActionsMenu";
@@ -16,6 +19,7 @@ import { ChangeEmailModal } from "../components/ChangeEmailModal";
 import { ChangeSubscriptionModal } from "../components/ChangeSubscriptionModal";
 import { MemberDetailModal } from "../components/MemberDetailModal";
 import { confirm, toast } from "../components/Toast";
+import { downloadXlsx } from "../lib/xlsx";
 import { Chip } from "./Queue";
 
 // Tab lọc theo trạng thái tham gia workspace (giống ChatGPT):
@@ -106,6 +110,9 @@ export default function Members() {
     queryFn: () =>
       api<Member[]>(`/api/v1/workspaces/${workspaceId}/members`),
     enabled: !!workspaceId,
+    // Poll nhẹ: scheduler nền tự gỡ hết hạn + sync promote pending→active có thể
+    // đổi danh sách mà không có thao tác của user → tự nạp lại (dừng khi tab ẩn).
+    refetchInterval: 20_000,
   });
 
   // Super-admin: danh sách tài khoản phụ để lọc member theo chủ sở hữu (id →
@@ -148,6 +155,7 @@ export default function Members() {
         `/api/v1/workspaces/${workspaceId}/members/stats`,
       ),
     enabled: !!workspaceId && hasPermission("MEMBER_VIEW"),
+    refetchInterval: 20_000,
   });
 
   const { data: recentTasks = [] } = useQuery({
@@ -322,7 +330,16 @@ export default function Members() {
     { onBulkRemoveCleared: () => setSelectedIds(new Set()) },
   );
 
+  // Mời lại (re-invite) member CHỜ THAM GIA khi lời mời lỗi. Hết hạn + ví thiếu →
+  // 402 QR (mở OrderQrModal); còn hạn → miễn phí.
+  const [reinviteQr, setReinviteQr] = useState<OrderQr | null>(null);
+  const reinvite = useReinvite(workspaceId, {
+    onPaymentRequired: (order) => setReinviteQr(order),
+  });
+
   const canRemove = hasPermission("MEMBER_REMOVE");
+  // Mời / mời lại cần quyền mời.
+  const canInvite = hasPermission("MEMBER_INVITE");
   // Đổi email sinh ra cả thao tác xoá lẫn mời → cần cả 2 quyền (khớp backend).
   const canChangeEmail = canRemove && hasPermission("MEMBER_INVITE");
   // Đổi hạn dùng cần quyền mời (sub-admin gửi yêu cầu chờ duyệt, super-admin áp ngay).
@@ -549,6 +566,50 @@ export default function Members() {
       );
       if (ok) bulkSetOwner.mutate({ memberIds: ids, targetUserId, targetName });
     }
+  }
+
+  // Xuất các dòng ĐÃ CHỌN ra file .xlsx thật (không phải CSV). Lý do bỏ CSV: mở
+  // bằng Excel bị lệ thuộc "dấu phân tách" theo locale máy (VN/macOS thường dùng
+  // dấu ";") → dữ liệu dồn hết vào cột A + luôn có cảnh báo "Possible Data Loss".
+  // .xlsx tách cột chuẩn, không cảnh báo. Trình sinh nằm ở lib/xlsx.ts (không thêm
+  // dependency). Cột khớp đúng bảng: Email · Vai trò · Trạng thái · Ngày gia hạn ·
+  // Ngày hết hạn.
+  function exportSelectedExcel() {
+    const selected = members.filter((m) => selectedIds.has(m.id));
+    if (selected.length === 0) return;
+    const roleLabel = (m: Member) =>
+      m.chatgpt_role
+        ? t(
+            `member.role${m.chatgpt_role.charAt(0).toUpperCase()}${m.chatgpt_role.slice(1)}`,
+          )
+        : "";
+    const statusLabel = (m: Member) =>
+      t(`member.status${m.status.charAt(0).toUpperCase()}${m.status.slice(1)}`);
+    const header = [
+      t("member.colEmail"),
+      t("member.colRole"),
+      t("member.colStatus"),
+      t("addedEmails.colRenewedAt"),
+      t("addedEmails.colExpiry"),
+    ];
+    const rows = selected.map((m) => [
+      m.email,
+      roleLabel(m),
+      statusLabel(m),
+      fmtRenewExpiry(
+        formatDateTime,
+        m.subscription_purchased_at ?? m.last_invited_at ?? m.created_at,
+      ),
+      m.subscription_end_at
+        ? fmtRenewExpiry(formatDateTime, m.subscription_end_at)
+        : "",
+    ]);
+    downloadXlsx(
+      `thanh-vien-${new Date().toISOString().slice(0, 10)}.xlsx`,
+      header,
+      rows,
+      t("member.listTitle"),
+    );
   }
 
   // Cột cố định (email, role, status, subscription, joinedAt, actions) = 6, cộng
@@ -849,6 +910,34 @@ export default function Members() {
                 )}
               </select>
             )}
+            {/* Xuất Excel — hiện cùng lúc với ô "Cập nhật đã chọn" (có ≥1 dòng
+                được chọn). Dùng .btn để khớp CHIỀU CAO với .form-input của select
+                (items-center canh giữa 2px chênh lệch), whiteSpace:nowrap chống
+                vỡ chữ; khi hàng header wrap thì nút tự xuống dưới select. */}
+            {canBulk && selectedCount > 0 && (
+              <button
+                type="button"
+                onClick={exportSelectedExcel}
+                className="btn btn-ghost"
+                style={{ padding: "9px 12px", fontSize: 13, whiteSpace: "nowrap" }}
+                title={t("bulkAction.exportExcel")}
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  width={15}
+                  height={15}
+                  aria-hidden="true"
+                >
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <path d="M7 10l5 5 5-5" />
+                  <path d="M12 15V3" />
+                </svg>
+                {t("bulkAction.exportExcel")}
+              </button>
+            )}
             {/* Action buttons (Sync ChatGPT + Mời thành viên) đã được lift
                 lên WorkspaceLayout header để nằm cùng hàng với tabs. */}
           </div>
@@ -1025,37 +1114,79 @@ export default function Members() {
                       className="flex items-center justify-end"
                       style={{ gap: 6 }}
                     >
-                      {/* Đồng bộ 1 tài khoản lẻ — CHỈ ở member 'pending': tìm email
-                          ở tab Lời mời, không thấy thì fallback tab Người dùng;
-                          thấy → set 'active'; không thấy → báo không tồn tại. */}
+                      {/* Member CHỜ THAM GIA: gom thao tác vào kebab "⋯" giống tab
+                          đang hoạt động. Gồm:
+                          - Đồng bộ: tìm email ở tab Lời mời, không thấy thì fallback
+                            tab Người dùng; thấy → 'active', không thấy → báo mất.
+                          - Đổi email: thu hồi lời mời cũ (fallback xoá nếu đã kịp
+                            tham gia) + mời email mới, giữ nguyên hạn dùng.
+                          - Thu hồi (danger): huỷ lời mời đang chờ. */}
                       {m.status === "pending" && (
-                        <button
-                          onClick={() => syncMember.mutate(m.email)}
-                          disabled={syncMember.isPending}
-                          className="row-action"
-                          title={t("member.syncAction")}
-                        >
-                          {t("member.syncAction")}
-                        </button>
-                      )}
-                      {canRemove && m.status === "pending" && (
-                        <button
-                          onClick={async () => {
-                            const ok = await confirm(
-                              t("member.confirmRevoke", { email: m.email }),
-                              {
-                                title: t("member.confirmRevokeTitle"),
-                                okText: t("member.revokeAction"),
-                                cancelText: t("common.cancel"),
-                                danger: true,
-                              },
-                            );
-                            if (ok) revokeInvites.mutate([m.email]);
-                          }}
-                          className="row-action warn"
-                        >
-                          {t("member.revokeAction")}
-                        </button>
+                        <RowActionsMenu
+                          ariaLabel={t("common.actions")}
+                          items={[
+                            {
+                              key: "sync",
+                              label: t("member.syncAction"),
+                              disabled: syncMember.isPending,
+                              onClick: () => syncMember.mutate(m.email),
+                            },
+                            ...(canInvite
+                              ? [
+                                  {
+                                    key: "reinvite",
+                                    label: t("member.reinviteAction"),
+                                    disabled: reinvite.isPending,
+                                    onClick: async () => {
+                                      const ok = await confirm(
+                                        t("member.confirmReinvite", {
+                                          email: m.email,
+                                        }),
+                                        {
+                                          title: t("member.reinviteAction"),
+                                          okText: t("member.reinviteAction"),
+                                          cancelText: t("common.cancel"),
+                                        },
+                                      );
+                                      if (ok) reinvite.mutate(m.id);
+                                    },
+                                  },
+                                ]
+                              : []),
+                            ...(canChangeEmail
+                              ? [
+                                  {
+                                    key: "change-email",
+                                    label: t("member.changeEmailAction"),
+                                    onClick: () => setChangeEmailMember(m),
+                                  },
+                                ]
+                              : []),
+                            ...(canRemove
+                              ? [
+                                  {
+                                    key: "revoke",
+                                    label: t("member.revokeAction"),
+                                    danger: true,
+                                    onClick: async () => {
+                                      const ok = await confirm(
+                                        t("member.confirmRevoke", {
+                                          email: m.email,
+                                        }),
+                                        {
+                                          title: t("member.confirmRevokeTitle"),
+                                          okText: t("member.revokeAction"),
+                                          cancelText: t("common.cancel"),
+                                          danger: true,
+                                        },
+                                      );
+                                      if (ok) revokeInvites.mutate([m.email]);
+                                    },
+                                  },
+                                ]
+                              : []),
+                          ]}
+                        />
                       )}
                       {m.status === "active" &&
                         (canRemove || canChangeEmail || canChangeSubscription) && (
@@ -1140,6 +1271,15 @@ export default function Members() {
           // sau khi lưu, KHỎI reload tay. Luật: mutation phải kèm làm mới dữ liệu.
           member={members.find((m) => m.id === detailMember.id) ?? detailMember}
           onClose={() => setDetailMember(null)}
+        />
+      )}
+
+      {/* Mời lại email HẾT HẠN + ví thiếu → QR thanh toán; quét xong tự thực thi. */}
+      {reinviteQr && (
+        <OrderQrModal
+          order={reinviteQr}
+          onClose={() => setReinviteQr(null)}
+          onPaid={() => setReinviteQr(null)}
         />
       )}
     </div>

@@ -7,7 +7,7 @@ import { findMemberRow } from "../member-row";
  * UI 2026 có ô search filter list — dùng để zoom thẳng vào row cần xoá thay
  * vì scroll qua hết list (failmode khi list > 50 row).
  */
-function findMemberFilterInput(): HTMLInputElement | null {
+export function findMemberFilterInput(): HTMLInputElement | null {
   return querySelectorFirst<HTMLInputElement>(SELECTORS.memberFilterInput);
 }
 
@@ -49,28 +49,47 @@ export async function filterAndFindRow(email: string): Promise<HTMLElement | nul
     `[autogpt-locate] ô lọc OK (placeholder="${input.placeholder}"), tìm ${email}`,
   );
 
-  // Thử nhiều needle: local-part (tránh maxlength) RỒI full email (giống user
-  // gõ tay). ChatGPT "Filter by name" match cả tên + email; needle nào ra row
-  // thì dừng. humanType tự clear input trước khi gõ nên gọi lại an toàn.
-  const local = email.includes("@") ? email.split("@")[0] : email;
-  const needles = local === email ? [local] : [local, email];
-
-  for (const needle of needles) {
-    await humanType(input, needle);
-    await sleep(700); // chờ React Query / debounce filter
+  // Gõ CHÍNH XÁC email ĐẦY ĐỦ (user 2026-07-13: không gõ nửa (local-part) rồi gõ
+  // full = 2 lần tra, tốn thời gian). ChatGPT "Filter by name" match cả email.
+  //
+  // FALSE-NEGATIVE OAN (user report 2026-07-21: "đồng bộ mấy lần vẫn còn pending
+  // dù đã tham gia thật"): tab admin ChatGPT chạy NỀN (runner mở active:false) →
+  // Chrome THROTTLE timer tab nền ~1000ms → chuỗi event `input` khi gõ ô lọc THI
+  // THOẢNG bị nuốt/gộp → fetch server-side KHÔNG kích hoạt → list không bao giờ
+  // hiện row trong cửa sổ chờ → báo "không có row" oan (member đã active). Bằng
+  // chứng DB: cùng batch sync lại sau ~90s thì mọi email ra 'active'. Chờ LÂU HƠN
+  // vô ích (đã chờ ~4.7s vẫn miss) — phải GÕ LẠI để kích hoạt lại fetch. Nên: thử
+  // tối đa 2 lần, mỗi lần clear + gõ lại; chỉ kết luận null sau khi cả 2 lần miss.
+  const ATTEMPTS = 2;
+  for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      // Query lần trước có thể đã bị throttle nuốt → clear + gõ lại để kích hoạt
+      // lại fetch lọc (chứ không chờ dài thêm — chờ không cứu được query bị nuốt).
+      await clearMemberFilter();
+      await sleep(400);
+    }
+    await humanType(input, email);
+    await sleep(600); // chờ React Query / debounce filter
     console.log(
-      `[autogpt-locate] đã lọc "${needle}" → ${visibleRowCount()} row hiển thị`,
+      `[autogpt-locate] đã lọc "${email}" (lần ${attempt + 1}/${ATTEMPTS}) → ${visibleRowCount()} row hiển thị`,
     );
     try {
-      const row = await waitFor(() => findMemberRow(email), 4000, 200);
+      const row = await waitFor(() => findMemberRow(email), 3000, 200);
       if (row) {
-        console.log(`[autogpt-locate] ✓ thấy row sau khi lọc "${needle}"`);
+        console.log(
+          `[autogpt-locate] ✓ thấy row sau khi lọc "${email}" (lần ${attempt + 1})`,
+        );
         return row;
       }
     } catch {
-      console.warn(`[autogpt-locate] lọc "${needle}" chưa ra row, thử cách khác`);
+      console.warn(
+        `[autogpt-locate] lọc "${email}" lần ${attempt + 1} không ra row`,
+      );
     }
   }
+  console.warn(
+    `[autogpt-locate] lọc "${email}" MISS sau ${ATTEMPTS} lần gõ lại → coi như không có ở tab này`,
+  );
   return null;
 }
 

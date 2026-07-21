@@ -1,14 +1,24 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { queuePollInterval } from "../lib/queuePolling";
 import { useAuth } from "../hooks/useAuth";
+import { useIsMobile } from "../hooks/useIsMobile";
 import { useAddedEmails } from "../hooks/useAddedEmails";
 import { useFormatDate, useFormatDateTime, useT } from "../i18n";
-import type { AddedMember, SubscriptionCycle } from "../types";
+import type { AddedMember, QueueItem, SubscriptionCycle } from "../types";
 import { SearchInput } from "./Members";
-import { BulkUpdateExpiryModal } from "../components/BulkUpdateExpiryModal";
+import { Chip } from "./Queue";
 import { MemberDetailModal } from "../components/MemberDetailModal";
+import { ChangeEmailModal } from "../components/ChangeEmailModal";
+import { ChangeSubscriptionModal } from "../components/ChangeSubscriptionModal";
+import { RowActionsMenu, type RowActionItem } from "../components/RowActionsMenu";
+import { isRenewalDue } from "../components/RenewalsPanel";
+import { confirm, toast } from "../components/Toast";
+import { useAddedMemberActions } from "../hooks/useAddedMemberActions";
+import OrderQrModal from "../components/OrderQrModal";
+import type { OrderQr } from "../lib/wallet";
 
 type SubAccount = {
   id: string;
@@ -18,6 +28,9 @@ type SubAccount = {
 };
 
 type PaymentFilter = "all" | "today" | "unpaid" | "requested";
+// Tab trạng thái CHÍNH (giống bảng Thành viên trong workspace, nhưng ở đây gom mọi
+// không gian): "active" = Đã tham gia, "pending" = Chờ tham gia.
+type StatusTab = "active" | "pending";
 
 function isToday(iso: string): boolean {
   const d = new Date(iso);
@@ -42,12 +55,37 @@ const PRECISE_TIME: Intl.DateTimeFormatOptions = {
   second: "2-digit",
 };
 
+// Icon 16px (Feather, stroke=currentColor) cho các item menu hàng loạt không nằm
+// trong DEFAULT_ICONS của RowActionsMenu (thanh toán / chuyển chủ).
+const ICON_PAYMENT = (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="2" y="5" width="20" height="14" rx="2" />
+    <line x1="2" y1="10" x2="22" y2="10" />
+  </svg>
+);
+const ICON_OWNER = (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+    <circle cx="12" cy="7" r="4" />
+  </svg>
+);
+
 export default function AddedEmails() {
   const t = useT();
+  const qc = useQueryClient();
   const formatDate = useFormatDate();
   const formatDateTime = useFormatDateTime();
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const isSuper = user?.is_super_admin === true;
+  const isMobile = useIsMobile();
+
+  // Quyền cho menu thao tác ⋯ theo dòng (khớp Members.tsx). Gán workspace CHỈ
+  // giới hạn việc mời (add) → các email owner đã thêm luôn được đổi hạn/đổi
+  // email/xoá; ở đây vẫn gate theo permission gốc như backend yêu cầu.
+  const canRemove = hasPermission("MEMBER_REMOVE");
+  const canInvite = hasPermission("MEMBER_INVITE");
+  const canChangeEmail = canRemove && hasPermission("MEMBER_INVITE");
+  const canChangeSubscription = hasPermission("MEMBER_INVITE");
 
   // Khởi tạo filter từ ?filter= (chuông thông báo mở thẳng "Chờ xác nhận").
   const [searchParams] = useSearchParams();
@@ -56,15 +94,31 @@ export default function AddedEmails() {
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<PaymentFilter>(initialFilter);
+  // Tab trạng thái: mặc định "Đã tham gia" (khớp Members.tsx). Chuyển sang "Chờ
+  // tham gia" để xem + đồng bộ/thu hồi hàng loạt các lời mời pending mọi không gian.
+  const [statusTab, setStatusTab] = useState<StatusTab>("active");
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [showBulkExpiry, setShowBulkExpiry] = useState(false);
   // Click email → mở modal chi tiết + lịch sử hoạt động của email đó.
   const [detailMember, setDetailMember] = useState<AddedMember | null>(null);
+  // Email đang mở modal "Đổi email" / "Đổi hạn dùng" từ menu ⋯ theo dòng (null = đóng).
+  const [changeEmailMember, setChangeEmailMember] = useState<AddedMember | null>(
+    null,
+  );
+  const [changeSubMember, setChangeSubMember] = useState<AddedMember | null>(
+    null,
+  );
+  // Mời lại email HẾT HẠN + ví thiếu → QR thanh toán.
+  const [reinviteQr, setReinviteQr] = useState<OrderQr | null>(null);
 
   const { requestPayment, markPaid, transferOwner } = useAddedEmails({
     onCleared: () => setSelected(new Set()),
+  });
+  // Thao tác theo dòng (Đồng bộ / Thu hồi / Xoá / Mời lại) — workspaceId truyền theo
+  // từng lời gọi vì mỗi email có thể thuộc workspace khác nhau. Xem useAddedMemberActions.
+  const rowActions = useAddedMemberActions({
+    onPaymentRequired: (order) => setReinviteQr(order),
   });
 
   // Super-admin: danh sách tài khoản phụ để xem riêng từng người.
@@ -80,7 +134,76 @@ export default function AddedEmails() {
   const { data: members = [], isLoading } = useQuery({
     queryKey: ["added-members", isSuper ? selectedUserId : "self"],
     queryFn: () => api<AddedMember[]>(`/api/v1/added-members${queryParam}`),
+    // Phục vụ TỪ CACHE — KHÔNG refetch theo thời gian / khi vào lại trang / focus
+    // tab. Chỉ gọi lại DB khi dữ liệu THỰC SỰ đổi, qua invalidate ["added-members"]
+    // từ: (1) mutation của chính user, (2) watcher recent-tasks-global khi task nền
+    // (mời/xoá/đồng bộ/tự gỡ hết hạn) hoàn tất. (User 2026-07-20: dữ liệu lấy cache,
+    // chỉ khi thay đổi mới get từ DB.) invalidate vẫn ép refetch dù staleTime=Infinity.
+    staleTime: Infinity,
+    // Ghi đè mặc định toàn cục (bật ở main.tsx): giữ đúng thiết kế cache ở trên,
+    // KHÔNG refetch khi focus tab — mọi cập nhật đi qua invalidate của watcher.
+    refetchOnWindowFocus: false,
   });
+
+  // Auto-refresh list khi task extension (Thu hồi / Xoá / Đồng bộ 1 email) mà
+  // owner enqueue TỪ TRANG NÀY chuyển sang terminal (COMPLETED/FAILED).
+  //
+  // Vì sao cần: các thao tác theo dòng chỉ ENQUEUE task; extension mới thực thi
+  // trên ChatGPT rồi báo COMPLETED sau. `useAddedMemberActions.refresh()` invalidate
+  // ["added-members"] NGAY lúc enqueue — lúc đó DB CHƯA đổi (member còn pending) →
+  // refetch tức thì không thấy khác gì → user tưởng "không hoạt động", phải F5.
+  // Watcher này (mô phỏng Members.tsx) bắt thời điểm task VỪA hoàn tất → invalidate
+  // ["added-members"] LẦN 2 lúc DB đã đổi → dòng tự biến mất/cập nhật, KHỎI F5.
+  //
+  // Trang gom email XUYÊN nhiều workspace → poll QUEUE TOÀN CỤC (không workspace_id):
+  // sub-admin chỉ thấy task mình tạo (đúng phạm vi list), super-admin thấy tất cả.
+  // Dùng key ["recent-tasks-global"] (khác ["recent-tasks", wsId] của Members) →
+  // refresh() invalidate ["recent-tasks-global"] để refetch ngay sau enqueue.
+  const { data: recentTasks = [] } = useQuery({
+    queryKey: ["recent-tasks-global"],
+    queryFn: () => api<QueueItem[]>("/api/v1/queue?limit=50"),
+    // Poll 2s khi còn task chạy; idle nhịp tim 10s (khớp Members.tsx) để bắt cả
+    // task do tab/phiên khác của owner tạo. refresh() sau enqueue → refetch ngay →
+    // thấy PENDING → poll bật 2s.
+    refetchInterval: queuePollInterval(2000, 10000),
+  });
+
+  // Chỉ invalidate khi 1 task VỪA chuyển đang-chạy → terminal NGAY TRƯỚC MẮT user
+  // (status lần trước là PENDING/IN_PROGRESS). Lần đầu thấy task (kể cả task lịch
+  // sử đã terminal lúc mở trang) chỉ ghi nhận status → tránh invalidate/toast thừa.
+  const lastStatusRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    const mutatingTypes = new Set([
+      "INVITE_MEMBER",
+      "REMOVE_MEMBER",
+      "CHANGE_ROLE",
+      "CHANGE_LICENSE_TYPE",
+      "SET_USAGE_LIMIT",
+      "REVOKE_INVITES",
+      "SYNC_DATA",
+      "SYNC_MEMBER",
+      "SYNC_MEMBERS_BATCH",
+    ]);
+    const justFinished: QueueItem[] = [];
+    for (const task of recentTasks) {
+      if (!mutatingTypes.has(task.type)) continue;
+      const prev = lastStatusRef.current.get(task.id);
+      lastStatusRef.current.set(task.id, task.status);
+      const isTerminal = task.status === "COMPLETED" || task.status === "FAILED";
+      const wasActive = prev === "PENDING" || prev === "IN_PROGRESS";
+      if (isTerminal && wasActive) justFinished.push(task);
+    }
+    if (justFinished.length === 0) return;
+    qc.invalidateQueries({ queryKey: ["added-members"] });
+    for (const task of justFinished) {
+      const typeLabel = t(`taskType.${task.type}`);
+      if (task.status === "COMPLETED") {
+        toast.success(t("task.completedToast", { type: typeLabel }));
+      } else {
+        toast.error(t("task.failedToast", { type: typeLabel }));
+      }
+    }
+  }, [recentTasks, qc, t]);
 
   // Workspace có mặt trong danh sách hiện tại → đổ vào dropdown lọc riêng.
   const workspaces = useMemo(() => {
@@ -94,8 +217,22 @@ export default function AddedEmails() {
     );
   }, [members]);
 
+  // Số đếm cho 2 tab "Đã tham gia / Chờ tham gia": tôn trọng bộ lọc không gian
+  // (dropdown workspace) để badge khớp danh sách đang xem, nhưng KHÔNG phụ thuộc ô
+  // tìm kiếm hay filter thanh toán (2 thứ đó chỉ thu hẹp TRONG tab). selectedUserId
+  // đã lọc sẵn ở tầng query nên members ở đây vốn đã đúng phạm vi tài khoản.
+  const wsScoped = useMemo(
+    () =>
+      selectedWorkspace
+        ? members.filter((m) => m.workspace_id === selectedWorkspace)
+        : members,
+    [members, selectedWorkspace],
+  );
+  const tabActiveCount = wsScoped.filter((m) => m.status === "active").length;
+  const tabPendingCount = wsScoped.filter((m) => m.status === "pending").length;
+
   const filtered = useMemo(() => {
-    let rows = members;
+    let rows = members.filter((m) => m.status === statusTab);
     if (selectedWorkspace)
       rows = rows.filter((m) => m.workspace_id === selectedWorkspace);
     // "Ngày thêm" = last_invited_at ?? created_at (xem Members.tsx): re-invite
@@ -117,16 +254,10 @@ export default function AddedEmails() {
       );
     }
     return rows;
-  }, [members, filter, search, selectedWorkspace]);
+  }, [members, filter, search, selectedWorkspace, statusTab]);
 
   const total = members.length;
   const paidCount = members.filter((m) => m.payment_status === "paid").length;
-  const requestedCount = members.filter(
-    (m) => m.payment_status === "requested",
-  ).length;
-  const unpaidCount = members.filter(
-    (m) => m.payment_status === "unpaid",
-  ).length;
 
   // Nhắc nhở hết hạn cho CHỦ SỞ HỮU email (bản đơn giản, không có nút remove —
   // remove là việc của admin ở trang Members). Mục đích: nhắc owner liên hệ
@@ -140,6 +271,16 @@ export default function AddedEmails() {
       (m.status === "active" || m.status === "pending") &&
       new Date(m.subscription_end_at).getTime() <= Date.now(),
   );
+
+  // 2 thẻ thống kê giữa (đã đổi nghĩa theo nhãn mới, KHÔNG còn đếm theo thanh toán):
+  //   "Chờ tham gia"    = email đã thêm nhưng chưa vào team (status pending).
+  //   "Đến hạn gia hạn" = email còn active/pending + đã hết hạn HOẶC còn ≤7 ngày —
+  //                       ĐÚNG bằng định nghĩa `isRenewalDue` dùng cho badge sidebar
+  //                       "Gia hạn" và RenewalsPanel. (Trước đây chỉ đếm expiredMembers
+  //                       = đã quá hạn thật → luôn ra 0 khi mọi email còn hạn tương lai,
+  //                       lệch với badge sidebar. User report 2026-07-20.)
+  const pendingCount = members.filter((m) => m.status === "pending").length;
+  const dueForRenewalCount = members.filter(isRenewalDue).length;
 
   const allFilteredSelected =
     filtered.length > 0 && filtered.every((m) => selected.has(m.id));
@@ -168,42 +309,338 @@ export default function AddedEmails() {
 
   const selectedIds = Array.from(selected);
 
+  // Các dòng đang chọn là PENDING (kèm workspace_id để gom theo không gian). Tab
+  // "Chờ tham gia" chỉ chứa pending nên selection ở đó đều lọt; vẫn lọc phòng khi
+  // còn chọn sót từ tab khác.
+  const pendingSelectedRows = members
+    .filter((m) => selected.has(m.id) && m.status === "pending")
+    .map((m) => ({ workspaceId: m.workspace_id, email: m.email }));
+
+  // Đồng bộ hàng loạt (kiểm tra đã tham gia) các lời mời đã chọn — xuyên workspace.
+  async function handleBulkSync() {
+    if (pendingSelectedRows.length === 0) return;
+    const n = pendingSelectedRows.length;
+    const ok = await confirm(t("bulkSync.confirmBody", { n }), {
+      title: t("bulkSync.confirmTitle", { n }),
+      okText: t("bulkSync.confirmOk", { n }),
+      cancelText: t("common.cancel"),
+    });
+    if (ok)
+      rowActions.bulkSync.mutate(pendingSelectedRows, {
+        onSuccess: () => setSelected(new Set()),
+      });
+  }
+
+  // Thu hồi hàng loạt các lời mời pending đã chọn — xuyên workspace.
+  async function handleBulkRevoke() {
+    if (pendingSelectedRows.length === 0) return;
+    const n = pendingSelectedRows.length;
+    const ok = await confirm(t("bulkRevoke.confirmBody", { n }), {
+      title: t("bulkRevoke.confirmTitle", { n }),
+      okText: t("bulkRevoke.confirmOk", { n }),
+      cancelText: t("common.cancel"),
+      danger: true,
+    });
+    if (ok)
+      rowActions.bulkRevoke.mutate(pendingSelectedRows, {
+        onSuccess: () => setSelected(new Set()),
+      });
+  }
+
+  // Đang chạy 1 thao tác hàng loạt bất kỳ → khoá select để tránh bấm chồng.
+  const bulkBusy =
+    markPaid.isPending ||
+    requestPayment.isPending ||
+    transferOwner.isPending ||
+    rowActions.bulkSync.isPending ||
+    rowActions.bulkRevoke.isPending;
+
+  // MỘT menu gom mọi thao tác hàng loạt (giống tab Thành viên trong workspace).
+  // markPaid/requestPayment/transferOwner tự clear selection qua onCleared.
+  const bulkMenuItems: RowActionItem[] = [
+    // Tab "Chờ tham gia" → Đồng bộ + Thu hồi lời mời.
+    ...(statusTab === "pending"
+      ? [
+          {
+            key: "sync",
+            label: t("bulkAction.sync"),
+            disabled: bulkBusy,
+            onClick: () => void handleBulkSync(),
+          },
+          ...(canRemove
+            ? [
+                {
+                  key: "revoke",
+                  label: t("bulkAction.revoke"),
+                  danger: true,
+                  disabled: bulkBusy,
+                  onClick: () => void handleBulkRevoke(),
+                },
+              ]
+            : []),
+        ]
+      : []),
+    // Thanh toán thủ công — CẢ 2 tab (email chờ tham gia vẫn có thể còn kỳ chưa
+    // thanh toán do gia hạn / mời lại).
+    isSuper
+      ? {
+          key: "confirm-payment",
+          label: t("addedEmails.confirmPayment"),
+          icon: ICON_PAYMENT,
+          disabled: bulkBusy,
+          onClick: () => markPaid.mutate({ ids: selectedIds, paid: true }),
+        }
+      : {
+          key: "request-payment",
+          label: t("addedEmails.requestPayment"),
+          icon: ICON_PAYMENT,
+          disabled: bulkBusy,
+          onClick: () =>
+            requestPayment.mutate({ ids: selectedIds, requested: true }),
+        },
+    // Chuyển chủ nhanh (chỉ super-admin) — áp cho cả 2 tab.
+    ...(isSuper
+      ? [
+          { key: "owner-head", label: t("bulkTransferOwner.group"), heading: true },
+          {
+            key: "owner:self",
+            label: t("bulkTransferOwner.toSelf"),
+            icon: ICON_OWNER,
+            disabled: bulkBusy,
+            onClick: () =>
+              user &&
+              transferOwner.mutate({ ids: selectedIds, targetUserId: user.id }),
+          },
+          ...subAccounts.map((u) => ({
+            key: `owner:${u.id}`,
+            label: u.username,
+            icon: ICON_OWNER,
+            disabled: bulkBusy,
+            onClick: () =>
+              transferOwner.mutate({ ids: selectedIds, targetUserId: u.id }),
+          })),
+        ]
+      : []),
+  ];
+
+  // Menu ⋯ theo dòng — DÙNG CHUNG cho bảng (desktop) và thẻ email (mobile):
+  //   active (đã tham gia) → Đổi hạn / Đổi email / Xoá;
+  //   pending (chờ tham gia) → Đồng bộ / Mời lại / Đổi email / Thu hồi.
+  function rowMenu(m: AddedMember) {
+    if (m.status === "active") {
+      return (
+        <RowActionsMenu
+          ariaLabel={t("common.actions")}
+          items={[
+            ...(canChangeSubscription
+              ? [
+                  {
+                    key: "change-subscription",
+                    label: t("subscription.changeAction"),
+                    onClick: () => setChangeSubMember(m),
+                  },
+                ]
+              : []),
+            ...(canChangeEmail
+              ? [
+                  {
+                    key: "change-email",
+                    label: t("member.changeEmailAction"),
+                    onClick: () => setChangeEmailMember(m),
+                  },
+                ]
+              : []),
+            ...(canRemove
+              ? [
+                  {
+                    key: "remove",
+                    label: t("member.removeAction"),
+                    danger: true,
+                    disabled: rowActions.remove.isPending,
+                    onClick: async () => {
+                      const ok = await confirm(
+                        t("member.confirmRemove", { email: m.email }),
+                        {
+                          title: t("member.confirmRemoveTitle"),
+                          okText: t("member.removeAction"),
+                          cancelText: t("common.cancel"),
+                          danger: true,
+                        },
+                      );
+                      if (ok)
+                        rowActions.remove.mutate({
+                          workspaceId: m.workspace_id,
+                          memberId: m.id,
+                        });
+                    },
+                  },
+                ]
+              : []),
+          ]}
+        />
+      );
+    }
+    if (m.status === "pending") {
+      return (
+        <RowActionsMenu
+          ariaLabel={t("common.actions")}
+          items={[
+            {
+              key: "sync",
+              label: t("member.syncAction"),
+              disabled: rowActions.sync.isPending,
+              onClick: () =>
+                rowActions.sync.mutate({
+                  workspaceId: m.workspace_id,
+                  email: m.email,
+                }),
+            },
+            ...(canInvite
+              ? [
+                  {
+                    key: "reinvite",
+                    label: t("member.reinviteAction"),
+                    disabled: rowActions.reinvite.isPending,
+                    onClick: async () => {
+                      const ok = await confirm(
+                        t("member.confirmReinvite", { email: m.email }),
+                        {
+                          title: t("member.reinviteAction"),
+                          okText: t("member.reinviteAction"),
+                          cancelText: t("common.cancel"),
+                        },
+                      );
+                      if (ok)
+                        rowActions.reinvite.mutate({
+                          workspaceId: m.workspace_id,
+                          memberId: m.id,
+                        });
+                    },
+                  },
+                ]
+              : []),
+            ...(canChangeEmail
+              ? [
+                  {
+                    key: "change-email",
+                    label: t("member.changeEmailAction"),
+                    onClick: () => setChangeEmailMember(m),
+                  },
+                ]
+              : []),
+            ...(canRemove
+              ? [
+                  {
+                    key: "revoke",
+                    label: t("member.revokeAction"),
+                    danger: true,
+                    disabled: rowActions.revoke.isPending,
+                    onClick: async () => {
+                      const ok = await confirm(
+                        t("member.confirmRevoke", { email: m.email }),
+                        {
+                          title: t("member.confirmRevokeTitle"),
+                          okText: t("member.revokeAction"),
+                          cancelText: t("common.cancel"),
+                          danger: true,
+                        },
+                      );
+                      if (ok)
+                        rowActions.revoke.mutate({
+                          workspaceId: m.workspace_id,
+                          email: m.email,
+                        });
+                    },
+                  },
+                ]
+              : []),
+          ]}
+        />
+      );
+    }
+    return null;
+  }
+
+  // Nhãn trạng thái (Đã tham gia / Chờ tham gia / Đã gỡ) + class badge tương ứng.
+  const statusBadge = (m: AddedMember) => (
+    <span className={STATUS_BADGE[m.status] ?? "badge badge-neutral"}>
+      {t(
+        `member.status${m.status.charAt(0).toUpperCase()}${m.status.slice(1)}`,
+      )}
+    </span>
+  );
+
+  // Ngày gia hạn = mốc neo subscription_purchased_at (fallback last_invited_at ??
+  // created_at cho row legacy) → khớp "Ngày hết hạn" = mốc + 30.
+  const renewedAt = (m: AddedMember) =>
+    formatDateTime(
+      m.subscription_purchased_at ?? m.last_invited_at ?? m.created_at,
+      undefined,
+      PRECISE_TIME,
+    );
+  const expiryAt = (m: AddedMember) =>
+    m.subscription_end_at
+      ? formatDateTime(m.subscription_end_at, undefined, PRECISE_TIME)
+      : t("addedEmails.expiryNone");
+
   return (
     <div className="page-fade">
       <div
-        className="flex items-start justify-between"
-        style={{ gap: 24, marginBottom: 32, flexWrap: "wrap" }}
+        className="flex justify-between"
+        style={{
+          gap: isMobile ? 14 : 24,
+          marginBottom: isMobile ? 20 : 32,
+          flexDirection: isMobile ? "column" : "row",
+          alignItems: isMobile ? "stretch" : "flex-start",
+          flexWrap: "wrap",
+        }}
       >
         <div>
           <div className="breadcrumb">{t("nav.addedEmails")}</div>
-          <h1 className="display-h1">{t("addedEmails.title")}</h1>
-          <p className="page-sub">{t("addedEmails.subtitle")}</p>
+          {/* Mobile chỉ hiển thị đường dẫn (breadcrumb) — bỏ tiêu đề lớn cho đỡ
+              thừa 1 dòng trùng nội dung. Desktop vẫn giữ tiêu đề. */}
+          {!isMobile && (
+            <h1 className="display-h1">{t("addedEmails.title")}</h1>
+          )}
         </div>
-        {/* Super-admin: áp ngay. Sub-admin: gửi yêu cầu đổi hạn chờ super-admin duyệt. */}
-        <button
-          className="btn btn-primary"
-          onClick={() => setShowBulkExpiry(true)}
-        >
-          {t("bulkExpiry.openBtn")}
-        </button>
+        {/* Nút "Cập nhật hạn hàng loạt" đã ẩn theo yêu cầu. */}
       </div>
-
-      {showBulkExpiry && (
-        <BulkUpdateExpiryModal
-          members={members}
-          isSuper={isSuper}
-          onClose={() => setShowBulkExpiry(false)}
-          onDone={() => setSelected(new Set())}
-        />
-      )}
 
       {/* Chi tiết + lịch sử thay đổi của 1 email (AddedMember ⊇ Member nên
           truyền thẳng vào MemberDetailModal; endpoint logs theo workspace_id). */}
       {detailMember && (
         <MemberDetailModal
           workspaceId={detailMember.workspace_id}
-          member={detailMember}
+          // Bản MỚI NHẤT từ list (đã refetch sau khi xử lý kỳ trong modal) theo id →
+          // các kỳ trong modal tự cập nhật NGAY, khỏi đóng/mở lại. Fallback snapshot.
+          member={members.find((x) => x.id === detailMember.id) ?? detailMember}
           onClose={() => setDetailMember(null)}
+        />
+      )}
+
+      {/* Đổi email / Đổi hạn dùng từ menu ⋯ theo dòng. Mỗi email có workspace_id
+          riêng → truyền thẳng workspace của dòng (AddedMember ⊇ Member). */}
+      {changeEmailMember && (
+        <ChangeEmailModal
+          workspaceId={changeEmailMember.workspace_id}
+          member={changeEmailMember}
+          onClose={() => setChangeEmailMember(null)}
+        />
+      )}
+      {changeSubMember && (
+        <ChangeSubscriptionModal
+          workspaceId={changeSubMember.workspace_id}
+          member={changeSubMember}
+          onClose={() => setChangeSubMember(null)}
+        />
+      )}
+
+      {/* Mời lại email HẾT HẠN + ví thiếu → QR thanh toán; quét xong tự thực thi. */}
+      {reinviteQr && (
+        <OrderQrModal
+          order={reinviteQr}
+          onClose={() => setReinviteQr(null)}
+          onPaid={() => setReinviteQr(null)}
         />
       )}
 
@@ -246,12 +683,15 @@ export default function AddedEmails() {
         <Metric label={t("addedEmails.metricPaid")} value={paidCount} />
         <Metric
           label={t("addedEmails.metricRequested")}
-          value={requestedCount}
+          value={pendingCount}
         />
-        <Metric label={t("addedEmails.metricUnpaid")} value={unpaidCount} />
+        <Metric
+          label={t("addedEmails.metricUnpaid")}
+          value={dueForRenewalCount}
+        />
       </div>
 
-      <div className="table-card">
+      <div className="table-card added-emails-card">
         <div className="table-head">
           <div>
             <div className="table-title">{t("addedEmails.listTitle")}</div>
@@ -259,77 +699,122 @@ export default function AddedEmails() {
               {t("addedEmails.countLabel", { n: filtered.length })}
             </div>
           </div>
-          <div
-            className="flex items-center gap-2"
-            style={{ flexWrap: "wrap" }}
-          >
-            {isSuper && (
-              <select
-                value={selectedUserId}
-                onChange={(e) => {
-                  setSelectedUserId(e.target.value);
-                  setSelected(new Set());
-                }}
-                className="form-input"
-                style={{ padding: "6px 10px", fontSize: 13, width: "auto" }}
+          {(() => {
+            // Nhóm select (tài khoản/không gian) + chip lọc — dùng lại cho cả 2
+            // bố cục. Trên mobile: ô tìm chiếm 1 dòng riêng, nhóm lọc cuộn ngang.
+            const filtersEl = (
+              <>
+                {isSuper && (
+                  <select
+                    value={selectedUserId}
+                    onChange={(e) => {
+                      setSelectedUserId(e.target.value);
+                      setSelected(new Set());
+                    }}
+                    className="form-input"
+                    style={{ padding: "6px 10px", fontSize: 13, width: "auto" }}
+                  >
+                    <option value="">{t("addedEmails.allSubAccounts")}</option>
+                    {user && <option value={user.id}>Admin (bạn)</option>}
+                    {subAccounts.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.username}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {workspaces.length > 1 && (
+                  <select
+                    value={selectedWorkspace}
+                    onChange={(e) => {
+                      setSelectedWorkspace(e.target.value);
+                      setSelected(new Set());
+                    }}
+                    className="form-input"
+                    style={{ padding: "6px 10px", fontSize: 13, width: "auto" }}
+                  >
+                    <option value="">{t("addedEmails.allWorkspaces")}</option>
+                    {workspaces.map((w) => (
+                      <option key={w.id} value={w.id}>
+                        {w.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <FilterChip
+                  active={filter === "all"}
+                  onClick={() => setFilter("all")}
+                >
+                  {t("addedEmails.filterAll")}
+                </FilterChip>
+                <FilterChip
+                  active={filter === "today"}
+                  onClick={() => setFilter("today")}
+                >
+                  {t("addedEmails.filterToday")}
+                </FilterChip>
+                <FilterChip
+                  active={filter === "requested"}
+                  onClick={() => setFilter("requested")}
+                >
+                  {t("addedEmails.filterRequested")}
+                </FilterChip>
+                <FilterChip
+                  active={filter === "unpaid"}
+                  onClick={() => setFilter("unpaid")}
+                >
+                  {t("addedEmails.filterUnpaid")}
+                </FilterChip>
+              </>
+            );
+            const searchEl = (
+              <SearchInput
+                value={search}
+                onChange={setSearch}
+                placeholder={t("addedEmails.searchPlaceholder")}
+              />
+            );
+            return isMobile ? (
+              <div
+                className="flex"
+                style={{ flexDirection: "column", gap: 10, width: "100%" }}
               >
-                <option value="">{t("addedEmails.allSubAccounts")}</option>
-                {user && <option value={user.id}>Admin (bạn)</option>}
-                {subAccounts.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.username}
-                  </option>
-                ))}
-              </select>
-            )}
-            {workspaces.length > 1 && (
-              <select
-                value={selectedWorkspace}
-                onChange={(e) => {
-                  setSelectedWorkspace(e.target.value);
-                  setSelected(new Set());
-                }}
-                className="form-input"
-                style={{ padding: "6px 10px", fontSize: 13, width: "auto" }}
+                {searchEl}
+                <div className="ae-filter-scroll">{filtersEl}</div>
+              </div>
+            ) : (
+              <div
+                className="flex items-center gap-2"
+                style={{ flexWrap: "wrap" }}
               >
-                <option value="">{t("addedEmails.allWorkspaces")}</option>
-                {workspaces.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}
-                  </option>
-                ))}
-              </select>
-            )}
-            <FilterChip
-              active={filter === "all"}
-              onClick={() => setFilter("all")}
-            >
-              {t("addedEmails.filterAll")}
-            </FilterChip>
-            <FilterChip
-              active={filter === "today"}
-              onClick={() => setFilter("today")}
-            >
-              {t("addedEmails.filterToday")}
-            </FilterChip>
-            <FilterChip
-              active={filter === "requested"}
-              onClick={() => setFilter("requested")}
-            >
-              {t("addedEmails.filterRequested")}
-            </FilterChip>
-            <FilterChip
-              active={filter === "unpaid"}
-              onClick={() => setFilter("unpaid")}
-            >
-              {t("addedEmails.filterUnpaid")}
-            </FilterChip>
-            <SearchInput
-              value={search}
-              onChange={setSearch}
-              placeholder={t("addedEmails.searchPlaceholder")}
-            />
-          </div>
+                {filtersEl}
+                {searchEl}
+              </div>
+            );
+          })()}
+        </div>
+
+        {/* Tab trạng thái CHÍNH — giống bảng Thành viên trong workspace, nhưng gom
+            mọi không gian. "Chờ tham gia" bật bộ thao tác đồng bộ/thu hồi hàng loạt. */}
+        <div className="flex flex-wrap gap-2" style={{ padding: "0 16px 12px" }}>
+          <Chip
+            active={statusTab === "active"}
+            onClick={() => {
+              setStatusTab("active");
+              setSelected(new Set());
+            }}
+            label={t("member.statusActive")}
+            count={tabActiveCount}
+          />
+          <Chip
+            active={statusTab === "pending"}
+            onClick={() => {
+              setStatusTab("pending");
+              setSelected(new Set());
+            }}
+            label={t("member.statusPending")}
+            count={tabPendingCount}
+          />
         </div>
 
         {selectedIds.length > 0 && (
@@ -346,144 +831,159 @@ export default function AddedEmails() {
             <span style={{ fontSize: 13, color: "var(--ink-2)" }}>
               {t("addedEmails.selectedCount", { n: selectedIds.length })}
             </span>
-            {isSuper ? (
-              <>
-                {/* Bước 2 — super-admin xác nhận / huỷ thanh toán. */}
-                <button
-                  className="btn btn-sm btn-primary"
-                  disabled={markPaid.isPending}
-                  onClick={() =>
-                    markPaid.mutate({ ids: selectedIds, paid: true })
-                  }
-                >
-                  {t("addedEmails.confirmPayment")}
-                </button>
-                <button
-                  className="btn btn-sm btn-ghost"
-                  disabled={markPaid.isPending}
-                  onClick={() =>
-                    markPaid.mutate({ ids: selectedIds, paid: false })
-                  }
-                >
-                  {t("addedEmails.unmarkPayment")}
-                </button>
-              </>
-            ) : (
-              <>
-                {/* Bước 1 — sub-admin gửi yêu cầu duyệt thanh toán. */}
-                <button
-                  className="btn btn-sm btn-primary"
-                  disabled={requestPayment.isPending}
-                  onClick={() =>
-                    requestPayment.mutate({
-                      ids: selectedIds,
-                      requested: true,
-                    })
-                  }
-                >
-                  {t("addedEmails.requestPayment")}
-                </button>
-              </>
-            )}
-            {isSuper && (
-              <>
+            {/* MỘT nút "Thao tác hàng loạt ▾" mở menu đẹp (icon + nhóm), thay cho
+                select thô. Item bám tab: "Chờ tham gia" → Đồng bộ + Thu hồi lời mời;
+                cả 2 tab → thanh toán + Chuyển chủ nhanh (super-admin). */}
+            <RowActionsMenu
+              ariaLabel={t("bulkAction.placeholder", { n: selectedIds.length })}
+              triggerClassName="btn btn-sm btn-primary"
+              trigger={
                 <span
-                  style={{
-                    width: 1,
-                    height: 20,
-                    background: "var(--border)",
-                    margin: "0 4px",
-                  }}
-                />
-                <button
-                  className="btn btn-sm btn-ghost"
-                  disabled={transferOwner.isPending}
-                  onClick={() =>
-                    user &&
-                    transferOwner.mutate({
-                      ids: selectedIds,
-                      targetUserId: user.id,
-                    })
-                  }
-                  title="Đưa quyền sở hữu các email đã chọn về admin"
+                  className="flex items-center"
+                  style={{ gap: 7, whiteSpace: "nowrap" }}
                 >
-                  Thu hồi về admin
-                </button>
-                <select
-                  value=""
-                  disabled={transferOwner.isPending}
-                  onChange={(e) => {
-                    if (e.target.value) {
-                      transferOwner.mutate({
-                        ids: selectedIds,
-                        targetUserId: e.target.value,
-                      });
-                      e.target.value = "";
-                    }
-                  }}
-                  className="form-input"
-                  style={{ padding: "6px 10px", fontSize: 13, width: "auto" }}
-                >
-                  <option value="">Chuyển cho…</option>
-                  {user && <option value={user.id}>Admin (bạn)</option>}
-                  {subAccounts.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.username}
-                    </option>
-                  ))}
-                </select>
-              </>
-            )}
+                  {bulkBusy
+                    ? t("bulkRemove.submitBusy")
+                    : t("bulkAction.placeholder", { n: selectedIds.length })}
+                  <svg
+                    viewBox="0 0 24 24"
+                    width="14"
+                    height="14"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <polyline points="6 9 12 15 18 9" />
+                  </svg>
+                </span>
+              }
+              items={bulkMenuItems}
+            />
           </div>
         )}
 
-        <div style={{ overflowX: "auto" }}>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th style={{ width: 36 }}>
+        {isMobile ? (
+          /* ---------- Mobile: danh sách THẺ (mỗi email 1 thẻ) ---------- */
+          <div className="email-card-list">
+            {isLoading && (
+              <div
+                className="cell-muted"
+                style={{ textAlign: "center", padding: 32 }}
+              >
+                {t("common.loading")}
+              </div>
+            )}
+            {!isLoading && filtered.length === 0 && (
+              <div
+                className="cell-muted"
+                style={{ textAlign: "center", padding: 32 }}
+              >
+                {t("addedEmails.empty")}
+              </div>
+            )}
+            {filtered.map((m) => (
+              <div key={m.id} className="email-card">
+                <div className="email-card-top">
                   <input
                     type="checkbox"
-                    checked={allFilteredSelected}
-                    onChange={toggleAll}
-                    aria-label={t("addedEmails.selectAll")}
+                    checked={selected.has(m.id)}
+                    onChange={() => toggleOne(m.id)}
+                    aria-label={m.email}
                   />
-                </th>
-                <th>{t("member.colEmail")}</th>
-                <th>{t("member.colName")}</th>
-                <th>{t("addedEmails.colWorkspace")}</th>
-                {isSuper && <th>Người sở hữu</th>}
-                <th>{t("member.colStatus")}</th>
-                <th>{t("addedEmails.colRenewedAt")}</th>
-                <th>{t("addedEmails.colExpiry")}</th>
-                <th>{t("addedEmails.colPayment")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {isLoading && (
-                <tr>
-                  <td
-                    colSpan={isSuper ? 9 : 8}
-                    className="cell-muted"
-                    style={{ textAlign: "center", padding: 32 }}
+                  {/* Click email → modal chi tiết + lịch sử thay đổi. */}
+                  <button
+                    type="button"
+                    className="email-card-email"
+                    onClick={() => setDetailMember(m)}
+                    title={t("memberDetail.openHint")}
                   >
-                    {t("common.loading")}
-                  </td>
-                </tr>
-              )}
-              {!isLoading && filtered.length === 0 && (
+                    {m.email}
+                  </button>
+                  {rowMenu(m)}
+                </div>
+                <div className="email-card-badges">
+                  {m.workspace_name && (
+                    <span className="email-card-ws">{m.workspace_name}</span>
+                  )}
+                  {statusBadge(m)}
+                  <PaymentCell
+                    m={m}
+                    isSuper={isSuper}
+                    markPaid={markPaid}
+                    requestPayment={requestPayment}
+                    t={t}
+                    formatDate={formatDate}
+                  />
+                </div>
+                <div className="email-card-dates">
+                  <div>
+                    <div className="email-card-date-label">
+                      {t("addedEmails.colRenewedAt")}
+                    </div>
+                    <div className="email-card-date-val">{renewedAt(m)}</div>
+                  </div>
+                  <div>
+                    <div className="email-card-date-label">
+                      {t("addedEmails.colExpiry")}
+                    </div>
+                    <div className="email-card-date-val">{expiryAt(m)}</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          /* ---------- Desktop: bảng đầy đủ ---------- */
+          <div style={{ overflowX: "auto" }}>
+            <table className="data-table">
+              <thead>
                 <tr>
-                  <td
-                    colSpan={isSuper ? 9 : 8}
-                    className="cell-muted"
-                    style={{ textAlign: "center", padding: 32 }}
-                  >
-                    {t("addedEmails.empty")}
-                  </td>
+                  <th style={{ width: 36 }}>
+                    <input
+                      type="checkbox"
+                      checked={allFilteredSelected}
+                      onChange={toggleAll}
+                      aria-label={t("addedEmails.selectAll")}
+                    />
+                  </th>
+                  <th>{t("member.colEmail")}</th>
+                  <th>{t("member.colName")}</th>
+                  <th>{t("addedEmails.colWorkspace")}</th>
+                  {isSuper && <th>Người sở hữu</th>}
+                  <th>{t("member.colStatus")}</th>
+                  <th>{t("addedEmails.colRenewedAt")}</th>
+                  <th>{t("addedEmails.colExpiry")}</th>
+                  <th>{t("addedEmails.colPayment")}</th>
+                  <th style={{ width: 44 }} aria-label={t("common.actions")} />
                 </tr>
-              )}
-              {filtered.map((m) => {
-                return (
+              </thead>
+              <tbody>
+                {isLoading && (
+                  <tr>
+                    <td
+                      colSpan={isSuper ? 10 : 9}
+                      className="cell-muted"
+                      style={{ textAlign: "center", padding: 32 }}
+                    >
+                      {t("common.loading")}
+                    </td>
+                  </tr>
+                )}
+                {!isLoading && filtered.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={isSuper ? 10 : 9}
+                      className="cell-muted"
+                      style={{ textAlign: "center", padding: 32 }}
+                    >
+                      {t("addedEmails.empty")}
+                    </td>
+                  </tr>
+                )}
+                {filtered.map((m) => (
                   <tr key={m.id}>
                     <td>
                       <input
@@ -512,39 +1012,12 @@ export default function AddedEmails() {
                         {m.invited_by_username ?? "—"}
                       </td>
                     )}
-                    <td>
-                      <span
-                        className={
-                          STATUS_BADGE[m.status] ?? "badge badge-neutral"
-                        }
-                      >
-                        {t(
-                          `member.status${m.status
-                            .charAt(0)
-                            .toUpperCase()}${m.status.slice(1)}`,
-                        )}
-                      </span>
-                    </td>
-                    {/* Ngày gia hạn = mốc neo subscription_purchased_at (fallback
-                        last_invited_at ?? created_at cho row legacy) → khớp "Ngày hết
-                        hạn" = mốc + 30. */}
+                    <td>{statusBadge(m)}</td>
                     <td className="cell-muted" style={{ fontSize: 12 }}>
-                      {formatDateTime(
-                        m.subscription_purchased_at ??
-                          m.last_invited_at ??
-                          m.created_at,
-                        undefined,
-                        PRECISE_TIME,
-                      )}
+                      {renewedAt(m)}
                     </td>
                     <td className="cell-muted" style={{ fontSize: 12 }}>
-                      {m.subscription_end_at
-                        ? formatDateTime(
-                            m.subscription_end_at,
-                            undefined,
-                            PRECISE_TIME,
-                          )
-                        : t("addedEmails.expiryNone")}
+                      {expiryAt(m)}
                     </td>
                     <td>
                       <PaymentCell
@@ -556,12 +1029,13 @@ export default function AddedEmails() {
                         formatDate={formatDate}
                       />
                     </td>
+                    <td style={{ textAlign: "right" }}>{rowMenu(m)}</td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -619,9 +1093,13 @@ function PaymentBadge({
 }
 
 /**
- * Ô "Thanh toán" — hiển thị theo TỪNG CHU KỲ (yêu cầu user 2026-07-08). Mỗi chu kỳ
- * có trạng thái + hành động riêng: super-admin xác nhận/huỷ, sub-admin gửi yêu cầu.
- * Member CHƯA gia hạn lần nào (cycles rỗng) → hiện badge cấp member (legacy) như cũ.
+ * Ô "Thanh toán" — gom hiển thị theo số chu kỳ để bảng KHÔNG bị dài khi 1 email có
+ * nhiều kỳ (user 2026-07-11: 10 kỳ xếp chồng rất xấu):
+ *   - 0 chu kỳ  → badge cấp member (legacy) như cũ.
+ *   - 1 chu kỳ  → 1 badge + nút hành động của kỳ đó (gọn 1 dòng).
+ *   - ≥2 chu kỳ → TÓM TẮT: chip "đã trả X/N" + nhắc số kỳ cần chú ý + MỘT nút gộp
+ *     (sub-admin gửi yêu cầu MỌI kỳ chưa gửi; super-admin xác nhận MỌI kỳ đang chờ).
+ * Chi tiết + xử lý RIÊNG LẺ từng kỳ chuyển vào modal Chi tiết thành viên (click email).
  */
 function PaymentCell({
   m,
@@ -639,50 +1117,62 @@ function PaymentCell({
   formatDate: ReturnType<typeof useFormatDate>;
 }) {
   const cycles: SubscriptionCycle[] = m.cycles ?? [];
+  const busy = markPaid.isPending || requestPayment.isPending;
+
+  // Member chưa có chu kỳ nào (mời sau migration, chưa từng gia hạn): dùng trạng
+  // thái thanh toán CẤP MEMBER + nút inline theo member_ids (giống nút bulk-select
+  // vốn đã chạy cho nhóm này) → nhất quán với hàng có chu kỳ, khỏi phải tick chọn.
   if (cycles.length === 0) {
     return (
-      <PaymentBadge
-        status={m.payment_status}
-        paidAt={m.paid_at}
-        requestedAt={m.payment_requested_at}
-        t={t}
-        formatDate={formatDate}
-      />
-    );
-  }
-  const busy = markPaid.isPending || requestPayment.isPending;
-  return (
-    <div style={{ display: "grid", gap: 4 }}>
-      {cycles.map((c) => (
-        <div
-          key={c.id}
-          className="flex items-center"
-          style={{ gap: 6, flexWrap: "wrap" }}
-        >
-          <span
-            className="cell-muted"
-            style={{ fontSize: 11, minWidth: 34, fontVariantNumeric: "tabular-nums" }}
-          >
-            {t("addedEmails.cycleLabel", { n: c.cycle_number })}
-          </span>
-          <PaymentBadge
-            status={c.payment_status}
-            paidAt={c.paid_at}
-            requestedAt={c.payment_requested_at}
-            t={t}
-            formatDate={formatDate}
-          />
-          {isSuper ? (
-            c.payment_status === "paid" ? (
+      <div className="flex items-center" style={{ gap: 6, flexWrap: "wrap" }}>
+        <PaymentBadge
+          status={m.payment_status}
+          paidAt={m.paid_at}
+          requestedAt={m.payment_requested_at}
+          t={t}
+          formatDate={formatDate}
+        />
+        {isSuper
+          ? m.payment_status === "requested" && (
               <button
-                className="btn btn-sm btn-ghost"
+                className="btn btn-sm btn-primary"
                 style={{ padding: "0 6px", fontSize: 11 }}
                 disabled={busy}
-                onClick={() => markPaid.mutate({ cycleIds: [c.id], paid: false })}
+                onClick={() => markPaid.mutate({ ids: [m.id], paid: true })}
               >
-                {t("addedEmails.unmarkShort")}
+                {t("addedEmails.confirmShort")}
               </button>
-            ) : (
+            )
+          : m.payment_status === "unpaid" && (
+              <button
+                className="btn btn-sm btn-primary"
+                style={{ padding: "0 6px", fontSize: 11 }}
+                disabled={busy}
+                onClick={() =>
+                  requestPayment.mutate({ ids: [m.id], requested: true })
+                }
+              >
+                {t("addedEmails.requestShort")}
+              </button>
+            )}
+      </div>
+    );
+  }
+
+  // Một chu kỳ: badge + hành động của kỳ đó trên 1 dòng (giữ như cũ).
+  if (cycles.length === 1) {
+    const c = cycles[0];
+    return (
+      <div className="flex items-center" style={{ gap: 6, flexWrap: "wrap" }}>
+        <PaymentBadge
+          status={c.payment_status}
+          paidAt={c.paid_at}
+          requestedAt={c.payment_requested_at}
+          t={t}
+          formatDate={formatDate}
+        />
+        {isSuper
+          ? c.payment_status === "requested" && (
               <button
                 className="btn btn-sm btn-primary"
                 style={{ padding: "0 6px", fontSize: 11 }}
@@ -692,8 +1182,7 @@ function PaymentCell({
                 {t("addedEmails.confirmShort")}
               </button>
             )
-          ) : (
-            c.payment_status === "unpaid" && (
+          : c.payment_status === "unpaid" && (
               <button
                 className="btn btn-sm btn-primary"
                 style={{ padding: "0 6px", fontSize: 11 }}
@@ -704,10 +1193,87 @@ function PaymentCell({
               >
                 {t("addedEmails.requestShort")}
               </button>
+            )}
+      </div>
+    );
+  }
+
+  // ≥2 chu kỳ: TÓM TẮT gọn. Đếm theo trạng thái để hiện "đã trả X/N" + nút gộp.
+  const paid = cycles.filter((c) => c.payment_status === "paid");
+  const requested = cycles.filter((c) => c.payment_status === "requested");
+  const unpaid = cycles.filter((c) => c.payment_status === "unpaid");
+  const total = cycles.length;
+  const allPaid = paid.length === total;
+  // Nút gộp bám vai trò: sub-admin gửi yêu cầu mọi kỳ CHƯA gửi; super-admin xác nhận
+  // mọi kỳ ĐANG CHỜ. Chỉ 1 nút để bảng gọn (xử lý lẻ từng kỳ ở modal).
+  const actionable = isSuper ? requested : unpaid;
+
+  return (
+    <div
+      style={{ display: "grid", gap: 4 }}
+      title={t("addedEmails.cyclesDetailHint")}
+    >
+      <span
+        className={
+          allPaid ? "badge badge-success badge-plain" : "badge badge-neutral badge-plain"
+        }
+        style={{ fontVariantNumeric: "tabular-nums", width: "fit-content" }}
+      >
+        {allPaid
+          ? t("addedEmails.cyclesAllPaid", { n: total })
+          : t("addedEmails.cyclesPaidCount", { paid: paid.length, total })}
+      </span>
+      {!allPaid && (
+        <div className="flex items-center" style={{ gap: 6, flexWrap: "wrap" }}>
+          {/* Số kỳ cần chú ý theo vai trò: super-admin → chờ xác nhận; sub-admin →
+              chưa gửi. Nếu không còn kỳ để mình xử lý, hiện phần còn lại dạng mờ. */}
+          {isSuper ? (
+            requested.length > 0 ? (
+              <span style={{ fontSize: 11, color: "var(--warning)", fontWeight: 600 }}>
+                {t("addedEmails.cyclesToConfirmHint", { n: requested.length })}
+              </span>
+            ) : (
+              unpaid.length > 0 && (
+                <span style={{ fontSize: 11, color: "var(--ink-3)" }}>
+                  {t("addedEmails.cyclesUnpaidHint", { n: unpaid.length })}
+                </span>
+              )
+            )
+          ) : unpaid.length > 0 ? (
+            <span style={{ fontSize: 11, color: "var(--warning)", fontWeight: 600 }}>
+              {t("addedEmails.cyclesUnpaidHint", { n: unpaid.length })}
+            </span>
+          ) : (
+            requested.length > 0 && (
+              <span style={{ fontSize: 11, color: "var(--ink-3)" }}>
+                {t("addedEmails.cyclesRequestedHint", { n: requested.length })}
+              </span>
             )
           )}
+          {actionable.length > 0 && (
+            <button
+              className="btn btn-sm btn-primary"
+              style={{ padding: "0 8px", fontSize: 11 }}
+              disabled={busy}
+              onClick={() =>
+                isSuper
+                  ? markPaid.mutate({
+                      cycleIds: actionable.map((c) => c.id),
+                      paid: true,
+                    })
+                  : requestPayment.mutate({
+                      cycleIds: actionable.map((c) => c.id),
+                      requested: true,
+                    })
+              }
+            >
+              {isSuper
+                ? t("addedEmails.confirmNShort", { n: actionable.length })
+                : t("addedEmails.requestNShort", { n: actionable.length })}
+            </button>
+          )}
         </div>
-      ))}
+      )}
     </div>
   );
 }

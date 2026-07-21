@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.9.9";
+export const VERSION = "0.9.22";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,187 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.9.22",
+    date: "2026-07-21",
+    kind: "fix",
+    summary:
+      "XOÁ THÀNH VIÊN hết 'báo thành công GIẢ': (1) định vị member bằng ô lọc server-side thay vì scroll-scan (hết sót row trên list ảo hoá → hết MEMBER_NOT_IN_WORKSPACE oan); (2) sau khi click xoá phải POLL xác minh member THỰC SỰ biến mất khỏi tab Người dùng mới báo COMPLETED — dialog đóng thôi CHƯA đủ.",
+    details: [
+      "USER REPORT 2026-07-21: member 'Xoá do hết hạn ✓ Thành công' trên dashboard nhưng VẪN còn trong workspace ChatGPT. Bằng chứng DB: 2 task REMOVE_MEMBER đều COMPLETED giả — 16/7 qua MEMBER_NOT_IN_WORKSPACE (ô lọc sót), 21/7 qua ok:true (dialog đóng, xong trong 5s) — rồi đồng bộ thấy member còn → hồi sinh active → giờ sau xoá lại → VÒNG LẶP xoá-giả vô hạn.",
+      "ROOT CAUSE 1 (locate-member.ts): REMOVE dùng locateMemberRow(pageThrough:false); tab Người dùng là list VIRTUALIZED không phân trang → rơi nhánh scroll-scan chỉ thấy vài row gần đỉnh → SÓT member vẫn hiện diện → null → MEMBER_NOT_IN_WORKSPACE → mark removed oan. FIX: đổi sang preferFilter:true (ô 'Lọc theo tên' server-side, đáng tin bất kể virtualized).",
+      "ROOT CAUSE 2 (execute-remove.ts): bản 2026-07-12 gỡ verify vì check quá sớm (ChatGPT eventual-consistent, list còn hiện member ~34s sau DELETE thật) → chỉ còn tin 'dialog confirm đóng' = COMPLETED. Nhưng dialog đóng KHÔNG bảo đảm xoá có hiệu lực. FIX: sau khi dialog đóng, POLL tới 45s bằng ô lọc (clear+gõ lại → fetch mới) — row biến mất → verified:true; tới 45s vẫn còn → REMOVE_VERIFY_FAILED (ok:false, GIỮ member, không mark removed).",
+      "BACKEND đi kèm (completion.py): REMOVE_MEMBER chỉ mark removed khi có BẰNG CHỨNG DƯƠNG result.data.verified===true (tìm-thấy→xoá→poll thấy biến mất); thiếu → MEMBER_REMOVE_UNVERIFIED, giữ active. BỎ HẲN auto-convert MEMBER_NOT_IN_WORKSPACE→removed (tái diễn 06:29 cùng ngày: ext cũ scroll-scan sót → mark removed giả) — 'không tìm thấy' KHÔNG còn suy ra 'đã xoá'; vắng mặt để ĐỒNG BỘ đầy đủ (expected_total) chốt. main.py loop-guard: gỡ ≥3 lần/7 ngày mà member vẫn quay lại → MEMBER_REMOVE_STUCK cảnh báo gỡ tay. SYNC promote xoá luôn stale removed_at.",
+      "AN TOÀN: mọi đánh đổi nghiêng về 'thà giữ member còn hơn báo xoá GIẢ'. Present+expired → ext tìm thấy → xoá xác minh → removed. Absent+expired → task gỡ FAILED (not found) → đồng bộ đầy đủ mark removed. Verify ~45s nằm trong ngân sách 150s.",
+      "File: content/actions/remove/execute-remove.ts, shared/messages.ts (+REMOVE_VERIFY_FAILED), version.ts.",
+    ],
+  },
+  {
+    version: "0.9.21",
+    date: "2026-07-21",
+    kind: "fix",
+    summary:
+      "Đồng bộ 'chờ tham gia' không còn báo pending OAN: filterAndFindRow thử lại (gõ lại) khi ô lọc tab Người dùng miss row — trước đây member đã tham gia thật nhưng sync vẫn giữ pending, phải sync đi sync lại nhiều lần mới bắt được.",
+    details: [
+      "USER REPORT 2026-07-21: đồng bộ tab 'chờ tham gia' nhiều lần, member đã tham gia thật ở ChatGPT nhưng trang quản trị vẫn giữ pending, dữ liệu không đổi.",
+      "ROOT CAUSE (bằng chứng DB): cùng batch SYNC_MEMBERS_BATCH chạy lại sau ~90s ra 'active' cho đúng các email lần trước trả 'pending' → backend promote + UI refresh ĐỀU ĐÚNG; lỗi là extension false-negative. Tab admin chạy NỀN (active:false) → Chrome throttle timer ~1000ms → chuỗi event `input` khi gõ ô 'Lọc theo tên' thi thoảng bị nuốt/gộp → fetch lọc server-side không kích hoạt → list không hiện row → báo 'không có' oan. Đã chờ ~4.7s vẫn miss ⇒ chờ lâu hơn vô ích, phải GÕ LẠI.",
+      "FIX (member-filter.ts filterAndFindRow): thử tối đa 2 lần — mỗi lần clearMemberFilter + gõ lại email + chờ (600ms debounce) + waitFor(findMemberRow, 3000ms); chỉ kết luận null (không có row) sau khi cả 2 lần đều miss. Bao trọn mọi luồng dùng ô lọc: sync-member/sync-members-batch (pending→active), remove, invite-verify, change-role/license.",
+      "AN TOÀN: retry chỉ GIẢM false-negative, không tạo false-positive — member thật sự vắng vẫn miss cả 2 lần → pending; không có nhánh mark-removed nào ăn theo. Chi phí xấu nhất ~2× thời gian/email (bounded), còn BATCH_BUDGET_MS backstop.",
+    ],
+  },
+  {
+    version: "0.9.20",
+    date: "2026-07-15",
+    kind: "fix",
+    summary:
+      "Báo lỗi RÕ RÀNG khi phiên ChatGPT hỏng/hết hạn: các lỗi 'trang admin không tải được' (NOT_LOGGED_IN_CHATGPT, CONTENT_TIMEOUT, CONTENT_NOT_INJECTED, PAGE_NOT_ADMIN, không tìm nút Mời) nay kèm gợi ý 'xoá cookie/đăng xuất chatgpt.com → đăng nhập lại rồi thử lại' thay vì thông báo TIMEOUT mơ hồ.",
+    details: [
+      "USER INSIGHT 2026-07-15: lời mời cứ lỗi (TIMEOUT/NOT_LOGGED_IN/VERIFY_FAILED) là do PHIÊN đăng nhập chatgpt.com hỏng → trang /admin/members redirect/treo, phải TỰ xoá phiên + đăng nhập lại mới load bình thường. Đây là vấn đề môi trường (OpenAI-side), không phải bug logic — nhưng thông báo cũ mơ hồ nên user phải tự đoán.",
+      "FIX: thêm hằng SESSION_RECOVERY_HINT (shared/messages.ts) + gắn vào các error_message có dấu hiệu phiên hỏng: runner NOT_LOGGED_IN_CHATGPT (×2), CONTENT_TIMEOUT (Phase 1 + external Phase A'), CONTENT_NOT_INJECTED; invite PAGE_NOT_ADMIN + 'không tìm nút Mời sau 20s'.",
+      "KHÔNG tự đăng nhập giúp: extension KHÔNG nhập credential / KHÔNG tự click 'đăng nhập bằng Google' (nhập mật khẩu = việc của user + dễ trip bot-detection của Google/ChatGPT làm hỏng thêm). Chỉ hướng dẫn user tự làm.",
+      "File: shared/messages.ts (+SESSION_RECOVERY_HINT), background/runner.ts, content/actions/invite/{execute-invite,execute-invite-inner}.ts, version.ts.",
+    ],
+  },
+  {
+    version: "0.9.19",
+    date: "2026-07-15",
+    kind: "fix",
+    summary:
+      "MỜI EMAIL NGOÀI TÊN MIỀN 'làm chậm mà chắc': hết lỗi VERIFY_FAILED do bật toggle 'Cho phép lời mời ngoài tên miền' xong submit MÙ khi setting chưa kịp có hiệu lực server-side. Chờ server chốt toggle + chờ ChatGPT validate email + CHỈ submit khi nút 'Gửi lời mời' thật sự bấm được.",
+    details: [
+      "USER REPORT 2026-07-15: 'lại lỗi ở bước bật tắt cho phép lời mời bên ngoài' → task INVITE_MEMBER FAILED VERIFY_FAILED ('đã submit nhưng không email nào xuất hiện trong tab Lời mời — có thể toggle mời ngoài chưa bật').",
+      "GỐC RỄ: chuỗi bật-toggle chỉ tin TÍN HIỆU CLIENT (aria-checked, banner-text vắng mặt) vốn chạy TRƯỚC khi ChatGPT commit setting server-side. (1) setExternalInvites(true) trả về ngay khi DOM aria-checked=true → background HARD-RELOAD /admin/members refetch org-config có thể chạy TRƯỚC khi server chốt → config vẫn external=OFF. (2) execute-invite-inner check banner NGAY sau setRole → banner validate bất đồng bộ chưa render → 'không banner' oan → submit. (3) findInviteSubmitButton trả cả nút ĐANG DISABLED → click nút chết = no-op → verify 15s → VERIFY_FAILED.",
+      "FIX 1 (set-toggle.ts): sau khi confirm toggle=ON, settleServerCommit() chờ 2s + đọc lại DOM xác nhận vẫn ON TRƯỚC khi trả về (Phase A) → hard-reload refetch config chắc chắn thấy external=ON. Tăng retry click 2→3, poll xác nhận 4s→6s, double-check 250ms→600ms.",
+      "FIX 2 (execute-invite-inner.ts bước 5.5): đợi 1.5s cho ChatGPT validate email vừa gõ TRƯỚC khi kết luận có/không banner; poll banner biến mất 8s→15s; banner clear rồi chờ thêm 1s cho React enable nút Send.",
+      "FIX 3 (execute-invite-inner.ts bước 6): CHỜ nút 'Gửi lời mời' thực sự ENABLE (poll 6s, kiểm disabled/aria-disabled/data-disabled) rồi mới click; còn disabled → EXTERNAL_TOGGLE_FAILED (huỷ rõ ràng, KHÔNG click nút chết → tránh lời mời ảo + VERIFY_FAILED oan).",
+      "Đánh đổi: mỗi lời mời chậm thêm ~1.5s (validate settle) + email ngoài miền thêm ~2-3s (server settle + chờ enable) — trong ngân sách 150s extension / 180s backend, đổi lấy độ tin cậy. Email cùng miền không bị ảnh hưởng (nút enable sẵn → poll trả ngay).",
+      "File: content/actions/external-invites/set-toggle.ts, content/actions/invite/execute-invite-inner.ts, external-invites/README.md, version.ts.",
+    ],
+  },
+  {
+    version: "0.9.18",
+    date: "2026-07-15",
+    kind: "fix",
+    summary:
+      "ĐỒNG BỘ (kiểm tra đã tham gia) viết lại theo logic ĐƠN GIẢN: KHÔNG quét tab 'Lời mời đang chờ xử lý' nữa. Chỉ vào tab 'Người dùng' tìm từng email — thấy = đã tham gia (active), không thấy = chưa tham gia (pending). Hết sót row / báo sai do scrape list virtualized.",
+    details: [
+      "USER DECISION 2026-07-15: lời mời đã xác minh thành công ngay lúc mời (invite → check lời mời → verify), nên 1 email 'chờ tham gia' chỉ có 2 khả năng — đã tham gia (có ở tab Người dùng) hoặc chưa (không có). KHÔNG cần đối chiếu tab Lời mời.",
+      "Trước đó nhiều lần vá scrape tab Lời mời (đếm-số-lượng thiếu mốc expectedTotal → sót row khi list nạp/virtualized trễ; vá cuộn mọi-khung lại gây over-scroll nested → 2/3 rồi 1/3). Không dứt điểm → bỏ hẳn hướng scrape pending.",
+      "FIX (execute-sync-members-batch.ts + execute-sync-member.ts): vào tab 'Người dùng' 1 lần → locateMemberRow(pageThrough=false) từng email (ô search là nguồn sự thật). Thấy → found_in='active'; không thấy → 'pending'. Bỏ khái niệm 'none' + mọi thao tác tab Lời mời. ok:false chỉ khi không vào được tab Người dùng.",
+      "REVERT: hoàn tác thay đổi cuộn mọi-khung ở scrape-current-tab.ts (v0.9.17) — khôi phục hành vi window-only cũ cho full-sync/map-lời-mời (không còn bị ảnh hưởng).",
+      "Backend completion.py không đổi: vốn chỉ xử lý found_in 'active'/'pending' (active→set active+joined_at; pending→giữ, chạm last_synced_at), bỏ qua phần khác — logic mới không phát sinh 'none'.",
+      "File: content/actions/sync-member/{execute-sync-members-batch,execute-sync-member}.ts, content/actions/sync/scrape-current-tab.ts (revert), README.md, version.ts.",
+    ],
+  },
+  {
+    version: "0.9.17",
+    date: "2026-07-15",
+    kind: "fix",
+    summary:
+      "SCRAPE tab (dùng chung cho 'Đồng bộ lời mời' + 'Đồng bộ hàng loạt kiểm tra đã tham gia' + full-sync) hết sót row: vòng gom chính giờ cuộn MỌI khung (window + div cuộn nội bộ), không chỉ window. Trước đây list nằm trong div cuộn riêng (modal/virtualized) không được nhích → chỉ gom được các row hiển thị ban đầu (~2/3).",
+    details: [
+      "USER REPORT 2026-07-14→15: 'Đồng bộ (kiểm tra đã tham gia)' + 'Đồng bộ lời mời' đều chỉ ra 2/3 email pending. Email sót → phân loại 'none' → backend bỏ qua → kết quả 'dừng ở 2'.",
+      "GỐC RỄ (scrape-current-tab.ts): `collectRowsByScrolling` — vòng gom row CHÍNH — chỉ dùng `window.scrollTo/scrollBy` + đo đáy bằng `document.body.scrollHeight`. Nhưng list ChatGPT có khi cuộn bằng DIV CON (overflow riêng, modal/virtualized) mà window KHÔNG nhích được → vòng gom kẹt ở tập row render ban đầu, các row cuối không bao giờ vào viewport để scrape. `scrollUntilAllLoaded` đã xử lý đúng qua `findScrollContainers()` nhưng vòng gom chính bị bỏ sót — biến thể chưa vá hết của bug lịch sử 'đồng bộ lần 1 chỉ ra 2 member'.",
+      "FIX: thêm `scrollAllContainersToTop` / `scrollAllContainersBy` / `allContainersAtBottom` — cuộn & đo đáy trên MỌI khung (window + div overflow). Vòng gom chính giờ nhích được div cuộn nội bộ → render & scrape hết row. Ảnh hưởng chung: full-sync members/invites, batch kiểm tra đã tham gia, map lời mời sau invite (đều dùng scrapeCurrentTab).",
+      "Kèm theo (v0.9.16, giữ nguyên): batch có lưới an toàn bước 4 — email kết luận 'none' được tra lại 1 lần ở tab Lời mời bằng locatePendingRow trước khi chốt (phòng khi vẫn còn sót).",
+      "File: content/actions/sync/scrape-current-tab.ts, content/actions/sync-member/execute-sync-members-batch.ts, version.ts.",
+    ],
+  },
+  {
+    version: "0.9.16",
+    date: "2026-07-14",
+    kind: "fix",
+    summary:
+      "ĐỒNG BỘ HÀNG LOẠT (kiểm tra đã tham gia) hết báo sai 'không thấy' cho email vẫn đang pending: lượt quét tab Lời mời trước đây có thể sót row (list nạp/virtualized trễ) khiến email pending bị coi là 'none'. Giờ mọi email kết luận 'none' được kiểm tra lại chính xác 1 lần ở tab Lời mời trước khi chốt.",
+    details: [
+      "USER REPORT 2026-07-14: tab Lời mời có 3 email nhưng đồng bộ hàng loạt chỉ quét được 2 rồi ngưng — email sót bị báo 'không thấy' thay vì vẫn 'chờ tham gia'.",
+      "GỐC RỄ: executeSyncMembersBatch bước 1 quét tab Lời mời đếm-theo-số-lượng qua scrapeCurrentTab, nhưng đường status='pending' KHÔNG có mốc expectedTotal (chỉ tab active đọc header count). Không mốc → waitForCountStable (stablePolls=2, 600ms) chốt vào số tạm thời + scroll patience thấp (3 tick ~1s) → nếu ChatGPT nạp/render row cuối trễ vài trăm ms thì scrape dừng ở tập con (2/3). Email sót rơi vào 'remaining' → tab Người dùng không thấy (vì vẫn pending) → gán 'none' oan. Cùng lớp bug lịch sử 'đồng bộ lần 1 chỉ ra 2 member' (đã fix cho tab active bằng mốc header, bỏ sót đường pending).",
+      "FIX (execute-sync-members-batch.ts) — thêm bước 4 lưới an toàn: mọi email kết luận 'none' (tập rủi ro, nhỏ) quay lại tab Lời mời tra ĐÚNG 1 email bằng locatePendingRow (ô search / scroll-scan cuộn tới khi gặp đúng row) — bắt được row mà lượt quét đếm-số-lượng bỏ sót. Thấy → nâng 'none'→'pending'. Bounded bởi BATCH_BUDGET_MS.",
+      "An toàn: backend completion vốn KHÔNG mark removed cho 'none' nên đây thuần sửa hiển thị/phân loại; không đụng scrape-current-tab dùng chung (active/full-sync/invite-mapping).",
+      "File: content/actions/sync-member/execute-sync-members-batch.ts, version.ts.",
+    ],
+  },
+  {
+    version: "0.9.15",
+    date: "2026-07-13",
+    kind: "fix",
+    summary:
+      "ĐỒNG BỘ LỜI MỜI hết xoá oan email đã tham gia: sau khi mời, email 'biến mất' khỏi tab Lời mời giờ được kiểm tra ở tab Người dùng trước khi mark 'removed'. Người dùng chấp nhận lời mời nhanh (rời tab Lời mời, sang tab Người dùng) sẽ được nhận diện active thay vì bị coi là phantom.",
+    details: [
+      "USER REPORT 2026-07-13: khi đồng bộ lời mời, email đã mời biến mất khỏi tab Lời mời không được kiểm tra xem đã sang tab Người dùng chưa → lỗi ở lần đồng bộ mới nhất (email đã tham gia bị xoá oan / task FAILED).",
+      "GỐC RỄ: executeVerifyPendingInvite CHỈ quét tab Lời mời. Mọi email không thấy = unverified → runner gọi reconcile-after-invite → backend mark Member pending → 'removed'. Không hề đối chiếu tab Người dùng (pattern đúng đã có ở execute-sync-members-batch bước 3 nhưng luồng verify-after-invite không dùng).",
+      "FIX extension: thêm action CHECK_ACTIVE_AFTER_INVITE (check-active-after-invite.ts) — sau vòng F5 verify, nếu còn email unverified (scrape OK) thì mở tab Người dùng, locateMemberRow(pageThrough=false) từng email; thấy → scrape thành ScrapedMember status='active'. Chạy MỘT lần, ngoài vòng F5 (không làm chậm reload).",
+      "FIX runner (runner.ts): reclassify trước reportToBackend — email active loại khỏi unverified_emails (reconcile KHÔNG mark removed), thêm vào verified_emails + gộp vào pending_members để bulk-upsert đúng status active (backend guard chỉ chặn chiều active→pending nên pending→active promote OK; isFullSync=false nên không reconcile).",
+      "File: content/actions/invite/{check-active-after-invite,index}.ts, content/index.ts, shared/messages.ts, background/runner.ts, version.ts.",
+    ],
+  },
+  {
+    version: "0.9.14",
+    date: "2026-07-13",
+    kind: "fix",
+    summary:
+      "THU HỒI lời mời hết cảnh 'đã thu hồi nhưng thực tế chưa': khi extension KHÔNG thu hồi được (vd menu ChatGPT không có mục 'Thu hồi lời mời') thì báo FAILED thay vì COMPLETED giả → dashboard KHÔNG mark 'removed' oan. Ngoài ra, tab Người dùng / Lời mời chỉ 1 TRANG thì quét vị trí trực tiếp, KHÔNG dùng ô search.",
+    details: [
+      "USER REPORT 2026-07-13: hellowda2@gmail.com hiện 'đã thu hồi' trên dashboard nhưng ChatGPT vẫn còn lời mời pending. Result task: {revoked:0, failed:1, reason:'Menu mở nhưng không có item \"Thu hồi lời mời\"'} — nhưng vẫn COMPLETED.",
+      "GỐC RỄ: execute-revoke-batch LUÔN trả ok:true miễn vào được tab Lời mời (kể cả revoked=0, failed>0). Backend completion khi thấy REVOKE_INVITES COMPLETED mark MÙ toàn bộ email trong payload = removed, không đọc result.data.results.",
+      "FIX extension (execute-revoke-batch.ts): revoked+removed==0 && failed>0 → trả ok:false FAILED_UI_CHANGED (kèm lý do từng email) để lỗi hiện lên cho admin.",
+      "FIX backend (completion.py): REVOKE_INVITES COMPLETED chỉ mark removed những email THỰC SỰ ok=true trong result.data.results (+ audit MEMBER_INVITE_REVOKED + Invite→revoked); email fail giữ pending + log MEMBER_INVITE_REVOKE_FAILED. Extension cũ không trả results → không mark (an toàn).",
+      "TỐI ƯU locate (user 2026-07-13): revoke (locate-pending-row) + remove/change-role/sync-member (locate-member) — nếu findPaginationState()==null (chỉ 1 trang) thì scrollScanForRow quét thẳng vị trí, bỏ ô search/lọc (tránh lỗi row sau lọc render menu thiếu). Nhiều trang mới search.",
+      "SEARCH gõ 1 LẦN (user 2026-07-13): khi phải search (nhiều trang) gõ CHÍNH XÁC email đầy đủ 1 lần, BỎ bước gõ local-part trước rồi full email (tra 2 lần, tốn thời gian). Áp cho revoke, remove/lọc-theo-tên, set-usage-limit, verify-pending lời mời.",
+      "File: content/actions/revoke/{execute-revoke-batch,locate-pending-row}.ts, content/actions/remove/{locate-member,member-filter}.ts, content/actions/set-usage-limit/execute-set-usage-limit.ts, content/actions/invite/verify-pending-via-filter.ts, version.ts; API routers/queue/completion.py.",
+    ],
+  },
+  {
+    version: "0.9.13",
+    date: "2026-07-12",
+    kind: "fix",
+    summary:
+      "XOÁ thành viên hết báo VERIFY_FAILED OAN khi xoá THẬT SỰ đã thành công: đổi tín hiệu verify cuối từ 'row biến mất khỏi list' (không tin cậy — backend ChatGPT eventual-consistent, list vẫn trả member vừa xoá vài chục giây) sang 'dialog xác nhận ĐÓNG = ChatGPT đã nhận lệnh destructive' (giống verify của INVITE).",
+    details: [
+      "USER REPORT 2026-07-12 (kèm ảnh): task 'Xoá thành viên' nhathuy.france@gmail.com lần đầu (19:32:32) → FAILED 'VERIFY_FAILED: Member vẫn còn trong danh sách sau khi confirm Remove' — nhưng thực tế ChatGPT ĐÃ xoá thành công; retry 34s sau (19:33:06) lọc không thấy → MEMBER_NOT_IN_WORKSPACE → COMPLETED (mark removed).",
+      "GỐC RỄ: bản vá v0.9.2 (reverifyRemovedViaFilter) giả định lọc lại từ SERVER là nguồn sự thật không trễ — SAI. Sau DELETE, chính backend ChatGPT eventual-consistent: query lọc server-side MỚI VẪN trả member vừa xoá trong vài chục giây → waitFor thấy row 'tái xuất' trong 5s → kết luận nhầm chưa xoá. Đọc lại list KHÔNG BAO GIỜ phân biệt được 'xoá lỗi, member còn' với 'xoá xong nhưng list trễ'.",
+      "FIX (execute-remove.ts): bỏ hẳn verify theo list (waitFor row biến mất + reverifyRemovedViaFilter). Verify mới = chờ dialog xác nhận ĐÓNG (confirmDialogOpen()=false) hoặc toast thành công trong 15s → COMPLETED; chỉ VERIFY_FAILED khi dialog VẪN mở sau 15s (OTP/2FA/lỗi thật sự chặn xoá), kèm text dialog để debug. Tín hiệu tại THỜI ĐIỂM thao tác, không dính độ trễ backend.",
+      "File: content/actions/remove/execute-remove.ts, version.ts.",
+    ],
+  },
+  {
+    version: "0.9.12",
+    date: "2026-07-12",
+    kind: "fix",
+    summary:
+      "Hoá đơn GIA HẠN kèm điều chỉnh seat (proration): đọc ĐÚNG chu kỳ dịch vụ = khoảng ngày có END MUỘN NHẤT (vd 11/7→11/8), không còn lấy nhầm dòng proration đầu (10/7-11/7). Trước đây period_end sai = ngày đầu chu kỳ → dashboard tưởng 'chu kỳ đã kết thúc', mọi số về '—'.",
+    details: [
+      "USER REPORT 2026-07-12: workspace GPT1 sau gia hạn 11/7 — hoá đơn 0005 (52.549.578đ, 183 seat) đọc được quantity nhưng period_end lưu = 11/7 (đáng lẽ 11/8) → billing-math ra note=cycle_ended, renewal 11/7, tổng seat/chi đều '—'.",
+      "GỐC RỄ: parsePeriod dùng text.match() → LẤY KHOẢNG NGÀY ĐẦU TIÊN. Hoá đơn có proration ghi '10 THÁNG 7 - 11 THÁNG 7' TRƯỚC dòng dịch vụ chính '11 THÁNG 7 - 11 THÁNG 8' → nuốt nhầm end=11/7.",
+      "FIX: parseAllPeriods() dùng matchAll gom MỌI khoảng (VI/EN/ZH); parsePeriod chọn khoảng có period_end MUỘN NHẤT = ngày renew thật. Test: invoice-detail.test.ts (hoá đơn 0005).",
+      "File: content/scrapers/invoice-detail.ts, version.ts.",
+    ],
+  },
+  {
+    version: "0.9.11",
+    date: "2026-07-12",
+    kind: "fix",
+    summary:
+      "Chu kỳ dài 31 ngày (vd 11/7→11/8): hoá đơn GỐC chu kỳ (ngày đầu, vd 11/7) không còn bị bỏ sót khi đọc chi tiết. Trước đây cửa sổ chu kỳ = renewal − 30 ngày cứng nên với tháng 31 ngày, ngày đầu rơi ra ngoài → hoá đơn add-seat giữa kỳ khiến base bị loại → thiếu đơn giá/tổng seat.",
+    details: [
+      "GỐC RỄ: enrichInvoicesWithDetails tính cycleStart = cycleEnd − 30×DAY_MS. Chu kỳ 11/7→11/8 (31 ngày): renewal=11/8 → cycleStart=12/7 → hoá đơn base 11/7 (t<cycleStart) bị lọc khỏi tập mở chi tiết khi có hoá đơn mới hơn quyết định period_end.",
+      "FIX: cycleStartMs() lùi ĐÚNG 1 THÁNG LỊCH (Date.UTC(y, m−1, d)) thay vì trừ 30 ngày — khớp cycleStartFromRenewal ở web billing-math. Gỡ hằng số BILLING_CYCLE_DAYS/DAY_MS không còn dùng.",
+      "File: background/runner.ts, version.ts.",
+    ],
+  },
+  {
+    version: "0.9.10",
+    date: "2026-07-10",
+    kind: "fix",
+    summary:
+      "SYNC_MEMBER (Đồng bộ 1 tài khoản) không còn báo nhầm 'pending' cho member đã active. Trước khi quét mỗi tab giờ CHỜ list ổn định (tránh đọc row còn sót của tab trước); list 1 trang → quét trực tiếp, nhiều trang → dùng ô search — áp cho cả tab Lời mời lẫn Người dùng.",
+    details: [
+      "USER REPORT 2026-07-10: nguyenthuhientho@gmail.com nằm ở tab Người dùng (đã chấp nhận lời mời) nhưng SYNC_MEMBER trả found_in='pending' 3 lần liên tiếp → member kẹt trạng thái pending trên dashboard.",
+      "GỐC RỄ: Bước 1 quét tab Lời mời bằng scrollScanForRow NGAY sau khi đổi tab; React chưa unmount kịp row của tab Người dùng → findMemberRow (match substring) trúng row active còn sót → return 'pending' sai.",
+      "FIX: thêm locateInCurrentTab() — (0) waitForCountStable chờ list render & ổn định trước khi đọc; (1) list gọn 1 trang → scrollScanForRow trực tiếp KHÔNG dùng search; (2) nhiều trang → ô search (pending: locatePendingRow, active: locateMemberRow). Dùng cho CẢ 2 tab.",
+      "File: content/actions/sync-member/execute-sync-member.ts.",
+    ],
+  },
   {
     version: "0.9.9",
     date: "2026-07-07",

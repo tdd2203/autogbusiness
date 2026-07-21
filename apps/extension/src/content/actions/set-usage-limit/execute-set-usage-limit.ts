@@ -29,7 +29,7 @@ function findFilterInput(): HTMLInputElement | null {
 /**
  * Lọc theo email rồi định vị nút hành động ("Thêm"/"Chỉnh sửa") của member.
  * Trang có phân trang (1/5…) → KHÔNG scroll/lật trang, dùng ô lọc làm nguồn sự
- * thật (giống REMOVE). Thử local-part rồi full email.
+ * thật (giống REMOVE). Gõ chính xác email đầy đủ 1 lần.
  */
 async function filterAndFindRowButton(
   email: string,
@@ -47,20 +47,17 @@ async function filterAndFindRowButton(
     return findUsageRowButton(email);
   }
 
-  const local = email.includes("@") ? email.split("@")[0] : email;
-  const needles = local === email ? [local] : [local, email];
-  for (const needle of needles) {
-    await humanType(input, needle);
-    await sleep(700); // chờ React Query / debounce filter
-    try {
-      const found = await waitFor(() => findUsageRowButton(email), 4000, 200);
-      if (found) {
-        console.log(`${LOG} ✓ thấy row sau khi lọc "${needle}"`);
-        return found;
-      }
-    } catch {
-      console.warn(`${LOG} lọc "${needle}" chưa ra row`);
+  // Gõ CHÍNH XÁC email đầy đủ 1 LẦN (user 2026-07-13: không gõ nửa rồi full = 2 lần).
+  await humanType(input, email);
+  await sleep(700); // chờ React Query / debounce filter
+  try {
+    const found = await waitFor(() => findUsageRowButton(email), 4000, 200);
+    if (found) {
+      console.log(`${LOG} ✓ thấy row sau khi lọc "${email}"`);
+      return found;
     }
+  } catch {
+    console.warn(`${LOG} lọc "${email}" không ra row`);
   }
   return null;
 }

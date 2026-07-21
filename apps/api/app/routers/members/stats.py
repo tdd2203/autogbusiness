@@ -11,12 +11,12 @@ from uuid import UUID
 
 from fastapi import Depends
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.deps import assert_workspace_access, get_session, require_permission
 from app.models import Member, User
 from app.permissions import Permission
-from app.schemas import MemberOut, WorkspaceMemberStats
+from app.schemas import MemberOut, SubscriptionCycleOut, WorkspaceMemberStats
 
 from ._shared import router, _get_workspace_or_404, _visibility_filter
 
@@ -72,15 +72,30 @@ def list_members(
     db: Session = Depends(get_session),
     user: User = Depends(require_permission(Permission.MEMBER_VIEW)),
     include_removed: bool = False,
-) -> list[Member]:
+) -> list[MemberOut]:
     _get_workspace_or_404(db, workspace_id)
     assert_workspace_access(db, user, workspace_id)
     stmt = (
         select(Member)
+        # Kèm chu kỳ gia hạn để modal "Chi tiết thành viên" hiện mục "Kỳ thanh toán"
+        # GIỐNG tab "Email đã add" / trang "Gia hạn" (cùng component MemberDetailModal).
+        # selectinload gom 1 truy vấn cho MỌI member → tránh N+1 khi workspace đông người.
+        # Xem [[multi-cycle-payment-display]].
+        .options(selectinload(Member.subscription_cycles))
         .where(Member.workspace_id == workspace_id)
         .order_by(Member.created_at.desc())
     )
     if not include_removed:
         stmt = stmt.where(Member.status != "removed")
     stmt = _visibility_filter(stmt, user)
-    return list(db.execute(stmt).scalars())
+    # MemberOut.cycles KHÔNG tự map từ Member.subscription_cycles (khác tên) → đổ tay
+    # y hệt added_members.list_added_members để hai nơi cùng dữ liệu chu kỳ.
+    rows: list[MemberOut] = []
+    for member in db.execute(stmt).scalars():
+        out = MemberOut.model_validate(member)
+        out.cycles = [
+            SubscriptionCycleOut.model_validate(c)
+            for c in member.subscription_cycles
+        ]
+        rows.append(out)
+    return rows

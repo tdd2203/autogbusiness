@@ -1,7 +1,8 @@
 """Bulk remove — POST /workspaces/{ws}/members/bulk-remove.
 
 Xác minh:
-  - Chọn bằng member_ids → enqueue 1 REMOVE_MEMBER / member.
+  - Chọn bằng member_ids → enqueue 1 task gỡ / member (pending → REVOKE_INVITES,
+    active → REMOVE_MEMBER — chọn theo status trong `remove.py::_build_removal_task`).
   - Chọn bằng emails → resolve về member, enqueue; email không khớp → skipped.
   - Trộn id + email + trùng nhau → dedupe theo member.id.
   - Member status='removed' không được enqueue.
@@ -44,6 +45,14 @@ def _remove_tasks(client: TestClient, ws_id: str, headers: dict) -> list[dict]:
     return [t for t in resp.json() if t["type"] == "REMOVE_MEMBER"]
 
 
+def _revoke_tasks(client: TestClient, ws_id: str, headers: dict) -> list[dict]:
+    """Member 'pending' (mời chưa accept) → bulk-remove enqueue REVOKE_INVITES (tab
+    Lời mời), KHÔNG phải REMOVE_MEMBER. Payload dùng `emails` (list)."""
+    resp = client.get(f"/api/v1/queue?workspace_id={ws_id}&limit=50", headers=headers)
+    assert resp.status_code == 200, resp.text
+    return [t for t in resp.json() if t["type"] == "REVOKE_INVITES"]
+
+
 def test_bulk_remove_by_member_ids_enqueues_one_task_each(
     client: TestClient, auth_header: dict
 ):
@@ -65,9 +74,10 @@ def test_bulk_remove_by_member_ids_enqueues_one_task_each(
     assert set(data["emails"]) == {"a@example.com", "b@example.com"}
     assert data["skipped"] == []
 
-    tasks = _remove_tasks(client, ws["id"], auth_header)
+    # Member đang pending (bulk-invite chưa accept) → REVOKE_INVITES, 1 task / member.
+    tasks = _revoke_tasks(client, ws["id"], auth_header)
     assert len(tasks) == 2
-    queued_emails = {t["payload"]["email"] for t in tasks}
+    queued_emails = {e for t in tasks for e in t["payload"]["emails"]}
     assert queued_emails == {"a@example.com", "b@example.com"}
 
 
@@ -105,7 +115,8 @@ def test_bulk_remove_dedupes_id_and_email_overlap(
     assert resp.status_code == 202, resp.text
     data = resp.json()
     assert data["count"] == 1
-    assert _remove_tasks(client, ws["id"], auth_header).__len__() == 1
+    # pending → 1 task REVOKE_INVITES (dedupe id+email về cùng 1 member).
+    assert len(_revoke_tasks(client, ws["id"], auth_header)) == 1
 
 
 def test_bulk_remove_requires_ids_or_emails(client: TestClient, auth_header: dict):
@@ -139,10 +150,14 @@ def _upsert_active(client: TestClient, ws: dict, emails: list[str]) -> None:
 
 
 def _complete_task(client: TestClient, ws: dict, task_id: str) -> None:
-    """Giả lập extension PATCH task REMOVE_MEMBER → COMPLETED (X-API-KEY)."""
+    """Giả lập extension PATCH task REMOVE_MEMBER → COMPLETED (X-API-KEY).
+
+    CONTRACT MỚI (v0.9.22): extension chỉ báo COMPLETED sau khi POLL xác minh member
+    đã BIẾN MẤT khỏi tab Người dùng → gửi kèm `result.data.verified=true`. Backend
+    chỉ mark removed khi có cờ này (chống xoá-giả — xem completion.py)."""
     resp = client.patch(
         f"/api/v1/queue/{task_id}",
-        json={"status": "COMPLETED", "result": {"ok": True}},
+        json={"status": "COMPLETED", "result": {"data": {"verified": True}}},
         headers={"X-API-KEY": ws["extension_api_key"]},
     )
     assert resp.status_code == 200, resp.text
@@ -212,11 +227,13 @@ def test_bulk_remove_by_paste_emails_lifecycle(
     assert after["keep@example.com"]["status"] == "active"
 
 
-def test_remove_member_not_in_workspace_marks_removed(
+def test_remove_member_not_found_stays_failed_defers_to_sync(
     client: TestClient, auth_header: dict
 ):
-    """Extension báo FAILED + MEMBER_NOT_IN_WORKSPACE (ô lọc không thấy email) →
-    backend coi như đã rời business: convert COMPLETED + mark Member.removed."""
+    """CHỐNG XOÁ-GIẢ (bug user 2026-07-21, tái diễn 06:29): "không tìm thấy member"
+    KHÔNG còn được suy ra "đã xoá". Extension báo FAILED + MEMBER_NOT_IN_WORKSPACE →
+    task GIỮ FAILED, Member GIỮ active (không mark removed). "Vắng mặt" để ĐỒNG BỘ đầy
+    đủ (expected_total) chốt, tránh false-negative của ô lọc/scroll-scan sinh xoá-giả."""
     ws = _create_workspace(client, auth_header)
     _upsert_active(client, ws, ["gone@example.com"])
 
@@ -238,12 +255,11 @@ def test_remove_member_not_in_workspace_marks_removed(
         headers={"X-API-KEY": ws["extension_api_key"]},
     )
     assert patch.status_code == 200, patch.text
-    # FAILED được convert sang COMPLETED, error_code xoá.
-    assert patch.json()["status"] == "COMPLETED"
-    assert patch.json()["error_code"] is None
+    # KHÔNG còn auto-convert: task giữ FAILED.
+    assert patch.json()["status"] == "FAILED"
 
     after = {m["email"]: m for m in _members(client, ws["id"], auth_header)}
-    assert after["gone@example.com"]["status"] == "removed"
+    assert after["gone@example.com"]["status"] == "active"
 
 
 def test_remove_ui_element_not_found_stays_failed(
@@ -276,3 +292,66 @@ def test_remove_ui_element_not_found_stays_failed(
 
     after = {m["email"]: m for m in _members(client, ws["id"], auth_header)}
     assert after["stay@example.com"]["status"] == "active"
+
+
+def test_remove_completed_without_verify_does_not_mark_removed(
+    client: TestClient, auth_header: dict
+):
+    """CHỐNG XOÁ-GIẢ (bug user 2026-07-21): extension báo COMPLETED nhưng KHÔNG kèm
+    bằng chứng đã rời (result.data.verified) → backend KHÔNG được mark removed, member
+    GIỮ active. (Đây là ca 'dialog đóng nhưng xoá chưa có hiệu lực' → trước đây bị mark
+    removed oan rồi kẹt vòng lặp xoá-giả.)"""
+    ws = _create_workspace(client, auth_header)
+    _upsert_active(client, ws, ["ghost@example.com"])
+
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-remove",
+        json={"emails": ["ghost@example.com"]},
+        headers=auth_header,
+    )
+    assert resp.status_code == 202, resp.text
+    task = _remove_tasks(client, ws["id"], auth_header)[0]
+
+    # COMPLETED nhưng result thiếu data.verified (giống bản extension cũ / dialog đóng
+    # mà chưa poll xác minh).
+    patch = client.patch(
+        f"/api/v1/queue/{task['id']}",
+        json={"status": "COMPLETED", "result": {"data": {"email": "ghost@example.com"}}},
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert patch.status_code == 200, patch.text
+
+    after = {m["email"]: m for m in _members(client, ws["id"], auth_header)}
+    assert after["ghost@example.com"]["status"] == "active", (
+        "COMPLETED thiếu verified KHÔNG được mark removed (chống xoá-giả)"
+    )
+
+
+def test_remove_completed_with_verify_marks_removed(
+    client: TestClient, auth_header: dict
+):
+    """Đối chứng: COMPLETED KÈM result.data.verified=true (extension đã poll thấy member
+    biến mất) → mark removed như mong đợi."""
+    ws = _create_workspace(client, auth_header)
+    _upsert_active(client, ws, ["bye@example.com"])
+
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-remove",
+        json={"emails": ["bye@example.com"]},
+        headers=auth_header,
+    )
+    assert resp.status_code == 202, resp.text
+    task = _remove_tasks(client, ws["id"], auth_header)[0]
+
+    patch = client.patch(
+        f"/api/v1/queue/{task['id']}",
+        json={
+            "status": "COMPLETED",
+            "result": {"data": {"email": "bye@example.com", "verified": True}},
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert patch.status_code == 200, patch.text
+
+    after = {m["email"]: m for m in _members(client, ws["id"], auth_header)}
+    assert after["bye@example.com"]["status"] == "removed"

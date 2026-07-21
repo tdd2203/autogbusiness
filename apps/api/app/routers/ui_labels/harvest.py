@@ -15,8 +15,8 @@ Endpoints (đăng ký lên router dùng chung từ `_shared`):
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from fastapi import Depends, status
-from sqlalchemy import select
+from fastapi import Depends, Request, Response, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -32,15 +32,73 @@ from app.schemas import (
 from ._shared import router, _push_history
 
 
+def _bundle_version(max_version: int, row_count: int) -> int:
+    """Công thức version của bundle — CHỈ ĐỊNH NGHĨA MỘT NƠI.
+
+    `max(version)` bắt đổi nội dung (mỗi upsert bump version), `count` bắt
+    thêm/bớt row. Dùng chung cho cả probe rẻ (MAX+COUNT) lẫn khi build đầy đủ,
+    để ETag khớp CHÍNH XÁC giá trị `version` trả trong body.
+    """
+    return int(max_version) * 1000 + int(row_count)
+
+
+def _match_etag(if_none_match: str | None, etag: str) -> bool:
+    """So If-None-Match với ETag hiện tại theo weak comparison (RFC 7232).
+
+    Xử lý: `*` (khớp mọi resource đang tồn tại), danh sách nhiều tag ngăn cách
+    dấu phẩy, và tiền tố `W/` của weak ETag.
+    """
+    if not if_none_match:
+        return False
+    if if_none_match.strip() == "*":
+        return True
+    wanted = etag.removeprefix("W/")
+    for tag in if_none_match.split(","):
+        if tag.strip().removeprefix("W/") == wanted:
+            return True
+    return False
+
+
 @router.get("/bundle", response_model=UiLabelBundleOut)
 def extension_bundle(
+    request: Request,
+    response: Response,
     workspace: Workspace = Depends(require_extension_workspace),
     db: Session = Depends(get_session),
-) -> UiLabelBundleOut:
-    """Extension fetch endpoint — trả toàn bộ label (3 locale × 4 page) đã có."""
+) -> UiLabelBundleOut | Response:
+    """Extension fetch endpoint — trả toàn bộ label (3 locale × 4 page) đã có.
+
+    Hỗ trợ ETag / conditional GET: extension poll bundle định kỳ nhưng label gần
+    như tĩnh (chỉ đổi khi admin harvest/calibrate). Trước tiên chạy 1 probe RẺ
+    (MAX(version) + COUNT) tái tạo CHÍNH XÁC `version` mà KHÔNG nạp toàn bảng; nếu
+    khớp `If-None-Match` của client → trả 304 (không body, không nạp bảng). Chỉ khi
+    version đổi mới nạp full + build dict. HTTP cache của browser/SW tự gửi
+    `If-None-Match` nên không cần đổi code extension.
+    """
+    _ = workspace
+
+    # Probe rẻ: aggregate 1 dòng thay vì nạp toàn bảng.
+    max_version, row_count = db.execute(
+        select(
+            func.coalesce(func.max(UiLabel.version), 0),
+            func.count(UiLabel.id),
+        )
+    ).one()
+    bundle_version = _bundle_version(max_version, row_count)
+    etag = f'"ui-labels-v{bundle_version}"'
+    # no-cache = client PHẢI revalidate qua ETag mỗi lần (không tự phục vụ cache mù),
+    # nhưng khi 304 thì server không nạp bảng — vừa tươi vừa rẻ.
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["ETag"] = etag
+
+    if _match_etag(request.headers.get("if-none-match"), etag):
+        return Response(
+            status_code=status.HTTP_304_NOT_MODIFIED,
+            headers={"ETag": etag, "Cache-Control": "no-cache"},
+        )
+
     rows = list(db.execute(select(UiLabel)).scalars())
     nested: dict[str, dict[str, dict[str, dict]]] = defaultdict(lambda: defaultdict(dict))
-    max_version = 0
     latest_at = datetime.fromtimestamp(0, tz=timezone.utc)
     for r in rows:
         nested[r.locale][r.page][r.control_key] = {
@@ -50,12 +108,8 @@ def extension_bundle(
             "version": r.version,
             "stale": r.stale,
         }
-        if r.version > max_version:
-            max_version = r.version
         if r.updated_at and r.updated_at > latest_at:
             latest_at = r.updated_at
-    bundle_version = max_version * 1000 + len(rows)
-    _ = workspace
     return UiLabelBundleOut(
         version=bundle_version,
         generated_at=latest_at if rows else datetime.now(timezone.utc),

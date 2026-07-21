@@ -250,20 +250,328 @@ def test_single_invite_after_removed_resets_to_pending(
     )
     assert del_resp.status_code == 202
 
-    # Lấy REMOVE_MEMBER task vừa tạo + giả lập extension hoàn tất
+    # Member đang pending → gỡ bằng REVOKE_INVITES (tab Lời mời), KHÔNG phải
+    # REMOVE_MEMBER. Completion mark removed khi result.data.results[].ok=true.
     queue = _list_queue(client, auth_header)
-    remove_task = next(q for q in queue if q["type"] == "REMOVE_MEMBER")
+    revoke_task = next(q for q in queue if q["type"] == "REVOKE_INVITES")
     _patch_task_as_extension(
         client,
-        remove_task["id"],
+        revoke_task["id"],
         ws["extension_api_key"],
         status="COMPLETED",
+        result={"data": {"results": [{"email": "re@example.com", "ok": True}]}},
     )
 
     # Giờ re-invite phải thành công (member.status đã 'removed')
     again = _invite_one(client, ws["id"], email="re@example.com", headers=auth_header)
     assert again["status"] == "pending"
     assert again["id"] == member_id  # reuse cùng row (UPSERT theo email)
+
+
+def test_reinvite_after_removed_resets_joined_at_to_now(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Email đã THAM GIA rồi bị XOÁ → mời lại: ngày tham gia phải là LÚC MỜI LẠI,
+    không giữ ngày tham gia lần trước (bất biến invite-time = join-date). Lịch sử
+    removed vẫn còn (cùng member.id) — xem test_member_logs cho phần lịch sử."""
+    ws = _create_workspace(client, auth_header)
+    first = _invite_one(client, ws["id"], email="rejoin@example.com", headers=auth_header)
+    member_id = first["id"]
+
+    # 1) Giả lập member đã accept lần đầu: bulk-upsert active + joined_at cũ.
+    old_joined = "2026-05-19T10:00:00+00:00"
+    client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-upsert",
+        json={
+            "members": [
+                {
+                    "email": "rejoin@example.com",
+                    "name": "Rejoin",
+                    "chatgpt_role": "member",
+                    "status": "active",
+                    "joined_at": old_joined,
+                }
+            ],
+            "is_full_sync": False,
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+
+    # 2) Xoá member (DELETE + giả lập extension hoàn tất → status='removed').
+    client.delete(
+        f"/api/v1/workspaces/{ws['id']}/members/{member_id}", headers=auth_header
+    )
+    remove_task = next(
+        q for q in _list_queue(client, auth_header) if q["type"] == "REMOVE_MEMBER"
+    )
+    _patch_task_as_extension(
+        client, remove_task["id"], ws["extension_api_key"], status="COMPLETED"
+    )
+
+    # 3) Mời lại → joined_at phải được reset (KHÁC ngày tham gia lần đầu) và
+    #    non-null (giữ record + lịch sử trước phantom-cleanup). (Member này vẫn CÒN
+    #    HẠN do reconcile cấp gói mặc định 1 tháng — nhưng mời-lại-còn-hạn CHỈ giữ
+    #    cửa sổ hạn, joined_at/last_invited_at vẫn reset như thường.)
+    again = _invite_one(client, ws["id"], email="rejoin@example.com", headers=auth_header)
+    assert again["id"] == member_id  # reuse cùng row → lịch sử removed còn nguyên
+    assert again["status"] == "pending"
+    assert again["joined_at"] is not None
+    assert again["joined_at"] != old_joined
+    # joined_at mới phải khớp last_invited_at (cùng mốc "lúc mời lại").
+    assert again["joined_at"] == again["last_invited_at"]
+
+
+def _revoke_and_complete(
+    client: TestClient, ws: dict, auth_header: dict, email: str
+) -> None:
+    """Xoá 1 member đang 'pending' (DELETE → REVOKE_INVITES) rồi giả lập extension
+    hoàn tất → status='removed'."""
+    members = {m["email"]: m for m in _list_members(client, ws["id"], auth_header)}
+    client.delete(
+        f"/api/v1/workspaces/{ws['id']}/members/{members[email]['id']}",
+        headers=auth_header,
+    )
+    revoke = next(
+        q for q in _list_queue(client, auth_header) if q["type"] == "REVOKE_INVITES"
+    )
+    _patch_task_as_extension(
+        client, revoke["id"], ws["extension_api_key"], status="COMPLETED",
+        result={"data": {"results": [{"email": email, "ok": True}]}},
+    )
+
+
+def _invite_with_months(
+    client: TestClient, ws_id: str, *, email: str, months: int, headers: dict
+) -> dict:
+    resp = client.post(
+        f"/api/v1/workspaces/{ws_id}/members/invite",
+        json={"email": email, "role": "member", "subscription_months": months},
+        headers=headers,
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def test_reinvite_still_valid_member_preserves_window(
+    client: TestClient, auth_header: dict
+) -> None:
+    """CÒN HẠN + bị xoá → mời lại GIỮ NGUYÊN cửa sổ hạn (không tạo chu kỳ mới, không
+    tính phí): dù mời lại với số THÁNG KHÁC, subscription_months + subscription_end_at
+    vẫn là của kỳ ĐÃ TRẢ trước đó (bỏ qua months yêu cầu). Xem yêu cầu user 2026-07-14
+    "email còn hạn, dù bị xoá mời lại cũng không bị tính phí"."""
+    ws = _create_workspace(client, auth_header)
+    first = _invite_with_months(
+        client, ws["id"], email="valid@example.com", months=3, headers=auth_header
+    )
+    orig_months = first["subscription_months"]
+    orig_end = first["subscription_end_at"]
+    assert orig_months == 3
+    assert orig_end is not None  # có hạn cụ thể (còn hạn, ≈ now + 90 ngày)
+
+    _revoke_and_complete(client, ws, auth_header, "valid@example.com")
+
+    # Mời lại với months KHÁC (1) → PHẢI giữ nguyên cửa sổ cũ (3 tháng), KHÔNG đặt lại
+    # thành 1 tháng-từ-bây-giờ (đó mới là "mua gói mới" bị tính phí).
+    again = _invite_with_months(
+        client, ws["id"], email="valid@example.com", months=1, headers=auth_header
+    )
+    assert again["id"] == first["id"]
+    assert again["status"] == "pending"
+    assert again["subscription_months"] == orig_months, (
+        "còn hạn → mời lại phải GIỮ số tháng đã trả, không nhận months mới"
+    )
+    assert again["subscription_end_at"] == orig_end, (
+        "còn hạn → mời lại phải GIỮ hạn cũ, không tạo cửa sổ mới (không service free)"
+    )
+
+
+def test_reinvite_expired_member_resets_window(
+    client: TestClient, auth_header: dict
+) -> None:
+    """HẾT HẠN + bị xoá → mời lại = CHU KỲ MỚI: reset cửa sổ theo months yêu cầu (đây
+    là ca ĐƯỢC tính phí — trái ngược với ca còn hạn)."""
+    import uuid as _uuid
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import SessionLocal
+    from app.models import Member as _Member
+
+    ws = _create_workspace(client, auth_header)
+    first = _invite_with_months(
+        client, ws["id"], email="expired@example.com", months=1, headers=auth_header
+    )
+
+    # Ép hạn về quá khứ → member hết hạn.
+    past = datetime.now(timezone.utc) - timedelta(days=10)
+    with SessionLocal() as db:
+        m = db.get(_Member, _uuid.UUID(first["id"]))
+        m.subscription_end_at = past
+        db.commit()
+
+    _revoke_and_complete(client, ws, auth_header, "expired@example.com")
+
+    before = datetime.now(timezone.utc)
+    again = _invite_with_months(
+        client, ws["id"], email="expired@example.com", months=2, headers=auth_header
+    )
+    assert again["id"] == first["id"]
+    assert again["subscription_months"] == 2, "hết hạn → chu kỳ mới nhận months yêu cầu"
+    new_end = datetime.fromisoformat(again["subscription_end_at"])
+    # Cửa sổ mới = bây giờ + 2×30 ngày (không giữ hạn quá khứ).
+    assert abs((new_end - (before + timedelta(days=60))).total_seconds()) < 5
+
+
+def test_paid_member_moves_to_correct_workspace_free(
+    client: TestClient, auth_header: dict
+) -> None:
+    """ADD NHẦM WORKSPACE (user 2026-07-16): email đã THANH TOÁN + còn hạn, bị gỡ khỏi
+    ws SAI, giờ mời sang ws ĐÚNG → CHUYỂN nguyên record (cùng member.id) sang ws đúng,
+    GIỮ NGUYÊN cửa sổ hạn đã trả (KHÔNG tính phí, BỎ QUA months mới), và biến mất khỏi
+    ws cũ. Trước fix: mời sang ws khác bị coi là email MỚI → tính phí lại oan."""
+    ws_wrong = _create_workspace(client, auth_header, name="Sai WS")
+    ws_right = _create_workspace(client, auth_header, name="Đúng WS")
+
+    # Mua gói 3 tháng ở ws SAI → có cửa sổ hạn cụ thể (còn hạn).
+    first = _invite_with_months(
+        client, ws_wrong["id"], email="wrongws@example.com", months=3, headers=auth_header
+    )
+    orig_id = first["id"]
+    orig_months = first["subscription_months"]
+    orig_end = first["subscription_end_at"]
+    assert orig_months == 3 and orig_end is not None
+
+    # Gỡ khỏi ws SAI → status 'removed' (cửa sổ hạn GIỮ nguyên, đã trả tiền rồi).
+    _revoke_and_complete(client, ws_wrong, auth_header, "wrongws@example.com")
+
+    # Mời sang ws ĐÚNG với months KHÁC (1) → phải CHUYỂN record cũ + giữ cửa sổ 3 tháng
+    # (nếu tạo member mới sẽ ra id khác + months=1 = bị tính phí lại).
+    moved = _invite_with_months(
+        client, ws_right["id"], email="wrongws@example.com", months=1, headers=auth_header
+    )
+    assert moved["id"] == orig_id, "phải CHUYỂN record cũ (cùng id), không tạo member mới"
+    assert moved["status"] == "pending"
+    assert moved["subscription_months"] == orig_months, "giữ số tháng đã trả (miễn phí)"
+    assert moved["subscription_end_at"] == orig_end, "giữ nguyên cửa sổ hạn đã trả"
+
+    # ws SAI KHÔNG còn email này (record đã dời đi).
+    wrong_emails = {
+        m["email"] for m in _list_members(client, ws_wrong["id"], auth_header)
+    }
+    assert "wrongws@example.com" not in wrong_emails, "record phải rời ws sai"
+
+    # ws ĐÚNG có email này ở trạng thái pending (chờ tham gia đội đúng).
+    right = {m["email"]: m for m in _list_members(client, ws_right["id"], auth_header)}
+    assert right["wrongws@example.com"]["status"] == "pending"
+
+
+def test_move_consolidates_over_expired_tombstone_in_target_ws(
+    client: TestClient, auth_header: dict
+) -> None:
+    """ADD NHẦM WORKSPACE — biến thể HỢP NHẤT (ca thật ksorhlen74, 2026-07-16): ws ĐÚNG
+    đã có tombstone `removed` HẾT HẠN (gói cũ), còn gói CÒN HẠN đã trả nằm ở ws SAI. Mời
+    lại vào ws đúng phải HỢP NHẤT về gói còn hạn (xoá tombstone hết hạn + chuyển record
+    còn hạn sang), GIỮ nguyên cửa sổ đã trả, KHÔNG tính phí. Trước fix: nhánh existing-
+    hết-hạn ở ws đúng tính phí oan dù gói còn hạn nằm ws khác."""
+    import uuid as _uuid
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import SessionLocal
+    from app.models import Member as _Member
+
+    ws_right = _create_workspace(client, auth_header, name="Đúng WS")
+    ws_wrong = _create_workspace(client, auth_header, name="Sai WS")
+
+    # 1) ws ĐÚNG: gói CŨ 1 tháng → ép hết hạn → gỡ → tombstone removed HẾT HẠN.
+    old = _invite_with_months(
+        client, ws_right["id"], email="consol@example.com", months=1, headers=auth_header
+    )
+    tombstone_id = old["id"]
+    with SessionLocal() as db:
+        m = db.get(_Member, _uuid.UUID(tombstone_id))
+        m.subscription_end_at = datetime.now(timezone.utc) - timedelta(days=3)
+        db.commit()
+    _revoke_and_complete(client, ws_right, auth_header, "consol@example.com")
+
+    # 2) ws SAI: gói MỚI 3 tháng (còn hạn) → gỡ → donor removed CÒN HẠN.
+    donor = _invite_with_months(
+        client, ws_wrong["id"], email="consol@example.com", months=3, headers=auth_header
+    )
+    donor_id = donor["id"]
+    assert donor_id != tombstone_id
+    _revoke_and_complete(client, ws_wrong, auth_header, "consol@example.com")
+
+    # 3) Mời lại vào ws ĐÚNG (months=1) → HỢP NHẤT: dùng record donor còn hạn (id donor),
+    #    xoá tombstone hết hạn, giữ cửa sổ 3 tháng, miễn phí.
+    moved = _invite_with_months(
+        client, ws_right["id"], email="consol@example.com", months=1, headers=auth_header
+    )
+    assert moved["id"] == donor_id, "phải HỢP NHẤT về record còn hạn (id donor)"
+    assert moved["id"] != tombstone_id, "tombstone hết hạn phải bị xoá, không tái dùng"
+    assert moved["status"] == "pending"
+    assert moved["subscription_months"] == 3, "giữ cửa sổ đã trả (3 tháng), bỏ qua months mới"
+
+    # ws SAI không còn record; ws ĐÚNG có email pending.
+    wrong = {m["email"] for m in _list_members(client, ws_wrong["id"], auth_header)}
+    assert "consol@example.com" not in wrong
+    right = {m["email"]: m for m in _list_members(client, ws_right["id"], auth_header)}
+    assert right["consol@example.com"]["status"] == "pending"
+    assert right["consol@example.com"]["id"] == donor_id
+
+
+def test_invite_preview_reports_free_for_cross_workspace_move(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Endpoint /invite-preview: email có gói còn hạn ở ws khác (chuyển ws) → báo
+    free_emails chứa email + total_fee=0 (để modal hiện 'Miễn phí' đúng, không doạ phí)."""
+    ws_right = _create_workspace(client, auth_header, name="Prev Right")
+    ws_wrong = _create_workspace(client, auth_header, name="Prev Wrong")
+    _invite_with_months(
+        client, ws_wrong["id"], email="prev@example.com", months=3, headers=auth_header
+    )
+    _revoke_and_complete(client, ws_wrong, auth_header, "prev@example.com")
+
+    resp = client.post(
+        f"/api/v1/workspaces/{ws_right['id']}/members/invite-preview",
+        json={
+            "invites": [{"email": "prev@example.com", "subscription_months": 1}],
+            "role": "member",
+        },
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "prev@example.com" in body["free_emails"]
+    assert body["total_fee"] == 0
+
+
+def test_expired_member_move_to_other_workspace_still_charges(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Ngược lại: email HẾT HẠN ở ws cũ → mời sang ws khác KHÔNG được miễn phí (không
+    còn 'đã trả cho kỳ hiện tại'): tạo member MỚI, cửa sổ mới theo months yêu cầu."""
+    import uuid as _uuid
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import SessionLocal
+    from app.models import Member as _Member
+
+    ws_a = _create_workspace(client, auth_header, name="Exp A")
+    ws_b = _create_workspace(client, auth_header, name="Exp B")
+    first = _invite_with_months(
+        client, ws_a["id"], email="expmove@example.com", months=1, headers=auth_header
+    )
+    # Ép hết hạn rồi gỡ.
+    with SessionLocal() as db:
+        m = db.get(_Member, _uuid.UUID(first["id"]))
+        m.subscription_end_at = datetime.now(timezone.utc) - timedelta(days=5)
+        db.commit()
+    _revoke_and_complete(client, ws_a, auth_header, "expmove@example.com")
+
+    moved = _invite_with_months(
+        client, ws_b["id"], email="expmove@example.com", months=2, headers=auth_header
+    )
+    assert moved["id"] != first["id"], "hết hạn → member MỚI ở ws B (không chuyển free)"
+    assert moved["subscription_months"] == 2
 
 
 def test_remove_not_found_does_not_mark_removed(
@@ -276,6 +584,24 @@ def test_remove_not_found_does_not_mark_removed(
     ws = _create_workspace(client, auth_header)
     m = _invite_one(client, ws["id"], email="stay@example.com", headers=auth_header)
     member_id = m["id"]
+
+    # Regression này thuộc REMOVE_MEMBER (tab Người dùng) → cho member 'active' (đã
+    # tham gia). Member 'pending' sẽ đi REVOKE_INVITES (tab Lời mời) — luồng khác.
+    client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-upsert",
+        json={
+            "members": [
+                {
+                    "email": "stay@example.com",
+                    "name": "Stay",
+                    "chatgpt_role": "member",
+                    "status": "active",
+                }
+            ],
+            "is_full_sync": False,
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
 
     del_resp = client.delete(
         f"/api/v1/workspaces/{ws['id']}/members/{member_id}", headers=auth_header
@@ -362,6 +688,149 @@ def test_sub_admin_invite_sets_invited_by_to_self(
         client, ws["id"], email="bysub@example.com", headers=_bearer(sub_token)
     )
     assert body["invited_by_user_id"] == sub["id"]
+
+
+# =====================================================================
+# B'. Cơ chế chủ sở hữu (owner lock) — toàn hệ thống
+# =====================================================================
+
+
+def _assign_ws(client: TestClient, auth_header: dict, ws_id: str, user_id: str) -> None:
+    resp = client.post(
+        f"/api/v1/workspaces/{ws_id}/assignments",
+        json={"user_id": user_id},
+        headers=auth_header,
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def test_owner_lock_blocks_other_account_same_workspace(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Email đã mời bởi tài khoản A → tài khoản B mời lại cùng workspace bị 409
+    (cơ chế chủ sở hữu), không phải chỉ 'đã tồn tại'."""
+    ws = _create_workspace(client, auth_header)
+    a = _create_sub_admin(
+        client, auth_header, email="own-a@example.com", username="owna",
+        permissions=["MEMBER_INVITE", "MEMBER_VIEW"],
+    )
+    b = _create_sub_admin(
+        client, auth_header, email="own-b@example.com", username="ownb",
+        permissions=["MEMBER_INVITE", "MEMBER_VIEW"],
+    )
+    _assign_ws(client, auth_header, ws["id"], a["id"])
+    _assign_ws(client, auth_header, ws["id"], b["id"])
+
+    _invite_one(
+        client, ws["id"], email="claimed@example.com",
+        headers=_bearer(_login(client, "owna")),
+    )
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "claimed@example.com", "role": "member"},
+        headers=_bearer(_login(client, "ownb")),
+    )
+    assert resp.status_code == 409, resp.text
+    assert "chủ sở hữu" in resp.json()["detail"]
+
+
+def test_owner_lock_blocks_super_admin_too(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Ngay cả super-admin cũng không mời được email của tài khoản khác (đúng khiếu
+    nại: admin@example.com mời email do sub-admin sở hữu)."""
+    ws = _create_workspace(client, auth_header)
+    a = _create_sub_admin(
+        client, auth_header, email="own-c@example.com", username="ownc",
+        permissions=["MEMBER_INVITE", "MEMBER_VIEW"],
+    )
+    _assign_ws(client, auth_header, ws["id"], a["id"])
+    _invite_one(
+        client, ws["id"], email="subowned@example.com",
+        headers=_bearer(_login(client, "ownc")),
+    )
+    # Super-admin (auth_header) thử mời lại → chặn.
+    _invite_one(
+        client, ws["id"], email="subowned@example.com",
+        headers=auth_header, expect=409,
+    )
+
+
+def test_owner_lock_is_global_across_workspaces(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Email do A mời ở WS1 → B mời sang WS2 (khác workspace) vẫn bị chặn (global)."""
+    ws1 = _create_workspace(client, auth_header, name="Owner WS1")
+    ws2 = _create_workspace(client, auth_header, name="Owner WS2")
+    a = _create_sub_admin(
+        client, auth_header, email="own-d@example.com", username="ownd",
+        permissions=["MEMBER_INVITE", "MEMBER_VIEW"],
+    )
+    b = _create_sub_admin(
+        client, auth_header, email="own-e@example.com", username="owne",
+        permissions=["MEMBER_INVITE", "MEMBER_VIEW"],
+    )
+    _assign_ws(client, auth_header, ws1["id"], a["id"])
+    _assign_ws(client, auth_header, ws2["id"], b["id"])
+    _invite_one(
+        client, ws1["id"], email="global@example.com",
+        headers=_bearer(_login(client, "ownd")),
+    )
+    resp = client.post(
+        f"/api/v1/workspaces/{ws2['id']}/members/invite",
+        json={"email": "global@example.com", "role": "member"},
+        headers=_bearer(_login(client, "owne")),
+    )
+    assert resp.status_code == 409, resp.text
+
+
+def test_owner_can_reinvite_after_removed(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Chủ sở hữu cũ vẫn mời lại được email của chính mình sau khi removed."""
+    ws = _create_workspace(client, auth_header)
+    first = _invite_one(client, ws["id"], email="mine@example.com", headers=auth_header)
+    member_id = first["id"]
+    client.delete(
+        f"/api/v1/workspaces/{ws['id']}/members/{member_id}", headers=auth_header
+    )
+    revoke = next(
+        q for q in _list_queue(client, auth_header) if q["type"] == "REVOKE_INVITES"
+    )
+    _patch_task_as_extension(
+        client, revoke["id"], ws["extension_api_key"], status="COMPLETED",
+        result={"data": {"results": [{"email": "mine@example.com", "ok": True}]}},
+    )
+    again = _invite_one(client, ws["id"], email="mine@example.com", headers=auth_header)
+    assert again["id"] == member_id  # cùng chủ → mời lại OK
+
+
+def test_owner_lock_bulk_invite_blocks_other_account(
+    client: TestClient, auth_header: dict
+) -> None:
+    """bulk-invite của tài khoản khác chứa 1 email đã có chủ → 409 (trước đây bulk
+    thiếu guard, ghi đè invited_by_user_id)."""
+    ws = _create_workspace(client, auth_header)
+    a = _create_sub_admin(
+        client, auth_header, email="own-f@example.com", username="ownf",
+        permissions=["MEMBER_INVITE", "MEMBER_VIEW"],
+    )
+    b = _create_sub_admin(
+        client, auth_header, email="own-g@example.com", username="owng",
+        permissions=["MEMBER_INVITE", "MEMBER_VIEW"],
+    )
+    _assign_ws(client, auth_header, ws["id"], a["id"])
+    _assign_ws(client, auth_header, ws["id"], b["id"])
+    _invite_one(
+        client, ws["id"], email="claimed2@example.com",
+        headers=_bearer(_login(client, "ownf")),
+    )
+    _bulk_invite(
+        client, ws["id"],
+        payload={"emails": ["fresh@example.com", "claimed2@example.com"], "role": "member"},
+        headers=_bearer(_login(client, "owng")),
+        expect=409,
+    )
 
 
 # =====================================================================
@@ -690,6 +1159,109 @@ def test_phantom_cleanup_completed_no_unverified_keeps_all(
     emails = {m["email"] for m in _list_members(client, ws["id"], auth_header)}
     assert "ok1@example.com" in emails
     assert "ok2@example.com" in emails
+
+
+def _member_logs(client: TestClient, ws_id: str, member_id: str, headers: dict) -> list[dict]:
+    resp = client.get(
+        f"/api/v1/workspaces/{ws_id}/members/{member_id}/logs?limit=200",
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_invite_completed_marks_verified_and_sets_joined_at(
+    client: TestClient, auth_header: dict
+) -> None:
+    """COMPLETED (không có unverified) → email verified: joined_at = LÚC THÀNH CÔNG
+    (trước đó None), và ghi audit MEMBER_INVITE_VERIFIED result=COMPLETED gắn member
+    + queue_item_id (để timeline hiện xanh thay vì PENDING đóng băng)."""
+    ws = _create_workspace(client, auth_header)
+    m = _invite_one(client, ws["id"], email="ok@example.com", headers=auth_header)
+    assert m["joined_at"] is None
+    task = next(
+        q for q in _list_queue(client, auth_header) if q["type"] == "INVITE_MEMBER"
+    )
+    _patch_task_as_extension(
+        client, task["id"], ws["extension_api_key"], status="COMPLETED", result={}
+    )
+
+    target = next(
+        x for x in _list_members(client, ws["id"], auth_header) if x["id"] == m["id"]
+    )
+    assert target["joined_at"] is not None, "verified → joined_at phải được set"
+
+    logs = _member_logs(client, ws["id"], m["id"], auth_header)
+    verified = [lg for lg in logs if lg["action"] == "MEMBER_INVITE_VERIFIED"]
+    assert len(verified) == 1
+    assert verified[0]["result"] == "COMPLETED"
+    assert verified[0]["data"]["queue_item_id"] == task["id"]
+
+
+def test_invite_verify_scrape_failed_does_not_mark_verified(
+    client: TestClient, auth_header: dict
+) -> None:
+    """verify_scrape_failed=true → CHƯA xác minh được → KHÔNG chấm thành công:
+    joined_at vẫn None, không có log VERIFIED (timeline giữ PENDING)."""
+    ws = _create_workspace(client, auth_header)
+    m = _invite_one(client, ws["id"], email="unknown@example.com", headers=auth_header)
+    task = next(
+        q for q in _list_queue(client, auth_header) if q["type"] == "INVITE_MEMBER"
+    )
+    _patch_task_as_extension(
+        client,
+        task["id"],
+        ws["extension_api_key"],
+        status="COMPLETED",
+        result={"verify_scrape_failed": True},
+    )
+    target = next(
+        x for x in _list_members(client, ws["id"], auth_header) if x["id"] == m["id"]
+    )
+    assert target["joined_at"] is None
+    logs = _member_logs(client, ws["id"], m["id"], auth_header)
+    assert not [lg for lg in logs if lg["action"] == "MEMBER_INVITE_VERIFIED"]
+
+
+def test_invite_failed_logs_failure_for_surviving_member(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Task FAILED nhưng member đã active (joined_at set → phantom cleanup GIỮ) →
+    ghi audit MEMBER_INVITE_FAILED result=FAILED gắn member (timeline hiện đỏ)."""
+    ws = _create_workspace(client, auth_header)
+    m = _invite_one(client, ws["id"], email="act@example.com", headers=auth_header)
+    # Promote active (joined_at set) để không bị phantom-cleanup xoá khi FAILED.
+    client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-upsert",
+        json={
+            "members": [
+                {
+                    "email": "act@example.com",
+                    "name": "Act",
+                    "chatgpt_role": "member",
+                    "status": "active",
+                    "joined_at": "2026-05-19T10:00:00+00:00",
+                }
+            ],
+            "is_full_sync": False,
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    task = next(
+        q for q in _list_queue(client, auth_header) if q["type"] == "INVITE_MEMBER"
+    )
+    _patch_task_as_extension(
+        client,
+        task["id"],
+        ws["extension_api_key"],
+        status="FAILED",
+        error_code="VERIFY_FAILED",
+    )
+    logs = _member_logs(client, ws["id"], m["id"], auth_header)
+    failed = [lg for lg in logs if lg["action"] == "MEMBER_INVITE_FAILED"]
+    assert len(failed) == 1
+    assert failed[0]["result"] == "FAILED"
+    assert failed[0]["data"]["queue_item_id"] == task["id"]
 
 
 def test_phantom_cleanup_scoped_to_workspace(

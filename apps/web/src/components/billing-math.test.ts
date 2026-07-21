@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeBillingCycle } from "./billing-math";
+import { computeBillingCycle, invoiceSeatPricing } from "./billing-math";
 import type { BillingInvoice } from "../types";
 
 // "Hôm nay" cố định để test ổn định: 2026-07-05 (còn 20 ngày tới 25/7).
@@ -115,6 +115,133 @@ describe("computeBillingCycle", () => {
     expect(c.note).toBe("ok");
     expect(c.totalSeats).toBe(35); // hoá đơn thiếu chi tiết không cộng
     expect(c.fullMonthPerSlot).toBe(260500);
+  });
+
+  it("gia hạn kèm proration + chu kỳ 31 ngày: giá/seat gồm VAT = đơn giá×1.1, 'thêm 1 seat' ≤ trọn tháng", () => {
+    // Hoá đơn 0005: total gồm proration (+100.843đ) → total÷qty = 287.157 (SAI).
+    // Đúng: 260.500×1.1 = 286.550. Chu kỳ 11/7→11/8 = 31 ngày (không phải 30).
+    const renew = baseInvoice({
+      date: "2026-07-11T00:00:00Z",
+      amount_vnd: 52549578,
+      quantity: 183,
+      unit_price_vnd: 260500,
+      subtotal_vnd: 47772343,
+      vat_vnd: 4777235,
+      total_vnd: 52549578,
+      period_start: "2026-07-11T00:00:00Z",
+      period_end: "2026-08-11T00:00:00Z",
+      invoice_number: "M96E9GXY-0005",
+    });
+    // Hôm nay = ngày đầu chu kỳ 11/7 → còn đúng 31 ngày.
+    const c = computeBillingCycle([renew], null, new Date("2026-07-11T00:00:00Z"));
+    expect(c.note).toBe("ok");
+    expect(c.fullMonthPerSlot).toBe(260500);
+    expect(c.fullMonthPerSlotWithVat).toBe(286550); // KHÔNG phải 287157
+    // Thêm 1 seat với 31/31 ngày = đúng trọn tháng, KHÔNG vượt (296728 cũ là sai).
+    expect(c.todayPrice).toBe(260500);
+    expect(c.todayPriceWithVat).toBe(286550);
+    // Tổng đã chi giữ nguyên số tiền THỰC của hoá đơn (gồm proration).
+    expect(c.totalCyclePaidWithVat).toBe(52549578);
+  });
+
+  it("phí ngân hàng nhập tay cộng vào tổng thực trả (gồm phí)", () => {
+    const withFee = baseInvoice({ service_fee_vnd: 578045 });
+    const c = computeBillingCycle([withFee], null, TODAY);
+    expect(c.note).toBe("ok");
+    expect(c.totalCyclePaidWithVat).toBe(10029250);
+    expect(c.totalCycleFees).toBe(578045);
+    expect(c.totalCyclePaidWithFees).toBe(10029250 + 578045);
+  });
+
+  it("không có phí → totalCycleFees = 0, thực trả = tổng gồm VAT", () => {
+    const c = computeBillingCycle([baseInvoice()], null, TODAY);
+    expect(c.totalCycleFees).toBe(0);
+    expect(c.totalCyclePaidWithFees).toBe(c.totalCyclePaidWithVat);
+  });
+
+  it("giá/seat gồm phí = giá gồm VAT + phí NH ÷ số seat", () => {
+    // 35 seat, phí NH 578.045 → phí/seat = round(578045/35) = 16516.
+    const c = computeBillingCycle(
+      [baseInvoice({ service_fee_vnd: 578045 })],
+      null,
+      TODAY,
+    );
+    expect(c.feePerSeat).toBe(Math.round(578045 / 35));
+    expect(c.fullMonthPerSlotWithFee).toBe(286550 + Math.round(578045 / 35));
+  });
+
+  it("không có phí → feePerSeat = 0, giá gồm phí = giá gồm VAT", () => {
+    const c = computeBillingCycle([baseInvoice()], null, TODAY);
+    expect(c.feePerSeat).toBe(0);
+    expect(c.fullMonthPerSlotWithFee).toBe(c.fullMonthPerSlotWithVat);
+  });
+
+  it("todayPriceWithFee = giá tháng (gồm VAT + phí) ÷ 30 × ngày còn lại", () => {
+    const c = computeBillingCycle(
+      [baseInvoice({ service_fee_vnd: 578045 })],
+      null,
+      TODAY, // còn 20 ngày
+    );
+    const monthly = 286550 + Math.round(578045 / 35);
+    expect(c.fullMonthPerSlotWithFee).toBe(monthly);
+    expect(c.todayPriceWithFee).toBe(Math.round((monthly * 20) / 30));
+  });
+
+  it("todayPrice prorate mẫu số 30 + kẹp 30 ngày (chu kỳ 31 ngày không vượt giá tháng)", () => {
+    const renew = baseInvoice({
+      date: "2026-07-11T00:00:00Z",
+      period_start: "2026-07-11T00:00:00Z",
+      period_end: "2026-08-11T00:00:00Z",
+    });
+    const c = computeBillingCycle([renew], null, new Date("2026-07-11T00:00:00Z"));
+    expect(c.daysRemaining).toBe(31);
+    expect(c.todayPrice).toBe(260500); // min(31,30)/30 = 1 → đúng giá tháng
+    expect(c.todayPriceWithVat).toBe(286550);
+    expect(c.todayPriceWithFee).toBe(286550);
+  });
+
+  describe("invoiceSeatPricing (mỗi hoá đơn tính riêng)", () => {
+    it("giá tháng = đơn giá×VAT + phí/seat; ngày còn lại ÷30 (từ hôm nay → renew)", () => {
+      const p = invoiceSeatPricing(
+        baseInvoice({ service_fee_vnd: 578045 }),
+        TODAY,
+      );
+      const monthly = 286550 + Math.round(578045 / 35);
+      expect(p.monthlyPerSeat).toBe(monthly);
+      expect(p.daysRemaining).toBe(20);
+      expect(p.remainingPerSeat).toBe(Math.round((monthly * 20) / 30));
+    });
+
+    it("chu kỳ 31 ngày: ngày còn lại kẹp ≤ giá tháng (không vượt)", () => {
+      const p = invoiceSeatPricing(
+        baseInvoice({
+          period_start: "2026-07-11T00:00:00Z",
+          period_end: "2026-08-11T00:00:00Z",
+        }),
+        new Date("2026-07-11T00:00:00Z"),
+      );
+      expect(p.daysRemaining).toBe(31);
+      expect(p.remainingPerSeat).toBe(p.monthlyPerSeat);
+    });
+
+    it("thiếu đơn giá/seat → null; hoá đơn hết hạn → remaining null", () => {
+      expect(invoiceSeatPricing(baseInvoice({ unit_price_vnd: null }), TODAY)
+        .monthlyPerSeat).toBeNull();
+      // period_end đã qua so với TODAY (2026-07-05)
+      const expired = invoiceSeatPricing(
+        baseInvoice({ period_end: "2026-06-25T00:00:00Z" }),
+        TODAY,
+      );
+      expect(expired.monthlyPerSeat).toBe(286550);
+      expect(expired.remainingPerSeat).toBeNull();
+    });
+
+    it("tỉ giá khác nhau → giá tháng khác nhau (đơn giá đã gồm tỉ giá)", () => {
+      const cheap = invoiceSeatPricing(baseInvoice({ unit_price_vnd: 255000 }), TODAY);
+      const pricey = invoiceSeatPricing(baseInvoice({ unit_price_vnd: 268000 }), TODAY);
+      expect(cheap.monthlyPerSeat).toBe(Math.round(255000 * 1.1));
+      expect(pricey.monthlyPerSeat).toBe(Math.round(268000 * 1.1));
+    });
   });
 
   it("không hoá đơn nào → no_invoices", () => {

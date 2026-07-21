@@ -23,7 +23,13 @@ class Permission(StrEnum):
     # Quyền yêu cầu đặt giới hạn tín dụng/tháng cho member. Sub-admin có quyền này
     # vẫn phải được super-admin DUYỆT từng lệnh + chỉ đặt trong ngân sách được cấp.
     MEMBER_SET_USAGE_LIMIT = "MEMBER_SET_USAGE_LIMIT"
+    # Sync 1 member lẻ / batch pending (tab "Chờ tham gia") + sync billing. Mặc định
+    # BẬT cho sub-admin — thao tác nhẹ, chỉ đọc lại trạng thái vài email.
     WORKSPACE_SYNC_TRIGGER = "WORKSPACE_SYNC_TRIGGER"
+    # Nút TO "Đồng bộ từ ChatGPT" (full-sync toàn workspace: scrape TOÀN BỘ member/
+    # invite). Tách riêng để KHOÁ ĐỘC LẬP với sync lẻ — mặc định TẮT (không nằm trong
+    # perms mặc định của sub-admin), super-admin cấp thủ công mới có.
+    WORKSPACE_FULL_SYNC = "WORKSPACE_FULL_SYNC"
     QUEUE_VIEW = "QUEUE_VIEW"
     AUDIT_LOG_VIEW = "AUDIT_LOG_VIEW"
 
@@ -45,6 +51,7 @@ GRANTABLE: frozenset[Permission] = frozenset(
         Permission.MEMBER_REMOVE,
         Permission.MEMBER_SET_USAGE_LIMIT,
         Permission.WORKSPACE_SYNC_TRIGGER,
+        Permission.WORKSPACE_FULL_SYNC,
         Permission.QUEUE_VIEW,
         Permission.AUDIT_LOG_VIEW,
         # BILLING_VIEW: cấp được cho sub-admin (CHỈ xem thanh toán). BILLING_PAY

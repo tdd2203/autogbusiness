@@ -28,6 +28,7 @@ from app.models import QueueItem, Workspace, WorkspaceSettings
 from app.schemas import QueueOut, QueueProgressUpdate
 
 from ._shared import router
+from .completion import reconcile_failed_invite
 
 
 @router.get("/next", response_model=QueueOut | None)
@@ -117,6 +118,19 @@ def pick_next(
             data={"age_sec": age_sec, "workspace_id": str(workspace.id)},
             commit=False,
         )
+        # ⚠️ INVITE_MEMBER timeout PHẢI reconcile như FAILED thật (hoàn phí ví +
+        # xoá member/invite phantom + ghi timeline FAILED). Trước đây đường timeout
+        # chỉ set status=FAILED → lời mời "thất bại nửa vời": tiền kẹt + member kẹt
+        # 'pending' (hiện "Chờ tham gia") + timeline vẫn "Đã mời". Dùng chung logic
+        # với đường extension báo FAILED (completion.py).
+        if stuck.type == "INVITE_MEMBER":
+            reconcile_failed_invite(
+                db,
+                stuck,
+                workspace_id=workspace.id,
+                workspace_name=workspace.name,
+                error_code="TIMEOUT",
+            )
     if stuck_tasks:
         db.commit()
 

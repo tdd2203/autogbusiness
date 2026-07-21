@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
 import { useAuth } from "../hooks/useAuth";
+import { useIsMobile } from "../hooks/useIsMobile";
 import { triggerExtensionRun } from "../hooks/useExtensionTrigger";
 import { useFormatDate, useT } from "../i18n";
 import {
@@ -16,10 +17,23 @@ import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
 import { AssignWorkspaceModal } from "../components/AssignWorkspaceModal";
 import { SearchInput } from "./Members";
 
+const mobileCardLabel: React.CSSProperties = {
+  fontFamily: "var(--font-mono)",
+  fontSize: 10,
+  letterSpacing: "0.08em",
+  color: "var(--ink-3)",
+};
+
 export default function Workspaces() {
   const t = useT();
   const formatDate = useFormatDate();
+  const isMobile = useIsMobile();
   const { user } = useAuth();
+  const isSuper = user?.is_super_admin === true;
+  const navigate = useNavigate();
+  // Số cột bảng (để colSpan dòng loading/rỗng). Tài khoản phụ ẩn cột Ghế + Ngày
+  // tạo (và cột Hành động vốn đã chỉ super-admin) → chỉ còn Tên, Gói, Đồng bộ.
+  const colCount = isSuper ? 6 : 3;
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
@@ -129,7 +143,6 @@ export default function Workspaces() {
       >
         <div>
           <h1 className="display-h1">{t("workspace.listTitle")}</h1>
-          <p className="page-sub">{t("workspace.pageSub")}</p>
         </div>
         {user?.is_super_admin && !showForm && (
           <button
@@ -288,15 +301,203 @@ export default function Workspaces() {
           />
         </div>
 
+        {isMobile ? (
+          <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+            {isLoading && (
+              <div
+                className="cell-muted"
+                style={{ textAlign: "center", padding: 24, fontSize: 13 }}
+              >
+                {t("common.loading")}
+              </div>
+            )}
+            {!isLoading && filtered.length === 0 && (
+              <div
+                className="cell-muted"
+                style={{ textAlign: "center", padding: 24, fontSize: 13 }}
+              >
+                {t("workspace.emptyList")}
+              </div>
+            )}
+            {filtered.map((ws) => {
+              const isSyncing = syncBilling.isPending && syncBillingId === ws.id;
+              const unpaid = ws.billing_status === "UNPAID";
+              const used = ws.seat_used ?? 0;
+              const total = ws.seat_total ?? 0;
+              const over = total > 0 && used > total;
+              const pct =
+                total > 0 ? Math.max(4, Math.min(100, Math.round((used / total) * 100))) : 0;
+              return (
+                <div
+                  key={ws.id}
+                  onClick={() => navigate(`/workspaces/${ws.id}/members`)}
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 14,
+                    padding: 14,
+                    background: "var(--surface)",
+                    boxShadow: "var(--shadow-card)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 12,
+                    cursor: "pointer",
+                  }}
+                >
+                  {/* tên + gói + trạng thái */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: 15.5,
+                        fontWeight: 600,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {ws.name}
+                    </div>
+                    {unpaid && (
+                      <span className="badge badge-danger" title={t("workspace.billingUnpaid")}>
+                        {t("workspace.billingUnpaid")}
+                      </span>
+                    )}
+                    <span
+                      className="mono"
+                      style={{
+                        flex: "none",
+                        border: "1px solid var(--border)",
+                        borderRadius: 7,
+                        padding: "3px 9px",
+                        fontSize: 11,
+                        color: "var(--ink-3)",
+                      }}
+                    >
+                      {ws.plan ?? "—"}
+                    </span>
+                  </div>
+
+                  {/* ghế đã dùng (chỉ super-admin) */}
+                  {isSuper && (
+                    <div>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "baseline",
+                          justifyContent: "space-between",
+                          marginBottom: 6,
+                        }}
+                      >
+                        <span style={mobileCardLabel}>{t("workspace.tableSeat")}</span>
+                        <span
+                          className="mono"
+                          style={{
+                            fontSize: 13,
+                            fontWeight: 600,
+                            color: over ? "var(--danger)" : "var(--ink)",
+                          }}
+                        >
+                          {used}/{ws.seat_total ?? "—"}
+                        </span>
+                      </div>
+                      <div
+                        style={{
+                          height: 6,
+                          borderRadius: 6,
+                          background: "var(--surface-2)",
+                          overflow: "hidden",
+                        }}
+                      >
+                        <div
+                          style={{
+                            height: "100%",
+                            width: `${pct}%`,
+                            borderRadius: 6,
+                            background: over ? "var(--danger)" : "var(--success)",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ngày đồng bộ / ngày tạo */}
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: isSuper ? "1fr 1fr" : "1fr",
+                      gap: 10,
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 11,
+                      color: "var(--ink-3)",
+                    }}
+                  >
+                    <div>
+                      <div style={{ letterSpacing: "0.05em", opacity: 0.85 }}>
+                        {t("workspace.tableLastSync")}
+                      </div>
+                      <div style={{ color: "var(--ink)", marginTop: 2, lineHeight: 1.4 }}>
+                        {ws.last_synced_at
+                          ? new Date(ws.last_synced_at).toLocaleString()
+                          : t("workspace.lastSyncNever")}
+                      </div>
+                    </div>
+                    {isSuper && (
+                      <div>
+                        <div style={{ letterSpacing: "0.05em", opacity: 0.85 }}>
+                          {t("workspace.tableCreated")}
+                        </div>
+                        <div style={{ color: "var(--ink)", marginTop: 2 }}>
+                          {formatDate(ws.created_at)}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* hành động (super-admin) */}
+                  {user?.is_super_admin && (
+                    <div style={{ display: "flex", gap: 8, paddingTop: 2 }}>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setAssignWs(ws);
+                        }}
+                        title={t("assign.tooltip")}
+                        className="btn btn-ghost btn-sm"
+                        style={{ flex: 1 }}
+                      >
+                        {t("assign.action")}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          syncBilling.mutate(ws);
+                        }}
+                        disabled={isSyncing}
+                        title={t("workspace.syncBillingTooltip")}
+                        className="btn btn-ghost btn-sm"
+                        style={{ flex: 1 }}
+                      >
+                        {isSyncing
+                          ? t("workspace.syncBillingBusy")
+                          : t("workspace.syncBilling")}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
         <div style={{ overflowX: "auto" }}>
           <table className="data-table">
             <thead>
               <tr>
                 <th>{t("workspace.tableName")}</th>
                 <th>{t("workspace.tablePlan")}</th>
-                <th>{t("workspace.tableSeat")}</th>
+                {isSuper && <th>{t("workspace.tableSeat")}</th>}
                 <th>{t("workspace.tableLastSync")}</th>
-                <th>{t("workspace.tableCreated")}</th>
+                {isSuper && <th>{t("workspace.tableCreated")}</th>}
                 {user?.is_super_admin && (
                   <th style={{ textAlign: "right" }}>
                     {t("workspace.tableActions")}
@@ -307,14 +508,14 @@ export default function Workspaces() {
             <tbody>
               {isLoading && (
                 <tr>
-                  <td colSpan={6} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
+                  <td colSpan={colCount} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
                     {t("common.loading")}
                   </td>
                 </tr>
               )}
               {!isLoading && filtered.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
+                  <td colSpan={colCount} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
                     {t("workspace.emptyList")}
                   </td>
                 </tr>
@@ -324,10 +525,17 @@ export default function Workspaces() {
                 const unpaid = ws.billing_status === "UNPAID";
                 const billingNeverSynced = !ws.last_billing_synced_at;
                 return (
-                  <tr key={ws.id}>
+                  <tr
+                    key={ws.id}
+                    // Cả dòng click được → vào workspace (yêu cầu user). Nút Gán/Đồng bộ
+                    // + Link tên tự stopPropagation để không kích hoạt điều hướng dòng.
+                    onClick={() => navigate(`/workspaces/${ws.id}/members`)}
+                    style={{ cursor: "pointer" }}
+                  >
                     <td>
                       <Link
                         to={`/workspaces/${ws.id}/members`}
+                        onClick={(e) => e.stopPropagation()}
                         style={{
                           color: "var(--ink)",
                           fontWeight: 500,
@@ -356,27 +564,31 @@ export default function Workspaces() {
                         )}
                       </div>
                     </td>
-                    <td
-                      className="cell-muted mono"
-                      style={{ fontSize: 12.5 }}
-                      title={
-                        billingNeverSynced
-                          ? t("workspace.billingNeverSynced")
-                          : `${t("workspace.tableLastSync")}: ${new Date(
-                              ws.last_billing_synced_at!,
-                            ).toLocaleString()}`
-                      }
-                    >
-                      {ws.seat_used ?? 0}/{ws.seat_total ?? "—"}
-                    </td>
+                    {isSuper && (
+                      <td
+                        className="cell-muted mono"
+                        style={{ fontSize: 12.5 }}
+                        title={
+                          billingNeverSynced
+                            ? t("workspace.billingNeverSynced")
+                            : `${t("workspace.tableLastSync")}: ${new Date(
+                                ws.last_billing_synced_at!,
+                              ).toLocaleString()}`
+                        }
+                      >
+                        {ws.seat_used ?? 0}/{ws.seat_total ?? "—"}
+                      </td>
+                    )}
                     <td className="cell-muted" style={{ fontSize: 12.5 }}>
                       {ws.last_synced_at
                         ? new Date(ws.last_synced_at).toLocaleString()
                         : t("workspace.lastSyncNever")}
                     </td>
-                    <td className="cell-muted" style={{ fontSize: 12.5 }}>
-                      {formatDate(ws.created_at)}
-                    </td>
+                    {isSuper && (
+                      <td className="cell-muted" style={{ fontSize: 12.5 }}>
+                        {formatDate(ws.created_at)}
+                      </td>
+                    )}
                     {user?.is_super_admin && (
                       <td style={{ textAlign: "right" }}>
                         <div
@@ -384,14 +596,20 @@ export default function Workspaces() {
                           style={{ gap: 6 }}
                         >
                           <button
-                            onClick={() => setAssignWs(ws)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setAssignWs(ws);
+                            }}
                             title={t("assign.tooltip")}
                             className="btn btn-ghost btn-sm"
                           >
                             {t("assign.action")}
                           </button>
                           <button
-                            onClick={() => syncBilling.mutate(ws)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              syncBilling.mutate(ws);
+                            }}
                             disabled={isSyncing}
                             title={t("workspace.syncBillingTooltip")}
                             className="btn btn-ghost btn-sm"
@@ -409,6 +627,7 @@ export default function Workspaces() {
             </tbody>
           </table>
         </div>
+        )}
       </div>
 
       {assignWs && (

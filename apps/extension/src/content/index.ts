@@ -3,7 +3,11 @@ import type {
   ExecuteActionResponse,
 } from "../shared/messages";
 import { loadBundleFromStorage } from "../shared/ui-labels";
-import { executeInvite, executeVerifyPendingInvite } from "./actions/invite";
+import {
+  executeInvite,
+  executeVerifyPendingInvite,
+  executeCheckActiveAfterInvite,
+} from "./actions/invite";
 import { executeRemove } from "./actions/remove";
 import { executeSyncMember, executeSyncMembersBatch } from "./actions/sync-member";
 import { executeChangeRole } from "./actions/change-role";
@@ -85,9 +89,12 @@ async function dispatch(
         msg.role,
         msg.verifiedDomain ?? null,
         msg.externalReady ?? false,
+        msg.reinvite ?? false,
       );
     case "VERIFY_PENDING_INVITE":
       return executeVerifyPendingInvite(msg.taskId, msg.emails, msg.role);
+    case "CHECK_ACTIVE_AFTER_INVITE":
+      return executeCheckActiveAfterInvite(msg.taskId, msg.emails);
     case "REMOVE_MEMBER":
       return executeRemove(msg.taskId, msg.email);
     case "SET_USAGE_LIMIT":

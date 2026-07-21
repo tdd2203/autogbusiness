@@ -9,7 +9,11 @@ const PERMISSIONS = {
   MEMBER_INVITE: "MEMBER_INVITE",
   MEMBER_REMOVE: "MEMBER_REMOVE",
   MEMBER_SET_USAGE_LIMIT: "MEMBER_SET_USAGE_LIMIT",
+  // Sync lẻ 1 member / batch pending (tab "Chờ tham gia") + sync billing.
   WORKSPACE_SYNC_TRIGGER: "WORKSPACE_SYNC_TRIGGER",
+  // Nút TO "Đồng bộ từ ChatGPT" (full-sync toàn workspace). Khoá ĐỘC LẬP với
+  // sync lẻ — mặc định TẮT (không nằm trong DEFAULT_SUB_ADMIN_PERMS).
+  WORKSPACE_FULL_SYNC: "WORKSPACE_FULL_SYNC",
   QUEUE_VIEW: "QUEUE_VIEW",
   AUDIT_LOG_VIEW: "AUDIT_LOG_VIEW",
 } as const;
@@ -24,6 +28,9 @@ export const GRANTABLE: PermissionKey[] = [
   // chỉ trong NGÂN SÁCH cấp riêng từng workspace).
   "MEMBER_SET_USAGE_LIMIT",
   "WORKSPACE_SYNC_TRIGGER",
+  // Full-sync (nút TO "Đồng bộ từ ChatGPT") — grantable nhưng KHÔNG default-on
+  // (không có trong DEFAULT_SUB_ADMIN_PERMS) ⇒ khoá sẵn, super-admin tick mới mở.
+  "WORKSPACE_FULL_SYNC",
   "QUEUE_VIEW",
   "AUDIT_LOG_VIEW",
   // BILLING_VIEW: cấp được cho sub-admin (chỉ xem thanh toán).
@@ -41,3 +48,46 @@ export const DEFAULT_SUB_ADMIN_PERMS: PermissionKey[] = [
   "QUEUE_VIEW",
   "WORKSPACE_SYNC_TRIGGER",
 ];
+
+// ---------------------------------------------------------------------------
+// Metadata trình bày cho trang "Tài khoản phụ" (chỉ dùng ở FE).
+//
+// Quyền "private": thao tác có sức phá hoại / phạm vi rộng, hoặc lộ thông tin
+// toàn hệ thống (nhật ký hệ thống, thanh toán) — được tô riêng (viền + nền đỏ
+// nhạt) trong form cấp quyền và trong pill trên bảng để super-admin cân nhắc kỹ
+// trước khi cấp.
+export const SENSITIVE_PERMS: ReadonlySet<PermissionKey> = new Set<PermissionKey>(
+  [
+    "MEMBER_REMOVE",
+    "MEMBER_SET_USAGE_LIMIT",
+    "WORKSPACE_FULL_SYNC",
+    "AUDIT_LOG_VIEW",
+    "BILLING_VIEW",
+  ],
+);
+
+export type PermGroupId = "member" | "view" | "system" | "other";
+
+export type PermGroup = { id: PermGroupId; codes: PermissionKey[] };
+
+// Nhóm quyền theo chủ đề (khớp mockup thiết kế). Mọi quyền GRANTABLE chưa xếp
+// nhóm sẽ tự rơi vào nhóm "other" để không bao giờ bị ẩn khỏi form khi thêm
+// quyền mới vào GRANTABLE.
+export const PERM_GROUPS: PermGroup[] = (() => {
+  const base: PermGroup[] = [
+    {
+      id: "member",
+      codes: [
+        "MEMBER_VIEW",
+        "MEMBER_INVITE",
+        "MEMBER_REMOVE",
+        "MEMBER_SET_USAGE_LIMIT",
+      ],
+    },
+    { id: "view", codes: ["QUEUE_VIEW", "AUDIT_LOG_VIEW", "BILLING_VIEW"] },
+    { id: "system", codes: ["WORKSPACE_SYNC_TRIGGER", "WORKSPACE_FULL_SYNC"] },
+  ];
+  const grouped = new Set(base.flatMap((g) => g.codes));
+  const leftover = GRANTABLE.filter((p) => !grouped.has(p));
+  return leftover.length ? [...base, { id: "other", codes: leftover }] : base;
+})();

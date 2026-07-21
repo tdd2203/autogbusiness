@@ -1,12 +1,15 @@
-"""Gia hạn tự phục vụ + chu kỳ + thanh toán theo chu kỳ (yêu cầu user 2026-07-08).
+"""Chu kỳ subscription — mô hình chốt user 2026-07-13.
+
+**1 tháng = 1 chu kỳ**; phí (ví/QR) LUÔN thu TRƯỚC khi mời/gia hạn/đổi hạn nên chu
+kỳ sinh ra là ĐÃ THANH TOÁN ngay — KHÔNG còn 'chưa thanh toán' / bước duyệt thủ công,
+KHÔNG reset member khi gia hạn.
 
 Xác minh:
-  - Sub-admin TỰ gia hạn (POST .../renew) → áp NGAY, KHÔNG cần duyệt.
-  - Mỗi lần gia hạn = 1 CHU KỲ mới, luôn 'unpaid'; member reset về 'chưa thanh toán'
-    kể cả trước đó đã 'paid'.
-  - Chu kỳ 1 'unpaid' → gia hạn → chu kỳ 2 vẫn 'unpaid' (member tổng hợp = unpaid).
-  - Xác nhận thanh toán theo TỪNG chu kỳ (cycle_ids); member 'paid' chỉ khi MỌI kỳ paid.
-  - Gia hạn cộng dồn hạn (còn hạn → hạn cũ + N×30).
+  - Sub-admin TỰ gia hạn (POST .../renew) → áp NGAY, không tạo yêu cầu duyệt.
+  - Gia hạn N tháng → nối N chu kỳ 1-tháng, tất cả 'paid'; member giữ 'paid'.
+  - Đổi hạn (PATCH .../subscription) ĐỒNG BỘ chu kỳ theo hạn mới (bug user báo: trước
+    đây đổi hạn không đụng chu kỳ → "Kỳ thanh toán" kẹt ở cửa sổ cũ):
+      * kéo dài → nối kỳ mới; rút ngắn → cắt kỳ; vô thời hạn → xoá hết kỳ.
 """
 
 from datetime import datetime, timedelta
@@ -74,6 +77,14 @@ def _renew(client, ws_id, member_id, headers, months):
     )
 
 
+def _patch_sub(client, ws_id, member_id, headers, body):
+    return client.patch(
+        f"/api/v1/workspaces/{ws_id}/members/{member_id}/subscription",
+        json=body,
+        headers=headers,
+    )
+
+
 def _added_row(client, headers, member_id):
     rows = client.get("/api/v1/added-members", headers=headers).json()
     return next(r for r in rows if r["id"] == member_id)
@@ -87,7 +98,7 @@ def _cycles(client, headers, member_id):
 def test_sub_admin_can_self_renew_without_approval(
     client: TestClient, auth_header: dict
 ):
-    """Gia hạn là quyền tự phục vụ: sub-admin renew → áp NGAY, không tạo yêu cầu duyệt."""
+    """Gia hạn tự phục vụ: sub-admin renew → áp NGAY, giữ 'đã thanh toán', không duyệt."""
     ws = _create_ws(client, auth_header)
     sub = _create_sub_admin(client, auth_header, username="cyc_sub")
     _assign(client, auth_header, ws["id"], sub["id"])
@@ -97,21 +108,22 @@ def test_sub_admin_can_self_renew_without_approval(
     resp = _renew(client, ws["id"], member["id"], sub_h, 3)
     assert resp.status_code == 200, resp.text
     out = resp.json()
-    # Áp NGAY (không phải 'requested').
     assert out["subscription_request_status"] == "none"
     assert out["subscription_months"] == 3
-    assert out["payment_status"] == "unpaid"
+    # Mô hình mới: KHÔNG reset về unpaid — phí thu trước = đã thanh toán.
+    assert out["payment_status"] == "paid"
 
-    # KHÔNG tạo yêu cầu đổi hạn chờ duyệt.
     cnt = client.get(
         "/api/v1/subscription-requests/pending-count", headers=auth_header
     ).json()
     assert cnt["count"] == 0
 
 
-def test_renew_stacks_expiry_and_creates_cycle(
+def test_renew_stacks_expiry_and_appends_one_grouped_cycle(
     client: TestClient, auth_header: dict
 ):
+    """Gia hạn 2 tháng → hạn +60 ngày; nối ĐÚNG 1 kỳ gộp (months=2), KHÔNG tách lẻ
+    (kèm kỳ vật chất hoá của lần mời months=1) — tất cả 'đã thanh toán'."""
     ws = _create_ws(client, auth_header)
     member = _invite(client, ws["id"], auth_header, "stack@example.com", months=1)
     old_end = datetime.fromisoformat(member["subscription_end_at"])
@@ -121,126 +133,139 @@ def test_renew_stacks_expiry_and_creates_cycle(
     new_end = datetime.fromisoformat(resp.json()["subscription_end_at"])
     assert new_end == old_end + timedelta(days=2 * 30)
 
-    # 2 chu kỳ: kỳ 1 (vật chất hoá từ trạng thái invite) + kỳ 2 (vừa gia hạn).
+    # 2 kỳ: kỳ 1 (vật chất hoá lần mời, months=1) + kỳ 2 (gia hạn gộp, months=2).
     cycles = _cycles(client, auth_header, member["id"])
     assert [c["cycle_number"] for c in cycles] == [1, 2]
-    assert cycles[1]["months"] == 2
-    assert cycles[1]["payment_status"] == "unpaid"
+    assert [c["months"] for c in cycles] == [1, 2]
+    assert all(c["payment_status"] == "paid" for c in cycles)
+    # Kỳ cuối kết thúc ĐÚNG bằng hạn dùng của member (không lệch).
+    assert datetime.fromisoformat(cycles[-1]["end_at"]) == new_end
 
 
-def test_paid_email_resets_to_unpaid_on_renew(
-    client: TestClient, auth_header: dict
-):
-    """Email đang 'đã thanh toán' mà gia hạn → member về 'chưa thanh toán'; kỳ cũ giữ paid."""
+def test_renew_keeps_member_and_cycles_paid(client: TestClient, auth_header: dict):
+    """Email đang 'đã thanh toán' mà gia hạn → VẪN 'đã thanh toán' (không reset)."""
     ws = _create_ws(client, auth_header)
     member = _invite(client, ws["id"], auth_header, "paid@example.com", months=1)
 
-    # Xác nhận đã thanh toán (kỳ đầu).
-    client.post(
-        "/api/v1/added-members/mark-paid",
-        json={"member_ids": [member["id"]], "paid": True},
-        headers=auth_header,
-    )
-    assert _added_row(client, auth_header, member["id"])["payment_status"] == "paid"
-
-    # Gia hạn → reset member về unpaid.
     resp = _renew(client, ws["id"], member["id"], auth_header, 1)
     assert resp.status_code == 200, resp.text
-    assert resp.json()["payment_status"] == "unpaid"
+    assert resp.json()["payment_status"] == "paid"
 
     cycles = _cycles(client, auth_header, member["id"])
     assert len(cycles) == 2
-    assert cycles[0]["payment_status"] == "paid"   # kỳ 1 giữ lịch sử đã trả
-    assert cycles[1]["payment_status"] == "unpaid"  # kỳ 2 chưa trả
-
-
-def test_unpaid_cycle1_stays_unpaid_after_renew(
-    client: TestClient, auth_header: dict
-):
-    """Chu kỳ 1 chưa thanh toán → gia hạn → chu kỳ 2 vẫn chưa thanh toán."""
-    ws = _create_ws(client, auth_header)
-    member = _invite(client, ws["id"], auth_header, "carry@example.com", months=1)
-
-    _renew(client, ws["id"], member["id"], auth_header, 1)
-    cycles = _cycles(client, auth_header, member["id"])
-    assert len(cycles) == 2
-    assert all(c["payment_status"] == "unpaid" for c in cycles)
-    assert _added_row(client, auth_header, member["id"])["payment_status"] == "unpaid"
-
-
-def test_per_cycle_mark_paid(client: TestClient, auth_header: dict):
-    """Xác nhận theo từng chu kỳ: member 'paid' CHỈ khi MỌI kỳ đã trả."""
-    ws = _create_ws(client, auth_header)
-    member = _invite(client, ws["id"], auth_header, "percycle@example.com", months=1)
-    _renew(client, ws["id"], member["id"], auth_header, 1)
-    cycles = _cycles(client, auth_header, member["id"])
-    c1, c2 = cycles[0]["id"], cycles[1]["id"]
-
-    # Trả kỳ 1 → member vẫn unpaid (kỳ 2 chưa trả).
-    resp = client.post(
-        "/api/v1/added-members/mark-paid",
-        json={"cycle_ids": [c1], "paid": True},
-        headers=auth_header,
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["count"] == 1
-    cycles = _cycles(client, auth_header, member["id"])
-    assert cycles[0]["payment_status"] == "paid"
-    assert cycles[1]["payment_status"] == "unpaid"
-    assert _added_row(client, auth_header, member["id"])["payment_status"] == "unpaid"
-
-    # Trả nốt kỳ 2 → member 'paid'.
-    client.post(
-        "/api/v1/added-members/mark-paid",
-        json={"cycle_ids": [c2], "paid": True},
-        headers=auth_header,
-    )
+    assert all(c["payment_status"] == "paid" for c in cycles)
     assert _added_row(client, auth_header, member["id"])["payment_status"] == "paid"
 
 
-def test_per_cycle_request_payment_by_sub_admin(
+def test_change_subscription_extend_appends_cycles(
     client: TestClient, auth_header: dict
 ):
-    """Sub-admin gửi yêu cầu duyệt cho MỘT chu kỳ cụ thể → kỳ đó 'requested'."""
+    """Đổi hạn KÉO DÀI (cộng dồn theo tháng) → nối kỳ mới đã thanh toán; kỳ cuối khớp
+    hạn mới (bug user báo: trước đây đổi hạn không đụng chu kỳ)."""
     ws = _create_ws(client, auth_header)
-    sub = _create_sub_admin(client, auth_header, username="cyc_req")
-    _assign(client, auth_header, ws["id"], sub["id"])
-    sub_h = _login(client, "cyc_req")
-    member = _invite(client, ws["id"], sub_h, "req@example.com", months=1)
-    _renew(client, ws["id"], member["id"], sub_h, 1)
-    cycles = _cycles(client, sub_h, member["id"])
-    c2 = cycles[1]["id"]
+    member = _invite(client, ws["id"], auth_header, "ext@example.com", months=1)
+    old_end = datetime.fromisoformat(member["subscription_end_at"])
 
-    resp = client.post(
-        "/api/v1/added-members/request-payment",
-        json={"cycle_ids": [c2], "requested": True},
-        headers=sub_h,
+    resp = _patch_sub(
+        client, ws["id"], member["id"], auth_header, {"subscription_months": 2}
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["count"] == 1
-    cycles = _cycles(client, sub_h, member["id"])
-    assert cycles[1]["payment_status"] == "requested"
-    assert cycles[1]["payment_requested_at"] is not None
+    new_end = datetime.fromisoformat(resp.json()["subscription_end_at"])
+    assert new_end == old_end + timedelta(days=2 * 30)
+
+    cycles = _cycles(client, auth_header, member["id"])
+    # Kỳ 1 (vật chất hoá months=1) + 1 kỳ kéo dài GỘP (months=2) = 2 kỳ, đều đã TT.
+    assert [c["cycle_number"] for c in cycles] == [1, 2]
+    assert [c["months"] for c in cycles] == [1, 2]
+    assert all(c["payment_status"] == "paid" for c in cycles)
+    # Kỳ cuối kết thúc ĐÚNG bằng hạn dùng mới — không còn kẹt ở cửa sổ cũ.
+    assert datetime.fromisoformat(cycles[-1]["end_at"]) == new_end
 
 
-def test_sub_admin_cannot_request_others_cycle(
+def test_change_subscription_shorten_trims_cycle(
     client: TestClient, auth_header: dict
 ):
-    """Sub B không gửi yêu cầu được cho chu kỳ email của Sub A (không sở hữu)."""
+    """Đổi hạn RÚT NGẮN (đặt ngày sớm hơn): kỳ mua gộp bị CẮT về hạn mới (vẫn 1 kỳ,
+    months cập nhật theo cửa sổ mới), không sinh thêm kỳ."""
     ws = _create_ws(client, auth_header)
-    suba = _create_sub_admin(client, auth_header, username="cyc_a")
-    _assign(client, auth_header, ws["id"], suba["id"])
-    suba_h = _login(client, "cyc_a")
-    member = _invite(client, ws["id"], suba_h, "owned@example.com", months=1)
-    _renew(client, ws["id"], member["id"], suba_h, 1)
-    c2 = _cycles(client, suba_h, member["id"])[1]["id"]
+    member = _invite(client, ws["id"], auth_header, "short@example.com", months=3)
+    old_end = datetime.fromisoformat(member["subscription_end_at"])
+    new_end = old_end - timedelta(days=45)  # 3 tháng → còn ~1.5 tháng
 
-    _create_sub_admin(client, auth_header, username="cyc_b")
-    subb_h = _login(client, "cyc_b")
-    resp = client.post(
-        "/api/v1/added-members/request-payment",
-        json={"cycle_ids": [c2], "requested": True},
-        headers=subb_h,
+    resp = _patch_sub(
+        client,
+        ws["id"],
+        member["id"],
+        auth_header,
+        {"subscription_end_at": new_end.isoformat()},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["count"] == 0
+    assert datetime.fromisoformat(resp.json()["subscription_end_at"]) == new_end
+
+    cycles = _cycles(client, auth_header, member["id"])
+    # Mua gộp 3 tháng = 1 kỳ; rút ngắn chỉ CẮT cửa sổ, vẫn 1 kỳ.
+    assert len(cycles) == 1
+    assert cycles[0]["payment_status"] == "paid"
+    assert datetime.fromisoformat(cycles[0]["end_at"]) == new_end
+
+
+def test_change_subscription_unlimited_clears_cycles(
+    client: TestClient, auth_header: dict
+):
+    """Đổi hạn VÔ THỜI HẠN → xoá hết chu kỳ (vô hạn không có kỳ tính tiền)."""
+    ws = _create_ws(client, auth_header)
+    member = _invite(client, ws["id"], auth_header, "unl@example.com", months=2)
+
+    resp = _patch_sub(client, ws["id"], member["id"], auth_header, {})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["subscription_end_at"] is None
+
+    cycles = _cycles(client, auth_header, member["id"])
+    assert cycles == []
+
+
+def test_cycles_cover_full_remaining_term_when_anchor_in_future(
+    client: TestClient, auth_header: dict
+):
+    """Mốc gia hạn rơi vào TƯƠNG LAI (dữ liệu chỉnh tay) mà member còn hạn → kỳ phải
+    phủ TỪ HÔM NAY tới hạn, không để khoảng còn-hạn nào trống (chốt user 2026-07-13)."""
+    import uuid as _uuid
+    from datetime import timezone
+
+    from app.db import SessionLocal
+    from app.models import Member as _Member
+
+    ws = _create_ws(client, auth_header)
+    member = _invite(client, ws["id"], auth_header, "future@example.com", months=1)
+
+    now = datetime.now(timezone.utc)
+    future_anchor = now + timedelta(days=59)  # mốc gia hạn (bị tính lại) ở tương lai
+    end = now + timedelta(days=89)  # còn hạn 89 ngày
+    with SessionLocal() as db:
+        m = db.get(_Member, _uuid.UUID(member["id"]))
+        m.subscription_cycles = []  # legacy: có ngày nhưng CHƯA có kỳ (mời giờ tạo sẵn 1 kỳ)
+        m.joined_at = now  # ngày tham gia = hôm nay (mốc neo kỳ 1)
+        m.subscription_purchased_at = future_anchor
+        m.subscription_end_at = end
+        m.subscription_months = 1
+        db.commit()
+
+    # Đổi hạn "theo ngày" giữ nguyên hạn → kích hoạt vật chất hoá kỳ (member chưa có kỳ).
+    resp = _patch_sub(
+        client,
+        ws["id"],
+        member["id"],
+        auth_header,
+        {"subscription_end_at": end.isoformat()},
+    )
+    assert resp.status_code == 200, resp.text
+
+    cycles = _cycles(client, auth_header, member["id"])
+    # 1 kỳ GỘP phủ [hôm nay → hạn]; KỲ bắt đầu ~ HÔM NAY (không phải mốc tương lai),
+    # months suy từ cửa sổ ~ 89/30 ≈ 3.
+    assert len(cycles) == 1
+    first_start = datetime.fromisoformat(cycles[0]["start_at"])
+    assert abs((first_start - now).total_seconds()) < 300
+    assert cycles[0]["months"] == 3
+    assert cycles[0]["payment_status"] == "paid"
+    assert datetime.fromisoformat(cycles[0]["end_at"]) == end
