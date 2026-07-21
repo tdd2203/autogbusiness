@@ -81,6 +81,32 @@ def test_billing_sync_persists_invoice_detail(client: TestClient, auth_header: d
     assert got["renewal_date"].startswith("2026-07-25")
 
 
+def test_billing_sync_renewal_date_change_no_500(client: TestClient, auth_header: dict):
+    """Đổi renewal_date (chu kỳ mới) KHÔNG được 500.
+
+    Regression: audit diff ghi `before` = renewal_date CŨ dạng datetime thô → khi
+    renewal_date đổi, log_event serialize JSONB fail json.dumps → 500 → extension
+    báo BILLING_SYNC_FAILED 'Unexpected token I…'. Phải serialize before→ISO.
+    """
+    ws = _ws(client, auth_header)
+    r1 = client.post(
+        "/api/v1/workspaces/billing-sync",
+        json={"renewal_date": "2026-07-11T00:00:00Z"},
+        headers=_ext(ws),
+    )
+    assert r1.status_code == 200, r1.text
+    # ĐỔI renewal_date → trước đây 500.
+    r2 = client.post(
+        "/api/v1/workspaces/billing-sync",
+        json={"renewal_date": "2026-08-11T00:00:00Z"},
+        headers=_ext(ws),
+    )
+    assert r2.status_code == 200, r2.text
+    assert _get_ws(client, auth_header, ws["id"])["renewal_date"].startswith(
+        "2026-08-11"
+    )
+
+
 def test_billing_sync_backward_compatible_minimal(client: TestClient, auth_header: dict):
     """Hoá đơn cũ chỉ có date/amount/status vẫn nhận được (detail_scraped mặc định False)."""
     ws = _ws(client, auth_header)
@@ -127,3 +153,85 @@ def test_billing_sync_empty_does_not_wipe(client: TestClient, auth_header: dict)
     assert r3.status_code == 200, r3.text
     invs = _get_ws(client, auth_header, ws["id"])["billing_invoices"]
     assert len(invs) == 1 and invs[0]["quantity"] == 35
+
+
+# --- Phí dịch vụ ngân hàng (nhập tay) ---------------------------------------
+
+
+def _set_fee(client, auth_header, ws_id, *, fee, invoice_number=None,
+             date="2026-06-25T00:00:00Z", amount_vnd=10029250):
+    return client.patch(
+        f"/api/v1/workspaces/{ws_id}/billing-invoices/fee",
+        json={
+            "invoice_number": invoice_number,
+            "date": date,
+            "amount_vnd": amount_vnd,
+            "service_fee_vnd": fee,
+        },
+        headers=auth_header,
+    )
+
+
+def test_set_invoice_fee_by_number(client: TestClient, auth_header: dict):
+    """Super-admin gán phí theo invoice_number → lưu; gửi 0 → xoá."""
+    ws = _ws(client, auth_header)
+    client.post(
+        "/api/v1/workspaces/billing-sync",
+        json={"invoices": [_invoice_35_seats()]},
+        headers=_ext(ws),
+    )
+    r = _set_fee(client, auth_header, ws["id"], fee=578045,
+                 invoice_number="MSNS6RGC-0024")
+    assert r.status_code == 200, r.text
+    invs = _get_ws(client, auth_header, ws["id"])["billing_invoices"]
+    assert invs[0]["service_fee_vnd"] == 578045
+
+    # Xoá phí (gửi 0 → field bị bỏ).
+    r2 = _set_fee(client, auth_header, ws["id"], fee=0,
+                  invoice_number="MSNS6RGC-0024")
+    assert r2.status_code == 200, r2.text
+    invs = _get_ws(client, auth_header, ws["id"])["billing_invoices"]
+    assert "service_fee_vnd" not in invs[0]
+
+
+def test_invoice_fee_survives_resync(client: TestClient, auth_header: dict):
+    """Phí nhập tay KHÔNG bị extension sync ghi đè (merge theo invoice_number)."""
+    ws = _ws(client, auth_header)
+    client.post(
+        "/api/v1/workspaces/billing-sync",
+        json={"invoices": [_invoice_35_seats()]},
+        headers=_ext(ws),
+    )
+    _set_fee(client, auth_header, ws["id"], fee=578045,
+             invoice_number="MSNS6RGC-0024")
+
+    # Extension sync lại (ghi đè toàn bộ) cùng hoá đơn → phí phải còn.
+    r = client.post(
+        "/api/v1/workspaces/billing-sync",
+        json={"invoices": [_invoice_35_seats()]},
+        headers=_ext(ws),
+    )
+    assert r.status_code == 200, r.text
+    invs = _get_ws(client, auth_header, ws["id"])["billing_invoices"]
+    assert invs[0]["service_fee_vnd"] == 578045
+
+
+def test_set_invoice_fee_not_found(client: TestClient, auth_header: dict):
+    ws = _ws(client, auth_header)
+    client.post(
+        "/api/v1/workspaces/billing-sync",
+        json={"invoices": [_invoice_35_seats()]},
+        headers=_ext(ws),
+    )
+    r = _set_fee(client, auth_header, ws["id"], fee=1000,
+                 invoice_number="DOES-NOT-EXIST", amount_vnd=999)
+    assert r.status_code == 404, r.text
+
+
+def test_set_invoice_fee_requires_super_admin(client: TestClient):
+    """Endpoint gán phí là JWT super-admin — không có JWT → 401/403."""
+    r = client.patch(
+        "/api/v1/workspaces/00000000-0000-0000-0000-000000000000/billing-invoices/fee",
+        json={"date": "2026-06-25T00:00:00Z", "amount_vnd": 1, "service_fee_vnd": 1},
+    )
+    assert r.status_code in (401, 403), r.text

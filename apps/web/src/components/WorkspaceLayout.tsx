@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { Link, NavLink, Outlet, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
@@ -6,9 +6,8 @@ import { queuePollInterval } from "../lib/queuePolling";
 import { useAuth } from "../hooks/useAuth";
 import { useExtensionStatus, triggerExtensionRun } from "../hooks/useExtensionTrigger";
 import { useBillingActions } from "../hooks/useBillingActions";
-import { useI18n, useT } from "../i18n";
-import { dashboardLangToChatGPTLocale } from "../lib/chatgpt-locale";
-import type { Member, QueueItem, Workspace } from "../types";
+import { useT } from "../i18n";
+import type { QueueItem, Workspace } from "../types";
 import { TaskCompletionBanner } from "./TaskCompletionBanner";
 import { InviteMemberModal } from "./InviteMemberModal";
 import { BulkRemoveModal } from "./BulkRemoveModal";
@@ -23,9 +22,7 @@ type Tab = {
 
 const TABS: Tab[] = [
   { to: "members", labelKey: "workspace.tabMembers" },
-  // "Gia hạn": gom thành viên sắp/đã hết hạn để quản lý gia hạn. Cùng quyền xem
-  // với tab Thành viên (MEMBER_VIEW đã gate ở route cha) — không set thêm gì.
-  { to: "renewals", labelKey: "workspace.tabRenewals" },
+  // "Gia hạn" đã chuyển sang trang "Email đã add" (sub-tab) — gom xuyên workspace.
   { to: "billing", labelKey: "workspace.tabBilling", permission: "BILLING_VIEW" },
   { to: "queue", labelKey: "workspace.tabQueue" },
   { to: "extension", labelKey: "workspace.tabExtension", superAdminOnly: true },
@@ -34,7 +31,6 @@ const TABS: Tab[] = [
 
 export default function WorkspaceLayout() {
   const t = useT();
-  const { lang } = useI18n();
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const { user, hasPermission } = useAuth();
   const qc = useQueryClient();
@@ -55,11 +51,21 @@ export default function WorkspaceLayout() {
     setShowBulkRemoveModal(true);
   }
 
-  const { data: workspace } = useQuery({
+  const { data: workspace, error: workspaceError } = useQuery({
     queryKey: ["workspace", workspaceId],
     queryFn: () => api<Workspace>(`/api/v1/workspaces/${workspaceId}`),
     enabled: !!workspaceId,
+    // 404 = workspace không tồn tại hoặc sub-admin đã bị gỡ quyền truy cập.
+    // Không retry để hiện màn "không tìm thấy" ngay thay vì nã lại.
+    retry: (failureCount, err) =>
+      err instanceof ApiError && err.status === 404 ? false : failureCount < 3,
   });
+
+  // Sub-admin bị gỡ khỏi workspace → backend trả 404 (assert_workspace_access).
+  // Trước đây lỗi bị nuốt, trang render vỏ rỗng (header "Workspaces" + số 0).
+  // Nay hiện màn "không tìm thấy / hết quyền" rõ ràng, không dựng tab/Outlet.
+  const notFound =
+    workspaceError instanceof ApiError && workspaceError.status === 404;
 
   // Poll recent-tasks để theo dõi tiến trình SYNC_BILLING (extension report
   // phase navigate→scraping→uploading). Cùng queryKey với Members.tsx nên
@@ -98,25 +104,6 @@ export default function WorkspaceLayout() {
       (!tab.permission || hasPermission(tab.permission)),
   );
 
-  // Số thành viên CẦN GIA HẠN (sắp ≤7 ngày HOẶC đã hết hạn) → badge đỏ cạnh tab
-  // "Gia hạn". Cùng queryKey ["members"] với trang Members/Renewals (react-query
-  // dedupe) + cùng điều kiện lọc như WorkspaceRenewals.tsx.
-  const { data: members = [] } = useQuery({
-    queryKey: ["members", workspaceId],
-    queryFn: () => api<Member[]>(`/api/v1/workspaces/${workspaceId}/members`),
-    enabled: !!workspaceId,
-  });
-  const renewalCount = useMemo(() => {
-    const now = Date.now();
-    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-    return members.filter((m) => {
-      if (m.status !== "active" && m.status !== "pending") return false;
-      if (m.subscription_end_at == null) return false;
-      const end = new Date(m.subscription_end_at).getTime();
-      return end <= now || end - now <= SEVEN_DAYS_MS;
-    }).length;
-  }, [members]);
-
   // Số liệu tổng quan (tổng/active/chờ/hàng đợi) hiển thị bằng KHỐI 4 THẺ TO ở
   // đầu trang Thành viên (Members.tsx) — theo mockup. Không còn cụm gọn trên hàng
   // tab nữa; hàng tab chỉ còn tab + nút hành động.
@@ -131,8 +118,10 @@ export default function WorkspaceLayout() {
     mutationFn: async (scope: "members" | "invites" | "both") => {
       setSyncOpen(false);
       // expected_locale chỉ để extension BÁO LỖI / hướng dẫn nếu ChatGPT lệch ngôn ngữ —
-      // KHÔNG tự đổi Settings giúp user.
-      const expectedLocale = dashboardLangToChatGPTLocale(lang);
+      // KHÔNG tự đổi Settings giúp user. Nguồn = "ngôn ngữ hệ thống" của workspace
+      // (super-admin đặt ở Cài đặt), KHÔNG phải ngôn ngữ HIỂN THỊ dashboard của
+      // người bấm sync (per-user). Mặc định 'vi' khi chưa tải xong workspace.
+      const expectedLocale = workspace?.chatgpt_locale ?? "vi";
       return api<{ queue_item_id: string }>(
         `/api/v1/workspaces/${workspaceId}/sync?scope=${scope}&expected_locale=${expectedLocale}`,
         { method: "POST" },
@@ -149,16 +138,36 @@ export default function WorkspaceLayout() {
     },
   });
 
+  // ---- "Đồng bộ lời mời" = QUÉT tab "Lời mời đang chờ xử lý" trên ChatGPT ----
+  // (user 2026-07-21) Nút này nay đọc ĐÚNG tab "Lời mời" qua SYNC_DATA scope=invites
+  // (syncMembers.mutate("invites")): extension thu thập các email đang ở tab đó
+  // (giống cách "Đồng bộ thành viên" đọc tab "Người dùng") → upsert pending +
+  // phát hiện lời mời lạ. KHÔNG tự phát hiện ai đã tham gia — việc đó dành cho
+  // "Đồng bộ thành viên"/"cả 2". An toàn: reconcile.py với scope='invites' bị
+  // guard (removal_scopes bỏ 'pending' khi thiếu 'active' + cấm hạ active→pending)
+  // nên một lần quét-chỉ-tab-Lời-mời KHÔNG xoá/hạ cấp ai (sự cố mất member
+  // 2026-07-13 đã được chặn). Đảo lại lựa chọn SYNC_MEMBERS_BATCH ngày 2026-07-15;
+  // luồng kiểm-tra-đã-tham-gia qua ô lọc vẫn còn ở per-row + "Cập nhật hàng loạt".
+
   function openInviteForm() {
     setShowInviteModal(true);
   }
 
-  // Full-sync toàn workspace (nút "Đồng bộ từ ChatGPT") CHỈ super-admin — ẩn hẳn
-  // với tài khoản phụ. (Đồng bộ pending lẻ ở tab "Chờ tham gia" là tính năng khác.)
-  const canSync = user?.is_super_admin === true;
+  // Full-sync toàn workspace (nút "Đồng bộ từ ChatGPT") gate bằng quyền RIÊNG
+  // WORKSPACE_FULL_SYNC — mặc định TẮT cho tài khoản phụ (khoá sẵn), super-admin
+  // tick mới hiện; super-admin luôn có. (Đồng bộ pending lẻ / batch ở tab "Chờ
+  // tham gia" là tính năng khác, mở mặc định — không bị khoá theo nút này.)
+  const canSync = hasPermission("WORKSPACE_FULL_SYNC");
   const canInvite = hasPermission("MEMBER_INVITE");
-  const canRemove = hasPermission("MEMBER_REMOVE");
   const alreadySyncedBilling = !!workspace?.last_billing_synced_at;
+
+  if (notFound) {
+    return (
+      <div className="page-fade" style={{ padding: 32 }}>
+        <p style={{ color: "var(--ink-2)" }}>{t("protected.404Workspace")}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="page-fade">
@@ -199,24 +208,6 @@ export default function WorkspaceLayout() {
                   className={({ isActive }) => (isActive ? "tab active" : "tab")}
                 >
                   {t(tab.labelKey)}
-                  {/* Badge đỏ = số thành viên cần gia hạn (chỉ tab "Gia hạn"). */}
-                  {tab.to === "renewals" && renewalCount > 0 && (
-                    <span
-                      style={{
-                        marginLeft: 6,
-                        fontSize: 11,
-                        fontWeight: 600,
-                        color: "#fff",
-                        background: "var(--danger)",
-                        borderRadius: 999,
-                        padding: "1px 7px",
-                        lineHeight: 1.5,
-                        verticalAlign: "middle",
-                      }}
-                    >
-                      {renewalCount}
-                    </span>
-                  )}
                 </NavLink>
               ))}
             </div>
@@ -254,14 +245,8 @@ export default function WorkspaceLayout() {
                   {t("member.inviteButton")}
                 </button>
               )}
-              {(canRemove || user?.is_super_admin) && (
-                <button
-                  onClick={() => openBulkUpdate()}
-                  className="btn btn-sm btn-ghost"
-                >
-                  {t("bulkUpdate.openModalBtn")}
-                </button>
-              )}
+              {/* Nút "Cập nhật hàng loạt" đã ẩn theo yêu cầu. Modal vẫn mở được
+                  qua openBulkUpdate() từ thanh thao tác hàng loạt trong bảng. */}
             </div>
           </div>
         </div>

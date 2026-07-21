@@ -1,14 +1,112 @@
 import type {
   ExecuteActionResponse,
   ChatGPTRole,
+  ScrapedMember,
 } from "../../../shared/messages";
-import { sleep } from "../../human";
+import { SESSION_RECOVERY_HINT } from "../../../shared/messages";
+import { sleep, waitFor } from "../../human";
+import { findControlByKey } from "../../i18n-ui";
 import { TEXT_FALLBACKS } from "../../selectors";
 import { navigateTo } from "../external-invites/navigate";
 import { setExternalInvites } from "../external-invites/set-toggle";
+import { locateMemberRow } from "../remove/locate-member";
+import { locatePendingRow } from "../revoke/locate-pending-row";
+import { revokeInvite } from "../revoke";
 import { clickTabAndWait } from "../sync";
+import { scrapeAllRows } from "../sync/scrape-all-rows";
 import { executeInviteInner } from "./execute-invite-inner";
+import { findInviteOpenButton } from "./finders/find-invite-open-button";
 import { waitForPendingListStable } from "./wait-for-pending-list-stable";
+
+const RE_LOG = "[autogpt-reinvite]";
+
+/**
+ * TIỀN TỐ cho action "Mời lại" (chạy 1 lần trước khi mời — xem executeInvite).
+ * Quy trình user 2026-07-14:
+ *   1. Tìm ở tab "Người dùng": nếu email CÒN là thành viên → trả
+ *      `already_in_workspace` (caller huỷ lệnh mời, chỉ upsert active + báo).
+ *   2. Tìm ở tab "Lời mời đang chờ": nếu còn lời mời cũ → THU HỒI (bỏ qua lỗi thu
+ *      hồi, vẫn mời tiếp — mời lại tạo lời mời mới đè lên).
+ * Trả `{ done: response }` khi cần dừng sớm (đã là thành viên), hoặc `{ done: null }`
+ * để caller mời tiếp. Tái dùng locateMemberRow/scrapeAllRows/locatePendingRow/revokeInvite.
+ */
+async function runReinvitePreSteps(
+  email: string,
+  role: ChatGPTRole,
+): Promise<{ done: ExecuteActionResponse | null }> {
+  // Bước 1: tab Người dùng — còn là thành viên?
+  const onUsers = await clickTabAndWait(
+    "tab_active_members",
+    TEXT_FALLBACKS.tabActiveMembers,
+    800,
+    undefined,
+    12_000,
+  );
+  if (onUsers) {
+    const row = await locateMemberRow(email, { pageThrough: false });
+    if (row) {
+      const scraped = scrapeAllRows().find(
+        (m) => m.email.toLowerCase() === email,
+      );
+      const activeMember: ScrapedMember = scraped
+        ? { ...scraped, status: "active" }
+        : {
+            email,
+            name: null,
+            chatgpt_role: null,
+            license_type: null,
+            status: "active",
+            joined_at: null,
+          };
+      console.log(`${RE_LOG} ${email} VẪN là thành viên (active) → huỷ mời lại`);
+      // verified_emails + pending_members(active) → reportToBackend upsert active +
+      // COMPLETED; unverified_emails rỗng → KHÔNG phantom-delete. Xem runner 1268.
+      return {
+        done: {
+          ok: true,
+          data: {
+            already_in_workspace: true,
+            verified_emails: [email],
+            unverified_emails: [],
+            pending_members: [activeMember],
+            emails: [email],
+            count: 1,
+            role,
+          },
+        },
+      };
+    }
+    console.log(`${RE_LOG} ${email} KHÔNG còn ở tab Người dùng → tiếp tục`);
+  } else {
+    console.warn(`${RE_LOG} không vào được tab Người dùng — bỏ qua bước kiểm tra`);
+  }
+
+  // Bước 2: tab Lời mời — thu hồi lời mời cũ nếu còn.
+  const onPending = await clickTabAndWait(
+    "tab_pending_invites",
+    TEXT_FALLBACKS.tabPendingInvites,
+    1200,
+    "tab=invites",
+    12_000,
+  );
+  if (onPending) {
+    try {
+      const pendingRow = await locatePendingRow(email);
+      if (pendingRow) {
+        const res = await revokeInvite(email);
+        console.log(`${RE_LOG} thu hồi lời mời cũ ${email}: ok=${res.ok}`);
+      } else {
+        console.log(`${RE_LOG} ${email} không có lời mời cũ trong tab Lời mời`);
+      }
+    } catch (e) {
+      console.warn(`${RE_LOG} thu hồi lời mời cũ ${email} lỗi (bỏ qua, vẫn mời):`, e);
+    }
+  } else {
+    console.warn(`${RE_LOG} không vào được tab Lời mời — bỏ qua bước thu hồi`);
+  }
+
+  return { done: null };
+}
 
 const MEMBERS_PATH = "/admin/members";
 
@@ -18,6 +116,45 @@ function membersPageReady(): boolean {
   const main = document.querySelector("main, [role='main']");
   const hasButtons = document.querySelectorAll("button").length > 2;
   return !!main && hasButtons;
+}
+
+/**
+ * FIX A (2026-07-15): CỔNG CHỜ SPA render XONG khu vực /admin/members TRƯỚC mọi
+ * thao tác mời. Nền (ensureAdminTab) sau F5 CHỈ chờ sự kiện "load" của trình
+ * duyệt (waitForTabComplete → status==="complete") rồi PING content — nhưng
+ * ChatGPT là React SPA: "load" xong React vẫn đang fetch org-config + render
+ * thanh tab + nút Mời trong vài giây nữa. Nếu chạy tiền tố "Mời lại" (chuyển 2
+ * tab) hoặc mở dialog khi CHƯA render → chuyển tab hỏng, "Không tìm thấy nút Mời"
+ * (8s cũ), hoặc mất context content-script → CONTENT_TIMEOUT (user report
+ * 2026-07-15: mời trước ổn giờ lỗi sau khi thêm tiền tố Mời lại + Phase 2b).
+ *
+ * `membersPageReady` cũ quá yếu (>2 button là true rất sớm). Ở đây chờ tới khi
+ * thấy DẤU HIỆU nav THẬT SỰ đã render: nút Mời, HOẶC tab "Người dùng"/"Lời mời".
+ * `waitFor` poll → trả NGAY khi sẵn sàng (case thường ~1 poll, không làm chậm),
+ * chỉ chờ khi tab vừa F5 chưa rehydrate. Trả false nếu hết `timeoutMs` (không
+ * throw — finder sâu hơn phía sau sẽ quyết định fail cuối cùng).
+ */
+async function waitForMembersNavReady(timeoutMs = 20_000): Promise<boolean> {
+  try {
+    await waitFor(() => {
+      if (findInviteOpenButton()) return true;
+      const usersTab = findControlByKey(
+        "tab_active_members",
+        TEXT_FALLBACKS.tabActiveMembers,
+        { page: "/admin/members" },
+      );
+      if (usersTab) return true;
+      const pendingTab = findControlByKey(
+        "tab_pending_invites",
+        TEXT_FALLBACKS.tabPendingInvites,
+        { page: "/admin/members" },
+      );
+      return pendingTab ? true : null;
+    }, timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Lấy phần domain sau '@' của email (lowercase). "" nếu không hợp lệ. */
@@ -46,16 +183,19 @@ export async function executeInvite(
   role: ChatGPTRole,
   verifiedDomain: string | null = null,
   externalReady = false,
+  reinvite = false,
 ): Promise<ExecuteActionResponse> {
   console.log(
-    `[autogpt-invite] START ${emails.length} email(s) role=${role} verifiedDomain=${verifiedDomain ?? "(chưa cấu hình)"} externalReady=${externalReady} pathname=${location.pathname}`,
+    `[autogpt-invite] START ${emails.length} email(s) role=${role} verifiedDomain=${verifiedDomain ?? "(chưa cấu hình)"} externalReady=${externalReady} reinvite=${reinvite} pathname=${location.pathname}`,
   );
 
   if (!location.pathname.includes("/admin")) {
     return {
       ok: false,
       error_code: "PAGE_NOT_ADMIN",
-      error_message: `Trang hiện tại không phải admin (${location.pathname}). Mở chatgpt.com/admin/members trước.`,
+      error_message:
+        `Trang hiện tại không phải admin (${location.pathname}). Mở chatgpt.com/admin/members trước. ` +
+        SESSION_RECOVERY_HINT,
     };
   }
   if (emails.length === 0) {
@@ -64,6 +204,26 @@ export async function executeInvite(
       error_code: "UI_ELEMENT_NOT_FOUND",
       error_message: "Danh sách emails rỗng",
     };
+  }
+
+  // FIX A: nếu đang ở /admin/members (đường mặc định sau ensureAdminTab F5), CHỜ
+  // SPA render xong nav/nút Mời trước khi làm bất cứ gì (tiền tố Mời lại / mở
+  // dialog). Trang chưa render là nguyên nhân "Không tìm thấy nút Mời" +
+  // CONTENT_TIMEOUT khi tab vừa bị F5. Case thường trả về ngay (nav đã có).
+  if (location.pathname.includes(MEMBERS_PATH)) {
+    const navReady = await waitForMembersNavReady(20_000);
+    if (!navReady) {
+      console.warn(
+        "[autogpt-invite] SPA /admin/members chưa render nav/nút Mời sau 20s — vẫn tiếp tục (finder sâu hơn sẽ quyết định fail).",
+      );
+    }
+  }
+
+  // Action "Mời lại": chạy TIỀN TỐ 1 lần (trước Phase A/toggle). !externalReady để
+  // KHÔNG lặp lại ở lần gọi thứ 2 sau khi background hard-reload. Mời lại luôn 1 email.
+  if (reinvite && !externalReady) {
+    const pre = await runReinvitePreSteps(emails[0].trim().toLowerCase(), role);
+    if (pre.done) return pre.done;
   }
 
   // Spec (v0.6.6, theo user 2026-05-20):

@@ -80,6 +80,7 @@ def create_user(
         is_active=True,
         permissions=[p.value for p in perms],
         created_by_id=actor.id,
+        wallet_beta=True,  # MẶC ĐỊNH MỞ VÍ cho tài khoản mới (cố định — user 2026-07-14).
     )
     db.add(user)
     db.flush()

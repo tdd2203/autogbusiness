@@ -37,7 +37,14 @@ export function useChangeEmail(workspaceId: string | undefined) {
     onSuccess: (m) => {
       toast.success(t("member.changeEmailOk", { email: m.email }));
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      // Trang "Email đã thêm" (AddedEmails) dùng ["added-members"] — làm mới để
+      // đổi email từ menu ⋯ ở dòng cũng hiện ngay, khỏi reload tay.
+      qc.invalidateQueries({ queryKey: ["added-members"] });
       qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
+      // ["recent-tasks-global"]: đánh thức watcher poll của AddedEmails (nếu đang
+      // mở) để khi REMOVE/REVOKE + INVITE của đổi email COMPLETED → tự invalidate
+      // ["added-members"] lần 2 (lúc DB đã đổi) → dòng cập nhật ngay, khỏi F5.
+      qc.invalidateQueries({ queryKey: ["recent-tasks-global"] });
       triggerExtensionRun();
     },
     onError: (e) => {

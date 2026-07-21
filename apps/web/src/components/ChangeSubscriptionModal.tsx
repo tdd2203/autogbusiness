@@ -14,7 +14,10 @@
 import { useMemo, useState } from "react";
 import { useFormatDate, useFormatDateTime, useT } from "../i18n";
 import { useAuth } from "../hooks/useAuth";
+import { useWallet } from "../hooks/useWallet";
 import type { Member } from "../types";
+import { formatVnd, type OrderQr } from "../lib/wallet";
+import OrderQrModal from "./OrderQrModal";
 import {
   useChangeSubscription,
   useCorrectAddDate,
@@ -74,9 +77,15 @@ export function ChangeSubscriptionModal({
       toLocalInputValue(member.subscription_end_at) ||
       toLocalInputValue(new Date().toISOString()),
   );
-  const change = useChangeSubscription(workspaceId);
+  // Ví không đủ khi gia hạn → BE trả hoá đơn QR (feature 003); mở modal QR.
+  const [qrOrder, setQrOrder] = useState<OrderQr | null>(null);
+  const change = useChangeSubscription(workspaceId, {
+    onPaymentRequired: (order) => setQrOrder(order),
+  });
   const correctAddDate = useCorrectAddDate(workspaceId);
-  const renewSub = useRenewSubscription(workspaceId);
+  const renewSub = useRenewSubscription(workspaceId, {
+    onPaymentRequired: (order) => setQrOrder(order),
+  });
 
   const isSub = !user?.is_super_admin;
   const monthsValid = months >= 1 && months <= 60;
@@ -202,6 +211,32 @@ export function ChangeSubscriptionModal({
   // Gia hạn tự phục vụ (tab Gia hạn, theo tháng, không sửa ngày neo) → áp NGAY,
   // KHÔNG qua duyệt kể cả sub-admin → nút hiện "Áp dụng" thay vì "Gửi yêu cầu".
   const isRenewImmediate = renew && mode === "months" && !pendingAddDate;
+
+  // ── Phí gia hạn/đổi hạn (feature 003, user 2026-07-13) ─────────────────────
+  // Phí = ĐƠN GIÁ/tháng (member.fee_vnd > wallet.invite_fee_vnd mặc định) × SỐ THÁNG
+  // kéo dài. Tính khi KÉO DÀI hạn (gia hạn theo tháng, hoặc đổi hạn theo ngày xa hơn);
+  // rút ngắn / vô thời hạn / sửa ngày neo → miễn phí. Chỉ user bật Ví & không super-admin.
+  const { data: wallet } = useWallet();
+  const chargeable = !!user?.wallet_beta && !user?.is_super_admin;
+  const feePerMonth = member.fee_vnd ?? wallet?.invite_fee_vnd ?? 0;
+  // Số tháng SẼ bị tính phí (khớp BE): sửa ngày neo → 0; theo tháng → months;
+  // theo ngày & xa hơn hạn hiện tại → chênh lệch/30 (làm tròn lên); vô thời hạn → 0.
+  const chargeMonths = (() => {
+    if (pendingAddDate) return 0; // sửa ngày neo (correct_add_date) không tính phí
+    if (mode === "months") return monthsValid ? months : 0;
+    if (mode === "date" && endDate && member.subscription_end_at) {
+      const cur = new Date(member.subscription_end_at).getTime();
+      if (endDate.getTime() > cur) {
+        return Math.max(1, Math.ceil((endDate.getTime() - cur) / (DAYS_PER_MONTH * 86_400_000)));
+      }
+    }
+    return 0;
+  })();
+  const renewFee = feePerMonth * chargeMonths;
+  const showRenewFee = chargeable && renewFee > 0;
+  const walletBalance = wallet?.balance ?? 0;
+  const feeInsufficient = showRenewFee && walletBalance < renewFee;
+
   // Áp dụng bật khi: đã Lưu ngày thêm (theo mode: tháng→Số tháng hợp lệ, ngày→có ngày,
   // vô thời hạn→luôn được) HOẶC thay đổi hạn hợp lệ.
   const applyEnabled = pendingAddDate
@@ -267,15 +302,33 @@ export function ChangeSubscriptionModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+    <>
+    {qrOrder && (
+      <OrderQrModal
+        order={qrOrder}
+        onClose={() => setQrOrder(null)}
+        onPaid={() => onClose()}
+      />
+    )}
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      style={{ padding: 16 }}
+    >
       <div
         className="bg-white rounded-lg shadow-xl"
-        style={{ width: "100%", maxWidth: 460 }}
+        style={{
+          width: "100%",
+          maxWidth: 460,
+          maxHeight: "90vh",
+          display: "flex",
+          flexDirection: "column",
+        }}
       >
         <div
           style={{
             padding: "16px 20px 12px",
             borderBottom: "1px solid var(--border)",
+            flexShrink: 0,
           }}
         >
           <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
@@ -283,7 +336,16 @@ export function ChangeSubscriptionModal({
           </h3>
         </div>
 
-        <div style={{ padding: "16px 20px", display: "grid", gap: 12 }}>
+        <div
+          style={{
+            padding: "16px 20px",
+            display: "grid",
+            gap: 12,
+            overflowY: "auto",
+            flex: 1,
+            minHeight: 0,
+          }}
+        >
           <div style={{ fontSize: 13 }}>
             <span className="cell-muted">{member.email}</span>
             <div style={{ marginTop: 2 }}>
@@ -456,6 +518,56 @@ export function ChangeSubscriptionModal({
                   )}
                 </div>
               )}
+              {/* Tổng phí gia hạn SẼ trừ khỏi Ví (phí cố định, không theo tháng). */}
+              {showRenewFee && (
+                <div
+                  style={{
+                    padding: "10px 12px",
+                    background: "var(--surface-2)",
+                    border: `1px solid ${feeInsufficient ? "var(--danger-border, var(--border))" : "var(--border)"}`,
+                    borderRadius: "var(--radius)",
+                    display: "grid",
+                    gap: 4,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "baseline",
+                      gap: 8,
+                    }}
+                  >
+                    <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+                      {t("subscription.renewFeeLabel")}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 15,
+                        fontWeight: 700,
+                        fontFamily: "var(--font-mono)",
+                        color: "var(--ink)",
+                      }}
+                    >
+                      {formatVnd(renewFee)}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: feeInsufficient ? "var(--danger)" : "var(--ink-3)",
+                    }}
+                  >
+                    {feeInsufficient
+                      ? t("invite.feeBalanceInsufficient", {
+                          balance: formatVnd(walletBalance),
+                        })
+                      : t("invite.feeBalance", {
+                          balance: formatVnd(walletBalance),
+                        })}
+                  </div>
+                </div>
+              )}
             </>
           )}
           {mode === "date" && (
@@ -511,6 +623,7 @@ export function ChangeSubscriptionModal({
             display: "flex",
             justifyContent: "flex-end",
             gap: 8,
+            flexShrink: 0,
           }}
         >
           <button
@@ -527,14 +640,11 @@ export function ChangeSubscriptionModal({
             onClick={submit}
             disabled={busy || editingAddDate || !applyEnabled}
           >
-            {busy
-              ? t("common.loading")
-              : isSub && !isRenewImmediate
-                ? t("subscription.submitRequest")
-                : t("subscription.submitApply")}
+            {busy ? t("common.loading") : t("subscription.submitApply")}
           </button>
         </div>
       </div>
     </div>
+    </>
   );
 }

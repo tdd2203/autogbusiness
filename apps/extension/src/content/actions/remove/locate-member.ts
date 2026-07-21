@@ -6,7 +6,11 @@ import {
   isDisabled,
   MAX_PAGINATION_PAGES,
 } from "../sync/pagination";
-import { clearMemberFilter, filterAndFindRow } from "./member-filter";
+import {
+  clearMemberFilter,
+  filterAndFindRow,
+  findMemberFilterInput,
+} from "./member-filter";
 
 /**
  * Gom các scroll-container khả dĩ (window + inner div overflow) — list member
@@ -88,13 +92,42 @@ export async function scrollScanForRow(email: string): Promise<HTMLElement | nul
  * ngay, không lật trang (yêu cầu user 2026-06-21). Các action khác
  * (change-role / change-license / sync-member) vẫn lật trang như cũ.
  *
+ * `opts.preferFilter`: BẮT BUỘC dùng ô tìm kiếm làm nguồn sự thật (bỏ qua nhánh
+ * "1 trang → scroll-scan"). Dùng cho ĐỒNG BỘ kiểm-tra-đã-tham-gia: tab "Người
+ * dùng" của ChatGPT là list VIRTUALIZED (150+ member, không có thanh phân trang →
+ * findPaginationState()=null) nên scroll-scan CHỈ thấy vài row đầu (gần đỉnh) →
+ * bỏ sót member ở giữa/cuối → báo "chưa tham gia" oan (user report 2026-07-15:
+ * "check 6 email nhưng chỉ đúng 1"). Ô "Lọc theo tên" của ChatGPT lọc server-side
+ * theo cả email → luôn hiện đúng row nếu member có, bất kể virtualized. Chỉ
+ * scroll-scan khi KHÔNG có ô lọc.
+ *
  * Trả row, hoặc null nếu không tìm thấy.
  */
 export async function locateMemberRow(
   email: string,
-  opts: { pageThrough?: boolean } = {},
+  opts: { pageThrough?: boolean; preferFilter?: boolean } = {},
 ): Promise<HTMLElement | null> {
-  const { pageThrough = true } = opts;
+  const { pageThrough = true, preferFilter = false } = opts;
+
+  // preferFilter: ô tìm kiếm là nguồn sự thật (list lớn virtualized). Có ô lọc →
+  // dùng nó; không có mới đành scroll-scan.
+  if (preferFilter) {
+    if (findMemberFilterInput()) return filterAndFindRow(email);
+    console.warn(
+      "[autogpt-locate] preferFilter nhưng KHÔNG có ô lọc → scroll-scan (best effort)",
+    );
+    return scrollScanForRow(email);
+  }
+
+  // 1 TRANG (không có thanh phân trang) → KHỎI lọc, quét thẳng vị trí (user
+  // 2026-07-13). List 1 trang thì scroll-scan phủ hết & tránh lỗi ô lọc (row sau
+  // lọc re-render menu thiếu, filter bỏ sót…). Nhiều trang mới cần lọc để rút gọn.
+  if (findPaginationState() === null) {
+    console.log(
+      "[autogpt-locate] tab Người dùng chỉ 1 trang → quét vị trí trực tiếp (bỏ lọc)",
+    );
+    return scrollScanForRow(email);
+  }
 
   // Fast path: ô lọc.
   const viaFilter = await filterAndFindRow(email);

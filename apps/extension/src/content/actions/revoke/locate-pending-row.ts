@@ -2,6 +2,7 @@ import { humanType, querySelectorFirst, sleep, waitFor } from "../../human";
 import { SELECTORS } from "../../selectors";
 import { findMemberRow } from "../member-row";
 import { scrollScanForRow } from "../remove/locate-member";
+import { findPaginationState } from "../sync/pagination";
 
 /**
  * Ô "Search for invites" trên tab "Lời mời đang chờ xử lý". Thử
@@ -47,6 +48,16 @@ function clearPendingSearch(input: HTMLInputElement): void {
 export async function locatePendingRow(
   email: string,
 ): Promise<HTMLElement | null> {
+  // 1 TRANG (không có thanh phân trang) → KHỎI search, quét thẳng vị trí (user
+  // 2026-07-13). Ô "Search for invites" đôi khi lọc lỗi / row sau lọc render menu
+  // thiếu mục "Thu hồi lời mời" → thao tác fail. List 1 trang thì scroll-scan phủ
+  // hết & tin cậy hơn. Nhiều trang mới cần search để rút gọn.
+  if (findPaginationState() === null) {
+    console.log(
+      "[autogpt-revoke] tab Lời mời chỉ 1 trang → quét vị trí trực tiếp (bỏ search)",
+    );
+    return scrollScanForRow(email);
+  }
   const input = findPendingSearchInput();
   if (!input) {
     console.warn(
@@ -58,23 +69,18 @@ export async function locatePendingRow(
     `[autogpt-revoke] ô search OK (placeholder="${input.placeholder}") — tìm ${email}`,
   );
 
-  // local-part trước (tránh maxlength), rồi full email — needle nào ra row thì
-  // dừng. humanType tự clear input trước khi gõ nên gọi lại an toàn.
-  const local = email.includes("@") ? email.split("@")[0] : email;
-  const needles = local === email ? [local] : [local, email];
-
-  for (const needle of needles) {
-    await humanType(input, needle);
-    await sleep(700); // chờ React Query / debounce filter
-    try {
-      const row = await waitFor(() => findMemberRow(email), 3000, 200);
-      if (row) {
-        console.log(`[autogpt-revoke] ✓ search thấy ${email}`);
-        return row;
-      }
-    } catch {
-      // needle này chưa ra row → thử needle kế.
+  // Gõ CHÍNH XÁC email ĐẦY ĐỦ 1 LẦN (user 2026-07-13: không gõ nửa rồi gõ full =
+  // 2 lần tra, tốn thời gian). humanType tự clear input trước khi gõ.
+  await humanType(input, email);
+  await sleep(700); // chờ React Query / debounce filter
+  try {
+    const row = await waitFor(() => findMemberRow(email), 3000, 200);
+    if (row) {
+      console.log(`[autogpt-revoke] ✓ search thấy ${email}`);
+      return row;
     }
+  } catch {
+    // không ra row → email thật sự không phải pending.
   }
 
   // Ô search hoạt động nhưng KHÔNG ra row → email thật sự không phải pending.

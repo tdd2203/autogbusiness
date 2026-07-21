@@ -21,6 +21,29 @@ class ChangePasswordIn(BaseModel):
     new_password: str = Field(..., min_length=8)
 
 
+# ---------- Tự đăng ký bằng OTP email ----------
+class RegisterIn(BaseModel):
+    email: EmailStr
+    username: str = Field(..., min_length=3, max_length=64)
+    password: str = Field(..., min_length=8)
+
+
+class RegisterOut(BaseModel):
+    message: str
+    email: EmailStr
+    # Giây tới khi OTP hết hạn — FE hiển thị đếm ngược.
+    expires_in_sec: int
+
+
+class VerifyOtpIn(BaseModel):
+    email: EmailStr
+    code: str = Field(..., min_length=4, max_length=12)
+
+
+class ResendOtpIn(BaseModel):
+    email: EmailStr
+
+
 # ---------- User ----------
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -32,6 +55,8 @@ class UserOut(BaseModel):
     username: str
     is_super_admin: bool
     is_active: bool
+    # Cờ thử nghiệm Ví — FE dùng để hiện/ẩn menu Ví + bật enforcement khi mời.
+    wallet_beta: bool = False
     permissions: list[str]
     created_at: datetime
     updated_at: datetime
@@ -123,6 +148,10 @@ class QueueProgressUpdate(BaseModel):
 # ---------- Workspace ----------
 WorkspacePlan = Literal["business", "enterprise"]
 
+# Ngôn ngữ giao diện ChatGPT admin của workspace (cấu hình HỆ THỐNG, super-admin
+# đặt theo từng workspace). Tách khỏi ngôn ngữ HIỂN THỊ dashboard (per-user).
+ChatGPTLocale = Literal["vi", "en", "zh"]
+
 
 # ChatGPT Business cho phép mua tối đa 999 ghế.
 SEAT_TOTAL_MAX = 999
@@ -145,6 +174,9 @@ class WorkspaceUpdate(BaseModel):
     plan: WorkspacePlan | None = None
     seat_total: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)
     verified_domain: str | None = Field(default=None, max_length=255)
+    # Ngôn ngữ ChatGPT của workspace (super-admin đặt ở Cài đặt). Tách khỏi
+    # ngôn ngữ hiển thị dashboard (per-user).
+    chatgpt_locale: ChatGPTLocale | None = None
 
 
 class WorkspaceOut(BaseModel):
@@ -165,6 +197,7 @@ class WorkspaceOut(BaseModel):
     last_billing_synced_at: datetime | None
     billing_invoices: list[dict] | None = None
     verified_domain: str | None = None
+    chatgpt_locale: str = "vi"
     created_at: datetime
     updated_at: datetime
 
@@ -192,6 +225,25 @@ class BillingInvoice(BaseModel):
     period_start: datetime | None = None
     period_end: datetime | None = None
     invoice_number: str | None = Field(default=None, max_length=64)
+    # Phí dịch vụ ngân hàng (ngoài Stripe) admin NHẬP TAY khi thanh toán qua thẻ/
+    # bank — KHÔNG scrape được. Cộng vào tổng thực trả chu kỳ. Bảo toàn khi extension
+    # sync ghi đè (billing.py merge theo invoice_number / date+amount). NULL/0 = chưa
+    # có phí. Xem `BillingInvoiceFeeIn` + endpoint set_invoice_fee.
+    service_fee_vnd: int | None = Field(default=None, ge=0)
+
+
+class BillingInvoiceFeeIn(BaseModel):
+    """Admin nhập/xoá phí dịch vụ ngân hàng cho 1 hoá đơn cụ thể.
+
+    Hoá đơn được định danh ưu tiên bằng `invoice_number` (mã Stripe, ổn định); nếu
+    hoá đơn cũ chưa có mã thì fallback khớp theo `date` + `amount_vnd`. Gửi
+    `service_fee_vnd=None` (hoặc 0) để xoá phí.
+    """
+
+    invoice_number: str | None = Field(default=None, max_length=64)
+    date: datetime
+    amount_vnd: int = Field(ge=0)
+    service_fee_vnd: int | None = Field(default=None, ge=0)
 
 
 class BillingSyncIn(BaseModel):
@@ -296,6 +348,22 @@ MemberStatus = Literal["active", "pending", "removed"]
 LicenseType = Literal["ChatGPT", "Codex"]
 
 
+class SubscriptionCycleOut(BaseModel):
+    """1 chu kỳ gia hạn của member — hiển thị lịch sử + trạng thái thanh toán theo kỳ."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    cycle_number: int
+    months: int | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    # unpaid | requested | paid (riêng cho từng chu kỳ).
+    payment_status: str = "unpaid"
+    payment_requested_at: datetime | None = None
+    paid_at: datetime | None = None
+
+
 class MemberOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -334,33 +402,31 @@ class MemberOut(BaseModel):
     subscription_requested_at: datetime | None = None
     # Đã dùng quyền sửa "ngày thêm" 1 lần chưa (NULL = chưa → super-admin còn sửa được).
     add_date_corrected_at: datetime | None = None
+    # Phí mời RIÊNG của member (VND) do super-admin đặt (feature 003). NULL = dùng
+    # phí mặc định payment_settings.invite_fee_vnd.
+    fee_vnd: int | None = None
+    # Lịch sử chu kỳ gia hạn (sắp theo cycle_number) — trạng thái thanh toán từng kỳ.
+    # Endpoint không kèm chu kỳ để rỗng; danh sách member workspace + tab "Email đã add"
+    # đổ đầy để modal "Chi tiết thành viên" hiện mục "Kỳ thanh toán" GIỐNG NHAU ở cả hai
+    # nơi (cùng component MemberDetailModal). Xem [[multi-cycle-payment-display]].
+    cycles: list[SubscriptionCycleOut] = Field(default_factory=list)
 
 
-class SubscriptionCycleOut(BaseModel):
-    """1 chu kỳ gia hạn của member — hiển thị lịch sử + trạng thái thanh toán theo kỳ."""
+class MemberFeeIn(BaseModel):
+    """Super-admin đặt/xoá phí mời riêng cho 1 member. None = về phí mặc định."""
 
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    cycle_number: int
-    months: int | None = None
-    start_at: datetime | None = None
-    end_at: datetime | None = None
-    # unpaid | requested | paid (riêng cho từng chu kỳ).
-    payment_status: str = "unpaid"
-    payment_requested_at: datetime | None = None
-    paid_at: datetime | None = None
+    fee_vnd: int | None = Field(default=None, ge=0)
 
 
 class AddedMemberOut(MemberOut):
-    """1 dòng trong tab 'Email đã add' — gom xuyên workspace, kèm tên workspace."""
+    """1 dòng trong tab 'Email đã add' — gom xuyên workspace, kèm tên workspace.
+
+    `cycles` kế thừa từ MemberOut (đổ đầy trong added_members.list_added_members)."""
 
     workspace_name: str | None = None
     # Username của sub-admin sở hữu email (để super-admin biết email của ai).
     # None nếu là 'email còn lại' (chưa có chủ).
     invited_by_username: str | None = None
-    # Lịch sử chu kỳ gia hạn (sắp theo cycle_number) — trạng thái thanh toán từng kỳ.
-    cycles: list[SubscriptionCycleOut] = []
 
 
 class PaymentRequestNotice(BaseModel):
@@ -608,11 +674,20 @@ class SyncMembersBatchIn(BaseModel):
     """Body cho "đồng bộ hàng loạt" (POST /{workspace_id}/sync-members-batch).
 
     Gom 1 DANH SÁCH email pending vào ĐÚNG MỘT task SYNC_MEMBERS_BATCH — extension
-    quét tab "Lời mời đang chờ xử lý" 1 lần rồi đối chiếu, thay cho việc fan-out N
-    task SYNC_MEMBER (mỗi task lại quét lại toàn bộ pending — thừa).
+    vào tab "Người dùng" (Users) ĐÚNG 1 lần, tìm từng email → có = đã tham gia
+    (promote active), không = giữ pending. Thay cho việc fan-out N task SYNC_MEMBER.
+
+    Hai cách gọi:
+      - `emails`: danh sách cụ thể (thanh bulk ở tab "Chờ tham gia" — các dòng đã chọn).
+      - `all_pending=true`: BỎ QUA `emails`, backend tự gom TOÀN BỘ member đang
+        pending của workspace (nút "Đồng bộ lời mời" ở header — user 2026-07-15).
     """
 
-    emails: list[EmailStr] = Field(..., min_length=1, max_length=500)
+    emails: list[EmailStr] = Field(default_factory=list, max_length=500)
+    all_pending: bool = Field(
+        default=False,
+        description="True = gom toàn bộ member pending của workspace, bỏ qua `emails`.",
+    )
 
 
 class MemberInviteEntry(BaseModel):
@@ -936,3 +1011,230 @@ class AuditLogOut(BaseModel):
     target_type: str | None
     target_id: str | None
     data: dict | None
+    # Tên workspace suy từ data.workspace_id (hoặc target khi target_type=WORKSPACE) —
+    # để nhật ký hiện "mời/xoá ở workspace nào". None nếu không gắn workspace.
+    workspace_name: str | None = None
+
+
+# ---------- Ví & Thanh toán (feature 003-wallet-invite-payment) ----------
+class WalletOut(BaseModel):
+    balance: int
+    held: int
+    total: int
+    wallet_beta: bool
+    invite_fee_vnd: int
+
+
+class WalletTxnOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    kind: str
+    amount: int
+    balance_after: int
+    held_after: int
+    ref_type: str | None
+    ref_id: str | None
+    meta: dict | None
+    created_at: datetime
+
+
+class WalletTxnPage(BaseModel):
+    items: list[WalletTxnOut]
+    next_cursor: str | None = None
+
+
+class TopupCreateIn(BaseModel):
+    amount_vnd: int = Field(..., gt=0, description="Số tiền nạp (VND), > 0")
+
+
+class TopupOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    ref_code: str
+    amount_vnd: int
+    status: str
+    paid_amount_vnd: int | None = None
+    created_at: datetime
+    paid_at: datetime | None = None
+
+
+class TopupCreatedOut(TopupOut):
+    """Response tạo lệnh nạp — kèm thông tin QR + chuyển khoản cho FE hiển thị."""
+
+    note: str
+    bank_name: str | None = None
+    account_number: str | None = None
+    account_name: str | None = None
+    qr_url: str | None = None
+
+
+class PaymentOrderOut(BaseModel):
+    """Hoá đơn thanh toán QR cho mời/gia hạn (feature 003) — dùng để poll trạng thái."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    ref_code: str
+    kind: str  # invite | renew
+    amount_vnd: int
+    status: str  # pending | paid | cancelled | expired
+    paid_amount_vnd: int | None = None
+    # Kết quả thực thi sau khi thanh toán (liên kết task mời / member gia hạn).
+    queue_item_id: UUID | None = None
+    member_id: UUID | None = None
+    fulfillment_error: str | None = None
+    created_at: datetime
+    paid_at: datetime | None = None
+
+
+class PaymentOrderQrOut(PaymentOrderOut):
+    """Response khi tạo hoá đơn (kèm QR + nội dung CK) — trả trong HTTP 402."""
+
+    note: str
+    bank_name: str | None = None
+    account_number: str | None = None
+    account_name: str | None = None
+    qr_url: str | None = None
+
+
+class WithdrawalCreateIn(BaseModel):
+    amount_vnd: int = Field(..., gt=0)
+    bank_account: str = Field(..., min_length=3, max_length=255)
+    note: str | None = None
+
+
+class WithdrawalOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    amount_vnd: int
+    bank_account: str
+    status: str
+    note: str | None = None
+    reject_reason: str | None = None
+    created_at: datetime
+    reviewed_at: datetime | None = None
+
+
+class WithdrawalAdminOut(WithdrawalOut):
+    user_id: UUID
+    username: str | None = None
+    user_email: str | None = None
+
+
+class WithdrawalRejectIn(BaseModel):
+    reason: str | None = None
+
+
+class PaymentCodeFlow(BaseModel):
+    """1 luồng mã thanh toán trên SePay (vd Nạp tiền=NAP, Đơn hàng=ORDER)."""
+
+    key: str = Field(..., min_length=1, max_length=32)
+    label: str = Field(default="", max_length=64)
+    prefix: str = Field(..., min_length=2, max_length=6)
+    suffix_min: int = Field(default=3, ge=1, le=64)
+    suffix_max: int = Field(default=30, ge=1, le=64)
+    # Kiểu hậu tố: 'numeric' = chỉ số (\d), 'alphanumeric' = số & chữ ([A-Za-z0-9]).
+    suffix_type: Literal["numeric", "alphanumeric"] = "alphanumeric"
+    enabled: bool = True
+
+
+SepayAuthMethod = Literal["none", "apikey", "hmac"]
+
+
+class PaymentSettingsOut(BaseModel):
+    invite_fee_vnd: int
+    bank_name: str | None = None
+    account_number: str | None = None
+    account_name: str | None = None
+    code_prefix: str
+    amount_tolerance_vnd: int
+    payment_codes: list[PaymentCodeFlow] = Field(default_factory=list)
+    # Phương thức xác thực webhook đang chọn + trạng thái secret tương ứng (env).
+    sepay_auth_method: SepayAuthMethod = "apikey"
+    sepay_apikey_configured: bool = False
+    sepay_hmac_secret_configured: bool = False
+    sepay_webhook_configured: bool = False  # secret của method đang chọn đã có chưa
+    # URL webhook để dán vào SePay dashboard (từ PUBLIC_URL) — có nút Copy trên UI.
+    webhook_url: str = ""
+
+
+class PaymentSettingsIn(BaseModel):
+    invite_fee_vnd: int | None = Field(default=None, ge=0)
+    bank_name: str | None = None
+    account_number: str | None = None
+    account_name: str | None = None
+    code_prefix: str | None = Field(default=None, min_length=2, max_length=6)
+    amount_tolerance_vnd: int | None = Field(default=None, ge=0)
+    payment_codes: list[PaymentCodeFlow] | None = None
+    sepay_auth_method: SepayAuthMethod | None = None
+
+
+class WalletBetaIn(BaseModel):
+    enabled: bool
+
+
+class WalletAdjustIn(BaseModel):
+    amount_vnd: int = Field(..., description="Số tiền điều chỉnh (có dấu, VND)")
+    reason: str | None = None
+
+
+class UserFeeIn(BaseModel):
+    """Super-admin đặt/xoá phí mời mặc định của 1 user (đại lý). None = về phí global."""
+
+    invite_fee_vnd: int | None = Field(default=None, ge=0)
+
+
+class WalletAdminUserOut(BaseModel):
+    user_id: UUID
+    username: str
+    email: str
+    wallet_beta: bool
+    is_super_admin: bool
+    balance: int
+    held: int
+    # Phí mời mặc định RIÊNG của user (đại lý). NULL = dùng phí mặc định toàn hệ thống.
+    invite_fee_vnd: int | None = None
+
+
+# ── Báo cáo tài chính (super-admin) ─────────────────────────────────────────
+# Doanh thu (THU) = Σ theo từng kỳ của mọi member (không test, không chủ workspace):
+# PHÍ MỜI hiệu lực (đơn giá/tháng) × số tháng của kỳ — mời lần đầu + gia hạn cùng loại
+# phí. Chi phí (CHI) = hoá đơn Stripe 'paid' có ngày >= workspace.finance_start_at
+# (total_vnd + phí NH). Lợi nhuận = THU − CHI. Tất cả VND số nguyên.
+
+class FinancialReportBucket(BaseModel):
+    """1 tháng trong biểu đồ (theo lịch, YYYY-MM)."""
+
+    month: str
+    revenue: int
+    cost: int
+    profit: int
+
+
+class FinancialReportAgent(BaseModel):
+    """Doanh thu 1 chủ sở hữu (đại lý) trong kỳ. user_id=None → nhóm 'chưa có chủ'
+    (member không gắn chủ), username hiển thị 'Chưa có chủ'."""
+
+    user_id: UUID | None = None
+    username: str | None = None
+    email: str | None = None
+    revenue: int
+    invite_count: int
+    renew_count: int
+
+
+class FinancialReportOut(BaseModel):
+    from_date: str  # ISO date (YYYY-MM-DD) — đầu kỳ (bao gồm)
+    to_date: str    # ISO date — cuối kỳ (bao gồm)
+    revenue: int
+    revenue_invite: int
+    revenue_renew: int
+    cost: int
+    profit: int
+    monthly: list[FinancialReportBucket]
+    by_agent: list[FinancialReportAgent]
+    # Số workspace chưa đồng bộ hoá đơn 'paid' → giá vốn thiếu (CHI có thể thấp hơn thực).
+    cost_missing_workspaces: int

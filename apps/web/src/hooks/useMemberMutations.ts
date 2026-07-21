@@ -122,12 +122,12 @@ export function useMemberMutations(
   });
 
   // Đồng bộ HÀNG LOẠT các tài khoản pending đã chọn — gom vào ĐÚNG MỘT task
-  // SYNC_MEMBERS_BATCH (POST …/sync-members-batch). Extension quét tab "Lời mời
-  // đang chờ xử lý" 1 LẦN rồi đối chiếu cả danh sách; email nào không có mới sang
-  // tab "Người dùng" kiểm tra → thấy = đã tham gia. Thay cho cách fan-out N task
-  // SYNC_MEMBER cũ (mỗi task lại quay về tab "Lời mời" quét lại toàn bộ — thừa,
-  // user report 2026-07-06). Khác SYNC_DATA (full-sync ở header) vốn quét TOÀN
-  // workspace — bulk-sync chỉ kiểm tra đúng các email đã chọn.
+  // SYNC_MEMBERS_BATCH (POST …/sync-members-batch). Extension vào tab "Người dùng"
+  // (Users) trên ChatGPT ĐÚNG 1 lần rồi tìm TỪNG email trong danh sách → thấy =
+  // đã tham gia (promote active), không = giữ pending (logic mới 2026-07-15, không
+  // còn quét tab "Lời mời"). Thay cho cách fan-out N task SYNC_MEMBER cũ (user
+  // report 2026-07-06). Bản `bulkSyncMembers` này gửi các email ĐÃ CHỌN ở tab
+  // "Chờ tham gia"; nút "Đồng bộ lời mời" ở header gửi all_pending=true (toàn bộ).
   const bulkSyncMembers = useMutation({
     mutationFn: (emails: string[]) =>
       api<{ queue_item_id: string; status: string; count: number }>(

@@ -29,7 +29,7 @@ from fastapi import Depends, Query
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from app.deps import assert_workspace_access, get_session, require_permission
+from app.deps import get_session, require_permission
 from app.models import AuditLog, User
 from app.permissions import Permission
 from app.schemas import AuditLogOut
@@ -47,14 +47,17 @@ def list_member_logs(
 ) -> list[AuditLog]:
     """Lịch sử audit của 1 member (panel chi tiết khi click email).
 
-    - Workspace tồn tại + user có quyền truy cập workspace.
+    - Workspace tồn tại.
     - Visibility: sub-admin chỉ xem được log member mình mời (qua
       `_member_or_404_visible`); super-admin xem tất cả. Member `removed` vẫn
       tra được log (không lọc theo status).
+    - CỐ Ý KHÔNG gọi `assert_workspace_access`: sub-admin bị gỡ khỏi workspace
+      vẫn phải xem được LỊCH SỬ HOẠT ĐỘNG của email do CHÍNH MÌNH add (mở từ
+      trang "Email đã add" gom xuyên workspace). `_member_or_404_visible` đã khoá
+      theo invited_by_user_id nên chỉ lấy được log member mình mời — không rò rỉ.
     - Trả về theo thời gian giảm dần (mới nhất lên đầu), tối đa `limit`.
     """
     _get_workspace_or_404(db, workspace_id)
-    assert_workspace_access(db, user, workspace_id)
     member = _member_or_404_visible(db, workspace_id, member_id, user)
 
     mid = str(member.id)
@@ -78,6 +81,23 @@ def list_member_logs(
                         {
                             "workspace_id": str(workspace_id),
                             "entries": [{"email": member.email}],
+                        }
+                    ),
+                ),
+                # Kết quả CUỐI của lời mời (verified/failed): gắn target_id = member
+                # id TẠI THỜI ĐIỂM mời. Với lời mời HỎNG, member pending đó đã bị
+                # phantom cleanup xoá và email được mời lại tạo member MỚI (id khác)
+                # → nhánh target_id ở trên KHÔNG bắt được terminal cũ. Bắt thêm theo
+                # (workspace_id, email) để timeline của member (mới) vẫn thấy mốc
+                # "Mời thất bại/thành công" của các lần mời trước cùng email.
+                and_(
+                    AuditLog.action.in_(
+                        ("MEMBER_INVITE_VERIFIED", "MEMBER_INVITE_FAILED")
+                    ),
+                    AuditLog.data.contains(
+                        {
+                            "workspace_id": str(workspace_id),
+                            "email": member.email,
                         }
                     ),
                 ),

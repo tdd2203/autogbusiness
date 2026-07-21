@@ -3,8 +3,11 @@
 Nghiệp vụ: khách đổi email → xoá email cũ + mời email mới, GIỮ NGUYÊN hạn dùng cũ.
 
 Xác minh:
-  - Enqueue đúng 2 task: REMOVE_MEMBER(email cũ) + INVITE_MEMBER(email mới).
-  - Member mới (email mới) status=pending, subscription_end_at == hạn cũ (copy y nguyên).
+  - Member ĐANG HOẠT ĐỘNG: enqueue REMOVE_MEMBER(email cũ) + INVITE_MEMBER(email mới).
+  - Member CHỜ THAM GIA: enqueue REVOKE_INVITES(email cũ) + INVITE_MEMBER — KHÔNG
+    REMOVE_MEMBER (extension thu hồi ở tab Lời mời, fallback xoá nếu đã tham gia).
+  - Member mới (email mới) status=pending, subscription_end_at == hạn cũ (copy y nguyên);
+    last_invited_at kế thừa từ email gốc (thời gian mời/tham gia giữ nguyên).
   - Member cũ → status=removed ngay trong DB.
   - new_email trùng email cũ → 400.
   - new_email đã là member active khác → 409.
@@ -96,16 +99,102 @@ def test_change_email_carries_expiry_and_enqueues_two_tasks(
     # Hạn dùng GIỮ NGUYÊN — copy y nguyên, KHÔNG tính lại từ now.
     assert new_member["subscription_end_at"] == old_end
 
-    # Đúng 2 task: xoá email cũ + mời email mới.
+    # Member ĐANG HOẠT ĐỘNG → gỡ bằng REMOVE_MEMBER (tab Người dùng), KHÔNG revoke.
     removes = _tasks(client, ws["id"], auth_header, "REMOVE_MEMBER")
     invites = _tasks(client, ws["id"], auth_header, "INVITE_MEMBER")
     assert [t["payload"]["email"] for t in removes] == ["old@example.com"]
     assert [t["payload"]["email"] for t in invites] == ["new@example.com"]
+    assert _tasks(client, ws["id"], auth_header, "REVOKE_INVITES") == []
 
     # Member cũ → removed ngay; member mới → pending với hạn cũ.
     members = _members(client, ws["id"], auth_header)
     assert members["old@example.com"]["status"] == "removed"
     assert members["new@example.com"]["subscription_end_at"] == old_end
+
+
+def test_change_email_pending_uses_revoke_and_carries_invite_time(
+    client: TestClient, auth_header: dict
+):
+    ws = _create_workspace(client, auth_header)
+    # Tạo member CHỜ THAM GIA qua invite → có last_invited_at + hạn dùng cụ thể.
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "pending-old@example.com", "subscription_months": 2},
+        headers=auth_header,
+    )
+    assert resp.status_code == 201, resp.text
+    old = resp.json()
+    assert old["status"] == "pending"
+    old_invited_at = old["last_invited_at"]
+    old_end = old["subscription_end_at"]
+    assert old_invited_at is not None
+
+    resp = _change_email(
+        client, ws["id"], old["id"], "pending-new@example.com", auth_header
+    )
+    assert resp.status_code == 201, resp.text
+    new_member = resp.json()
+    assert new_member["email"] == "pending-new@example.com"
+    assert new_member["status"] == "pending"
+    # Hạn dùng + thời gian mời (last_invited_at) kế thừa Y NGUYÊN từ email gốc.
+    assert new_member["subscription_end_at"] == old_end
+    assert new_member["last_invited_at"] == old_invited_at
+
+    # Member CHỜ THAM GIA → gỡ bằng REVOKE_INVITES, TUYỆT ĐỐI không REMOVE_MEMBER.
+    revokes = _tasks(client, ws["id"], auth_header, "REVOKE_INVITES")
+    assert [t["payload"]["emails"] for t in revokes] == [["pending-old@example.com"]]
+    assert _tasks(client, ws["id"], auth_header, "REMOVE_MEMBER") == []
+    # Vẫn mời email mới.
+    invite_emails = {
+        t["payload"].get("email")
+        for t in _tasks(client, ws["id"], auth_header, "INVITE_MEMBER")
+    }
+    assert "pending-new@example.com" in invite_emails
+
+    members = _members(client, ws["id"], auth_header)
+    assert members["pending-old@example.com"]["status"] == "removed"
+    assert members["pending-new@example.com"]["status"] == "pending"
+
+
+def _added_row(client: TestClient, headers: dict, email: str) -> dict | None:
+    rows = client.get("/api/v1/added-members", headers=headers).json()
+    return next((r for r in rows if r["email"] == email), None)
+
+
+def test_change_email_carries_payment_status_and_cycles(
+    client: TestClient, auth_header: dict
+):
+    """Đổi email = đổi tên: trạng thái ĐÃ THANH TOÁN + lịch sử chu kỳ phải theo
+    sang email mới, không reset về unpaid."""
+    ws = _create_workspace(client, auth_header)
+    # Invite với gói tháng → member đã "paid" + có 1 chu kỳ (mô hình phí trước).
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "paid-old@example.com", "subscription_months": 1},
+        headers=auth_header,
+    )
+    assert resp.status_code == 201, resp.text
+    old = resp.json()
+
+    old_row = _added_row(client, auth_header, "paid-old@example.com")
+    assert old_row is not None
+    assert old_row["payment_status"] == "paid"
+    old_cycle_count = len(old_row["cycles"])
+    assert old_cycle_count >= 1
+
+    resp = _change_email(
+        client, ws["id"], old["id"], "paid-new@example.com", auth_header
+    )
+    assert resp.status_code == 201, resp.text
+
+    # Email mới kế thừa NGUYÊN trạng thái đã thanh toán + toàn bộ chu kỳ (move).
+    new_row = _added_row(client, auth_header, "paid-new@example.com")
+    assert new_row is not None
+    assert new_row["payment_status"] == "paid"
+    assert len(new_row["cycles"]) == old_cycle_count
+    assert all(c["payment_status"] == "paid" for c in new_row["cycles"])
+    # Email cũ đã removed → không còn trong danh sách added-members.
+    assert _added_row(client, auth_header, "paid-old@example.com") is None
 
 
 def test_change_email_same_as_current_rejected(client: TestClient, auth_header: dict):
@@ -140,7 +229,8 @@ def test_change_email_of_removed_member_rejected(
     task = _tasks(client, ws["id"], auth_header, "REMOVE_MEMBER")[0]
     client.patch(
         f"/api/v1/queue/{task['id']}",
-        json={"status": "COMPLETED", "result": {"ok": True}},
+        # CONTRACT v0.9.22: mark removed cần bằng chứng đã rời (result.data.verified).
+        json={"status": "COMPLETED", "result": {"data": {"verified": True}}},
         headers={"X-API-KEY": ws["extension_api_key"]},
     )
     resp = _change_email(client, ws["id"], m["id"], "fresh@example.com", auth_header)

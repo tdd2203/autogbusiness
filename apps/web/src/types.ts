@@ -14,6 +14,8 @@ export type BillingInvoice = {
   period_start?: string | null; // ISO date — đầu chu kỳ dịch vụ
   period_end?: string | null; // ISO date — cuối chu kỳ = renewal
   invoice_number?: string | null;
+  // Phí dịch vụ ngân hàng (ngoài Stripe) admin NHẬP TAY — cộng vào tổng thực trả.
+  service_fee_vnd?: number | null;
 };
 
 export type Workspace = {
@@ -32,6 +34,9 @@ export type Workspace = {
   last_billing_synced_at: string | null;
   billing_invoices: BillingInvoice[] | null;
   verified_domain: string | null;
+  /** Ngôn ngữ giao diện ChatGPT admin của workspace (cấu hình HỆ THỐNG, super-admin
+   *  đặt ở Cài đặt). TÁCH khỏi ngôn ngữ HIỂN THỊ dashboard (per-user). */
+  chatgpt_locale: "vi" | "en" | "zh";
   created_at: string;
   updated_at: string;
 };
@@ -111,6 +116,14 @@ export type Member = {
   subscription_requested_at: string | null;
   /** [DEPRECATED] cột cũ của tính năng đồng bộ ngày thêm ChatGPT — đã gỡ, không dùng. */
   add_date_corrected_at: string | null;
+  /** Phí mời RIÊNG của member (VND) do super-admin đặt (feature 003). NULL = dùng
+   *  phí mặc định (payment_settings.invite_fee_vnd). */
+  fee_vnd?: number | null;
+  /** Lịch sử chu kỳ gia hạn (sắp theo cycle_number). Đổ đầy ở CẢ danh sách member
+   *  workspace (GET /workspaces/{id}/members) LẪN tab "Email đã add" → modal "Chi tiết
+   *  thành viên" hiện mục "Kỳ thanh toán" giống nhau ở hai nơi. Rỗng/undefined nếu
+   *  member chưa có chu kỳ nào (vd vô thời hạn). */
+  cycles?: SubscriptionCycle[];
 };
 
 /** 1 dòng lịch sử audit của 1 member (panel chi tiết khi click email).

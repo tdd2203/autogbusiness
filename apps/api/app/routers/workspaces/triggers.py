@@ -37,7 +37,7 @@ from app.deps import (
     require_permission,
     require_super_admin,
 )
-from app.models import QueueItem, User, Workspace
+from app.models import Member, QueueItem, User, Workspace
 from app.permissions import Permission
 from app.schemas import PurchaseSeatIn, SyncMemberIn, SyncMembersBatchIn
 from app.sse import publish_task_event
@@ -75,10 +75,12 @@ def trigger_sync(
     scope: str | None = None,
     expected_locale: str | None = None,
     db: Session = Depends(get_session),
-    # Full-sync toàn workspace (nút "Đồng bộ từ ChatGPT") CHỈ super-admin — thao tác
-    # scrape TOÀN BỘ member, không cấp cho tài khoản phụ. (Đồng bộ 1 member / batch ở
-    # tab "Chờ tham gia" vẫn dùng WORKSPACE_SYNC_TRIGGER — xem trigger_sync_member.)
-    user: User = Depends(require_super_admin),
+    # Full-sync toàn workspace (nút "Đồng bộ từ ChatGPT") gate bằng quyền RIÊNG
+    # WORKSPACE_FULL_SYNC — mặc định TẮT cho sub-admin (không nằm trong perms mặc
+    # định), super-admin cấp thủ công mới có; super-admin luôn pass. Tách khỏi
+    # WORKSPACE_SYNC_TRIGGER để KHOÁ ĐỘC LẬP: sync 1 member / batch pending ở tab
+    # "Chờ tham gia" vẫn mở mặc định (xem trigger_sync_member / _batch).
+    user: User = Depends(require_permission(Permission.WORKSPACE_FULL_SYNC)),
 ) -> dict:
     """Tạo task SYNC_DATA để Extension scrape danh sách member từ ChatGPT về DB.
 
@@ -222,7 +224,10 @@ def trigger_sync_member(
     `enforce_command_spam`. Áp cho MỌI user.
     """
     _get_workspace_or_404(db, workspace_id)
-    assert_workspace_access(db, user, workspace_id)
+    # KHÔNG gate assert_workspace_access: gán workspace CHỈ giới hạn việc ADD (mời).
+    # Đồng bộ 1 tài khoản mình ĐÃ add (nút ⋯ trang "Email đã thêm") vẫn cho phép kể
+    # cả khi sub-admin bị gỡ khỏi workspace — khớp remove/renew/change-email. Chống
+    # spam (enforce_command_spam) vẫn giữ. Xem members/remove.py, subscription.py.
     email = body.email.strip().lower()
 
     # Chống spam: cùng email lặp >3 lần liên tiếp → cấm 10 phút (raise 403).
@@ -286,23 +291,47 @@ def trigger_sync_members_batch(
 ) -> dict:
     """Tạo task SYNC_MEMBERS_BATCH — "đồng bộ hàng loạt" cho 1 danh sách email.
 
-    Gom N email pending vào ĐÚNG MỘT task: extension quét tab "Lời mời đang chờ
-    xử lý" 1 lần → email nào có trong set = pending; email còn lại mới check tab
-    "Người dùng" → thấy = active (đã tham gia), không = none. Thay cho việc web
-    fan-out N task SYNC_MEMBER (mỗi task lại quét lại toàn bộ pending — thừa,
+    Gom N email pending vào ĐÚNG MỘT task: extension vào tab "Người dùng" 1 lần →
+    tìm từng email → thấy = active (đã tham gia), không = pending. Thay cho việc
+    web fan-out N task SYNC_MEMBER (mỗi task lại quét lại toàn bộ pending — thừa,
     user report 2026-07-06).
 
+    Hai nguồn email:
+      - `body.emails`: danh sách cụ thể (thanh bulk ở tab "Chờ tham gia").
+      - `body.all_pending=true`: backend TỰ GOM toàn bộ member status='pending'
+        của workspace (nút "Đồng bộ lời mời" ở header — user 2026-07-15). Bỏ qua
+        `body.emails`.
+
     Completion reconcile theo `result.data.results` (mảng {email, found_in}):
-    active → member.status='active' + joined_at; pending → giữ; none → chỉ báo
-    (KHÔNG mark removed — an toàn khi scan sót).
+    active → member.status='active' + joined_at; pending → giữ (KHÔNG mark removed
+    — an toàn khi scan sót).
 
     KHÔNG áp `enforce_command_spam` per-email (1 task/mẻ đã tự bounded); thay bằng
     dedup: đã có SYNC_MEMBERS_BATCH PENDING/IN_PROGRESS của workspace → trả task cũ.
     """
     _get_workspace_or_404(db, workspace_id)
     assert_workspace_access(db, user, workspace_id)
-    emails = sorted({e.strip().lower() for e in body.emails if e.strip()})
+    if body.all_pending:
+        # Gom TOÀN BỘ email đang pending của workspace từ DB (không phụ thuộc web
+        # truyền lên) — đúng ý "đồng bộ toàn bộ email chờ tham gia" của nút header.
+        rows = db.execute(
+            select(Member.email).where(
+                Member.workspace_id == workspace_id,
+                Member.status == "pending",
+            )
+        ).scalars()
+        emails = sorted({e.strip().lower() for e in rows if e and e.strip()})
+    else:
+        emails = sorted({e.strip().lower() for e in body.emails if e.strip()})
     if not emails:
+        if body.all_pending:
+            # Không có member nào đang chờ tham gia — không cần tạo task.
+            return {
+                "queue_item_id": None,
+                "status": "no_pending",
+                "count": 0,
+                "deduplicated": False,
+            }
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Danh sách email rỗng.",

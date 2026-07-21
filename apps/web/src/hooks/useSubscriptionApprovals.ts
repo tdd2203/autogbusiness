@@ -12,6 +12,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { getQrOrder, type OrderQr } from "../lib/wallet";
 import { useAuth } from "./useAuth";
 import { useT } from "../i18n";
 import { toast } from "../components/Toast";
@@ -29,7 +30,14 @@ export type ChangeSubscriptionVars = {
   subscriptionEndAt?: string | null;
 };
 
-export function useChangeSubscription(workspaceId: string | undefined) {
+export function useChangeSubscription(
+  workspaceId: string | undefined,
+  opts?: {
+    /** Ví không đủ khi đổi hạn (kéo dài) → BE trả 402 QR (feature 003). Có callback →
+     *  mở modal QR thay vì báo lỗi; quét QR xong đổi hạn tự thực thi. */
+    onPaymentRequired?: (order: OrderQr) => void;
+  },
+) {
   const t = useT();
   const qc = useQueryClient();
   return useMutation({
@@ -51,17 +59,26 @@ export function useChangeSubscription(workspaceId: string | undefined) {
       );
     },
     onSuccess: (m) => {
-      // BE trả Member: nếu requested → sub-admin gửi yêu cầu; ngược lại đã áp dụng.
+      // Đổi hạn giờ TỰ PHỤC VỤ (bỏ duyệt, user 2026-07-13) → luôn áp ngay. Vẫn giữ
+      // nhánh 'requested' phòng dữ liệu cũ, nhưng thực tế BE trả 'none'.
       if (m.subscription_request_status === "requested") {
         toast.success(t("subscription.requestSent"));
       } else {
         toast.success(t("subscription.applied"));
       }
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      // Trang "Email đã thêm" (AddedEmails) dùng ["added-members"] — làm mới để
+      // đổi hạn từ menu ⋯ ở dòng cũng hiện ngay, khỏi reload tay.
+      qc.invalidateQueries({ queryKey: ["added-members"] });
       qc.invalidateQueries({ queryKey: ["subscription-requests"] });
       qc.invalidateQueries({ queryKey: ["member-logs"] });
     },
     onError: (e) => {
+      const order = getQrOrder(e);
+      if (order && opts?.onPaymentRequired) {
+        opts.onPaymentRequired(order);
+        return;
+      }
       toast.error(e instanceof Error ? e.message : String(e));
     },
   });
@@ -73,7 +90,14 @@ export function useChangeSubscription(workspaceId: string | undefined) {
  * trạng thái thanh toán của member về 'chưa thanh toán'. Khác useChangeSubscription
  * (đổi hạn — vẫn qua duyệt cho sub-admin). Xem routers/members/renew.py.
  */
-export function useRenewSubscription(workspaceId: string | undefined) {
+export function useRenewSubscription(
+  workspaceId: string | undefined,
+  opts?: {
+    /** Ví không đủ → BE trả 402 kèm hoá đơn QR (feature 003). Có callback → mở modal
+     *  QR thay vì báo lỗi; quét QR xong gia hạn tự thực thi. */
+    onPaymentRequired?: (order: OrderQr) => void;
+  },
+) {
   const t = useT();
   const qc = useQueryClient();
   return useMutation({
@@ -90,6 +114,11 @@ export function useRenewSubscription(workspaceId: string | undefined) {
       qc.invalidateQueries({ queryKey: ["member-logs"] });
     },
     onError: (e) => {
+      const order = getQrOrder(e);
+      if (order && opts?.onPaymentRequired) {
+        opts.onPaymentRequired(order);
+        return;
+      }
       toast.error(e instanceof Error ? e.message : String(e));
     },
   });

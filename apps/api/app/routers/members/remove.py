@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 
 from app.audit import log_event
 from app.deps import (
-    assert_workspace_access,
     enforce_command_spam,
     get_session,
     require_permission,
@@ -32,9 +31,46 @@ from ._shared import (
     router,
     SUBSCRIPTION_GRACE_AFTER_EXPIRY,
     _get_workspace_or_404,
+    _has_open_remove_task,
     _member_or_404_visible,
     _visibility_filter,
 )
+
+
+def _build_removal_task(
+    member: Member, created_by_id: UUID | None, workspace_id: UUID
+) -> tuple[QueueItem, str]:
+    """Chọn LOẠI task gỡ theo trạng thái member trên ChatGPT (khớp change_email.py +
+    yêu cầu user 2026-07-13):
+      - `pending` (chờ tham gia) → **REVOKE_INVITES**: extension thu hồi ở tab "Lời mời
+        đang chờ xử lý" TRƯỚC; nếu email không có ở đó (đã kịp chấp nhận → thành active)
+        thì tự fallback xoá ở tab "Người dùng". Payload `emails` (executeRevokeInvites
+        nhận list).
+      - `active`/khác (đã tham gia) → **REMOVE_MEMBER**: vào THẲNG tab "Người dùng",
+        không dò tab Lời mời.
+    Nhờ đó DB không còn mark removed member pending mà lời mời vẫn treo trên ChatGPT
+    (bug cũ: REMOVE_MEMBER cho pending → tab Người dùng không thấy → MEMBER_NOT_IN_
+    WORKSPACE → mark removed dù chưa thu hồi). Trả (queue_item, task_type).
+
+    `created_by_id`: user bấm lệnh (endpoint) hoặc người mời member (scheduler nền,
+    xem main.py) — cột nullable, chỉ dùng để truy vết chủ task."""
+    if member.status == "pending":
+        qi = QueueItem(
+            type="REVOKE_INVITES",
+            status="PENDING",
+            workspace_id=workspace_id,
+            payload={"emails": [member.email.lower()]},
+            created_by_id=created_by_id,
+        )
+        return qi, "REVOKE_INVITES"
+    qi = QueueItem(
+        type="REMOVE_MEMBER",
+        status="PENDING",
+        workspace_id=workspace_id,
+        payload={"member_id": str(member.id), "email": member.email},
+        created_by_id=created_by_id,
+    )
+    return qi, "REMOVE_MEMBER"
 
 
 @router.post("/cleanup-expired", status_code=status.HTTP_202_ACCEPTED)
@@ -43,16 +79,19 @@ def cleanup_expired_members(
     db: Session = Depends(get_session),
     user: User = Depends(require_permission(Permission.MEMBER_REMOVE)),
 ) -> dict:
-    """Tìm các member đã quá hạn >= 1 GIỜ (`subscription_end_at <= now - 1h`,
-    active/pending) trong workspace → enqueue 1 REMOVE_MEMBER task cho mỗi email + audit.
+    """Tìm các member đã hết hạn (`subscription_end_at <= now`, active/pending)
+    trong workspace → enqueue 1 REMOVE_MEMBER task cho mỗi email + audit.
 
-    Ân hạn 1 giờ (`SUBSCRIPTION_GRACE_AFTER_EXPIRY`): email vừa hết hạn trong vòng 1
-    giờ chưa bị xoá — cho khách thời gian gia hạn. Trả về list email đã enqueue.
+    Không còn ân hạn (`SUBSCRIPTION_GRACE_AFTER_EXPIRY = 0`, yêu cầu user
+    2026-07-10): hết hạn là xoá ngay, không chờ. Trả về list email đã enqueue.
     Dashboard có thể gọi để admin "1 click remove tất cả expired". Cùng rule với
     scheduler ở `main.py` (background timer dọn định kỳ mọi workspace).
     """
     _get_workspace_or_404(db, workspace_id)
-    assert_workspace_access(db, user, workspace_id)
+    # KHÔNG gate assert_workspace_access: gán workspace CHỈ giới hạn việc ADD (mời).
+    # Xoá/dọn thành viên mình ĐÃ add vẫn cho phép kể cả khi sub-admin bị gỡ khỏi
+    # workspace — visibility filter dưới đây khoá theo invited_by_user_id nên chỉ
+    # dọn được member mình mời, không rò rỉ. Xem đầu file remove.py.
     now = datetime.now(timezone.utc)
     cutoff = now - SUBSCRIPTION_GRACE_AFTER_EXPIRY
     expired = (
@@ -72,14 +111,15 @@ def cleanup_expired_members(
         expired = [m for m in expired if m.invited_by_user_id == user.id]
 
     enqueued: list[str] = []
+    events: list[tuple[str, str]] = []  # (email, task_type) để publish sau commit
     for member in expired:
-        queue_item = QueueItem(
-            type="REMOVE_MEMBER",
-            status="PENDING",
-            workspace_id=workspace_id,
-            payload={"member_id": str(member.id), "email": member.email},
-            created_by_id=user.id,
-        )
+        # Idempotent: bỏ qua nếu member đã có task gỡ đang mở (REMOVE_MEMBER hoặc
+        # REVOKE_INVITES — tránh đẻ task trùng khi admin bấm 2 lần / scheduler vừa
+        # enqueue). Xem _has_open_remove_task + remove.md.
+        if _has_open_remove_task(db, member):
+            continue
+        # pending → REVOKE_INVITES (tab Lời mời trước), active → REMOVE_MEMBER.
+        queue_item, task_type = _build_removal_task(member, user.id, workspace_id)
         db.add(queue_item)
         db.flush()
         log_event(
@@ -94,6 +134,7 @@ def cleanup_expired_members(
             data={
                 "workspace_id": str(workspace_id),
                 "email": member.email,
+                "task_type": task_type,
                 "subscription_end_at": member.subscription_end_at.isoformat()
                 if member.subscription_end_at
                 else None,
@@ -102,12 +143,13 @@ def cleanup_expired_members(
             commit=False,
         )
         enqueued.append(member.email)
+        events.append((member.email, task_type))
     if enqueued:
         db.commit()
-        for email in enqueued:
+        for email, task_type in events:
             publish_task_event(
                 workspace_id,
-                {"type": "task-available", "task_type": "REMOVE_MEMBER", "email": email},
+                {"type": "task-available", "task_type": task_type, "email": email},
             )
     return {"workspace_id": str(workspace_id), "count": len(enqueued), "emails": enqueued}
 
@@ -131,7 +173,8 @@ def bulk_remove_members(
     → bỏ qua; emails không match trả về trong `skipped` để UI cảnh báo.
     """
     _get_workspace_or_404(db, workspace_id)
-    assert_workspace_access(db, user, workspace_id)
+    # KHÔNG gate assert_workspace_access — xem cleanup_expired_members ở trên: gán
+    # workspace chỉ giới hạn ADD; `_visibility_filter` (invited_by_user_id) đủ khoá.
 
     emails_lower = {e.strip().lower() for e in body.emails if e.strip()}
     if not body.member_ids and not emails_lower:
@@ -156,14 +199,10 @@ def bulk_remove_members(
     targets = {m.id: m for m in db.execute(stmt).scalars()}
 
     enqueued: list[str] = []
+    events: list[tuple[str, str]] = []  # (email, task_type) để publish sau commit
     for member in targets.values():
-        queue_item = QueueItem(
-            type="REMOVE_MEMBER",
-            status="PENDING",
-            workspace_id=workspace_id,
-            payload={"member_id": str(member.id), "email": member.email},
-            created_by_id=user.id,
-        )
+        # pending → REVOKE_INVITES (tab Lời mời trước), active → REMOVE_MEMBER.
+        queue_item, task_type = _build_removal_task(member, user.id, workspace_id)
         db.add(queue_item)
         db.flush()
         log_event(
@@ -178,20 +217,22 @@ def bulk_remove_members(
             data={
                 "workspace_id": str(workspace_id),
                 "email": member.email,
+                "task_type": task_type,
                 "queue_item_id": str(queue_item.id),
             },
             commit=False,
         )
         enqueued.append(member.email)
+        events.append((member.email, task_type))
 
     if enqueued:
         db.commit()
-        for email in enqueued:
+        for email, task_type in events:
             publish_task_event(
                 workspace_id,
                 {
                     "type": "task-available",
-                    "task_type": "REMOVE_MEMBER",
+                    "task_type": task_type,
                     "email": email,
                 },
             )
@@ -214,7 +255,8 @@ def remove_member(
     user: User = Depends(require_permission(Permission.MEMBER_REMOVE)),
 ) -> dict:
     _get_workspace_or_404(db, workspace_id)
-    assert_workspace_access(db, user, workspace_id)
+    # KHÔNG gate assert_workspace_access — xem cleanup_expired_members ở trên: gán
+    # workspace chỉ giới hạn ADD; `_member_or_404_visible` (invited_by_user_id) đủ khoá.
     member = _member_or_404_visible(db, workspace_id, member_id, user)
 
     # DB là nguồn member đầy đủ: mọi member vào qua web app + SYNC_DATA giữ DB
@@ -225,16 +267,12 @@ def remove_member(
     if member.status == "removed":
         return {"status": "already_removed", "email": member.email}
 
-    # Chống spam: cùng (REMOVE_MEMBER, email) lặp >3 lần liên tiếp → cấm 10 phút.
+    # Chống spam: cùng (removal, email) lặp >3 lần liên tiếp → cấm 10 phút. Dùng chung
+    # 1 bucket "REMOVE_MEMBER" cho cả pending/active (chỉ là khoá rate-limit theo email).
     enforce_command_spam(db, user, "REMOVE_MEMBER", member.email)
 
-    queue_item = QueueItem(
-        type="REMOVE_MEMBER",
-        status="PENDING",
-        workspace_id=workspace_id,
-        payload={"member_id": str(member.id), "email": member.email},
-        created_by_id=user.id,
-    )
+    # pending → REVOKE_INVITES (tab Lời mời trước), active → REMOVE_MEMBER (tab Người dùng).
+    queue_item, task_type = _build_removal_task(member, user.id, workspace_id)
     db.add(queue_item)
     db.flush()
 
@@ -250,6 +288,7 @@ def remove_member(
         data={
             "workspace_id": str(workspace_id),
             "email": member.email,
+            "task_type": task_type,
             "queue_item_id": str(queue_item.id),
         },
         commit=False,
@@ -257,6 +296,6 @@ def remove_member(
     db.commit()
     publish_task_event(
         workspace_id,
-        {"type": "task-available", "task_id": str(queue_item.id), "task_type": "REMOVE_MEMBER"},
+        {"type": "task-available", "task_id": str(queue_item.id), "task_type": task_type},
     )
     return {"queue_item_id": str(queue_item.id), "status": "queued"}

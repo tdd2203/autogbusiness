@@ -1,11 +1,12 @@
-"""Subscription change approval — PATCH .../members/{id}/subscription + duyệt.
+"""Đổi hạn dùng — PATCH .../members/{id}/subscription.
 
-Xác minh quy tắc duyệt (theo yêu cầu user):
-  - Sub-admin PATCH → KHÔNG áp ngay, tạo yêu cầu 'requested' + pending_* (real giữ nguyên).
-  - Super-admin PATCH → áp dụng NGAY (tự duyệt), không tạo request.
-  - Gia hạn CHỈ theo SỐ THÁNG (cộng dồn từ hạn hiện tại, giữ giờ) — không ngày lẻ.
-  - Super-admin GET pending-count / pending; POST approve áp pending, reject clear.
-  - approve chỉ super-admin (sub → 403).
+Từ 2026-07-13 (user): BỎ DUYỆT → đổi hạn TỰ PHỤC VỤ, áp NGAY cho cả sub-admin lẫn
+super-admin (giống Gia hạn). Tính phí khi KÉO DÀI hạn (xem test_payment_flow). Các
+test dưới dùng sub-admin KHÔNG bật Ví nên miễn phí → áp ngay.
+
+  - Sub-admin / super-admin PATCH → áp dụng NGAY, KHÔNG tạo yêu cầu chờ duyệt.
+  - Gia hạn theo SỐ THÁNG cộng dồn từ hạn hiện tại (giữ giờ); ngày mua neo hạn; v.v.
+  - approve endpoint (dormant) vẫn chỉ super-admin (sub → 403).
 """
 
 from datetime import datetime, timedelta, timezone
@@ -92,88 +93,26 @@ def _sub_with_ws(client, auth_header):
     return {"id": user["id"], "token": token}, ws
 
 
-def test_sub_admin_change_creates_pending_request(client: TestClient, auth_header: dict):
+def test_sub_admin_change_applies_immediately(client: TestClient, auth_header: dict):
+    """BỎ DUYỆT (user 2026-07-13): sub-admin đổi hạn → áp NGAY, KHÔNG tạo yêu cầu chờ.
+    Sub-admin ở đây không bật Ví → miễn phí."""
     sub, ws = _sub_with_ws(client, auth_header)
     sub_h = _bearer(sub["token"])
     member = _invite(client, ws["id"], sub_h, months=1)
-    old_end = member["subscription_end_at"]
 
     resp = _patch_sub(client, ws["id"], member["id"], sub_h, {"subscription_months": 6})
     assert resp.status_code == 200, resp.text
     out = resp.json()
-    # KHÔNG áp dụng ngay: real giữ nguyên, request 'requested', pending = đề xuất.
-    assert out["subscription_request_status"] == "requested"
-    assert out["subscription_months"] == 1
-    assert out["subscription_end_at"] == old_end
-    assert out["pending_subscription_months"] == 6
-    assert out["pending_subscription_end_at"] is not None
+    # Áp dụng NGAY (tự phục vụ): số tháng đổi, không còn trạng thái chờ duyệt.
+    assert out["subscription_months"] == 6
+    assert out["subscription_request_status"] == "none"
+    assert out["pending_subscription_months"] is None
 
-    # Super-admin thấy badge + danh sách.
+    # KHÔNG tạo yêu cầu chờ duyệt (badge super-admin = 0).
     cnt = client.get(
         "/api/v1/subscription-requests/pending-count", headers=auth_header
     ).json()
-    assert cnt["count"] == 1
-    pending = client.get(
-        "/api/v1/subscription-requests/pending", headers=auth_header
-    ).json()
-    assert len(pending) == 1
-    assert pending[0]["member_id"] == member["id"]
-    assert pending[0]["requested_months"] == 6
-    assert pending[0]["requested_by_username"] == "sub"
-
-    # Sub-admin KHÔNG thấy badge.
-    sub_cnt = client.get(
-        "/api/v1/subscription-requests/pending-count", headers=sub_h
-    ).json()
-    assert sub_cnt["count"] == 0
-
-
-def test_super_admin_approve_applies_pending(client: TestClient, auth_header: dict):
-    sub, ws = _sub_with_ws(client, auth_header)
-    sub_h = _bearer(sub["token"])
-    member = _invite(client, ws["id"], sub_h, months=1)
-    _patch_sub(client, ws["id"], member["id"], sub_h, {"subscription_months": 9})
-
-    resp = client.post(
-        "/api/v1/subscription-requests/approve",
-        json={"member_ids": [member["id"]], "approve": True},
-        headers=auth_header,
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json() == {"count": 1, "approve": True}
-
-    # Real đã áp pending; request đã clear.
-    m = client.get(
-        f"/api/v1/workspaces/{ws['id']}/members", headers=auth_header
-    ).json()
-    row = next(x for x in m if x["id"] == member["id"])
-    assert row["subscription_months"] == 9
-    assert row["subscription_request_status"] == "none"
-    assert row["pending_subscription_months"] is None
-
-
-def test_reject_keeps_old_subscription(client: TestClient, auth_header: dict):
-    sub, ws = _sub_with_ws(client, auth_header)
-    sub_h = _bearer(sub["token"])
-    member = _invite(client, ws["id"], sub_h, months=2)
-    old_end = member["subscription_end_at"]
-    _patch_sub(client, ws["id"], member["id"], sub_h, {"subscription_months": 24})
-
-    resp = client.post(
-        "/api/v1/subscription-requests/approve",
-        json={"member_ids": [member["id"]], "approve": False},
-        headers=auth_header,
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["approve"] is False
-
-    m = client.get(
-        f"/api/v1/workspaces/{ws['id']}/members", headers=auth_header
-    ).json()
-    row = next(x for x in m if x["id"] == member["id"])
-    assert row["subscription_months"] == 2
-    assert row["subscription_end_at"] == old_end
-    assert row["subscription_request_status"] == "none"
+    assert cnt["count"] == 0
 
 
 def test_super_admin_change_applies_immediately(client: TestClient, auth_header: dict):

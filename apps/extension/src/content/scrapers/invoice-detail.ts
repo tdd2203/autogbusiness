@@ -147,41 +147,66 @@ function parseTotal(text: string): number | null {
   );
 }
 
-/** Khoảng chu kỳ dịch vụ trên hoá đơn → {period_start, period_end} ISO. */
-function parsePeriod(text: string): { start: string | null; end: string | null } {
+type Period = { start: string | null; end: string | null };
+
+/**
+ * TẤT CẢ khoảng chu kỳ dịch vụ trên hoá đơn (dùng matchAll — hoá đơn gia hạn kèm
+ * điều chỉnh seat có NHIỀU dòng ngày: proration "10/7-11/7" ĐỨNG TRƯỚC dòng dịch
+ * vụ chính "11/7-11/8"). parsePeriod chọn khoảng có END MUỘN NHẤT.
+ */
+function parseAllPeriods(text: string): Period[] {
+  const out: Period[] = [];
+  const curYear = new Date().getUTCFullYear();
+
   // VI: "25 THÁNG 6 - 25 THÁNG 7, 2026" (năm ở cuối; /i để khớp THÁNG hoa)
-  const vi = text.match(
-    /(\d{1,2})\s*(?:thg|tháng)\s*(\d{1,2})\s*[-–—~]\s*(\d{1,2})\s*(?:thg|tháng)\s*(\d{1,2})(?:\s*,?\s*(\d{4}))?/i,
-  );
-  if (vi) {
-    const [d1, m1, d2, m2] = [Number(vi[1]), Number(vi[2]), Number(vi[3]), Number(vi[4])];
-    const year = vi[5] ? Number(vi[5]) : new Date().getUTCFullYear();
-    const startYear = m1 > m2 ? year - 1 : year;
-    return { start: toIso(startYear, m1, d1), end: toIso(year, m2, d2) };
+  const viRe =
+    /(\d{1,2})\s*(?:thg|tháng)\s*(\d{1,2})\s*[-–—~]\s*(\d{1,2})\s*(?:thg|tháng)\s*(\d{1,2})(?:\s*,?\s*(\d{4}))?/gi;
+  for (const m of text.matchAll(viRe)) {
+    const [d1, mo1, d2, mo2] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+    const year = m[5] ? Number(m[5]) : curYear;
+    const startYear = mo1 > mo2 ? year - 1 : year;
+    out.push({ start: toIso(startYear, mo1, d1), end: toIso(year, mo2, d2) });
   }
+
   // EN month-first: "Jun 25 - Jul 25, 2026"
-  const en = text.match(
-    /(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z.]*\s+(\d{1,2})\s*[-–—~]\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z.]*\s+(\d{1,2})(?:\s*,?\s*(\d{4}))?/i,
-  );
-  if (en) {
-    const m1 = EN_MONTHS[en[1].toLowerCase()];
-    const m2 = EN_MONTHS[en[3].toLowerCase()];
-    const year = en[5] ? Number(en[5]) : new Date().getUTCFullYear();
-    const startYear = m1 > m2 ? year - 1 : year;
-    return { start: toIso(startYear, m1, Number(en[2])), end: toIso(year, m2, Number(en[4])) };
+  const enRe =
+    /(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z.]*\s+(\d{1,2})\s*[-–—~]\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z.]*\s+(\d{1,2})(?:\s*,?\s*(\d{4}))?/gi;
+  for (const m of text.matchAll(enRe)) {
+    const mo1 = EN_MONTHS[m[1].toLowerCase()];
+    const mo2 = EN_MONTHS[m[3].toLowerCase()];
+    const year = m[5] ? Number(m[5]) : curYear;
+    const startYear = mo1 > mo2 ? year - 1 : year;
+    out.push({ start: toIso(startYear, mo1, Number(m[2])), end: toIso(year, mo2, Number(m[4])) });
   }
+
   // ZH: "2026年6月25日 - 2026年7月25日"
-  const zh = text.match(
-    /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?\s*[-–—~至]\s*(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?/,
-  );
-  if (zh) {
-    const endYear = zh[4] ? Number(zh[4]) : zh[1] ? Number(zh[1]) : new Date().getUTCFullYear();
-    const m1 = Number(zh[2]);
-    const m2 = Number(zh[5]);
-    const startYear = zh[1] ? Number(zh[1]) : m1 > m2 ? endYear - 1 : endYear;
-    return { start: toIso(startYear, m1, Number(zh[3])), end: toIso(endYear, m2, Number(zh[6])) };
+  const zhRe =
+    /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?\s*[-–—~至]\s*(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?/g;
+  for (const m of text.matchAll(zhRe)) {
+    const endYear = m[4] ? Number(m[4]) : m[1] ? Number(m[1]) : curYear;
+    const mo1 = Number(m[2]);
+    const mo2 = Number(m[5]);
+    const startYear = m[1] ? Number(m[1]) : mo1 > mo2 ? endYear - 1 : endYear;
+    out.push({ start: toIso(startYear, mo1, Number(m[3])), end: toIso(endYear, mo2, Number(m[6])) });
   }
-  return { start: null, end: null };
+
+  return out;
+}
+
+/**
+ * Khoảng chu kỳ dịch vụ CHÍNH của hoá đơn → {period_start, period_end} ISO.
+ * Chọn khoảng có END MUỘN NHẤT trong tất cả khoảng tìm thấy: hoá đơn gia hạn kèm
+ * điều chỉnh seat có dòng proration ngắn (vd 10/7-11/7) đứng TRƯỚC dòng dịch vụ
+ * thật (11/7-11/8) — lấy .match() cũ nuốt nhầm dòng đầu → period_end sai (= ngày
+ * đầu chu kỳ) → dashboard tưởng "chu kỳ đã kết thúc". End muộn nhất = ngày renew.
+ */
+function parsePeriod(text: string): Period {
+  const ranges = parseAllPeriods(text);
+  let best: Period = { start: null, end: null };
+  for (const r of ranges) {
+    if (r.end && (best.end === null || r.end > best.end)) best = r;
+  }
+  return best;
 }
 
 /**

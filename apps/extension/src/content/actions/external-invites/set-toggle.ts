@@ -83,12 +83,15 @@ export async function setExternalInvites(
   // với target=ON: nếu thật ra OFF mà ta bỏ qua → mời email ngoài khi toggle tắt
   // → ChatGPT từ chối silently → phantom "đang chờ" trên dashboard.
   if (prev === target) {
-    await sleep(250);
+    await sleep(600);
     const recheck = readStateFresh();
     if (recheck === target) {
       console.log(
         `[autogpt-external-invites] toggle đã ở ${target} (xác nhận 2 lần) → skip click`,
       );
+      // Dù đã ON sẵn (prev), vẫn để server chốt trước khi caller HARD-RELOAD
+      // refetch org-config (xem settleServerCommit bên dưới).
+      await settleServerCommit(target);
       return { prev, changed: false, confirmed: true };
     }
     console.warn(
@@ -96,9 +99,10 @@ export async function setExternalInvites(
     );
   }
 
-  // Click + poll xác nhận, retry tối đa 2 lần.
+  // Click + poll xác nhận, retry tối đa 3 lần (v0.8.x "làm chậm mà chắc": tăng
+  // 2→3 + poll 4s→6s để mạng/PATCH chậm không rơi confirmed=false oan).
   let confirmed = false;
-  for (let attempt = 0; attempt < 2 && !confirmed; attempt++) {
+  for (let attempt = 0; attempt < 3 && !confirmed; attempt++) {
     const el = findExternalInvitesToggle();
     if (!el) break;
     const cur = getToggleState(el);
@@ -110,12 +114,13 @@ export async function setExternalInvites(
       `[autogpt-external-invites] click toggle (lần ${attempt + 1}): ${cur} → ${target}`,
     );
     await humanClick(el);
-    // Chờ ChatGPT fire PATCH /api/... + DOM phản ánh. Poll tới 4s thay vì sleep cứng.
-    confirmed = await pollUntilState(target, 4_000);
+    // Chờ ChatGPT fire PATCH /api/... + DOM phản ánh. Poll tới 6s thay vì sleep cứng.
+    confirmed = await pollUntilState(target, 6_000);
   }
 
   if (confirmed) {
     console.log(`[autogpt-external-invites] OK, toggle = ${target} (confirmed)`);
+    await settleServerCommit(target);
   } else {
     console.warn(
       `[autogpt-external-invites] KHÔNG xác nhận được toggle = ${target} sau retry — caller nên huỷ invite (tránh phantom)`,
@@ -123,4 +128,32 @@ export async function setExternalInvites(
   }
 
   return { prev, changed: true, confirmed };
+}
+
+/**
+ * "Làm chậm mà chắc" (fix 2026-07-15): DOM toggle `aria-checked=true` chỉ nghĩa
+ * là client ĐÃ FIRE PATCH lưu setting — KHÔNG đảm bảo ChatGPT đã COMMIT server-side.
+ * Ngay sau đó `execute-invite.ts` (Phase A) trả `awaiting_external_reload` →
+ * background HARD-RELOAD /admin/members để REFETCH org-config. Nếu reload chạy
+ * TRƯỚC khi server commit toggle → config refetch vẫn external=OFF → dialog Mời
+ * hiện banner "ngoài miền" → submit mù → ChatGPT từ chối silently → VERIFY_FAILED
+ * (user report 2026-07-15).
+ *
+ * → CHỈ khi bật ON (target=true): chờ thêm 1 khoảng để server chốt + đọc lại DOM
+ * xác nhận vẫn giữ ON (không bị revert bởi toast lỗi) TRƯỚC khi trả về caller.
+ * Tắt OFF (cleanup) không cần — không có bước phụ thuộc phía sau.
+ */
+async function settleServerCommit(target: boolean): Promise<void> {
+  if (target !== true) return;
+  await sleep(2_000);
+  const after = readStateFresh();
+  if (after !== true) {
+    console.warn(
+      `[autogpt-external-invites] toggle bị revert về ${after} sau settle 2s — org-config có thể chưa ON; caller nên xác minh banner trước khi submit.`,
+    );
+  } else {
+    console.log(
+      "[autogpt-external-invites] settle 2s: toggle vẫn ON — server đã kịp chốt, an toàn để reload refetch config.",
+    );
+  }
 }

@@ -7,8 +7,12 @@ import Settings from "./pages/Settings";
 import Billing from "./pages/Billing";
 import Workspaces from "./pages/Workspaces";
 import Members from "./pages/Members";
-import WorkspaceRenewals from "./pages/WorkspaceRenewals";
+import InviteMembers from "./pages/InviteMembers";
 import AddedEmails from "./pages/AddedEmails";
+import Renewals from "./pages/Renewals";
+import Wallet from "./pages/Wallet";
+import WalletAdmin from "./pages/WalletAdmin";
+import FinancialReport from "./pages/FinancialReport";
 import WorkspaceQueue from "./pages/WorkspaceQueue";
 import WorkspaceBilling from "./pages/WorkspaceBilling";
 import WorkspaceExtension from "./pages/WorkspaceExtension";
@@ -16,6 +20,19 @@ import WorkspaceSettings from "./pages/WorkspaceSettings";
 import Layout from "./components/Layout";
 import WorkspaceLayout from "./components/WorkspaceLayout";
 import ProtectedRoute from "./components/ProtectedRoute";
+import { useAuth } from "./hooks/useAuth";
+
+// Trang chủ tuỳ vai trò: super-admin → "Không gian làm việc" (giờ là mục Tổ chức,
+// chỉ admin thấy); còn lại → "Email đã thêm" (nằm trong menu của mọi sub-admin).
+function HomeRedirect() {
+  const { user } = useAuth();
+  return (
+    <Navigate
+      to={user?.is_super_admin ? "/workspaces" : "/added-emails"}
+      replace
+    />
+  );
+}
 
 export default function App() {
   return (
@@ -28,11 +45,22 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        <Route index element={<Navigate to="/workspaces" replace />} />
+        <Route index element={<HomeRedirect />} />
+        {/* Trang "Mời thành viên" phía người dùng — mở cho user có quyền MEMBER_INVITE
+            (super-admin luôn có). Không cần workspace trên URL: hệ thống tự chọn
+            workspace đích theo cấu hình (nút ⚙️, super-admin đặt). */}
+        <Route
+          path="invite"
+          element={
+            <ProtectedRoute requirePermission="MEMBER_INVITE">
+              <InviteMembers />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="workspaces"
           element={
-            <ProtectedRoute requirePermission="MEMBER_VIEW">
+            <ProtectedRoute requireSuperAdmin>
               <Workspaces />
             </ProtectedRoute>
           }
@@ -40,14 +68,13 @@ export default function App() {
         <Route
           path="workspaces/:workspaceId"
           element={
-            <ProtectedRoute requirePermission="MEMBER_VIEW">
+            <ProtectedRoute requireSuperAdmin>
               <WorkspaceLayout />
             </ProtectedRoute>
           }
         >
           <Route index element={<Navigate to="members" replace />} />
           <Route path="members" element={<Members />} />
-          <Route path="renewals" element={<WorkspaceRenewals />} />
           <Route
             path="billing"
             element={
@@ -86,6 +113,33 @@ export default function App() {
           element={
             <ProtectedRoute requirePermission="MEMBER_VIEW">
               <AddedEmails />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="renewals"
+          element={
+            <ProtectedRoute requirePermission="MEMBER_VIEW">
+              <Renewals />
+            </ProtectedRoute>
+          }
+        />
+        {/* Ví (feature 003) — bảo vệ ở FE bằng ProtectedRoute; backend chặn thật
+            bằng require_wallet_enabled (403 nếu chưa bật cờ). */}
+        <Route path="wallet" element={<Wallet />} />
+        <Route
+          path="admin/wallet"
+          element={
+            <ProtectedRoute requireSuperAdmin>
+              <WalletAdmin />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="admin/report"
+          element={
+            <ProtectedRoute requireSuperAdmin>
+              <FinancialReport />
             </ProtectedRoute>
           }
         />

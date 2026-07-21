@@ -10,7 +10,10 @@
  *     đơn gốc chu kỳ (hoá đơn có period_start MỚI NHẤT). Fallback: renewal_date
  *     của workspace (đoán từ tab Kế hoạch) + cycle_start = renewal − 30 ngày.
  *   - fullMonthPerSlot = unit_price_vnd của hoá đơn gốc chu kỳ (KHÔNG chia tổng).
- *   - todayPrice = round(fullMonthPerSlot × daysRemaining / 30).
+ *   - fullMonthPerSlotWithVat = unit_price × (1+VAT) — KHÔNG lấy total÷qty (total
+ *     hoá đơn gia hạn gồm proration nên bị đội lên).
+ *   - todayPrice = round(fullMonthPerSlot × ngày_còn_lại / ĐỘ_DÀI_CHU_KỲ_THẬT),
+ *     độ dài = renewal − cycle_start (28/30/31, KHÔNG hard-code 30); kẹp ≤ trọn tháng.
  *   - totalSeats = TỔNG cộng dồn quantity của mọi hoá đơn Paid có chi tiết trong
  *     chu kỳ (chốt với người dùng).
  */
@@ -61,16 +64,26 @@ export type BillingCycle = {
   fullMonthPerSlot: number | null;
   /** Giá/seat 1 tháng GỒM VAT (= total ÷ quantity, chi phí thực trả). */
   fullMonthPerSlotWithVat: number | null;
+  /** Phí ngân hàng phân bổ trên 1 seat (= tổng phí chu kỳ ÷ số seat). */
+  feePerSeat: number | null;
+  /** Giá/seat 1 tháng GỒM VAT + phí ngân hàng phân bổ (chi phí thật/seat). */
+  fullMonthPerSlotWithFee: number | null;
   /** Thuế suất VAT suy từ hoá đơn gốc (vd 0.1). */
   vatRate: number | null;
-  /** Giá/seat hôm nay CHƯA VAT (prorate theo ngày còn lại). */
+  /** Giá/seat hôm nay CHƯA VAT (prorate theo ngày còn lại, mẫu số 30). */
   todayPrice: number | null;
   /** Giá/seat hôm nay GỒM VAT. */
   todayPriceWithVat: number | null;
+  /** Giá/seat hôm nay GỒM VAT + phí NH (prorate ngày còn lại ÷ 30, kẹp ≤ giá tháng). */
+  todayPriceWithFee: number | null;
   /** Số seat hiện tại (quantity hoá đơn mới nhất trong chu kỳ). */
   totalSeats: number | null;
   /** Tổng ĐÃ CHI trong chu kỳ (gồm VAT) = Σ total của hoá đơn Paid trong chu kỳ. */
   totalCyclePaidWithVat: number | null;
+  /** Tổng PHÍ ngân hàng (nhập tay) của hoá đơn trong chu kỳ. */
+  totalCycleFees: number | null;
+  /** Tổng THỰC TRẢ chu kỳ = totalCyclePaidWithVat + tổng phí ngân hàng. */
+  totalCyclePaidWithFees: number | null;
   /** Dự kiến chi phí kỳ sau (gồm VAT) nếu giữ nguyên seat = seats × giá/seat gồm VAT. */
   projectedNextCycleWithVat: number | null;
   /** Số hoá đơn Paid trong chu kỳ đã đọc được chi tiết. */
@@ -115,11 +128,16 @@ export function computeBillingCycle(
     baseInvoice: null,
     fullMonthPerSlot: null,
     fullMonthPerSlotWithVat: null,
+    feePerSeat: null,
+    fullMonthPerSlotWithFee: null,
     vatRate: null,
     todayPrice: null,
     todayPriceWithVat: null,
+    todayPriceWithFee: null,
     totalSeats: null,
     totalCyclePaidWithVat: null,
+    totalCycleFees: null,
+    totalCyclePaidWithFees: null,
     projectedNextCycleWithVat: null,
     detailedCount: 0,
   };
@@ -224,23 +242,22 @@ export function computeBillingCycle(
   }
 
   const fullMonthPerSlot = baseInvoice.unit_price_vnd;
-  // Giá/seat GỒM VAT = chi phí thực trả 1 seat. Ưu tiên total ÷ quantity (chính
-  // xác nhất); nếu thiếu, nhân thuế suất suy từ vat ÷ subtotal (mặc định 10%).
+  // Thuế suất suy từ hoá đơn gốc (vat ÷ subtotal); mặc định 10%.
   const vatRate =
     baseInvoice.vat_vnd != null && baseInvoice.subtotal_vnd
       ? baseInvoice.vat_vnd / baseInvoice.subtotal_vnd
       : 0.1;
-  let fullMonthPerSlotWithVat: number;
-  if (baseInvoice.total_vnd != null && baseInvoice.quantity) {
-    fullMonthPerSlotWithVat = Math.round(
-      baseInvoice.total_vnd / baseInvoice.quantity,
-    );
-  } else {
-    fullMonthPerSlotWithVat = Math.round(fullMonthPerSlot * (1 + vatRate));
-  }
-  const todayPrice = Math.round((fullMonthPerSlot * daysRemaining) / CYCLE_DAYS);
+  // Giá/seat 1 tháng GỒM VAT = đơn giá SẠCH × (1+VAT). KHÔNG dùng total ÷ quantity:
+  // hoá đơn gia hạn kèm điều chỉnh seat (proration) có `total` gồm phần cộng/trừ
+  // giữa kỳ (vd +100.843đ) → total÷qty bị đội lên (287.156 thay vì 286.550).
+  const fullMonthPerSlotWithVat = Math.round(fullMonthPerSlot * (1 + vatRate));
+  // Prorate cho NGÀY CÒN LẠI với mẫu số CỐ ĐỊNH 30 ngày (chốt với người dùng):
+  // giá/ngày = giá tháng ÷ 30. Kẹp số ngày ≤ 30 để không vượt giá trọn tháng khi
+  // chu kỳ dài 31 ngày (mua trọn kỳ = đúng giá tháng, không hơn).
+  const proRataDays = Math.min(daysRemaining, CYCLE_DAYS);
+  const todayPrice = Math.round((fullMonthPerSlot * proRataDays) / CYCLE_DAYS);
   const todayPriceWithVat = Math.round(
-    (fullMonthPerSlotWithVat * daysRemaining) / CYCLE_DAYS,
+    (fullMonthPerSlotWithVat * proRataDays) / CYCLE_DAYS,
   );
   // Tổng seat chu kỳ = SỐ SEAT HIỆN TẠI = quantity của hoá đơn MỚI NHẤT trong
   // chu kỳ (true-up ghi số seat mới nhất). KHÔNG cộng dồn (proration ghi tổng
@@ -262,6 +279,26 @@ export function computeBillingCycle(
     (sum, inv) => sum + (inv.total_vnd ?? inv.amount_vnd ?? 0),
     0,
   );
+  // Phí ngân hàng nhập tay (ngoài Stripe) → cộng vào tổng thực trả chu kỳ.
+  const totalCycleFees = cycleInvoices.reduce(
+    (sum, inv) => sum + (inv.service_fee_vnd ?? 0),
+    0,
+  );
+  const totalCyclePaidWithFees = totalCyclePaidWithVat + totalCycleFees;
+  // Phí ngân hàng phân bổ trên 1 seat = tổng phí chu kỳ ÷ số seat hiện tại. Giá
+  // thật/seat = giá gồm VAT + phần phí này (khi chưa nhập phí → = giá gồm VAT).
+  const feePerSeat =
+    totalSeats != null && totalSeats > 0
+      ? Math.round(totalCycleFees / totalSeats)
+      : null;
+  const fullMonthPerSlotWithFee =
+    feePerSeat != null
+      ? fullMonthPerSlotWithVat + feePerSeat
+      : fullMonthPerSlotWithVat;
+  // Giá/seat ngày còn lại GỒM cả phí NH = giá tháng (gồm VAT + phí) ÷ 30 × ngày còn lại.
+  const todayPriceWithFee = Math.round(
+    (fullMonthPerSlotWithFee * proRataDays) / CYCLE_DAYS,
+  );
   // Dự kiến kỳ sau (gồm VAT) nếu giữ nguyên seat hiện tại.
   const projectedNextCycleWithVat =
     totalSeats != null ? totalSeats * fullMonthPerSlotWithVat : null;
@@ -275,12 +312,64 @@ export function computeBillingCycle(
     baseInvoice,
     fullMonthPerSlot,
     fullMonthPerSlotWithVat,
+    feePerSeat,
+    fullMonthPerSlotWithFee,
     vatRate,
     todayPrice,
     todayPriceWithVat,
+    todayPriceWithFee,
     totalSeats,
     totalCyclePaidWithVat,
+    totalCycleFees,
+    totalCyclePaidWithFees,
     projectedNextCycleWithVat,
     detailedCount: detailInCycle.length,
   };
+}
+
+export type InvoiceSeatPricing = {
+  /** Giá/seat 1 tháng của hoá đơn = đơn giá × (1+VAT) + phí NH/seat. null nếu thiếu đơn giá/seat. */
+  monthlyPerSeat: number | null;
+  /** Giá/seat cho ngày còn lại = giá tháng ÷ 30 × ngày còn lại (kẹp ≤ giá tháng). null nếu hết hạn/thiếu period. */
+  remainingPerSeat: number | null;
+  /** Số ngày còn lại từ hôm nay tới period_end (renew). null nếu không có period_end. */
+  daysRemaining: number | null;
+};
+
+/**
+ * Tính giá/seat cho 1 hoá đơn RIÊNG LẺ — mỗi hoá đơn tự tính theo đơn giá & VAT
+ * & phí của chính nó (tỉ giá VND đã nằm trong đơn giá scrape), KHÔNG dùng chung
+ * base của chu kỳ. Giá tháng = đơn giá×(1+VAT)+phí/seat (loại proration, khác
+ * total÷qty). Ngày còn lại prorate mẫu số cố định 30, kẹp ≤ giá tháng.
+ */
+export function invoiceSeatPricing(
+  inv: BillingInvoice,
+  today: Date = new Date(),
+): InvoiceSeatPricing {
+  const qty = inv.quantity;
+  const unit = inv.unit_price_vnd;
+  if (qty == null || qty <= 0 || unit == null) {
+    return { monthlyPerSeat: null, remainingPerSeat: null, daysRemaining: null };
+  }
+  const vatRate =
+    inv.vat_vnd != null && inv.subtotal_vnd
+      ? inv.vat_vnd / inv.subtotal_vnd
+      : 0.1;
+  const feePerSeat =
+    inv.service_fee_vnd != null ? Math.round(inv.service_fee_vnd / qty) : 0;
+  const monthlyPerSeat = Math.round(unit * (1 + vatRate)) + feePerSeat;
+
+  let remainingPerSeat: number | null = null;
+  let daysRemaining: number | null = null;
+  if (inv.period_end) {
+    const end = atUtcMidnight(inv.period_end);
+    const t = new Date(today);
+    t.setUTCHours(0, 0, 0, 0);
+    daysRemaining = daysBetween(t, end);
+    if (daysRemaining > 0) {
+      const proRataDays = Math.min(daysRemaining, CYCLE_DAYS);
+      remainingPerSeat = Math.round((monthlyPerSeat * proRataDays) / CYCLE_DAYS);
+    }
+  }
+  return { monthlyPerSeat, remainingPerSeat, daysRemaining };
 }

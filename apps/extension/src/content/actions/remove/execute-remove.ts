@@ -1,7 +1,6 @@
 import type { ExecuteActionResponse } from "../../../shared/messages";
 import {
   humanClick,
-  humanType,
   normalizeMatchText,
   querySelectorFirst,
   randomDelay,
@@ -10,10 +9,10 @@ import {
 } from "../../human";
 import { reportProgress } from "../../progress";
 import { SELECTORS, TEXT_FALLBACKS } from "../../selectors";
-import { findMemberRow, findRowMenuButton } from "../member-row";
+import { findRowMenuButton } from "../member-row";
 import { dbLabelsFor, reportLabelMismatch } from "../../../shared/ui-labels";
 import { clickTabAndWait } from "../sync";
-import { clearMemberFilter } from "./member-filter";
+import { clearMemberFilter, filterAndFindRow } from "./member-filter";
 import { locateMemberRow } from "./locate-member";
 
 const LOG = "[autogpt-remove]";
@@ -77,35 +76,20 @@ function findConfirmRemoveButton(texts: readonly string[]): HTMLElement | null {
 }
 
 /**
- * Re-verify "đã xoá" bằng cách ép ChatGPT LỌC LẠI TỪ SERVER (clear ô lọc + gõ lại
- * email). Sau khi click confirm Remove, ChatGPT xoá qua server round-trip rồi refetch
- * list — nếu mạng chậm, list (filter optimistic) có thể VẪN còn row trong >10s dù
- * server đã xoá xong → verify cũ timeout 10s → VERIFY_FAILED OAN (bug user 2026-06-29:
- * "xoá thành công nhưng chưa chờ xong đã ghi nhận lỗi"). Lọc lại từ server cho câu trả
- * lời dứt khoát: gõ lại email, nếu row KHÔNG xuất hiện trong 5s = member đã bị xoá thật.
- *
- * Trả true nếu đã xoá (không còn row), false nếu vẫn còn (server vẫn trả member).
+ * Dialog xác nhận xoá còn MỞ không? Sau khi click confirm "Xóa", ChatGPT ĐÓNG dialog
+ * ngay khi NHẬN thao tác destructive (gửi DELETE) → dialog biến mất = đã nhận lệnh xoá.
+ * Nếu bị chặn (OTP/2FA/lỗi) thì dialog VẪN mở (hoặc bị thay bằng dialog challenge).
  */
-async function reverifyRemovedViaFilter(email: string): Promise<boolean> {
-  const input = querySelectorFirst<HTMLInputElement>(SELECTORS.memberFilterInput);
-  if (!input) {
-    // Không có ô lọc → chỉ dựa vào DOM hiện tại.
-    return findMemberRow(email) === null;
-  }
-  const needle = email.includes("@") ? email.split("@")[0] : email;
-  await clearMemberFilter();
-  await sleep(300);
-  await humanType(input, needle); // humanType tự clear trước khi gõ
-  await sleep(700); // chờ debounce + ChatGPT re-query server
-  try {
-    // Row XUẤT HIỆN trong 5s → server vẫn trả member = chưa xoá. Không thấy → đã xoá.
-    await waitFor(() => findMemberRow(email), 5000, 250);
-    console.warn(`${LOG} re-verify: ${email} VẪN còn sau khi lọc lại từ server`);
-    return false;
-  } catch {
-    console.log(`${LOG} re-verify: ${email} đã biến mất sau khi lọc lại từ server → đã xoá`);
-    return true;
-  }
+function confirmDialogOpen(): boolean {
+  return (
+    document.querySelector('[role="alertdialog"], [role="dialog"]') !== null
+  );
+}
+
+/** Text dialog đang mở (để báo lý do khi verify fail: OTP/2FA/lỗi). */
+function openDialogText(): string {
+  const d = document.querySelector('[role="alertdialog"], [role="dialog"]');
+  return (d?.textContent ?? "").trim();
 }
 
 export async function executeRemove(
@@ -146,10 +130,15 @@ export async function executeRemove(
     { phase: "searching", message: `Tìm ${email} bằng ô lọc...` },
     true,
   );
-  // REMOVE dùng ô lọc làm nguồn sự thật: search không ra email thì DỪNG, không
-  // lật trang (pageThrough=false). Tránh quét chậm/ồn khi email vốn không có
-  // trong tab Người dùng (yêu cầu user 2026-06-21).
-  const row = await locateMemberRow(email, { pageThrough: false });
+  // REMOVE dùng Ô LỌC server-side của ChatGPT làm NGUỒN SỰ THẬT (preferFilter:
+  // true). KHÔNG dùng pageThrough/scroll-scan: tab "Người dùng" là list VIRTUALIZED
+  // (150+ row, không có thanh phân trang → findPaginationState()=null) nên nhánh
+  // "1 trang → scroll-scan" của locateMemberRow CHỈ thấy vài row gần đỉnh → BỎ SÓT
+  // member vẫn hiện diện → trả null → MEMBER_NOT_IN_WORKSPACE → mark removed OAN
+  // (bug user 2026-07-21: member còn trong workspace nhưng bị đánh dấu removed +
+  // kẹt vòng lặp xoá-giả). Ô "Lọc theo tên" lọc server-side theo email → luôn
+  // đúng bất kể virtualized (cùng bài học sync-pending-use-search-filter).
+  const row = await locateMemberRow(email, { preferFilter: true });
   if (!row) {
     // GUARD chống mark-removed OAN (bug user 2026-06-29): chỉ kết luận "đã rời
     // business" khi CHẮC CHẮN đang ở tab "Người dùng". URL là nguồn sự thật —
@@ -167,14 +156,15 @@ export async function executeRemove(
           `bỏ qua để TRÁNH đánh dấu removed oan. Mở chatgpt.com/admin/members (tab Người dùng) rồi thử lại.`,
       };
     }
-    // Ô lọc (filter server-side của ChatGPT) không ra row → email KHÔNG còn trong
-    // tab Người dùng = không còn trong business. Trả MEMBER_NOT_IN_WORKSPACE để
-    // backend mark removed ở dashboard luôn (không cần SYNC). Dùng code RIÊNG, KHÔNG
-    // phải UI_ELEMENT_NOT_FOUND — code đó dành cho "member có nhưng menu/nút lỗi".
+    // Ô lọc không ra row → không thấy email trong tab Người dùng. Trả FAILED +
+    // MEMBER_NOT_IN_WORKSPACE (KHÔNG mark removed): "không tìm thấy" KHÔNG đủ tin để
+    // kết luận đã xoá (ô lọc có thể sót do tab nền bị throttle / list trễ) — từng gây
+    // xoá-giả (bug user 2026-07-21). "Vắng mặt" để ĐỒNG BỘ đầy đủ (expected_total)
+    // chốt. Code RIÊNG, KHÁC UI_ELEMENT_NOT_FOUND ("member có nhưng menu/nút lỗi").
     return {
       ok: false,
       error_code: "MEMBER_NOT_IN_WORKSPACE",
-      error_message: `Không tìm thấy ${email} khi lọc trong tab Người dùng → coi như đã rời business; đánh dấu removed ở dashboard.`,
+      error_message: `Không tìm thấy ${email} khi lọc trong tab Người dùng → GIỮ nguyên (không đánh dấu removed); để đồng bộ đầy đủ xác nhận vắng mặt.`,
     };
   }
 
@@ -255,33 +245,85 @@ export async function executeRemove(
   await randomDelay();
   await humanClick(confirmBtn);
 
-  // Verify member biến mất khỏi danh sách. Filter input vẫn đang giữ giá trị
-  // search → list chỉ chứa row khớp; nếu row mất nghĩa là xoá thật sự thành
-  // công (không phải do scroll out viewport).
-  await reportProgress(taskId, { phase: "verifying", message: "Đợi member biến mất khỏi danh sách..." }, true);
+  // ---- Verify: chờ ChatGPT NHẬN lệnh xoá (tín hiệu tại THỜI ĐIỂM thao tác) ----
+  // KHÔNG dựa vào "row biến mất khỏi list" nữa: sau DELETE, backend ChatGPT
+  // eventual-consistent → list (KỂ CẢ lọc server-side MỚI) VẪN trả member vừa xoá
+  // trong vài chục giây → verify cũ (theo dõi list / lọc lại) kết luận "còn" =
+  // VERIFY_FAILED OAN dù đã xoá xong (bug user 2026-07-12: lần xoá ĐẦU thành công
+  // nhưng báo thất bại, 34s sau retry mới thấy đã removed). Tín hiệu TIN CẬY nằm
+  // ngay lúc confirm: dialog xác nhận ĐÓNG = ChatGPT đã nhận thao tác destructive
+  // (giống verify của INVITE — toast/dialog đóng). Chỉ VERIFY_FAILED khi dialog
+  // VẪN mở sau 15s (OTP/2FA/lỗi thật sự chặn xoá).
+  await reportProgress(taskId, { phase: "verifying", message: "Đợi ChatGPT xác nhận đã nhận lệnh xoá..." }, true);
   let verifyOk = false;
   try {
-    // Nới 10s→15s: ChatGPT xoá qua server round-trip + refetch, mạng chậm có thể
-    // >10s — timeout sớm → VERIFY_FAILED oan dù đã xoá xong (bug user 2026-06-29).
-    await waitFor(() => (findMemberRow(email) ? null : document.body), 15_000);
+    await waitFor(() => {
+      const toast = querySelectorFirst(SELECTORS.inviteSuccessToast);
+      return toast ?? (confirmDialogOpen() ? null : document.body);
+    }, 15_000, 250);
     verifyOk = true;
   } catch {
-    // Path nhanh (theo dõi list filter sẵn) timeout → có thể list optimistic chưa
-    // refetch. Hỏi lại SERVER dứt khoát bằng cách lọc lại email: không còn = đã xoá.
-    verifyOk = await reverifyRemovedViaFilter(email);
+    // Dialog xác nhận VẪN mở sau 15s → ChatGPT chặn thao tác (OTP/2FA/lỗi) →
+    // xoá THẬT bại (không phải trễ list). Đọc text dialog để báo rõ nguyên nhân.
+    verifyOk = false;
   }
 
-  // Clear filter cho list về trạng thái đầy đủ (UX: user mở tab admin lên thấy
-  // toàn bộ member, không phải state đã filter).
-  await clearMemberFilter();
-
   if (!verifyOk) {
+    const dialogText = openDialogText();
     return {
       ok: false,
       error_code: "VERIFY_FAILED",
-      error_message: "Member vẫn còn trong danh sách sau khi confirm Remove.",
+      error_message:
+        "Dialog xác nhận xoá KHÔNG đóng sau 15s → ChatGPT có thể yêu cầu OTP/2FA " +
+        "hoặc báo lỗi cho thao tác xoá. Cần xoá thủ công." +
+        (dialogText ? ` Dialog: "${dialogText.slice(0, 200)}"` : ""),
     };
   }
 
-  return { ok: true, data: { email } };
+  // ---- XÁC MINH THẬT: member phải BIẾN MẤT khỏi list, không chỉ dialog đóng ----
+  // Dialog đóng = ChatGPT NHẬN lệnh, KHÔNG bảo đảm đã xoá server-side (bug user
+  // 2026-07-21: dialog đóng → báo COMPLETED → nhưng member VẪN còn → backend mark
+  // removed OAN → đồng bộ thấy còn → hồi sinh active → giờ sau xoá lại → VÒNG LẶP
+  // xoá-giả vô hạn, không bao giờ xoá thật). Bản 2026-07-12 gỡ verify vì check QUÁ
+  // SỚM: ChatGPT eventual-consistent, sau DELETE THẬT list còn hiện member ~34s rồi
+  // mới biến mất → verify sớm báo "còn" = fail oan. Cách đúng: POLL tới 45s bằng
+  // chính ô lọc server-side (clear+gõ lại mỗi vòng → fetch mới):
+  //   - Row biến mất trong 45s → xoá THỰC SỰ có hiệu lực → verified:true.
+  //   - Tới 45s vẫn còn → xoá KHÔNG có hiệu lực (ChatGPT chặn/quyền/ghế) →
+  //     REMOVE_VERIFY_FAILED (ok:false) → backend GIỮ member active, KHÔNG mark
+  //     removed; tick sau retry; loop-guard backend chốt STUCK nếu lặp mãi.
+  // Hướng an toàn: thà báo chưa-xoá (giữ member) còn hơn báo đã-xoá GIẢ.
+  await reportProgress(
+    taskId,
+    { phase: "verifying", message: `Xác minh ${email} đã rời workspace...` },
+    true,
+  );
+  let gone = false;
+  const verifyDeadlineMs = Date.now() + 45_000;
+  while (Date.now() < verifyDeadlineMs) {
+    // filterAndFindRow: clear + gõ lại email (2 lần) → kích hoạt fetch lọc mới,
+    // trả null nếu ChatGPT không còn trả row nào khớp email.
+    const stillThere = await filterAndFindRow(email);
+    if (!stillThere) {
+      gone = true;
+      break;
+    }
+    await sleep(3000);
+  }
+
+  await clearMemberFilter();
+
+  if (!gone) {
+    return {
+      ok: false,
+      error_code: "REMOVE_VERIFY_FAILED",
+      error_message:
+        `Đã click xoá ${email} (dialog đóng) nhưng member VẪN còn trong tab ` +
+        `"Người dùng" sau 45s → xoá CHƯA có hiệu lực. Giữ nguyên (không mark ` +
+        `removed), sẽ thử lại ở lần sau.`,
+    };
+  }
+
+  console.log(`${LOG} ${email}: đã BIẾN MẤT khỏi list sau khi xoá → verified → COMPLETED`);
+  return { ok: true, data: { email, verified: true } };
 }

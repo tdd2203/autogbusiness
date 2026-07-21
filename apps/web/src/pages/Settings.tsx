@@ -4,8 +4,9 @@ import { api, ApiError, setToken } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useFormatDate, useT } from "../i18n";
 import { UiLabelsManager } from "../components/UiLabelsManager";
+import { SystemLanguageManager } from "../components/SystemLanguageManager";
 
-type SettingsTab = "account" | "security" | "uiLabels";
+type SettingsTab = "account" | "security" | "uiLabels" | "systemLang";
 
 export default function Settings() {
   const t = useT();
@@ -84,6 +85,14 @@ export default function Settings() {
               {t("settings.sectionUiLabels")}
             </button>
           )}
+          {user?.is_super_admin && (
+            <button
+              onClick={() => setTab("systemLang")}
+              className={tab === "systemLang" ? "settings-link active" : "settings-link"}
+            >
+              {t("settings.sectionSystemLang")}
+            </button>
+          )}
         </nav>
 
         <div>
@@ -122,6 +131,10 @@ export default function Settings() {
           )}
 
           {tab === "uiLabels" && user?.is_super_admin && <UiLabelsManager />}
+
+          {tab === "systemLang" && user?.is_super_admin && (
+            <SystemLanguageManager />
+          )}
 
           {tab === "security" && (
             <div className="settings-section">
