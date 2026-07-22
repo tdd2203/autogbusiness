@@ -61,48 +61,98 @@ def list_member_logs(
     member = _member_or_404_visible(db, workspace_id, member_id, user)
 
     mid = str(member.id)
+    ws_s = str(workspace_id)
+
+    # Ngữ cảnh đổi email: email/member cũ + queue mời mới (để gắn lịch sử trước khi đổi tên).
+    change_data = db.execute(
+        select(AuditLog.data)
+        .where(
+            AuditLog.action == "MEMBER_EMAIL_CHANGED",
+            AuditLog.target_id == mid,
+        )
+        .order_by(AuditLog.timestamp.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    old_email_from_change: str | None = None
+    old_mid_from_change: str | None = None
+    invite_qid_from_change: str | None = None
+    if isinstance(change_data, dict):
+        oe = change_data.get("old_email")
+        if isinstance(oe, str) and oe.strip():
+            old_email_from_change = oe.strip().lower()
+        om = change_data.get("old_member_id")
+        if isinstance(om, str) and om.strip():
+            old_mid_from_change = om.strip()
+        iq = change_data.get("invite_queue_item_id")
+        if isinstance(iq, str) and iq.strip():
+            invite_qid_from_change = iq.strip()
+
+    member_match = and_(
+        AuditLog.target_type == "MEMBER",
+        or_(
+            AuditLog.target_id == mid,
+            AuditLog.data.contains({"member_ids": [mid]}),
+        ),
+    )
+    bulk_invite_match = and_(
+        AuditLog.action == "MEMBER_BULK_INVITE_QUEUED",
+        AuditLog.data.contains(
+            {
+                "workspace_id": ws_s,
+                "entries": [{"email": member.email}],
+            }
+        ),
+    )
+    invite_terminal_match = and_(
+        AuditLog.action.in_(("MEMBER_INVITE_VERIFIED", "MEMBER_INVITE_FAILED")),
+        AuditLog.data.contains(
+            {
+                "workspace_id": ws_s,
+                "email": member.email,
+            }
+        ),
+    )
+    ors: list = [member_match, bulk_invite_match, invite_terminal_match]
+
+    if old_email_from_change and old_email_from_change != member.email.lower():
+        ors.append(
+            and_(
+                AuditLog.action == "MEMBER_BULK_INVITE_QUEUED",
+                AuditLog.data.contains(
+                    {
+                        "workspace_id": ws_s,
+                        "entries": [{"email": old_email_from_change}],
+                    }
+                ),
+            )
+        )
+        ors.append(
+            and_(
+                AuditLog.action.in_(("MEMBER_INVITE_VERIFIED", "MEMBER_INVITE_FAILED")),
+                AuditLog.data.contains(
+                    {
+                        "workspace_id": ws_s,
+                        "email": old_email_from_change,
+                    }
+                ),
+            )
+        )
+    if old_mid_from_change and old_mid_from_change != mid:
+        ors.append(
+            and_(
+                AuditLog.target_type == "MEMBER",
+                or_(
+                    AuditLog.target_id == old_mid_from_change,
+                    AuditLog.data.contains({"member_ids": [old_mid_from_change]}),
+                ),
+            )
+        )
+    if invite_qid_from_change:
+        ors.append(AuditLog.data.contains({"queue_item_id": invite_qid_from_change}))
+
     stmt = (
         select(AuditLog)
-        .where(
-            or_(
-                and_(
-                    AuditLog.target_type == "MEMBER",
-                    or_(
-                        AuditLog.target_id == mid,
-                        # Event hàng loạt: id member nằm trong data["member_ids"].
-                        AuditLog.data.contains({"member_ids": [mid]}),
-                    ),
-                ),
-                # Mời hàng loạt (target_type=QUEUE_ITEM, chưa có member.id): khớp
-                # theo (workspace_id, email) trong data["entries"] — xem docstring.
-                and_(
-                    AuditLog.action == "MEMBER_BULK_INVITE_QUEUED",
-                    AuditLog.data.contains(
-                        {
-                            "workspace_id": str(workspace_id),
-                            "entries": [{"email": member.email}],
-                        }
-                    ),
-                ),
-                # Kết quả CUỐI của lời mời (verified/failed): gắn target_id = member
-                # id TẠI THỜI ĐIỂM mời. Với lời mời HỎNG, member pending đó đã bị
-                # phantom cleanup xoá và email được mời lại tạo member MỚI (id khác)
-                # → nhánh target_id ở trên KHÔNG bắt được terminal cũ. Bắt thêm theo
-                # (workspace_id, email) để timeline của member (mới) vẫn thấy mốc
-                # "Mời thất bại/thành công" của các lần mời trước cùng email.
-                and_(
-                    AuditLog.action.in_(
-                        ("MEMBER_INVITE_VERIFIED", "MEMBER_INVITE_FAILED")
-                    ),
-                    AuditLog.data.contains(
-                        {
-                            "workspace_id": str(workspace_id),
-                            "email": member.email,
-                        }
-                    ),
-                ),
-            ),
-        )
+        .where(or_(*ors))
         .order_by(AuditLog.timestamp.desc())
         .limit(limit)
     )

@@ -88,6 +88,9 @@ const IMP_OP_GROUP: Record<string, ImpGroup> = {
   MEMBER_BULK_REMOVE_QUEUED: "remove",
   MEMBER_REMOVED_SYNCED: "remove",
   MEMBER_EXPIRED_REMOVE_QUEUED: "remove",
+  REVOKE_INVITES_QUEUED: "remove",
+  MEMBER_INVITE_REVOKED: "remove",
+  MEMBER_INVITE_REVOKE_FAILED: "remove",
   // Cảnh báo: đã tự động gỡ nhiều lần nhưng member vẫn còn trên ChatGPT → cần gỡ
   // tay. Thuộc nhóm remove để nổi lên tab "Chính" (admin phải thấy).
   MEMBER_REMOVE_STUCK: "remove",
@@ -185,8 +188,8 @@ const ACT_TITLE: Record<string, string> = {
   MEMBER_BULK_OWNER_ASSIGN: "Gán chủ sở hữu hàng loạt",
   MEMBER_BULK_REMOVE_QUEUED: "Xếp lịch gỡ hàng loạt",
   MEMBER_REMOVE_QUEUED: "Xếp lịch gỡ thành viên",
-  MEMBER_REMOVED_SYNCED: "Đồng bộ gỡ thành viên",
-  MEMBER_EXPIRED_REMOVE_QUEUED: "Xếp lịch gỡ thành viên hết hạn",
+  MEMBER_REMOVED_SYNCED: "Đã xoá (đồng bộ xong)",
+  MEMBER_EXPIRED_REMOVE_QUEUED: "Xoá do hết hạn",
   MEMBER_REMOVE_STUCK: "Gỡ thất bại — cần gỡ tay",
   MEMBER_REMOVE_UNVERIFIED: "Gỡ chưa xác minh (giữ nguyên)",
   MEMBER_EMAIL_CHANGED: "Đổi email thành viên",
@@ -236,6 +239,7 @@ const SUB_TITLE: Record<string, string> = {
   CHANGE_LICENSE_TYPE: "Đổi loại license",
   BILLING: "Thanh toán",
   // Tiêu đề vòng đời task đồng bộ (dùng cho QUEUE_*:SYNC_* khi gom nhóm).
+  REVOKE_INVITES: "Thu hồi lời mời",
   SYNC_DATA: "Đồng bộ từ ChatGPT",
   SYNC_MEMBERS_BATCH: "Đồng bộ lời mời",
   SYNC_MEMBER: "Đồng bộ thành viên",
@@ -249,8 +253,14 @@ function prettify(code: string): string {
     .join(" ");
 }
 
-function actionTitle(action: string): string {
+function actionTitle(action: string, data?: Record<string, unknown> | null): string {
   const [op, sub] = action.split(":");
+  if (
+    op === "MEMBER_REMOVED_SYNCED" &&
+    data?.removal_reason === "expired"
+  ) {
+    return "Xoá do hết hạn";
+  }
   let title = ACT_TITLE[op] ?? prettify(op);
   if (sub) title += " · " + (SUB_TITLE[sub] ?? prettify(sub));
   return title;
@@ -291,7 +301,14 @@ function collectEmails(d: Record<string, unknown> | null): string[] {
     if (typeof v === "string" && v.includes("@") && !out.includes(v))
       out.push(v);
   };
-  for (const k of ["email", "member_email", "target_email", "to_email"])
+  for (const k of [
+    "email",
+    "member_email",
+    "target_email",
+    "to_email",
+    "old_email",
+    "new_email",
+  ])
     push(d[k]);
   const entries = d.entries;
   if (Array.isArray(entries))
@@ -303,7 +320,24 @@ function collectEmails(d: Record<string, unknown> | null): string[] {
   // của task sync) → hiện ở cột "Đối tượng" của dòng đồng bộ.
   const promoted = d.promoted_emails;
   if (Array.isArray(promoted)) for (const e of promoted) push(e);
+  const payload = d.payload;
+  if (payload && typeof payload === "object") {
+    const p = payload as Record<string, unknown>;
+    if (Array.isArray(p.emails)) for (const e of p.emails) push(e);
+    push(p.email);
+  }
   return out;
+}
+
+function buildMemberIdEmailMap(logs: AuditLog[]): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const l of logs) {
+    if (l.target_type !== "MEMBER" || !l.target_id) continue;
+    for (const em of collectEmails(l.data)) {
+      if (!m.has(l.target_id)) m.set(l.target_id, em);
+    }
+  }
+  return m;
 }
 
 /**
@@ -356,10 +390,51 @@ type Stages = {
   failed: boolean;
 };
 type GStatus = "queued" | "processing" | "done" | "failed";
+
+/** Kết quả terminal coi là thành công (backend dùng COMPLETED / SUCCESS / OK). */
+function isTerminalOk(result: string): boolean {
+  return result === "COMPLETED" || result === "SUCCESS" || result === "OK";
+}
+
+function isTerminalFail(result: string): boolean {
+  return result === "FAILED" || result === "ERROR";
+}
+
+/** Sự kiện kết thúc vòng đời task (không chỉ QUEUE_UPDATED / *_SYNCED). */
+const LIFECYCLE_SUCCESS_OPS = new Set([
+  "MEMBER_INVITE_VERIFIED",
+  "MEMBER_INVITE_REVOKED",
+  "MEMBER_REMOVED_SYNCED",
+  "MEMBER_ROLE_SYNCED",
+  "MEMBER_LICENSE_TYPE_SYNCED",
+  "MEMBER_USAGE_LIMIT_SYNCED",
+  "MEMBER_SYNC_PROMOTED_ACTIVE",
+]);
+
+const LIFECYCLE_FAIL_OPS = new Set([
+  "MEMBER_INVITE_FAILED",
+  "MEMBER_INVITE_REVOKE_FAILED",
+  "MEMBER_REMOVE_STUCK",
+]);
+
+function eventMarksDone(e: Decorated): boolean {
+  const op = opOf(e.action);
+  if (op === "QUEUE_UPDATED" && isTerminalOk(e.result)) return true;
+  if (op.endsWith("_SYNCED") && isTerminalOk(e.result)) return true;
+  return LIFECYCLE_SUCCESS_OPS.has(op) && isTerminalOk(e.result);
+}
+
+function eventMarksFailed(e: Decorated): boolean {
+  const op = opOf(e.action);
+  if (op.startsWith("QUEUE_TIMEOUT")) return true;
+  if (LIFECYCLE_FAIL_OPS.has(op)) return true;
+  return isTerminalFail(e.result);
+}
+
 const GSTATUS_STYLE: Record<GStatus, { color: string; bg: string; key: string }> = {
   queued: { color: "var(--ink-3)", bg: "var(--surface-2)", key: "audit.gstatus.queued" },
   processing: { color: "var(--warning)", bg: "#f5eccb", key: "audit.status.pending" },
-  done: { color: "var(--success)", bg: "var(--success-bg)", key: "audit.gstatus.done" },
+  done: { color: "var(--success)", bg: "var(--success-bg)", key: "audit.status.success" },
   failed: { color: "var(--danger)", bg: "var(--danger-bg)", key: "audit.status.failed" },
 };
 
@@ -390,6 +465,65 @@ type Group = {
 
 const opOf = (action: string) => action.split(":")[0];
 
+/** Tiêu đề nhóm vòng đời (gom queue) theo sự kiện KHỞI TẠO — tránh mọi gỡ đều
+ * hiện chung "Gỡ thành viên" dù là xoá tay hay xoá tự động do hết hạn. */
+const LIFECYCLE_TITLE_BY_INIT: Record<string, string> = {
+  MEMBER_EXPIRED_REMOVE_QUEUED: "Xoá do hết hạn",
+  MEMBER_REMOVE_QUEUED: "Gỡ thành viên",
+  MEMBER_BULK_REMOVE_QUEUED: "Gỡ thành viên hàng loạt",
+  MEMBER_INVITE_QUEUED: "Mời thành viên",
+  MEMBER_BULK_INVITE_QUEUED: "Mời thành viên hàng loạt",
+  MEMBER_CHANGE_ROLE_QUEUED: "Đổi vai trò",
+  MEMBER_CHANGE_LICENSE_TYPE_QUEUED: "Đổi giấy phép",
+  MEMBER_BULK_CHANGE_LICENSE_TYPE_QUEUED: "Đổi giấy phép hàng loạt",
+  REVOKE_INVITES_QUEUED: "Thu hồi lời mời",
+  SYNC_MEMBER_QUEUED: "Đồng bộ thành viên",
+  SYNC_MEMBERS_BATCH_QUEUED: "Đồng bộ hàng loạt",
+  WORKSPACE_SYNC_QUEUED: "Đồng bộ workspace",
+  PURCHASE_SEAT_QUEUED: "Mua ghế",
+};
+
+function groupInitiator(evs: Decorated[]): Decorated {
+  const oldestFirst = [...evs].reverse();
+  return (
+    oldestFirst.find(
+      (e) => /_QUEUED$/.test(opOf(e.action)) || opOf(e.action) === "QUEUE_CREATED",
+    ) ?? oldestFirst[0]
+  );
+}
+
+function isRevokeInviteGroup(evs: Decorated[]): boolean {
+  if (evs.some((e) => opOf(e.action) === "REVOKE_INVITES_QUEUED")) return true;
+  if (evs.some((e) => opOf(e.action) === "MEMBER_INVITE_REVOKED")) return true;
+  return evs.some(
+    (e) =>
+      e.data?.task_type === "REVOKE_INVITES" &&
+      /_(REMOVE|EXPIRED_REMOVE)_QUEUED$/.test(opOf(e.action)),
+  );
+}
+
+function lifecycleTitleForGroup(evs: Decorated[], initOp: string): string | null {
+  if (isExpiredRemoveGroup(evs)) return "Xoá do hết hạn";
+  if (
+    (initOp === "MEMBER_REMOVE_QUEUED" || initOp === "MEMBER_BULK_REMOVE_QUEUED") &&
+    evs.some((e) => e.data?.task_type === "REVOKE_INVITES")
+  ) {
+    return initOp === "MEMBER_BULK_REMOVE_QUEUED"
+      ? "Thu hồi lời mời hàng loạt"
+      : "Thu hồi lời mời";
+  }
+  return LIFECYCLE_TITLE_BY_INIT[initOp] ?? null;
+}
+
+function isExpiredRemoveGroup(evs: Decorated[]): boolean {
+  return evs.some(
+    (e) =>
+      opOf(e.action) === "MEMBER_EXPIRED_REMOVE_QUEUED" ||
+      (opOf(e.action) === "MEMBER_REMOVED_SYNCED" &&
+        e.data?.removal_reason === "expired"),
+  );
+}
+
 function buildMemberQueueMap(events: Decorated[]): Map<string, string> {
   const m = new Map<string, string>();
   for (const e of events) {
@@ -412,18 +546,13 @@ function groupKeyFor(e: Decorated, memberMap: Map<string, string>): string {
 function makeGroup(key: string, evs: Decorated[]): Group {
   const lifecycle = key.startsWith("q:");
   const has = (pred: (e: Decorated) => boolean) => evs.some(pred);
-  const ok = (r: string) => r === "COMPLETED" || r === "SUCCESS";
   const stages: Stages = {
     queued: has(
       (e) => /_QUEUED$/.test(opOf(e.action)) || opOf(e.action) === "QUEUE_CREATED",
     ),
     running: has((e) => opOf(e.action) === "QUEUE_PICKED"),
-    done: has(
-      (e) =>
-        (opOf(e.action) === "QUEUE_UPDATED" && ok(e.result)) ||
-        (opOf(e.action).endsWith("_SYNCED") && ok(e.result)),
-    ),
-    failed: has((e) => e.result === "FAILED"),
+    done: has(eventMarksDone),
+    failed: has(eventMarksFailed),
   };
   const gstatus: GStatus = stages.failed
     ? "failed"
@@ -434,15 +563,16 @@ function makeGroup(key: string, evs: Decorated[]): Group {
         : "queued";
 
   // Người khởi tạo = sự kiện XẾP HÀNG (cũ nhất), fallback sự kiện cũ nhất.
-  const oldestFirst = [...evs].reverse();
-  const initiator =
-    oldestFirst.find(
-      (e) => /_QUEUED$/.test(opOf(e.action)) || opOf(e.action) === "QUEUE_CREATED",
-    ) ?? oldestFirst[0];
+  const initiator = groupInitiator(evs);
+  const initOp = opOf(initiator.action);
 
   let title: string;
   let code: string;
-  if (lifecycle) {
+  const mappedTitle = lifecycle ? lifecycleTitleForGroup(evs, initOp) : null;
+  if (lifecycle && mappedTitle) {
+    title = mappedTitle;
+    code = initOp;
+  } else if (lifecycle) {
     const qEvent = evs.find(
       (e) => opOf(e.action).startsWith("QUEUE_") && e.action.includes(":"),
     );
@@ -451,11 +581,11 @@ function makeGroup(key: string, evs: Decorated[]): Group {
       title = SUB_TITLE[sub] ?? prettify(sub);
       code = sub;
     } else {
-      title = actionTitle(evs[0].action);
+      title = actionTitle(evs[0].action, evs[0].data);
       code = opOf(evs[0].action);
     }
   } else {
-    title = actionTitle(evs[0].action);
+    title = actionTitle(evs[0].action, evs[0].data);
     code = evs[0].action;
   }
 
@@ -581,74 +711,122 @@ function Steps({ stages }: { stages: Stages }) {
   );
 }
 
-/** Cột "ĐỐI TƯỢNG & KẾT QUẢ" (giao diện mới): email đối tượng (đậm) + câu tóm
- *  tắt 1 dòng. Nhiều email → email đầu + nút "+N" xổ toàn bộ (chặn nổi bọt để
- *  không kích hoạt mở/thu bảng chi tiết của dòng). Không email → "—". */
-function TargetResult({ emails, summary }: { emails: string[]; summary: string }) {
+/** Cột "ĐỐI TƯỢNG & KẾT QUẢ": nhãn email thành viên + danh sách email (đậm) +
+ *  ngữ cảnh hành động 1 dòng. Nhiều email → email đầu + nút "+N" xổ toàn bộ. */
+function TargetResult({
+  emails,
+  summary,
+  title,
+}: {
+  emails: string[];
+  summary: string;
+  title: string;
+}) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const stop = (e: React.MouseEvent) => e.stopPropagation();
   const emailStyle: CSSProperties = {
-    fontSize: 13,
+    fontSize: 13.5,
     color: "var(--ink)",
     fontWeight: 600,
+    fontFamily: "var(--font-mono)",
     whiteSpace: "nowrap",
     overflow: "hidden",
     textOverflow: "ellipsis",
     minWidth: 0,
   };
+  const labelStyle: CSSProperties = {
+    fontSize: 10.5,
+    letterSpacing: "0.08em",
+    textTransform: "uppercase",
+    color: "var(--ink-3)",
+    fontWeight: 700,
+    fontFamily: "var(--font-mono)",
+    marginBottom: 4,
+  };
   return (
     <div style={{ minWidth: 0 }}>
       {emails.length === 0 ? (
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--ink-4)", fontFamily: "var(--font-mono)" }}>—</div>
-      ) : !open ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          <span title={emails[0]} style={emailStyle}>{emails[0]}</span>
-          {emails.length > 1 && (
-            <button
-              type="button"
-              onClick={(e) => { stop(e); setOpen(true); }}
-              title={t("audit.showAllEmails", { n: emails.length })}
-              style={{
-                flexShrink: 0,
-                fontSize: 11,
-                fontFamily: "var(--font-mono)",
-                fontWeight: 600,
-                color: "var(--ink-2)",
-                background: "var(--surface-2)",
-                border: "1px solid var(--border)",
-                borderRadius: 6,
-                padding: "1px 8px",
-                cursor: "pointer",
-              }}
-            >
-              +{emails.length - 1}
-            </button>
-          )}
-        </div>
-      ) : (
-        <div>
-          {emails.map((em) => (
-            <div key={em} title={em} style={{ ...emailStyle, marginBottom: 2 }}>{em}</div>
-          ))}
-          <button
-            type="button"
-            onClick={(e) => { stop(e); setOpen(false); }}
+        <>
+          <div style={labelStyle}>{title}</div>
+          <div
             style={{
-              fontSize: 11,
+              fontSize: 13,
               fontWeight: 600,
-              color: "var(--ink-3)",
-              background: "transparent",
-              border: "none",
-              padding: 0,
-              cursor: "pointer",
+              color: "var(--ink-4)",
+              fontFamily: "var(--font-mono)",
             }}
           >
-            {t("audit.collapse")}
-          </button>
-        </div>
+            —
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={labelStyle}>
+            {emails.length === 1
+              ? title
+              : t("audit.targetEmailCount", { n: emails.length })}
+          </div>
+          {!open ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <span title={emails[0]} style={emailStyle}>
+                {emails[0]}
+              </span>
+              {emails.length > 1 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    stop(e);
+                    setOpen(true);
+                  }}
+                  title={t("audit.showAllEmails", { n: emails.length })}
+                  style={{
+                    flexShrink: 0,
+                    fontSize: 11,
+                    fontFamily: "var(--font-mono)",
+                    fontWeight: 600,
+                    color: "var(--ink-2)",
+                    background: "var(--surface-2)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 6,
+                    padding: "1px 8px",
+                    cursor: "pointer",
+                  }}
+                >
+                  +{emails.length - 1}
+                </button>
+              )}
+            </div>
+          ) : (
+            <div>
+              {emails.map((em) => (
+                <div key={em} title={em} style={{ ...emailStyle, marginBottom: 2 }}>
+                  {em}
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={(e) => {
+                  stop(e);
+                  setOpen(false);
+                }}
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "var(--ink-3)",
+                  background: "transparent",
+                  border: "none",
+                  padding: 0,
+                  cursor: "pointer",
+                }}
+              >
+                {t("audit.collapse")}
+              </button>
+            </div>
+          )}
+        </>
       )}
-      <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3, lineHeight: 1.4 }}>
+      <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 5, lineHeight: 1.45 }}>
         {summary}
       </div>
     </div>
@@ -881,30 +1059,76 @@ function summarize(g: Group): string | null {
   const who = g.emails[0];
   const more = g.emails.length > 1 ? ` (+${g.emails.length - 1})` : "";
   const ws = g.workspaceName ?? "";
+  const showEmailInline = g.emails.length === 0;
   const reason = isFailed(g)
     ? null
     : (firstStr(g.events, "error_message") ?? firstStr(g.events, "reason"));
   let head: string | null = null;
   switch (g.impGroup) {
     case "remove":
-      head = who ? `Gỡ ${who}${more}${ws ? ` khỏi ${ws}` : ""}` : null;
+      if (isExpiredRemoveGroup(g.events)) {
+        head = showEmailInline
+          ? who
+            ? `Xoá do hết hạn · ${who}${more}${ws ? ` (${ws})` : ""}`
+            : "Xoá do hết hạn"
+          : ws
+            ? `Xoá do hết hạn · ${ws}`
+            : "Xoá do hết hạn";
+      } else if (isRevokeInviteGroup(g.events)) {
+        head = showEmailInline
+          ? who
+            ? `Thu hồi lời mời · ${who}${more}${ws ? ` (${ws})` : ""}`
+            : "Thu hồi lời mời"
+          : ws
+            ? `Thu hồi lời mời · ${ws}`
+            : "Thu hồi lời mời";
+      } else {
+        head = showEmailInline
+          ? who
+            ? `Gỡ ${who}${more}${ws ? ` khỏi ${ws}` : ""}`
+            : null
+          : ws
+            ? `Gỡ khỏi ${ws}`
+            : "Gỡ thành viên";
+      }
       break;
     case "invite":
-      // Nếu do ĐỒNG BỘ nâng pending→active (không phải lời mời vừa gửi), nói rõ
-      // "đã tham gia (qua đồng bộ)" để không đội lốt một loạt lời mời mới khi
-      // admin chạy đồng bộ.
-      if (promotedViaSync(g))
-        head = who ? `${who}${more} đã tham gia${ws ? ` ${ws}` : ""} (qua đồng bộ)` : null;
-      else head = who ? `Mời ${who}${more}${ws ? ` vào ${ws}` : ""}` : null;
+      if (promotedViaSync(g)) {
+        head = showEmailInline
+          ? who
+            ? `${who}${more} đã tham gia${ws ? ` ${ws}` : ""} (qua đồng bộ)`
+            : null
+          : ws
+            ? `Đã tham gia ${ws} (qua đồng bộ)`
+            : "Đã tham gia (qua đồng bộ)";
+      } else {
+        head = showEmailInline
+          ? who
+            ? `Mời ${who}${more}${ws ? ` vào ${ws}` : ""}`
+            : null
+          : ws
+            ? `Mời vào ${ws}`
+            : "Mời thành viên";
+      }
       break;
     case "renew":
-      head = who ? `Gia hạn gói cho ${who}${more}` : null;
+      head = showEmailInline
+        ? who
+          ? `Gia hạn gói cho ${who}${more}`
+          : null
+        : "Gia hạn gói";
       break;
     case "owner": {
       const to = firstStr(g.events, "target_username");
-      head = who
-        ? `Đổi chủ ${who}${more}${to ? ` → ${to}` : ""}`
-        : null;
+      head = showEmailInline
+        ? who
+          ? `Đổi chủ ${who}${more}${to ? ` → ${to}` : ""}`
+          : to
+            ? `Chuyển chủ → ${to}`
+            : null
+        : to
+          ? `Chuyển chủ → ${to}`
+          : "Chuyển chủ sở hữu";
       break;
     }
     default:
@@ -1046,7 +1270,17 @@ function ExpandedPanel({ g }: { g: Group }) {
   const pairs: { label: string; value: string }[] = [
     { label: t("audit.panel.how"), value: shortHow(g, t) },
   ];
-  if (scope.object) pairs.push({ label: t("audit.panel.affect"), value: scope.object });
+  if (g.emails.length) {
+    pairs.push({
+      label:
+        g.emails.length > 1
+          ? t("audit.targetEmailCount", { n: g.emails.length })
+          : t("audit.targetEmail"),
+      value: g.emails.join(", "),
+    });
+  } else if (scope.object) {
+    pairs.push({ label: t("audit.panel.affect"), value: scope.object });
+  }
   for (const r of infoRows.slice(0, 4)) pairs.push(r);
 
   const heading: CSSProperties = {
@@ -1298,7 +1532,11 @@ function groupView(g: Group, t: TFn) {
       ? t(gs.key)
       : t(RESULT_LABEL[g.singleStatus]);
   const summary = summarize(g) ?? g.title;
-  return { col, chipLabel, statusColor, statusText, summary };
+  const targetEmailTitle =
+    g.emails.length > 1
+      ? t("audit.targetEmailCount", { n: g.emails.length })
+      : t("audit.targetEmail");
+  return { col, chipLabel, statusColor, statusText, summary, targetEmailTitle };
 }
 
 type AuditListProps = {
@@ -1350,7 +1588,8 @@ function AuditTable({ filtered, expanded, setExpanded, isLoading }: AuditListPro
           </div>
 
           {filtered.map((g) => {
-            const { col, chipLabel, statusColor, statusText, summary } = groupView(g, t);
+            const { col, chipLabel, statusColor, statusText, summary, targetEmailTitle } =
+              groupView(g, t);
             const isOpen = expanded === g.key;
             const toggle = () =>
               setExpanded((k) => (k === g.key ? null : g.key));
@@ -1472,6 +1711,24 @@ function AuditTable({ filtered, expanded, setExpanded, isLoading }: AuditListPro
                         </span>
                       )}
                     </div>
+                    {g.emails.length > 0 && (
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontSize: 12.5,
+                          fontFamily: "var(--font-mono)",
+                          fontWeight: 600,
+                          color: "var(--ink)",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                        title={g.emails.join(", ")}
+                      >
+                        {g.emails[0]}
+                        {g.emails.length > 1 ? ` +${g.emails.length - 1}` : ""}
+                      </div>
+                    )}
                     {g.lifecycle && <Steps stages={g.stages} />}
                   </div>
                   {/* TRẠNG THÁI */}
@@ -1504,7 +1761,11 @@ function AuditTable({ filtered, expanded, setExpanded, isLoading }: AuditListPro
                     </span>
                   </div>
                   {/* ĐỐI TƯỢNG & KẾT QUẢ */}
-                  <TargetResult emails={g.emails} summary={summary} />
+                  <TargetResult
+                    emails={g.emails}
+                    summary={summary}
+                    title={targetEmailTitle}
+                  />
                   {/* Chevron */}
                   <div
                     style={{
@@ -1558,7 +1819,8 @@ function AuditCards({ filtered, expanded, setExpanded, isLoading }: AuditListPro
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {filtered.map((g) => {
-        const { col, chipLabel, statusColor, statusText, summary } = groupView(g, t);
+        const { col, chipLabel, statusColor, statusText, summary, targetEmailTitle } =
+          groupView(g, t);
         const isOpen = expanded === g.key;
         const toggle = () => setExpanded((k) => (k === g.key ? null : g.key));
         return (
@@ -1662,12 +1924,32 @@ function AuditCards({ filtered, expanded, setExpanded, isLoading }: AuditListPro
                 </span>
               </div>
 
+              {g.emails.length > 0 && (
+                <div
+                  style={{
+                    marginTop: 10,
+                    fontSize: 13,
+                    fontFamily: "var(--font-mono)",
+                    fontWeight: 600,
+                    color: "var(--ink)",
+                    wordBreak: "break-all",
+                  }}
+                >
+                  {g.emails[0]}
+                  {g.emails.length > 1 ? ` +${g.emails.length - 1}` : ""}
+                </div>
+              )}
+
               {/* Thanh tiến trình vòng đời */}
               {g.lifecycle && <Steps stages={g.stages} />}
 
               {/* Đáy thẻ: email đối tượng (đậm) + câu tóm tắt */}
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(0,0,0,.06)" }}>
-                <TargetResult emails={g.emails} summary={summary} />
+                <TargetResult
+                  emails={g.emails}
+                  summary={summary}
+                  title={targetEmailTitle}
+                />
               </div>
             </div>
             {isOpen && <ExpandedPanel g={g} />}
@@ -1714,6 +1996,7 @@ export default function AuditLogs() {
   const decorated: Decorated[] = useMemo(() => {
     const rows = logs.data ?? [];
     const qmap = buildQueueEmailMap(rows);
+    const memberIdMap = buildMemberIdEmailMap(rows);
     return rows.map((l) => {
       const c = classify(l.action, l.actor_type);
       const failed = l.result === "FAILED";
@@ -1748,6 +2031,14 @@ export default function AuditLogs() {
         actorName = at > 0 ? label.slice(0, at) : label || t("audit.actorUnknown");
       }
       let targetEmails = collectEmails(l.data);
+      if (
+        !targetEmails.length &&
+        l.target_type === "MEMBER" &&
+        l.target_id &&
+        memberIdMap.has(l.target_id)
+      ) {
+        targetEmails = [memberIdMap.get(l.target_id)!];
+      }
       if (
         !targetEmails.length &&
         l.target_type === "QUEUE_ITEM" &&
@@ -1818,20 +2109,6 @@ export default function AuditLogs() {
 
   return (
     <div className="page-fade">
-      <div
-        className="flex items-start justify-between"
-        style={{ gap: 24, marginBottom: 24, flexWrap: "wrap" }}
-      >
-        <div>
-          <div className="breadcrumb">
-            {t("breadcrumb.system")}
-            <span className="breadcrumb-sep">/</span>
-            {t("nav.auditLog")}
-          </div>
-          <h1 className="display-h1">{t("audit.title")}</h1>
-        </div>
-      </div>
-
       {/* Dải tóm tắt */}
       <div className="metrics" style={{ marginBottom: 24 }}>
         <div className="metric">

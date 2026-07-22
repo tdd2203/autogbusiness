@@ -443,7 +443,13 @@ def trigger_revoke_invites(
         result="PENDING",
         target_type="WORKSPACE",
         target_id=str(workspace_id),
-        data={"queue_item_id": str(queue_item.id), "count": len(emails)},
+        data={
+            "workspace_id": str(workspace_id),
+            "queue_item_id": str(queue_item.id),
+            "count": len(emails),
+            "emails": emails,
+            **({"email": emails[0]} if len(emails) == 1 else {}),
+        },
         commit=False,
     )
     db.commit()

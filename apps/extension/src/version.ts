@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.9.22";
+export const VERSION = "0.9.24";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,38 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.9.24",
+    date: "2026-07-22",
+    kind: "fix",
+    summary:
+      "\"Lời mời chờ xử lý\" hết lỗi UI_ELEMENT_NOT_FOUND khi tab Lời mời TRỐNG — tab trống là kết quả hợp lệ, không phải lỗi. Nay vẫn gửi reconcile để backend đối chiếu với danh sách chờ tham gia của dashboard.",
+    details: [
+      "USER REPORT 2026-07-22: 'lệnh đồng bộ lời mời mới nhất lỗi, không sử dụng được — nguyên nhân là nó không đối chiếu email của trang quản trị và tab lời mời chờ xử lý'. Bằng chứng DB: 2 task SYNC_DATA scope=invites gần nhất (09:35, 09:53) đều FAILED `UI_ELEMENT_NOT_FOUND: Không tìm được row member nào (tab1=false, ~10s)`. Dashboard đang có 14 member 'pending'.",
+      "ROOT CAUSE 1 (execute-sync.ts): guard `members.length === 0 → FAILED` viết cho ca scrape HỎNG, nhưng với scope=invites thì tab Lời mời TRỐNG (mọi lời mời đã được nhận) cũng ra 0 row → task chết ngay, backend không nhận được gì. Trớ trêu: ĐÂY MỚI LÀ CA CẦN ĐỐI CHIẾU NHẤT — 14 pending trên dashboard mà tab Lời mời trống ⇒ cả 14 đều đáng nghi đã tham gia. Thêm cờ `invitesTabFound` (URL đã đổi sang ?tab=invites) để phân biệt 'tab rỗng THẬT' với 'không vào được tab': rỗng-thật ⇒ ok, không-vào-được ⇒ vẫn FAILED như cũ. Scope có 'active' thì 0 row VẪN luôn là lỗi (tab Người dùng rỗng = scrape hỏng, reconcile theo đó sẽ xoá oan cả team).",
+      "ROOT CAUSE 2 (runner.ts): bước reconcile bị gate `if (members.length > 0)` nên kể cả action trả ok với danh sách rỗng thì cũng KHÔNG gọi bulk-upsert → không có `reconcile_emails` tường minh → backend không biết tab Lời mời rỗng thật hay scrape hỏng. Thêm ngoại lệ `invitesTabEmptyButValid` (scope=invites + invites_tab_ok) → gửi reconcile với danh sách RỖNG TƯỜNG MINH.",
+      "AN TOÀN: reconcile scope=['pending'] KHÔNG được phép mark removed (removal_scopes bỏ 'pending' khi thiếu 'active' — reconcile.py), nên đường đi mới chỉ dẫn tới TRA THÊM chứ không tới xoá. Kể cả khi scrape tab Lời mời sót row, hậu quả xấu nhất là tra thừa vài email ở tab Người dùng → không thấy → giữ pending.",
+      "Kèm theo: action trả thêm `invites_tab_ok`/`active_tab_ok`; error_message ghi cả `invitesTab=` (trước chỉ có `tab1=` là cờ tab NGƯỜI DÙNG, luôn false ở scope=invites nên vô dụng cho chẩn đoán); runner log số email lệch + id task tra tab Người dùng.",
+      "File: content/actions/sync/execute-sync.ts, background/runner.ts, shared/api.ts, version.ts.",
+    ],
+  },
+  {
+    version: "0.9.23",
+    date: "2026-07-22",
+    kind: "fix",
+    summary:
+      "XOÁ THÀNH VIÊN: gõ TOÀN BỘ email vào ô lọc ĐÚNG 1 LẦN, chờ list load xong — không thấy = ĐÃ GỠ XONG (thành công). Hết cảnh báo thất bại rồi retry mỗi giờ tới khi STUCK, và bỏ luôn kiểu gõ đi gõ lại 2-3 lần vô ích.",
+    details: [
+      "USER REPORT 2026-07-22 (1): 'đã xoá thành công + tìm kiếm không thấy email ở tab Người dùng thì nó phải thành công'. Bằng chứng DB: hôm đó 4 OK / 16 FAILED, nhưng 16 lỗi chỉ là 6 email lặp — mỗi email lần 1 REMOVE_VERIFY_FAILED/CONTENT_TIMEOUT (xoá ĐÃ có hiệu lực, verify 45s hụt), các lần sau MEMBER_NOT_IN_WORKSPACE mỗi giờ → không lần nào được mark removed → loop-guard chốt MEMBER_REMOVE_STUCK. 6 member đã rời ChatGPT thật vẫn kẹt 'active' + hết hạn.",
+      "USER REPORT 2026-07-22 (2): 'chỉ cần nhập toàn bộ email vào ô tìm kiếm 1 lần rồi chờ nó load thành công mà không thấy là chắc chắn bị xoá rồi; hiện đang tìm kiếm tới 3 lần không cần thiết'. Đúng: gõ thêm KHÔNG làm kết quả đáng tin hơn, chỉ ăn ngân sách 150s/task (đã có 3 ca CONTENT_TIMEOUT trong ngày).",
+      "ROOT CAUSE: `filterAndFindRow` trả `null` cho HAI tình huống khác hẳn nhau mà caller không phân biệt được — (a) ô lọc chạy thật, ChatGPT trả 0 row (ĐÁNG TIN) và (b) ô lọc không có / query bị Chrome throttle nuốt nên fetch chưa từng chạy, list đứng im (VÔ NGHĨA). Vì (b) từng gây xoá-giả tháng 6-7 nên 4891f5c chặn CẢ HAI → (a) thành thiệt hại phụ. Mấu chốt KHÔNG nằm ở số lần gõ mà ở chỗ list có PHẢN HỒI query hay không.",
+      "FIX (member-filter.ts): thay `filterAndFindRow` (2 lần gõ) bằng `filterOnceAndResolve` cho REMOVE — (1) đảm bảo ô lọc trống rồi đếm `rows_before`; (2) gõ TOÀN BỘ email ĐÚNG 1 LẦN; (3) chờ tới 12s một trong hai dấu hiệu list đã chạy query: row khớp hiện ra ⇒ 'found', hoặc SỐ ROW ĐỔI khác `rows_before` ⇒ query đã chạy → chờ ổn định 1.2s, soi lại lần chót (bắt ca render trễ) → vẫn trống ⇒ 'absent'; (4) hết 12s mà list KHÔNG hề đổi ⇒ 'inconclusive'. Chính 'số row đổi' là bằng chứng 'đã load xong' mà trước đây thiếu.",
+      "FIX (execute-remove.ts): 'absent' ⇒ ok:true + data.verified=true + data.absent=true (COMPLETED, mark removed). 'inconclusive' ⇒ MEMBER_NOT_IN_WORKSPACE FAILED, giữ member (thà chậm còn hơn xoá-giả). Vòng verify 45s sau khi click cũng đổi sang `filterOnceAndResolve` → 1 lần gõ/nhịp thay vì 2, và không còn coi 'list không phản hồi' là đã xoá.",
+      "BACKEND (completion.py): `data.absent===true` là đường thứ HAI để set removal_verified (đường 1 vẫn là tìm-thấy→click→poll biến mất). Audit MEMBER_REMOVED_SYNCED ghi thêm `removal_evidence` = absent_confirmed | clicked_and_verified để hậu kiểm. `MEMBER_NOT_IN_WORKSPACE` trơ trọi (ext cũ) vẫn KHÔNG được mark removed.",
+      "GHI CHÚ: `filterAndFindRow` (2 lần gõ) GIỮ NGUYÊN cho các action khác qua `locateMemberRow` (sync-member, change-role, change-license) — chúng chỉ cần 'tìm thấy', false-negative ở đó không gây mất dữ liệu, và cơ chế gõ-lại là fix riêng của v0.9.21 cho sync.",
+      "File: content/actions/remove/member-filter.ts, execute-remove.ts, api/routers/queue/completion.py, version.ts.",
+    ],
+  },
   {
     version: "0.9.22",
     date: "2026-07-21",
