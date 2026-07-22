@@ -10,7 +10,14 @@
       "Bash(lsof -nP -iTCP -sTCP:LISTEN)",
       "WebFetch(domain:tempmail.lovevn.org)",
       "Bash(curl -s -m 20 -H 'Authorization: Bearer __TRACKED_VAR__' https://tempmail.lovevn.org/api/v1/domains)",
-      "Bash(curl -s -m 20 -H 'Authorization: Bearer hm_I4y2ox65tthaERZ35Hr2BNEI-U0u2R9gmasjtBdsYeQ' https://tempmail.lovevn.org/api/v1/messages/admin@amev.lovevn.org)"
+      "Bash(curl -s -m 20 -H 'Authorization: Bearer hm_I4y2ox65tthaERZ35Hr2BNEI-U0u2R9gmasjtBdsYeQ' https://tempmail.lovevn.org/api/v1/messages/admin@amev.lovevn.org)",
+      "Bash(docker exec *)",
+      "Bash(npx tsc *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('apps/api/app/routers/queue/completion.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(npm run *)",
+      "Bash(.venv/bin/python -m pytest tests -q)",
+      "Bash(docker run *)",
+      "Bash(docker stop *)"
     ]
   }
 }

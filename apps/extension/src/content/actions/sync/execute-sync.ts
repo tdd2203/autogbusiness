@@ -115,6 +115,10 @@ export async function executeSync(
   // active thắng. Nhưng thường email pending không trùng với active.
   const merged = new Map<string, ScrapedMember>();
 
+  // Đã VÀO ĐƯỢC tab "Lời mời đang chờ xử lý" hay chưa (URL đã có ?tab=invites).
+  // Phân biệt "tab rỗng THẬT" với "không vào được tab / scrape hỏng" — quét ra 0
+  // row chỉ đáng tin khi cờ này true. Xem guard `members.length === 0` bên dưới.
+  let invitesTabFound = false;
   if (scrapeInvites) {
     // ----- Tab 1: Lời mời đang chờ xử lý (pending invites) -----
     // verifyTabParam="tab=invites": bắt buộc URL đổi sang ?tab=invites mới coi là
@@ -128,6 +132,7 @@ export async function executeSync(
         "tab=invites",
       )
     ) {
+      invitesTabFound = true;
       const { members } = await scrapeCurrentTab(
         taskId,
         "pending",
@@ -196,7 +201,20 @@ export async function executeSync(
     true,
   );
 
-  if (members.length === 0) {
+  // "Lời mời chờ xử lý" (scope=invites) quét ra 0 row là KẾT QUẢ HỢP LỆ, không
+  // phải lỗi: nghĩa là mọi lời mời đã được nhận (hoặc bị thu hồi) hết. Trước đây
+  // rơi thẳng vào guard dưới → task FAILED `UI_ELEMENT_NOT_FOUND` → backend không
+  // nhận được gì → KHÔNG đối chiếu được với danh sách "chờ tham gia" của dashboard
+  // (user 2026-07-22: "lệnh đồng bộ lời mời lỗi, không đối chiếu email"). Chính ca
+  // 0-row mới là ca cần đối chiếu nhất: 14 pending trên dashboard mà tab Lời mời
+  // trống ⇒ cả 14 đều đáng nghi đã tham gia.
+  //
+  // Chỉ tin 0-row khi ĐÃ VÀO ĐƯỢC tab (URL có ?tab=invites) — không vào được thì
+  // vẫn là lỗi như cũ. Với scope có 'active', 0 row vẫn luôn là lỗi (tab Người
+  // dùng rỗng = dấu hiệu scrape hỏng, reconcile theo đó sẽ xoá oan cả team).
+  const invitesOnlyEmptyButValid =
+    scrapeInvites && !scrapeActive && invitesTabFound;
+  if (members.length === 0 && !invitesOnlyEmptyButValid) {
     const localeHint = localeCheck.match
       ? ""
       : ` LANGUAGE_MISMATCH: ${localeCheck.hint}`;
@@ -204,7 +222,8 @@ export async function executeSync(
       ok: false,
       error_code: localeCheck.match ? "UI_ELEMENT_NOT_FOUND" : "LANGUAGE_MISMATCH",
       error_message:
-        `Không tìm được row member nào (tab1=${tab1Found}, ${elapsedMs}ms, ChatGPT locale='${detectedLocale ?? "unknown"}'). ` +
+        `Không tìm được row member nào (tab1=${tab1Found}, invitesTab=${invitesTabFound}, ` +
+        `${elapsedMs}ms, ChatGPT locale='${detectedLocale ?? "unknown"}'). ` +
         `URL hiện tại: ${location.pathname}.${localeHint}`,
     };
   }
@@ -231,6 +250,11 @@ export async function executeSync(
       // phát hiện sync THIẾU và BỎ QUA reconcile (không mark removed oan). null
       // khi scope không quét active hoặc không đọc được header.
       expected_total: activeExpectedTotal,
+      // Đã vào được tab tương ứng chưa — runner cần biết để phân biệt "quét ra 0
+      // row vì tab rỗng THẬT" (vẫn phải reconcile) với "0 row vì scrape hỏng"
+      // (bỏ qua reconcile kẻo xoá oan).
+      invites_tab_ok: invitesTabFound,
+      active_tab_ok: tab1Found,
     },
   };
 }

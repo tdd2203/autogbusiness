@@ -131,9 +131,9 @@ const KNOWN_ACTIONS = new Set([
 ]);
 
 // Timeline chi tiết thành viên (yêu cầu user 2026-07-20) CHỈ hiển thị 4 nhóm
-// nghiệp vụ: mời · xoá email (gỡ) · gia hạn · đổi chủ. Các log khác của member
-// (đổi email, đổi thời hạn, đổi role/loại giấy phép/giới hạn dùng, đánh dấu thanh
-// toán, nhập hàng loạt…) vẫn được backend lưu nhưng ẩn khỏi timeline này.
+// nghiệp vụ: mời · xoá email (gỡ) · gia hạn · đổi chủ · đổi email. Các log khác
+// (đổi thời hạn, đổi role/loại giấy phép/giới hạn dùng, đánh dấu thanh toán…)
+// vẫn được backend lưu nhưng ẩn khỏi timeline này.
 const MODAL_TIMELINE_ACTIONS = new Set([
   // mời
   "MEMBER_INVITE_QUEUED",
@@ -157,6 +157,8 @@ const MODAL_TIMELINE_ACTIONS = new Set([
   "MEMBER_OWNER_REVOKED",
   "MEMBER_OWNER_TRANSFERRED",
   "MEMBER_BULK_OWNER_ASSIGN",
+  // đổi email (thay thế 1-đổi-1: gỡ email cũ + mời email mới)
+  "MEMBER_EMAIL_CHANGED",
 ]);
 
 const PAYMENT_BADGE: Record<string, string> = {
@@ -715,6 +717,12 @@ export function MemberDetailModal({
         ? t("memberLog.action.MEMBER_INVITE_SINGLE")
         : t("memberLog.action.MEMBER_BULK_INVITE_QUEUED");
     }
+    if (
+      action === "MEMBER_REMOVED_SYNCED" &&
+      (log.data as Record<string, unknown> | null)?.removal_reason === "expired"
+    ) {
+      return t("memberLog.action.MEMBER_EXPIRED_REMOVE_QUEUED");
+    }
     return KNOWN_ACTIONS.has(action) ? t(`memberLog.action.${action}`) : action;
   };
 
@@ -741,6 +749,10 @@ export function MemberDetailModal({
   const queueIdOf = (log: MemberLog): string | undefined => {
     const d = log.data as Record<string, unknown> | null;
     if (d && typeof d.queue_item_id === "string") return d.queue_item_id;
+    // Đổi email: task mời email mới (gộp MEMBER_INVITE_VERIFIED vào dòng này).
+    if (log.action === "MEMBER_EMAIL_CHANGED" && d) {
+      if (typeof d.invite_queue_item_id === "string") return d.invite_queue_item_id;
+    }
     // Mời hàng loạt log target_type=QUEUE_ITEM, target_id CHÍNH LÀ queue id.
     if (log.action === "MEMBER_BULK_INVITE_QUEUED" && log.target_id)
       return log.target_id;
@@ -776,7 +788,8 @@ export function MemberDetailModal({
   }
   const isInviteQueued = (log: MemberLog) =>
     log.action === "MEMBER_INVITE_QUEUED" ||
-    log.action === "MEMBER_BULK_INVITE_QUEUED";
+    log.action === "MEMBER_BULK_INVITE_QUEUED" ||
+    log.action === "MEMBER_EMAIL_CHANGED";
   const isRemoveQueued = (log: MemberLog) =>
     log.action === "MEMBER_REMOVE_QUEUED" ||
     log.action === "MEMBER_BULK_REMOVE_QUEUED" ||

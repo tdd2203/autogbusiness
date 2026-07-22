@@ -192,6 +192,10 @@ export async function bulkUpsertMembers(
   rogue_pending_emails?: string[];
   reconcile_skipped?: boolean;
   reconcile_skip_reason?: string | null;
+  /** Số email lệch giữa tab "Lời mời" và danh sách chờ tham gia của dashboard. */
+  joined_check_count?: number;
+  /** Task SYNC_MEMBERS_BATCH backend tự tạo để tra tiếp tab "Người dùng". */
+  joined_check_task_id?: string | null;
 }> {
   return request(
     config,

@@ -1152,6 +1152,8 @@ async function reportToBackend(
             members?: Array<Record<string, unknown>>;
             user_info?: { email?: string | null; name?: string | null };
             expected_total?: number | null;
+            invites_tab_ok?: boolean;
+            active_tab_ok?: boolean;
           }
         | undefined;
       const members = (data?.members ?? []) as Array<{
@@ -1200,9 +1202,22 @@ async function reportToBackend(
         }
 
         // Bước 2: reconcile 1 LẦN trên TOÀN BỘ email đã scrape (members rỗng).
-        // Bỏ qua nếu scrape rỗng (members.length === 0) — tránh xoá oan toàn team
-        // khi scrape lỗi/trống. rogue-pending cũng tính từ tập đầy đủ này.
-        if (members.length > 0) {
+        // Bỏ qua nếu scrape rỗng — tránh xoá oan toàn team khi scrape lỗi/trống.
+        // rogue-pending cũng tính từ tập đầy đủ này.
+        //
+        // NGOẠI LỆ (user 2026-07-22): "Lời mời chờ xử lý" (scope=invites) quét ra
+        // 0 row mà ĐÃ VÀO ĐƯỢC tab (`invites_tab_ok`) = tab rỗng THẬT, không phải
+        // scrape hỏng → VẪN phải gửi reconcile với danh sách RỖNG TƯỜNG MINH, để
+        // backend đối chiếu và phát hiện mọi pending trên dashboard đều đã rời tab
+        // Lời mời (→ tra tiếp tab Người dùng xem ai đã tham gia). Trước đây nhánh
+        // này bị bỏ qua nên nút không đối chiếu được gì. An toàn: reconcile
+        // scope=['pending'] không được phép mark removed (removal_scopes bỏ
+        // 'pending' khi thiếu 'active' — reconcile.py).
+        const invitesTabEmptyButValid =
+          members.length === 0 &&
+          scope === "invites" &&
+          data?.invites_tab_ok === true;
+        if (members.length > 0 || invitesTabEmptyButValid) {
           const reconcileEmails = members.map((m) => m.email);
           const reconcilePendingEmails = members
             .filter((m) => m.status === "pending")
@@ -1217,9 +1232,20 @@ async function reportToBackend(
             rogue_pending_emails?: string[];
             reconcile_skipped?: boolean;
             reconcile_skip_reason?: string | null;
+            joined_check_count?: number;
+            joined_check_task_id?: string | null;
           };
           if (Array.isArray(result.rogue_pending_emails)) {
             rogueEmailsAggregated.push(...result.rogue_pending_emails);
+          }
+          if (result.joined_check_count) {
+            // Backend đã đối chiếu tab Lời mời với danh sách chờ tham gia và tự
+            // tạo task tra tab "Người dùng" cho nhóm lệch — extension sẽ pick ở
+            // vòng kế (hoặc ngay qua SSE task-available).
+            console.log(
+              `[autogpt-sync] ${result.joined_check_count} email lệch khỏi tab Lời mời ` +
+                `→ đã tạo task tra tab Người dùng (${result.joined_check_task_id ?? "dedupe"})`,
+            );
           }
           if (result.reconcile_skipped) {
             // Backend từ chối reconcile vì nghi sync thiếu → member đã upsert vẫn

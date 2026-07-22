@@ -20,8 +20,9 @@ from sqlalchemy.orm import Session
 
 from app.audit import log_event
 from app.deps import get_session, require_extension_workspace
-from app.models import Invite, Member, Workspace
+from app.models import Invite, Member, QueueItem, Workspace
 from app.schemas import InviteVerifyReconcileIn, MemberBulkUpsert
+from app.sse import publish_task_event
 
 from ._shared import router, _end_from_purchase
 
@@ -320,6 +321,107 @@ def bulk_upsert_members(
                 if row is None or row.status == "removed":
                     rogue_pending_emails.append(email)
 
+    # ---- "Lời mời chờ xử lý": email BIẾN MẤT khỏi tab Lời mời → truy tiếp tab
+    # "Người dùng" (user 2026-07-22) ----
+    # Quét tab Lời mời xong, đối chiếu với danh sách pending trên dashboard. Email
+    # dashboard đang để "chờ tham gia" mà KHÔNG còn ở tab Lời mời của ChatGPT thì
+    # về lý có 2 khả năng: (a) người dùng ĐÃ CHẤP NHẬN lời mời → nay nằm ở tab
+    # "Người dùng"; (b) lời mời hỏng/bị thu hồi. Không phân biệt được nếu chỉ nhìn
+    # tab Lời mời — đó chính là lý do khối reconcile bên trên KHÔNG dám mark removed
+    # (sự cố mất member 2026-07-13).
+    #
+    # Nay: thay vì bỏ lửng chờ "Đồng bộ cả 2", tự enqueue SYNC_MEMBERS_BATCH cho
+    # đúng nhóm email lệch đó → extension lọc TỪNG email trong tab "Người dùng" →
+    # thấy ⇒ đã tham gia (completion.py promote pending→active); không thấy ⇒ giữ
+    # pending. (b) coi như không xảy ra: luồng invite đã verify pending tab ngay lúc
+    # mời (Phase 2) nên lời mời "thành công giả" hầu như không còn — user chốt bỏ
+    # qua nhánh này, chỉ cần tra tab Người dùng là đủ.
+    #
+    # CHỈ chạy cho sync CHỈ-tab-Lời-mời (`pending` mà không có `active`): scope
+    # 'both' vốn đã quét tab Người dùng nên biết thừa ai đã tham gia.
+    joined_check_emails: list[str] = []
+    joined_check_task_id: str | None = None
+    # Scrape rỗng do LỖI và scrape rỗng THẬT (mọi lời mời đều đã được nhận) nhìn
+    # giống hệt nhau nếu chỉ xét `incoming_emails`. `reconcile_emails is not None`
+    # = extension gửi danh sách TƯỜNG MINH ⇒ scrape thành công, rỗng là rỗng thật.
+    pending_scan_authoritative = (
+        body.reconcile_emails is not None or bool(incoming_emails)
+    )
+    if (
+        scopes
+        and "pending" in scopes
+        and "active" not in scopes
+        and pending_scan_authoritative
+        and not reconcile_skipped
+    ):
+        # Vùng bảo vệ 10 phút như khối mark-removed: ChatGPT index lời mời mới vào
+        # tab "Lời mời" trễ 1-30s → email vừa mời chưa hiện KHÔNG phải "đã tham gia".
+        fresh_invite_cutoff = now - timedelta(minutes=10)
+        conds = [
+            Member.workspace_id == workspace_id,
+            Member.status == "pending",
+            ~(
+                (Member.invited_by_user_id.isnot(None))
+                & (
+                    func.coalesce(Member.last_invited_at, Member.created_at)
+                    > fresh_invite_cutoff
+                )
+            ),
+        ]
+        # Tab Lời mời rỗng THẬT (mọi lời mời đều đã được nhận) → không loại trừ ai;
+        # `notin_(<rỗng>)` là mệnh đề vô nghĩa nên chỉ thêm khi có email.
+        if incoming_emails:
+            conds.append(Member.email.notin_(incoming_emails))
+        vanished = db.execute(select(Member.email).where(*conds)).scalars().all()
+        joined_check_emails = sorted({e.lower() for e in vanished})
+
+    if joined_check_emails:
+        # Dedupe như `trigger_sync_members_batch`: đang có mẻ batch chạy dở thì thôi
+        # (lần quét sau vẫn thấy các email này nếu chúng thực sự còn lệch).
+        existing_batch = (
+            db.execute(
+                select(QueueItem).where(
+                    QueueItem.workspace_id == workspace_id,
+                    QueueItem.type == "SYNC_MEMBERS_BATCH",
+                    QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if existing_batch is None:
+            batch_item = QueueItem(
+                type="SYNC_MEMBERS_BATCH",
+                status="PENDING",
+                workspace_id=workspace_id,
+                # `source` để truy vết task này do sync-lời-mời tự sinh, không phải
+                # do admin bấm "Cập nhật hàng loạt".
+                payload={
+                    "emails": joined_check_emails,
+                    "source": "invite_sync_diff",
+                },
+                created_by_id=None,
+            )
+            db.add(batch_item)
+            db.flush()
+            joined_check_task_id = str(batch_item.id)
+            log_event(
+                db,
+                actor_type="EXTENSION",
+                actor_label=f"workspace:{workspace.name}",
+                action="SYNC_MEMBERS_BATCH_QUEUED",
+                result="PENDING",
+                target_type="WORKSPACE",
+                target_id=str(workspace_id),
+                data={
+                    "queue_item_id": joined_check_task_id,
+                    "count": len(joined_check_emails),
+                    "source": "invite_sync_diff",
+                    "note": "Email lệch giữa tab Lời mời (ChatGPT) và danh sách chờ tham gia (dashboard) → tra tiếp tab Người dùng để xác định ai đã tham gia.",
+                },
+                commit=False,
+            )
+
     db.add(workspace)
     log_event(
         db,
@@ -355,6 +457,16 @@ def bulk_upsert_members(
             commit=False,
         )
     db.commit()
+    if joined_check_task_id:
+        # Sau commit — extension pick ngay task tra tab "Người dùng".
+        publish_task_event(
+            workspace_id,
+            {
+                "type": "task-available",
+                "task_id": joined_check_task_id,
+                "task_type": "SYNC_MEMBERS_BATCH",
+            },
+        )
     return {
         "created": created,
         "updated": updated,
@@ -363,6 +475,9 @@ def bulk_upsert_members(
         "rogue_pending_emails": rogue_pending_emails,
         "reconcile_skipped": reconcile_skipped,
         "reconcile_skip_reason": skip_reason,
+        # Số email lệch giữa tab Lời mời và dashboard → đã enqueue tra tab Người dùng.
+        "joined_check_count": len(joined_check_emails),
+        "joined_check_task_id": joined_check_task_id,
     }
 
 

@@ -138,16 +138,22 @@ export default function WorkspaceLayout() {
     },
   });
 
-  // ---- "Đồng bộ lời mời" = QUÉT tab "Lời mời đang chờ xử lý" trên ChatGPT ----
-  // (user 2026-07-21) Nút này nay đọc ĐÚNG tab "Lời mời" qua SYNC_DATA scope=invites
+  // ---- "Lời mời chờ xử lý" = QUÉT tab "Lời mời đang chờ xử lý" trên ChatGPT ----
+  // (user 2026-07-21) Nút này đọc ĐÚNG tab "Lời mời" qua SYNC_DATA scope=invites
   // (syncMembers.mutate("invites")): extension thu thập các email đang ở tab đó
-  // (giống cách "Đồng bộ thành viên" đọc tab "Người dùng") → upsert pending +
-  // phát hiện lời mời lạ. KHÔNG tự phát hiện ai đã tham gia — việc đó dành cho
-  // "Đồng bộ thành viên"/"cả 2". An toàn: reconcile.py với scope='invites' bị
-  // guard (removal_scopes bỏ 'pending' khi thiếu 'active' + cấm hạ active→pending)
-  // nên một lần quét-chỉ-tab-Lời-mời KHÔNG xoá/hạ cấp ai (sự cố mất member
-  // 2026-07-13 đã được chặn). Đảo lại lựa chọn SYNC_MEMBERS_BATCH ngày 2026-07-15;
-  // luồng kiểm-tra-đã-tham-gia qua ô lọc vẫn còn ở per-row + "Cập nhật hàng loạt".
+  // (giống cách "Đồng bộ người dùng hoạt động" đọc tab "Người dùng") → upsert
+  // pending + phát hiện lời mời lạ.
+  //
+  // (user 2026-07-22) Quét xong, backend `reconcile.py` ĐỐI CHIẾU: email dashboard
+  // đang để "chờ tham gia" mà KHÔNG còn ở tab Lời mời → tự enqueue
+  // SYNC_MEMBERS_BATCH để extension tra tiếp TAB NGƯỜI DÙNG → thấy ⇒ đã tham gia
+  // (promote active), không thấy ⇒ giữ pending. Nên nút này giờ TỰ phát hiện ai đã
+  // tham gia, không phải chờ "Đồng bộ cả 2" nữa.
+  //
+  // An toàn: reconcile.py với scope='invites' vẫn bị guard (removal_scopes bỏ
+  // 'pending' khi thiếu 'active' + cấm hạ active→pending) nên một lần
+  // quét-chỉ-tab-Lời-mời KHÔNG xoá/hạ cấp ai (sự cố mất member 2026-07-13 đã được
+  // chặn) — việc "biến mất khỏi tab Lời mời" chỉ dẫn tới TRA THÊM, không tới xoá.
 
   function openInviteForm() {
     setShowInviteModal(true);

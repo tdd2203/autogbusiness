@@ -24,7 +24,7 @@ from app.deps import (
     get_session,
     require_extension_workspace,
 )
-from app.models import Invite, Member, QueueItem, Workspace
+from app.models import AuditLog, Invite, Member, QueueItem, Workspace
 from app.schemas import QueueOut, QueueUpdate
 from app.services import wallet_service
 
@@ -202,18 +202,23 @@ def update_task(
     reconcile_note: str | None = None
     effective_status = body.status
     # REMOVE_MEMBER chỉ được mark removed khi CÓ BẰNG CHỨNG DƯƠNG member đã thực sự
-    # rời ChatGPT: `result.data.verified === true` — extension TÌM THẤY row, click
-    # xoá, rồi POLL xác minh row BIẾN MẤT. Không có bằng chứng dương → GIỮ active.
+    # rời ChatGPT: `result.data.verified === true`. Extension (>= v0.9.23) phát tín
+    # hiệu này qua ĐÚNG HAI đường, cả hai đều là bằng chứng dương:
+    #   1. Tìm thấy row → click xoá → POLL thấy row BIẾN MẤT.
+    #   2. `data.absent === true` — lọc tab "Người dùng" không ra email VÀ đã chứng
+    #      minh ô lọc còn sống (clear lọc thấy member khác → gõ lại vẫn trống). Đúng
+    #      nghiệp vụ: không có trong business thì coi như đã gỡ xong (user
+    #      2026-07-22) — xem `confirmAbsenceViaFilter` bên extension.
     #
-    # ⚠️ KHÔNG suy "không tìm thấy = đã xoá" nữa (bug user 2026-07-21, TÁI diễn
-    # 06:29 cùng ngày): MEMBER_NOT_IN_WORKSPACE từng được auto-convert → removed,
-    # nhưng "không tìm thấy" là tín hiệu KHÔNG đáng tin (ô lọc/scroll-scan có thể sót
-    # do list virtualized hoặc tab nền bị Chrome throttle) → mark removed GIẢ cho
-    # member VẪN CÒN → đồng bộ hồi sinh → xoá-giả lại → VÒNG LẶP. Nay: task gỡ KHÔNG
-    # tìm thấy member → để FAILED, KHÔNG mark removed. "Vắng mặt" chỉ do ĐỒNG BỘ đầy
-    # đủ (SYNC_DATA/bulk-upsert, có expected_total làm nguồn sự thật — xem
-    # reconcile.py) chốt, hoặc do lần gỡ sau tìm-thấy-rồi-xoá-xác-minh. Đảo lại quyết
-    # định cũ "tìm không thấy = xoá luôn" để đổi lấy zero-sai-số (yêu cầu user).
+    # ⚠️ KHÔNG suy "không tìm thấy = đã xoá" một cách TRẦN TRỤI (bug user 2026-07-21,
+    # TÁI diễn 06:29 cùng ngày): `MEMBER_NOT_IN_WORKSPACE` trơ trọi từng được
+    # auto-convert → removed, nhưng "không tìm thấy" KHÔNG đáng tin khi ô lọc vắng
+    # mặt (rơi scroll-scan trên list virtualized) hoặc tab nền bị Chrome throttle →
+    # mark removed GIẢ cho member VẪN CÒN → đồng bộ hồi sinh → VÒNG LẶP xoá-giả. Nên
+    # ranh giới nằm ở BẰNG CHỨNG chứ không ở "thấy/không thấy": ext gửi kèm `absent`
+    # chỉ khi đã tự chứng minh; `MEMBER_NOT_IN_WORKSPACE` (FAILED, ext cũ hoặc không
+    # chứng minh được) vẫn KHÔNG mark removed — để ĐỒNG BỘ đầy đủ (SYNC_DATA/
+    # bulk-upsert, `expected_total` — xem reconcile.py) chốt.
     removal_verified = False
 
     # ---- REVOKE_INVITES COMPLETED → CHỈ mark removed email THỰC SỰ thu hồi ----
@@ -299,6 +304,7 @@ def update_task(
                 target_id=str(workspace.id),
                 data={
                     "emails": sorted(failed_emails),
+                    "queue_item_id": str(item.id),
                     "note": "Extension báo COMPLETED nhưng không thu hồi được các email này (giữ pending)",
                 },
                 commit=False,
@@ -458,6 +464,29 @@ def update_task(
                 member.status = "removed"
                 member.removed_at = datetime.now(timezone.utc)
                 db.add(member)
+                remove_data: dict = {
+                    "email": target_email,
+                    "queue_item_id": str(item.id),
+                }
+                # Gỡ theo đường nào: "clicked" = tìm thấy row → click xoá → poll thấy
+                # biến mất; "absent" = không có trong tab Người dùng (ô lọc đã chứng
+                # minh còn sống). Cần cho hậu kiểm nếu lại nghi ngờ xoá-giả.
+                ext_result_data = (body.result or {}).get("data") or {}
+                if isinstance(ext_result_data, dict) and ext_result_data.get("absent") is True:
+                    remove_data["removal_evidence"] = "absent_confirmed"
+                    remove_data["absence_reason"] = ext_result_data.get("absence_reason")
+                else:
+                    remove_data["removal_evidence"] = "clicked_and_verified"
+                expired_init = db.execute(
+                    select(AuditLog.id)
+                    .where(
+                        AuditLog.action == "MEMBER_EXPIRED_REMOVE_QUEUED",
+                        AuditLog.data["queue_item_id"].astext == str(item.id),
+                    )
+                    .limit(1)
+                ).first()
+                if expired_init:
+                    remove_data["removal_reason"] = "expired"
                 log_event(
                     db,
                     actor_type="EXTENSION",
@@ -468,7 +497,7 @@ def update_task(
                     target_id=str(member.id),
                     # queue_item_id để timeline gộp vào dòng *_REMOVE_QUEUED
                     # tương ứng (lật "Đang chờ" → "Thành công").
-                    data={"email": target_email, "queue_item_id": str(item.id)},
+                    data=remove_data,
                     commit=False,
                 )
 
