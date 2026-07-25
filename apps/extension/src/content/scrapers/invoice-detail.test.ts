@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { __internal } from "./invoice-detail";
+import { __internal, isDetailToggleText } from "./invoice-detail";
 
 const {
   parseUnitPrice,
@@ -86,6 +86,20 @@ describe("invoice-detail scraper (regression 2026-07-06)", () => {
     // đơn giá + số lượng vẫn đọc đúng.
     expect(parseUnitPrice(renew)).toBe(260500);
     expect(parseQuantity(renew, parseSubtotal(renew), parseUnitPrice(renew))).toBe(183);
+  });
+
+  it("nút mở panel: khớp CẢ 'hoá' lẫn 'hóa', KHÔNG khớp nút 'Đóng'", () => {
+    // BUG thực tế: Stripe UI dùng 'hóa' (dấu trên 'o'); regex cũ ho[áà] chỉ khớp
+    // 'hoá' (dấu trên 'a') → không tìm ra nút → panel không mở → no_detail.
+    expect(isDetailToggleText("Xem chi tiết hóa đơn")).toBe(true); // dấu trên 'o'
+    expect(isDetailToggleText("Xem chi tiết hoá đơn")).toBe(true); // dấu trên 'a'
+    expect(isDetailToggleText("Xem chi tiết hóa đơn ›")).toBe(true);
+    expect(isDetailToggleText("Xem chi tiết")).toBe(true);
+    expect(isDetailToggleText("View invoice details")).toBe(true);
+    expect(isDetailToggleText("View details")).toBe(true);
+    // KHÔNG được khớp nút ĐÓNG (nếu khớp → bấm nhầm đóng panel đang mở).
+    expect(isDetailToggleText("Đóng chi tiết hóa đơn")).toBe(false);
+    expect(isDetailToggleText("Đóng chi tiết hoá đơn ✕")).toBe(false);
   });
 
   it("đơn giá EN 'each' và số lượng suy vẫn hoạt động", () => {

@@ -18,6 +18,7 @@ import type {
   ExecuteActionResponse,
 } from "../shared/messages";
 import {
+  isDetailToggleText,
   isDetailUsable,
   scrapeInvoiceDetailFromDom,
 } from "./scrapers/invoice-detail";
@@ -140,16 +141,14 @@ async function humanClickStripe(el: HTMLElement): Promise<void> {
   }
 }
 
-const DETAIL_TOGGLE_RE =
-  /^(xem\s*chi\s*tiết(\s*ho[áà]\s*đơn)?|view\s*invoice\s*details?|view\s*details?|查看发票明细|发票明细|查看明细|查看详情)\s*[>›»]?$/i;
-
 /**
  * Mở panel "Xem chi tiết hoá đơn" nếu chưa mở (để lộ dòng Số lượng / Mỗi / chu
  * kỳ). Stripe render toggle này là <span>/<div> chứ KHÔNG phải <button>/<a>, nên
  * phải quét mọi phần tử, chọn phần tử NHỎ NHẤT (gần lá) có text khớp rồi click cả
  * nó lẫn ancestor clickable (React gắn handler ở cha). Trả true nếu đã bấm.
  */
-/** Tìm phần tử toggle "Xem chi tiết hoá đơn" (nhỏ nhất, đang hiển thị). */
+/** Tìm phần tử toggle "Xem chi tiết hoá đơn" (nhỏ nhất, đang hiển thị).
+ * Nhận diện text qua isDetailToggleText (khớp cả "hoá"/"hóa", loại nút "Đóng"). */
 function findDetailToggle(): HTMLElement | null {
   const all = Array.from(document.querySelectorAll<HTMLElement>("*"));
   let best: HTMLElement | null = null;
@@ -157,7 +156,7 @@ function findDetailToggle(): HTMLElement | null {
   for (const el of all) {
     const text = (el.textContent ?? "").trim();
     if (text.length === 0 || text.length > 40) continue;
-    if (!DETAIL_TOGGLE_RE.test(text)) continue;
+    if (!isDetailToggleText(text)) continue;
     if (el.offsetParent === null) continue; // bỏ phần tử ẩn
     const childCount = el.querySelectorAll("*").length;
     if (childCount < bestChildren) {
@@ -204,7 +203,7 @@ async function scrapeStripeInvoiceDetail(): Promise<ExecuteActionResponse> {
     detail = scrapeInvoiceDetailFromDom();
   }
   console.log(
-    `[autogpt-stripe] scrape-detail v0.9.8 url=${location.href} toggleSeen=${toggleSeen} clicks=${clicks} usable=${isDetailUsable(detail)}:`,
+    `[autogpt-stripe] scrape-detail v0.9.28 url=${location.href} toggleSeen=${toggleSeen} clicks=${clicks} usable=${isDetailUsable(detail)}:`,
     JSON.stringify(detail),
   );
   if (!isDetailUsable(detail)) {
