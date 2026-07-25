@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.9.27";
+export const VERSION = "0.9.28";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,19 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.9.28",
+    date: "2026-07-25",
+    kind: "fix",
+    summary:
+      "GỐC RỄ của lỗi không đọc được chi tiết hoá đơn: nút UI là 'Xem chi tiết hóa đơn' (dấu trên 'o') nhưng regex chỉ khớp 'hoá' (dấu trên 'a') → không tìm ra nút → panel không mở → no_detail. Nay khớp cả 2 kiểu bỏ dấu.",
+    details: [
+      "USER REPORT 2026-07-25: 'sửa mãi vẫn lỗi' — trang Thanh toán vẫn trống dù đã mở tab foreground.",
+      "ROOT CAUSE: DETAIL_TOGGLE_RE dùng `ho[áà]` (khớp 'hoá' — dấu sắc trên 'a'), nhưng Stripe UI hiển thị 'Xem chi tiết hóa đơn' ('hóa' — dấu sắc trên 'o', ký tự Unicode khác). Regex trượt → findDetailToggle trả null → panel không mở → mọi parser đọc rỗng → no_detail. Deterministic, không phải do timing/layout.",
+      "FIX: tách hàm isDetailToggleText sang invoice-detail.ts (thuần, test được). Nhận diện nút CHỈ cần bắt đầu bằng 'Xem chi tiết' / 'View details' — khớp cả 'hoá'/'hóa', vẫn LOẠI nút 'Đóng chi tiết' (bắt đầu bằng 'Đóng').",
+      "LƯU Ý: web dashboard cần deploy lại để Tổng seat lấy từ tab Kế hoạch (46) — nếu chưa deploy, web cũ hiển thị seat theo hoá đơn (proration nên lệch).",
+    ],
+  },
   {
     version: "0.9.27",
     date: "2026-07-25",

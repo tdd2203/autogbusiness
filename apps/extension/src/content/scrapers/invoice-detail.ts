@@ -230,6 +230,23 @@ function parseStatus(text: string): ScrapedInvoiceDetail["status"] {
 }
 
 /**
+ * Nhận diện text của nút MỞ panel "Xem chi tiết hoá đơn".
+ *
+ * ⚠️ Chỉ cần BẮT ĐẦU bằng "Xem chi tiết" (vi) / "View details" (en) / các biến
+ * thể zh — KHÔNG so khớp cả cụm "hoá đơn". Lý do: tiếng Việt có 2 kiểu bỏ dấu
+ * "ho[á] đơn" (dấu trên 'a') và "h[ó]a đơn" (dấu trên 'o'); regex cũ `ho[áà]` chỉ
+ * khớp kiểu đầu → trượt nút "Xem chi tiết hóa đơn" (Stripe dùng kiểu sau) → panel
+ * không bao giờ mở → đọc rỗng. Prefix "xem chi tiết" cũng LOẠI nút "Đóng chi tiết"
+ * (bắt đầu bằng "đóng") nên không vô tình đóng panel đang mở.
+ */
+const DETAIL_TOGGLE_RE =
+  /^(?:xem\s*chi\s*tiết|view\s*(?:invoice\s*)?details?|查看发票明细|发票明细|查看明细|查看详情)/i;
+
+export function isDetailToggleText(text: string): boolean {
+  return DETAIL_TOGGLE_RE.test(text.trim());
+}
+
+/**
  * Scrape toàn bộ trường chi tiết từ DOM trang hoá đơn Stripe hiện tại (panel
  * "Xem chi tiết hoá đơn" phải đang mở).
  */
