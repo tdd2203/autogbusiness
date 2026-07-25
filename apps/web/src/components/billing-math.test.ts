@@ -330,6 +330,49 @@ describe("computeBillingCycle", () => {
       expect(c.projectedNextCycleWithVat).toBe(35 * 286550);
     });
 
+    it("hoá đơn chu kỳ đọc detail FAIL → vẫn hiện seats (plan) + tổng chi (list), giá '—'", () => {
+      // Đúng tình huống thực: hoá đơn gia hạn nhiều proration đọc chi tiết fail
+      // (detail_scraped=false) nhưng có amount trên list. Không hoá đơn kỳ trước.
+      const curNoDetail: BillingInvoice = {
+        date: "2026-07-25T00:00:00Z",
+        amount_vnd: 15607218,
+        status: "paid",
+        detail_scraped: false,
+      };
+      const c = computeBillingCycle(
+        [curNoDetail],
+        "2026-08-25T00:00:00Z",
+        new Date("2026-07-25T00:00:00Z"),
+        46,
+      );
+      expect(c.note).toBe("no_detail");
+      expect(c.totalSeats).toBe(46); // từ tab Kế hoạch
+      expect(c.totalCyclePaidWithVat).toBe(15607218); // từ list, không cần detail
+      expect(c.fullMonthPerSlot).toBeNull(); // giá/seat chưa có
+    });
+
+    it("detail chu kỳ FAIL nhưng có hoá đơn kỳ trước → ước tính giá + tổng chi thực từ list", () => {
+      // Hoá đơn gia hạn 25/7 (15.6M) đọc detail fail; hoá đơn kỳ trước 25/6 đọc
+      // được đơn giá → giá/seat ước tính, tổng chi vẫn = số thực trên list.
+      const curNoDetail: BillingInvoice = {
+        date: "2026-07-25T00:00:00Z",
+        amount_vnd: 15607218,
+        status: "paid",
+        detail_scraped: false,
+      };
+      const c = computeBillingCycle(
+        [curNoDetail, baseInvoice()],
+        "2026-08-25T00:00:00Z",
+        new Date("2026-07-25T00:00:00Z"),
+        46,
+      );
+      expect(c.note).toBe("estimated");
+      expect(c.totalSeats).toBe(46);
+      expect(c.fullMonthPerSlotWithVat).toBe(286550);
+      expect(c.totalCyclePaidWithVat).toBe(15607218); // số thực từ hoá đơn hiện tại
+      expect(c.projectedNextCycleWithVat).toBe(46 * 286550);
+    });
+
     it("chu kỳ mới rỗng & KHÔNG có hoá đơn kỳ trước đọc được giá → no_detail (không đoán)", () => {
       const noDetail: BillingInvoice = {
         date: "2026-06-25T00:00:00Z",
