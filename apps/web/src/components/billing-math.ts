@@ -4,11 +4,14 @@
  * (chia tổng tiền cho dải slot 1..10, chặn giá 200–400k) vốn fail với workspace
  * >10 seat / giá cao.
  *
- * Quy tắc (2026-07-06):
+ * Quy tắc (2026-07-06, cập nhật 2026-07-25):
  *   - Chỉ tính trên hoá đơn ĐÃ THANH TOÁN (status="paid"). Void/unpaid bị loại.
- *   - renewal_date / cycle_start ưu tiên lấy từ period_end / period_start của hoá
- *     đơn gốc chu kỳ (hoá đơn có period_start MỚI NHẤT). Fallback: renewal_date
- *     của workspace (đoán từ tab Kế hoạch) + cycle_start = renewal − 30 ngày.
+ *   - CHU KỲ CHUẨN = "Current cycle" tab Kế hoạch (workspaceRenewalIso = ngày kết
+ *     thúc). ƯU TIÊN nguồn này; period hoá đơn chỉ TINH CHỈNH cycle_start (hoá đơn
+ *     add-seat cùng renewal) hoặc DỰ PHÒNG khi tab Kế hoạch không cho renewal.
+ *     cycle_start = renewal − 1 tháng lịch.
+ *   - Chu kỳ mới CHƯA có hoá đơn (đúng ngày renew) → ƯỚC TÍNH (note="estimated")
+ *     theo giá/seat hoá đơn gốc chu kỳ TRƯỚC × số seat hiện tại (seatCount).
  *   - fullMonthPerSlot = unit_price_vnd của hoá đơn gốc chu kỳ (KHÔNG chia tổng).
  *   - fullMonthPerSlotWithVat = unit_price × (1+VAT) — KHÔNG lấy total÷qty (total
  *     hoá đơn gia hạn gồm proration nên bị đội lên).
@@ -49,10 +52,15 @@ export type BillingCycle = {
   /** ok = tính được giá; các note khác → hiển thị hint tương ứng. */
   note:
     | "ok"
+    // Chu kỳ mới CHƯA có hoá đơn nào (đúng ngày renew, hoá đơn mới chưa lên) →
+    // ước tính giá/dự kiến từ giá/seat chu kỳ TRƯỚC × số seat hiện tại.
+    | "estimated"
     | "no_invoices"
     | "no_detail"
     | "no_renewal_date"
     | "cycle_ended";
+  /** true khi giá/dự kiến là ƯỚC TÍNH từ chu kỳ trước (note="estimated"). */
+  estimated: boolean;
   renewalDate: Date | null;
   cycleStart: Date | null;
   daysRemaining: number | null;
@@ -111,6 +119,36 @@ function invDateMs(inv: BillingInvoice): number {
 }
 
 /**
+ * Hoá đơn GỐC chu kỳ TRƯỚC — dùng làm giá/seat ước tính khi chu kỳ hiện tại chưa
+ * có hoá đơn. Ưu tiên hoá đơn có đơn giá + period_end ≤ cycle_start (kết thúc
+ * trước/đúng đầu chu kỳ hiện tại = thuộc kỳ trước), chọn period_end MUỘN NHẤT
+ * (kỳ liền trước). Fallback: hoá đơn có đơn giá, NGÀY < cycle_start, mới nhất.
+ */
+function findPreviousCycleBase(
+  paid: BillingInvoice[],
+  cycleStart: Date,
+): BillingInvoice | null {
+  const cs = cycleStart.getTime();
+  const withEnd = paid.filter(
+    (inv) =>
+      hasUnitPrice(inv) &&
+      inv.period_end &&
+      atUtcMidnight(inv.period_end).getTime() <= cs,
+  );
+  if (withEnd.length > 0) {
+    return withEnd.reduce((a, b) =>
+      atUtcMidnight(b.period_end as string).getTime() >
+      atUtcMidnight(a.period_end as string).getTime()
+        ? b
+        : a,
+    );
+  }
+  const before = paid.filter((inv) => hasUnitPrice(inv) && invDateMs(inv) < cs);
+  if (before.length === 0) return null;
+  return before.reduce((a, b) => (invDateMs(b) > invDateMs(a) ? b : a));
+}
+
+/**
  * Tính chu kỳ billing từ list hoá đơn + renewal_date của workspace (fallback).
  * `today` cho phép inject để test (mặc định = bây giờ).
  */
@@ -118,9 +156,13 @@ export function computeBillingCycle(
   invoices: BillingInvoice[] | null | undefined,
   workspaceRenewalIso: string | null,
   today: Date = new Date(),
+  /** Số seat HIỆN TẠI (từ tab Kế hoạch) — dùng cho dự kiến/ước tính khi chu kỳ
+   * mới chưa có hoá đơn. Bỏ trống → suy từ quantity hoá đơn. */
+  seatCount: number | null = null,
 ): BillingCycle {
   const base: BillingCycle = {
     note: "no_invoices",
+    estimated: false,
     renewalDate: null,
     cycleStart: null,
     daysRemaining: null,
@@ -150,12 +192,36 @@ export function computeBillingCycle(
   todayMid.setUTCHours(0, 0, 0, 0);
 
   // 1) Xác định renewal / cycle_start.
+  //
+  // CHU KỲ CHUẨN = "Current cycle" tab Kế hoạch (workspaceRenewalIso = ngày kết
+  // thúc). Đây là NGUỒN ƯU TIÊN — extension đã neo renewal_date theo tab Kế hoạch.
+  // period hoá đơn chỉ dùng để TINH CHỈNH cycle_start (hoá đơn add-seat giữa kỳ)
+  // hoặc làm dự phòng khi tab Kế hoạch không cho renewal.
   const detailWithPeriod = paid.filter(
     (inv) => hasDetail(inv) && inv.period_start && inv.period_end,
   );
   let renewalDate: Date | null = null;
   let cycleStart: Date | null = null;
-  if (detailWithPeriod.length > 0) {
+  if (workspaceRenewalIso) {
+    renewalDate = atUtcMidnight(workspaceRenewalIso);
+    cycleStart = cycleStartFromRenewal(renewalDate);
+    // Tinh chỉnh cycle_start = period_start SỚM NHẤT của hoá đơn cùng ngày kết
+    // thúc chu kỳ (hoá đơn gia hạn đầu kỳ / add-seat giữa kỳ cùng renewal).
+    const renewalMs = renewalDate.getTime();
+    const sameEnd = detailWithPeriod.filter(
+      (inv) => atUtcMidnight(inv.period_end as string).getTime() === renewalMs,
+    );
+    if (sameEnd.length > 0) {
+      cycleStart = new Date(
+        Math.min(
+          ...sameEnd.map((inv) =>
+            atUtcMidnight(inv.period_start as string).getTime(),
+          ),
+        ),
+      );
+    }
+  } else if (detailWithPeriod.length > 0) {
+    // Dự phòng: tab Kế hoạch không cho renewal → suy từ period hoá đơn.
     // renewal = period_end gần nhất TRONG TƯƠNG LAI (chu kỳ hiện tại); nếu mọi
     // period_end đã qua → lấy period_end lớn nhất (sẽ rơi vào nhánh cycle_ended).
     const ends = detailWithPeriod.map((inv) =>
@@ -165,8 +231,6 @@ export function computeBillingCycle(
     const renewalMs =
       future.length > 0 ? Math.min(...future) : Math.max(...ends);
     renewalDate = new Date(renewalMs);
-    // cycle_start = period_start SỚM NHẤT trong các hoá đơn cùng period_end (hoá
-    // đơn add-seat giữa kỳ có period_start muộn hơn nhưng cùng chu kỳ).
     const sameEnd = detailWithPeriod.filter(
       (inv) => atUtcMidnight(inv.period_end as string).getTime() === renewalMs,
     );
@@ -175,9 +239,6 @@ export function computeBillingCycle(
         ...sameEnd.map((inv) => atUtcMidnight(inv.period_start as string).getTime()),
       ),
     );
-  } else if (workspaceRenewalIso) {
-    renewalDate = atUtcMidnight(workspaceRenewalIso);
-    cycleStart = cycleStartFromRenewal(renewalDate);
   } else {
     return { ...base, note: "no_renewal_date" };
   }
@@ -230,6 +291,68 @@ export function computeBillingCycle(
   }
 
   if (!baseInvoice || baseInvoice.unit_price_vnd == null) {
+    // Chu kỳ HIỆN TẠI chưa có hoá đơn (gốc) đọc được đơn giá. Nếu chu kỳ chuẩn
+    // đến từ tab Kế hoạch (workspaceRenewalIso) và có hoá đơn chu kỳ TRƯỚC còn
+    // đơn giá → ƯỚC TÍNH giá/dự kiến theo giá/seat kỳ trước × số seat hiện tại
+    // (đúng ngày renew mà hoá đơn mới chưa lên). Nếu không → không đoán.
+    const prevBase = workspaceRenewalIso
+      ? findPreviousCycleBase(paid, cycleStart as Date)
+      : null;
+    if (prevBase && prevBase.unit_price_vnd != null) {
+      const fullMonthPerSlot = prevBase.unit_price_vnd;
+      const vatRate =
+        prevBase.vat_vnd != null && prevBase.subtotal_vnd
+          ? prevBase.vat_vnd / prevBase.subtotal_vnd
+          : 0.1;
+      const fullMonthPerSlotWithVat = Math.round(
+        fullMonthPerSlot * (1 + vatRate),
+      );
+      const proRataDays = Math.min(daysRemaining, CYCLE_DAYS);
+      const todayPrice = Math.round((fullMonthPerSlot * proRataDays) / CYCLE_DAYS);
+      const todayPriceWithVat = Math.round(
+        (fullMonthPerSlotWithVat * proRataDays) / CYCLE_DAYS,
+      );
+      // Số seat cho dự kiến: ưu tiên seat HIỆN TẠI (tab Kế hoạch), fallback số
+      // seat hoá đơn kỳ trước.
+      const totalSeats =
+        seatCount != null && seatCount > 0 ? seatCount : prevBase.quantity ?? null;
+      const projectedNextCycleWithVat =
+        totalSeats != null ? totalSeats * fullMonthPerSlotWithVat : null;
+      // Tổng đã chi chu kỳ = Σ hoá đơn Paid trong chu kỳ (thường = 0 khi hoá đơn
+      // mới chưa lên; >0 nếu đã có hoá đơn true-up chưa đọc được đơn giá).
+      const totalCyclePaidWithVat = cycleInvoices.reduce(
+        (sum, inv) => sum + (inv.total_vnd ?? inv.amount_vnd ?? 0),
+        0,
+      );
+      const totalCycleFees = cycleInvoices.reduce(
+        (sum, inv) => sum + (inv.service_fee_vnd ?? 0),
+        0,
+      );
+      return {
+        ...base,
+        note: "estimated",
+        estimated: true,
+        renewalDate,
+        cycleStart,
+        daysRemaining,
+        cycleInvoices,
+        baseInvoice: prevBase,
+        fullMonthPerSlot,
+        fullMonthPerSlotWithVat,
+        fullMonthPerSlotWithFee: fullMonthPerSlotWithVat,
+        feePerSeat: null,
+        vatRate,
+        todayPrice,
+        todayPriceWithVat,
+        todayPriceWithFee: todayPriceWithVat,
+        totalSeats,
+        totalCyclePaidWithVat,
+        totalCycleFees,
+        totalCyclePaidWithFees: totalCyclePaidWithVat + totalCycleFees,
+        projectedNextCycleWithVat,
+        detailedCount: 0,
+      };
+    }
     // Có hoá đơn Paid trong chu kỳ nhưng chưa đọc được đơn giá → không đoán.
     return {
       ...base,
@@ -305,6 +428,7 @@ export function computeBillingCycle(
 
   return {
     note: "ok",
+    estimated: false,
     renewalDate,
     cycleStart,
     daysRemaining,

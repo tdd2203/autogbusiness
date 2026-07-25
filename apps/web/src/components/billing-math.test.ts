@@ -265,4 +265,86 @@ describe("computeBillingCycle", () => {
     expect(c.renewalDate?.toISOString()).toContain("2026-07-25");
     expect(c.fullMonthPerSlot).toBe(260500);
   });
+
+  describe("chu kỳ chuẩn = tab Kế hoạch (workspaceRenewalIso ưu tiên)", () => {
+    it("renewal tab Kế hoạch (25/8) ĐÈ period hoá đơn kỳ trước (25/7)", () => {
+      // Hoá đơn chu kỳ mới 25/7→25/8 đã lên. Plan renewal = 25/8.
+      const cur = baseInvoice({
+        date: "2026-07-25T00:00:00Z",
+        quantity: 46,
+        subtotal_vnd: 14188380,
+        vat_vnd: 1418838,
+        total_vnd: 15607218,
+        amount_vnd: 15607218,
+        period_start: "2026-07-25T00:00:00Z",
+        period_end: "2026-08-25T00:00:00Z",
+        invoice_number: "MSNS6RGC-0025",
+      });
+      const c = computeBillingCycle(
+        [baseInvoice(), cur],
+        "2026-08-25T00:00:00Z",
+        new Date("2026-07-25T00:00:00Z"),
+        46,
+      );
+      expect(c.note).toBe("ok");
+      expect(c.estimated).toBe(false);
+      expect(c.renewalDate?.toISOString()).toContain("2026-08-25");
+      expect(c.cycleStart?.toISOString()).toContain("2026-07-25");
+      expect(c.totalSeats).toBe(46);
+      expect(c.fullMonthPerSlotWithVat).toBe(286550);
+      // Chỉ hoá đơn 25/7 thuộc chu kỳ → tổng chi = total của nó, KHÔNG gồm 25/6.
+      expect(c.totalCyclePaidWithVat).toBe(15607218);
+      expect(c.projectedNextCycleWithVat).toBe(46 * 286550);
+    });
+
+    it("ĐÚNG NGÀY RENEW, chu kỳ mới CHƯA có hoá đơn → ước tính từ giá kỳ trước × seat hiện tại", () => {
+      // Chỉ có hoá đơn kỳ trước (25/6→25/7). Plan đã cuộn sang 25/7→25/8. seat=46.
+      const c = computeBillingCycle(
+        [baseInvoice()], // period 25/6→25/7, unit 260500, qty 35
+        "2026-08-25T00:00:00Z",
+        new Date("2026-07-25T00:00:00Z"),
+        46,
+      );
+      expect(c.note).toBe("estimated");
+      expect(c.estimated).toBe(true);
+      expect(c.renewalDate?.toISOString()).toContain("2026-08-25");
+      expect(c.cycleStart?.toISOString()).toContain("2026-07-25");
+      expect(c.daysRemaining).toBe(31);
+      expect(c.fullMonthPerSlot).toBe(260500);
+      expect(c.fullMonthPerSlotWithVat).toBe(286550);
+      // Số seat cho dự kiến = seat HIỆN TẠI (46), KHÔNG phải qty kỳ trước (35).
+      expect(c.totalSeats).toBe(46);
+      expect(c.projectedNextCycleWithVat).toBe(46 * 286550);
+      // Chu kỳ mới chưa có hoá đơn → chưa chi.
+      expect(c.totalCyclePaidWithVat).toBe(0);
+    });
+
+    it("ước tính dùng qty kỳ trước khi KHÔNG truyền seatCount", () => {
+      const c = computeBillingCycle(
+        [baseInvoice()],
+        "2026-08-25T00:00:00Z",
+        new Date("2026-07-25T00:00:00Z"),
+      );
+      expect(c.note).toBe("estimated");
+      expect(c.totalSeats).toBe(35); // qty hoá đơn kỳ trước
+      expect(c.projectedNextCycleWithVat).toBe(35 * 286550);
+    });
+
+    it("chu kỳ mới rỗng & KHÔNG có hoá đơn kỳ trước đọc được giá → no_detail (không đoán)", () => {
+      const noDetail: BillingInvoice = {
+        date: "2026-06-25T00:00:00Z",
+        amount_vnd: 10029250,
+        status: "paid",
+        detail_scraped: false,
+      };
+      const c = computeBillingCycle(
+        [noDetail],
+        "2026-08-25T00:00:00Z",
+        new Date("2026-07-25T00:00:00Z"),
+        46,
+      );
+      expect(c.note).toBe("no_detail");
+      expect(c.estimated).toBe(false);
+    });
+  });
 });
