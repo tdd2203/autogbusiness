@@ -176,12 +176,15 @@ function findDetailToggle(): HTMLElement | null {
 async function openInvoiceDetailPanel(): Promise<boolean> {
   const toggle = findDetailToggle();
   if (!toggle) return false;
-  const clickable =
-    (toggle.closest(
-      "a, button, [role='button'], [class*='button' i], [class*='link' i], [class*='Link' i]",
-    ) as HTMLElement | null) ?? toggle;
-  await humanClickStripe(clickable);
-  if (clickable !== toggle) await humanClickStripe(toggle);
+  console.log(
+    `[autogpt-stripe] toggle mở panel: "${(toggle.textContent ?? "").trim().slice(0, 40)}"`,
+  );
+  // CHỈ bấm 1 LẦN đúng vào nút (giống người dùng bấm tay). Nút này là TOGGLE:
+  // bấm mở panel, bấm lại đóng. Bản cũ bấm cả ancestor lẫn nút (2 lần) → mở rồi
+  // đóng ngay → panel không bao giờ ở trạng thái mở. React bắt sự kiện qua bubbling
+  // nên bấm chính span text là đủ (handler ở cha vẫn nhận). Vòng lặp sau thấy nút
+  // đổi thành "Đóng chi tiết" (không khớp) → KHÔNG bấm lại → panel giữ mở.
+  await humanClickStripe(toggle);
   return true;
 }
 
@@ -203,9 +206,27 @@ async function scrapeStripeInvoiceDetail(): Promise<ExecuteActionResponse> {
     detail = scrapeInvoiceDetailFromDom();
   }
   console.log(
-    `[autogpt-stripe] scrape-detail v0.9.28 url=${location.href} toggleSeen=${toggleSeen} clicks=${clicks} usable=${isDetailUsable(detail)}:`,
+    `[autogpt-stripe] scrape-detail v0.9.29 url=${location.href} toggleSeen=${toggleSeen} clicks=${clicks} usable=${isDetailUsable(detail)}:`,
     JSON.stringify(detail),
   );
+  if (!isDetailUsable(detail)) {
+    // Chẩn đoán: liệt kê text các phần tử lá chứa "chi tiết"/"detail" để biết nút
+    // thật là gì (và có nằm trong iframe không — content script không vào được).
+    const candidates = [
+      ...new Set(
+        Array.from(document.querySelectorAll<HTMLElement>("*"))
+          .filter((el) => el.children.length === 0)
+          .map((el) => (el.textContent ?? "").trim())
+          .filter((t) => t.length > 0 && t.length < 50 && /chi\s*tiết|detail|明细|详情/i.test(t)),
+      ),
+    ].slice(0, 10);
+    console.log(
+      `[autogpt-stripe] DIAG ứng viên 'chi tiết':`,
+      JSON.stringify(candidates),
+      `| iframes=${document.querySelectorAll("iframe").length}`,
+      `| bodyLen=${(document.body?.textContent ?? "").length}`,
+    );
+  }
   if (!isDetailUsable(detail)) {
     return {
       ok: false,
