@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.9.28";
+export const VERSION = "0.9.29";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,19 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.9.29",
+    date: "2026-07-25",
+    kind: "fix",
+    summary:
+      "Bấm 'Xem chi tiết hóa đơn' chỉ 1 LẦN (bản cũ bấm cả nút lẫn ancestor = 2 lần → mở rồi ĐÓNG ngay → panel không hiện). Thêm log chẩn đoán nút.",
+    details: [
+      "USER REPORT 2026-07-25: đã tìm ra nút nhưng panel chi tiết bên phải vẫn không hiện khi extension bấm.",
+      "ROOT CAUSE: openInvoiceDetailPanel bấm `clickable` (ancestor a/button/[class*=link]) RỒI bấm cả `toggle` → 2 lần bấm cùng 1 handler toggle → mở panel xong ĐÓNG ngay → luôn ở trạng thái đóng → no_detail.",
+      "FIX: chỉ bấm 1 LẦN đúng vào nút (span text) — React nhận qua bubbling nên đủ. Vòng lặp sau thấy nút đổi thành 'Đóng chi tiết' → không bấm lại → panel giữ mở.",
+      "Thêm log DIAG: khi vẫn fail, in ra text các nút chứa 'chi tiết' + số iframe + độ dài body — để chẩn đoán chính xác nếu còn vướng.",
+    ],
+  },
   {
     version: "0.9.28",
     date: "2026-07-25",
