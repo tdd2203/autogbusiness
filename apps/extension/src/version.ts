@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.9.29";
+export const VERSION = "0.9.30";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,17 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.9.30",
+    date: "2026-07-25",
+    kind: "fix",
+    summary:
+      "Sau khi mở panel chi tiết hoá đơn → CUỘN xuống đáy để render toàn bộ (dòng Tổng phụ / Số tiền đến hạn / 'Mỗi' / chu kỳ nằm ở CUỐI, không cuộn thì chưa vào DOM → đọc rỗng).",
+    details: [
+      "USER: đã mở được panel chi tiết; cần cuộn tab đó đến cuối để lấy toàn bộ hoá đơn.",
+      "stripe-invoice.ts: thêm scrollDetailPanelToBottom — cuộn mọi container cuộn được xuống đáy theo từng bước (kích hoạt lazy render). Gọi trong vòng poll sau khi mở panel, trước khi scrape. Tăng deadline 14s → 20s cho hoá đơn nhiều dòng.",
+    ],
+  },
   {
     version: "0.9.29",
     date: "2026-07-25",
