@@ -360,6 +360,8 @@
   "billing.noInvoicesHint": "暂无账单 (请同步账单)",
   "billing.noRenewalHint": "尚未获取续期日 — 请同步账单",
   "billing.cycleEndedHint": "周期已结束 — 等待新同步",
+  "billing.estimatedBadge": "预估",
+  "billing.estimatedHint": "新周期尚无账单 — 价格与预计为按上一周期每席位价 × 当前席位数的预估值。新周期账单出来后请重新同步以获取准确数字。",
   "billing.invoiceHistoryToggle": "查看 {n} 条账单历史",
   "billing.colDate": "日期",
   "billing.colAmount": "金额",

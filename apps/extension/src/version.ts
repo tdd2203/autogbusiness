@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.9.24";
+export const VERSION = "0.9.25";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,19 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.9.25",
+    date: "2026-07-25",
+    kind: "fix",
+    summary:
+      "Chu kỳ billing lấy CHUẨN theo 'Current cycle' tab Kế hoạch (không còn suy nhầm từ hoá đơn mới nhất). Đúng ngày renew mà hoá đơn chu kỳ mới chưa lên → không còn báo 'cycle_ended', mà ước tính giá theo chu kỳ trước × số seat hiện tại.",
+    details: [
+      "USER REPORT 2026-07-25: logic đọc invoice sai khi cập nhật giá & ngày renew — cần đọc 'Current cycle' ở tab Kế hoạch TRƯỚC làm chuẩn, rồi mới đối chiếu hoá đơn vào cửa sổ chu kỳ đó.",
+      "runner.ts (enrichInvoicesWithDetails): biên chu kỳ lấy từ billing.renewal_date (ngày kết thúc 'Current cycle') = [renewal − 1 tháng lịch, renewal). renewal_date GIỮ theo tab Kế hoạch, KHÔNG để period_end hoá đơn kỳ trước ghi đè (bug cũ khiến đúng ngày 25 khoá nhầm chu kỳ trước → web báo cycle_ended).",
+      "billing.ts: parseRenewalDateVi nay parse thêm dải ngày TIẾNG ANH ('Current cycle: Jul 25 - Aug 25') — trước chỉ VI/ZH → trang Kế hoạch tiếng Anh cho renewal=null.",
+      "web billing-math.ts: chu kỳ chuẩn = workspaceRenewalIso (tab Kế hoạch) ưu tiên; period hoá đơn chỉ tinh chỉnh cycle_start / dự phòng. Đúng ngày renew chưa có hoá đơn → note 'estimated': giá/seat + dự kiến ước tính theo hoá đơn gốc chu kỳ TRƯỚC × số seat hiện tại. Panel hiện badge 'ước tính'.",
+    ],
+  },
   {
     version: "0.9.24",
     date: "2026-07-22",

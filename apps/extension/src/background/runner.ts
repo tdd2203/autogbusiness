@@ -901,6 +901,30 @@ function cycleStartMs(cycleEndMs: number): number {
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - 1, d.getUTCDate());
 }
 
+/**
+ * Ngày kết thúc "Current cycle" từ tab Kế hoạch (billing.renewal_date) → ms UTC
+ * nửa đêm. Đây là CHU KỲ CHUẨN. Nếu giá trị scrape được đã qua (đúng ngày renew
+ * mà tab Kế hoạch chưa kịp cuộn sang chu kỳ mới) → tiến 1 tháng lịch để chu kỳ
+ * chuẩn là chu kỳ ĐANG chạy (hôm nay < renewal). Trả null nếu không parse được.
+ */
+function parsePlanRenewalMs(
+  renewalIso: string | null | undefined,
+  todayMs: number,
+): number | null {
+  if (!renewalIso) return null;
+  const d = new Date(renewalIso);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setUTCHours(0, 0, 0, 0);
+  let ms = d.getTime();
+  let guard = 0;
+  while (ms <= todayMs && guard < 3) {
+    const dd = new Date(ms);
+    ms = Date.UTC(dd.getUTCFullYear(), dd.getUTCMonth() + 1, dd.getUTCDate());
+    guard++;
+  }
+  return ms;
+}
+
 /** Đọc chi tiết 1 hoá đơn (mở tab Stripe) và gộp vào phần tử invoice. */
 async function openAndMergeDetail(
   inv: BillingInvoiceWire,
@@ -924,15 +948,21 @@ async function openAndMergeDetail(
 }
 
 /**
- * Đọc chi tiết CHỈ các hoá đơn Paid thuộc CHU KỲ 30 NGÀY HIỆN TẠI (không mở tràn
- * lan gây rối). Chiến lược xác định chu kỳ để tối thiểu số lần mở:
- *   1. Nếu tab Kế hoạch đã cho `renewal_date` → cửa sổ chu kỳ = [renewal−30d,
- *      renewal). KHÔNG tốn lần mở nào để xác định chu kỳ.
- *   2. Nếu thiếu renewal → mở ĐÚNG 1 hoá đơn Paid MỚI NHẤT, đọc `period` của nó
- *      làm biên chu kỳ.
- * Sau đó chỉ mở các hoá đơn Paid có NGÀY (trên list) nằm trong cửa sổ đó.
- * renewal_date cuối cùng suy từ `period_end` hoá đơn gốc chu kỳ. Mở TUẦN TỰ +
- * delay ngẫu nhiên; 1 hoá đơn lỗi → detail_scraped=false, không fail task.
+ * Đọc chi tiết CHỈ các hoá đơn Paid thuộc CHU KỲ HIỆN TẠI (không mở tràn lan).
+ *
+ * CHU KỲ CHUẨN = "Current cycle" trên tab Kế hoạch (billing.renewal_date = ngày
+ * KẾT THÚC chu kỳ). Đây là nguồn ưu tiên — đúng quy trình: đọc chu kỳ ở tab Kế
+ * hoạch TRƯỚC, rồi mới đối chiếu hoá đơn vào cửa sổ [cycle_start, renewal).
+ * Cửa sổ chu kỳ = [renewal − 1 tháng lịch, renewal).
+ *
+ * Chiến lược mở:
+ *   1. Có chu kỳ chuẩn → mở các hoá đơn Paid có NGÀY (trên list) trong cửa sổ.
+ *   2. Chu kỳ chuẩn CHƯA có hoá đơn nào (đúng ngày renew, hoá đơn mới chưa lên) →
+ *      vẫn mở hoá đơn Paid MỚI NHẤT (của chu kỳ TRƯỚC) để web lấy được giá/seat
+ *      kỳ trước làm ƯỚC TÍNH. KHÔNG ghi đè chu kỳ chuẩn bằng period kỳ trước.
+ *   3. KHÔNG có chu kỳ chuẩn (tab Kế hoạch không đọc được renewal) → dự phòng:
+ *      mở hoá đơn mới nhất, suy chu kỳ từ `period_end` của nó.
+ * Mở TUẦN TỰ + delay ngẫu nhiên; 1 hoá đơn lỗi → detail_scraped=false, không fail.
  */
 async function enrichInvoicesWithDetails(
   config: ExtensionConfig,
@@ -948,46 +978,41 @@ async function enrichInvoicesWithDetails(
   if (paid.length === 0) return;
 
   const opened = new Set<BillingInvoiceWire>();
+  const todayMs = new Date().setUTCHours(0, 0, 0, 0);
 
-  // Bước 1: LUÔN mở hoá đơn Paid MỚI NHẤT trước để BIẾT CHU KỲ — neo theo
-  // period_END (= renewal, dùng chung cho cả chu kỳ; KHÔNG dùng period_start vì
-  // hoá đơn add-seat giữa kỳ có period_start muộn hơn ngày gốc kỳ). Hoá đơn mới
-  // nhất cũng nằm TRONG chu kỳ nên không phí. Biết chu kỳ rồi → BỎ QUA mọi hoá
-  // đơn ngoài [cycle_start, renewal). Tin cậy hơn renewal đoán từ tab Kế hoạch.
+  // Bước 1: chu kỳ CHUẨN từ tab Kế hoạch (nguồn ưu tiên).
+  let cycleEnd: number | null = parsePlanRenewalMs(billing.renewal_date, todayMs);
+  let cycleStart: number | null = cycleEnd !== null ? cycleStartMs(cycleEnd) : null;
+
+  const inWindow = (inv: BillingInvoiceWire, cs: number, ce: number): boolean => {
+    const t = invoiceDateMs(inv);
+    return t >= cs && t < ce;
+  };
+
+  // Bước 2: hoá đơn thuộc chu kỳ chuẩn (theo NGÀY hoá đơn trên list).
+  let targets: BillingInvoiceWire[] =
+    cycleStart !== null && cycleEnd !== null
+      ? paid.filter((inv) => inWindow(inv, cycleStart as number, cycleEnd as number))
+      : [];
+
+  // Bước 3: mở hoá đơn mới nhất khi (a) không có chu kỳ chuẩn → suy chu kỳ từ nó;
+  // hoặc (b) chu kỳ chuẩn rỗng → nó là hoá đơn kỳ TRƯỚC, mở để web ước tính giá.
   const newest = paid[0];
-  await reportRunnerProgress(config, taskId, {
-    phase: "scraping",
-    message: "Xác định chu kỳ: đọc hoá đơn mới nhất...",
-  });
-  await openAndMergeDetail(newest, taskId);
-  opened.add(newest);
-
-  let cycleEnd: number | null = null;
-  let cycleStart: number | null = null;
-  if (newest.detail_scraped && newest.period_end) {
-    cycleEnd = new Date(newest.period_end).setUTCHours(0, 0, 0, 0);
-    cycleStart = cycleStartMs(cycleEnd);
-  } else if (billing.renewal_date) {
-    // Dự phòng: hoá đơn mới nhất không đọc được period → dùng renewal tab Kế hoạch.
-    const r = new Date(billing.renewal_date);
-    r.setUTCHours(0, 0, 0, 0);
-    cycleEnd = r.getTime();
-    cycleStart = cycleStartMs(cycleEnd);
-  }
-
-  // Bước 2: chốt tập hoá đơn cần mở = Paid có NGÀY trong [cycleStart, cycleEnd).
-  let targets: BillingInvoiceWire[];
-  if (cycleStart !== null && cycleEnd !== null) {
-    const cs = cycleStart;
-    const ce = cycleEnd;
-    targets = paid.filter((inv) => {
-      const t = invoiceDateMs(inv);
-      return t >= cs && t < ce;
+  if (cycleEnd === null || targets.length === 0) {
+    await reportRunnerProgress(config, taskId, {
+      phase: "scraping",
+      message: "Xác định chu kỳ: đọc hoá đơn mới nhất...",
     });
-  } else {
-    // Không suy được chu kỳ (hoá đơn mới nhất cũng không đọc được period) → chỉ
-    // giữ hoá đơn mới nhất đã mở, KHÔNG mở thêm để tránh rối.
-    targets = paid.slice(0, 1);
+    await openAndMergeDetail(newest, taskId);
+    opened.add(newest);
+    // Chỉ SUY chu kỳ từ period hoá đơn khi tab Kế hoạch KHÔNG cho chu kỳ chuẩn.
+    if (cycleEnd === null && newest.detail_scraped && newest.period_end) {
+      cycleEnd = new Date(newest.period_end).setUTCHours(0, 0, 0, 0);
+      cycleStart = cycleStartMs(cycleEnd);
+      const cs = cycleStart;
+      const ce = cycleEnd;
+      targets = paid.filter((inv) => inWindow(inv, cs, ce));
+    }
   }
 
   const toOpen = targets
@@ -1014,20 +1039,26 @@ async function enrichInvoicesWithDetails(
     }
   }
 
-  // renewal_date = period_end của hoá đơn gốc chu kỳ = hoá đơn đã đọc được chi
-  // tiết có period_start SỚM NHẤT (hoá đơn gia hạn đầu kỳ). Ưu tiên hơn renewal
-  // đoán từ tab Kế hoạch.
-  const withPeriod = [...opened].filter(
-    (inv) => inv.detail_scraped && inv.period_start && inv.period_end,
-  );
-  if (withPeriod.length > 0) {
-    const base = withPeriod.reduce((a, b) =>
-      new Date(b.period_start as string).getTime() <
-      new Date(a.period_start as string).getTime()
-        ? b
-        : a,
+  // Bước 4: chốt renewal_date.
+  //  - Có chu kỳ chuẩn → GIỮ ngày kết thúc chu kỳ chuẩn (kể cả khi đã tiến 1 tháng
+  //    cho trường hợp đúng ngày renew). KHÔNG để period hoá đơn kỳ trước ghi đè.
+  //  - Không có chu kỳ chuẩn → suy từ period_end hoá đơn gốc chu kỳ (period_start
+  //    sớm nhất) làm dự phòng.
+  if (cycleEnd !== null) {
+    billing.renewal_date = new Date(cycleEnd).toISOString();
+  } else {
+    const withPeriod = [...opened].filter(
+      (inv) => inv.detail_scraped && inv.period_start && inv.period_end,
     );
-    if (base.period_end) billing.renewal_date = base.period_end;
+    if (withPeriod.length > 0) {
+      const base = withPeriod.reduce((a, b) =>
+        new Date(b.period_start as string).getTime() <
+        new Date(a.period_start as string).getTime()
+          ? b
+          : a,
+      );
+      if (base.period_end) billing.renewal_date = base.period_end;
+    }
   }
 }
 

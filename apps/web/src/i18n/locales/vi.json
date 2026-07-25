@@ -360,6 +360,8 @@
   "billing.noInvoicesHint": "Chưa có hoá đơn nào (sync billing để cập nhật)",
   "billing.noRenewalHint": "Chưa biết ngày renew — sync billing để cập nhật",
   "billing.cycleEndedHint": "Chu kỳ đã kết thúc — chờ sync mới",
+  "billing.estimatedBadge": "ước tính",
+  "billing.estimatedHint": "Chu kỳ mới chưa có hoá đơn — giá & dự kiến là ƯỚC TÍNH theo giá/seat chu kỳ trước × số seat hiện tại. Sync lại sau khi hoá đơn chu kỳ mới lên để có số chính xác.",
   "billing.invoiceHistoryToggle": "Xem lịch sử {n} hoá đơn",
   "billing.colDate": "Ngày",
   "billing.colAmount": "Số tiền",

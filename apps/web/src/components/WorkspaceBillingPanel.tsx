@@ -43,9 +43,15 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
   const canEditFee = !!user?.is_super_admin;
   const invoices = workspace.billing_invoices ?? [];
 
-  const cycle = computeBillingCycle(invoices, workspace.renewal_date);
+  const cycle = computeBillingCycle(
+    invoices,
+    workspace.renewal_date,
+    undefined,
+    workspace.seat_used ?? workspace.seat_total ?? null,
+  );
   const {
     note,
+    estimated,
     renewalDate,
     cycleStart,
     daysRemaining,
@@ -119,7 +125,9 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
           ? t("billing.cycleEndedHint")
           : note === "no_detail"
             ? t("billing.noDetailHint")
-            : baseInvoice && fullMonthPerSlotWithFee !== null && displayDaysRemaining !== null
+            : note === "estimated"
+              ? t("billing.estimatedHint")
+              : baseInvoice && fullMonthPerSlotWithFee !== null && displayDaysRemaining !== null
               ? t("billing.todayFromBase", {
                   base: VND.format(fullMonthPerSlotWithFee),
                   days: displayDaysRemaining,
@@ -133,6 +141,11 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
         {displayRenewal && displayDaysRemaining !== null && displayDaysRemaining > 0 && (
           <span className="mono" style={{ fontSize: 12, color: "var(--ink-3)" }}>
             {t("billing.daysRemaining", { n: displayDaysRemaining })}
+          </span>
+        )}
+        {estimated && (
+          <span className="badge badge-neutral" title={t("billing.estimatedHint")}>
+            {t("billing.estimatedBadge")}
           </span>
         )}
       </div>

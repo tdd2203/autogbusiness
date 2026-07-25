@@ -114,6 +114,10 @@ const VI_MONTH_RE =
 // Chinese: "2026年5月11日 - 2026年6月11日" or "5月11日 - 6月11日"
 const ZH_MONTH_RE =
   /(?:\d{4}\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?\s*[-–—~]\s*(?:\d{4}\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?/;
+// English (tab Kế hoạch tiếng Anh): "Current cycle: Jul 25 - Aug 25" /
+// "May 11 – Jun 11, 2026". Month-first, năm optional ở cuối. END = renewal.
+const EN_MONTH_RANGE_RE =
+  /(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z.]*\s+(\d{1,2})\s*[-–—~]\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z.]*\s+(\d{1,2})(?:\s*,?\s*(\d{4}))?/i;
 
 /**
  * Từ khoá neo cho ngày gia hạn dạng ĐƠN (khi trang KHÔNG hiển thị dạng khoảng).
@@ -223,6 +227,15 @@ function parseRenewalDateVi(text: string): string | null {
   const m = text.match(VI_MONTH_RE);
   if (m) {
     const iso = isoFromMonthDay(Number(m[4]), Number(m[3]));
+    if (iso) return iso;
+  }
+  // EN range "Jul 25 - Aug 25[, 2026]" → END = renewal (m[3]=tháng, m[4]=ngày).
+  const en = text.match(EN_MONTH_RANGE_RE);
+  if (en) {
+    const month = EN_MONTHS[en[3].toLowerCase()];
+    const iso = month
+      ? isoFromMonthDay(month, Number(en[4]), en[5] ? Number(en[5]) : undefined)
+      : null;
     if (iso) return iso;
   }
   // 2) Fallback: ngày ĐƠN neo theo từ khoá renew (vd "gia hạn vào 11 thg 7, 2026",
