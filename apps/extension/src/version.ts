@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.9.26";
+export const VERSION = "0.9.27";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,18 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.9.27",
+    date: "2026-07-25",
+    kind: "fix",
+    summary:
+      "Đọc chi tiết hoá đơn: mở tab Stripe HIỆN LÊN (foreground) để nút 'Xem chi tiết hoá đơn' bấm mở được panel (tab nền không vẽ layout → bấm trượt → đọc rỗng). Gỡ quét hoá đơn chu kỳ trước (thừa, chậm).",
+    details: [
+      "USER REPORT 2026-07-25: sync xong trang Thanh toán vẫn trống + phiên bản trước còn quét cả hoá đơn chu kỳ trước làm chậm.",
+      "payment-chain.ts (scrapeInvoiceDetailInTab): mở tab hoá đơn Stripe active:true (foreground). Tab nền không được trình duyệt vẽ layout → getBoundingClientRect=0 → cú bấm 'Xem chi tiết hoá đơn' bằng toạ độ trượt → panel không mở → đọc rỗng (no_detail). Foreground: panel mở chắc + người dùng xem được từng bước; đọc xong đóng tab, focus trả về.",
+      "runner.ts: gỡ bước mở thêm hoá đơn chu kỳ TRƯỚC làm giá tham chiếu (chỉ đọc hoá đơn trong chu kỳ hiện tại — nhanh, đúng phạm vi).",
+    ],
+  },
   {
     version: "0.9.26",
     date: "2026-07-25",
