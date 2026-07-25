@@ -188,14 +188,44 @@ async function openInvoiceDetailPanel(): Promise<boolean> {
   return true;
 }
 
+/**
+ * Cuộn MỌI container cuộn được xuống ĐÁY (theo từng bước để kích hoạt lazy render).
+ * Panel "chi tiết hoá đơn" của Stripe dài (nhiều dòng proration) + phần TỔNG (Tổng
+ * phụ / Số tiền đến hạn / "Mỗi …" / chu kỳ chính 25/7–25/8) nằm ở CUỐI — không cuộn
+ * thì các dòng đó chưa vào DOM → parseSubtotal/parseUnitPrice đọc rỗng → no_detail.
+ */
+async function scrollDetailPanelToBottom(): Promise<void> {
+  const doc = (document.scrollingElement ??
+    document.documentElement) as HTMLElement;
+  const scrollers = [
+    doc,
+    ...Array.from(document.querySelectorAll<HTMLElement>("*")).filter(
+      (el) => el.scrollHeight > el.clientHeight + 40,
+    ),
+  ].slice(0, 12);
+  for (const el of scrollers) {
+    try {
+      const h = el.scrollHeight;
+      const step = Math.max(400, el.clientHeight || 600);
+      for (let y = 0; y <= h; y += step) {
+        el.scrollTop = y;
+        await sleep(80);
+      }
+      el.scrollTop = el.scrollHeight; // chốt đáy
+    } catch {}
+  }
+  await sleep(150);
+}
+
 async function scrapeStripeInvoiceDetail(): Promise<ExecuteActionResponse> {
-  // Panel chi tiết cần click "Xem chi tiết hoá đơn" để lộ dòng Số lượng/Mỗi.
-  // Poll tới 14s: mỗi vòng, nếu toggle còn đó (panel chưa mở) thì click; rồi
-  // scrape. Panel mở → text đổi thành "Đóng chi tiết" → không click lại nữa.
+  // Panel chi tiết cần click "Xem chi tiết hoá đơn" để lộ dòng Số lượng/Mỗi, RỒI
+  // cuộn xuống đáy để render toàn bộ (dòng tổng nằm cuối). Poll tới 20s: mỗi vòng
+  // click (nếu panel chưa mở) → cuộn đáy → scrape. Panel mở → nút đổi "Đóng chi
+  // tiết" (không khớp) → không click lại.
   let detail = scrapeInvoiceDetailFromDom();
   let clicks = 0;
   let toggleSeen = false;
-  const deadline = Date.now() + 14_000;
+  const deadline = Date.now() + 20_000;
   while (!isDetailUsable(detail) && Date.now() < deadline) {
     const clicked = await openInvoiceDetailPanel();
     if (clicked) {
@@ -203,10 +233,11 @@ async function scrapeStripeInvoiceDetail(): Promise<ExecuteActionResponse> {
       toggleSeen = true;
     }
     await sleep(600);
+    await scrollDetailPanelToBottom();
     detail = scrapeInvoiceDetailFromDom();
   }
   console.log(
-    `[autogpt-stripe] scrape-detail v0.9.29 url=${location.href} toggleSeen=${toggleSeen} clicks=${clicks} usable=${isDetailUsable(detail)}:`,
+    `[autogpt-stripe] scrape-detail v0.9.30 url=${location.href} toggleSeen=${toggleSeen} clicks=${clicks} usable=${isDetailUsable(detail)}:`,
     JSON.stringify(detail),
   );
   if (!isDetailUsable(detail)) {
