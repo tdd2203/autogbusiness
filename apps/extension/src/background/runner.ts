@@ -1039,28 +1039,6 @@ async function enrichInvoicesWithDetails(
     }
   }
 
-  // Bước 3.5: đảm bảo có ÍT NHẤT 1 ĐƠN GIÁ/seat để web tính (ước tính). Hoá đơn
-  // gia hạn chu kỳ hiện tại nhiều dòng proration hay đọc fail → nếu KHÔNG hoá đơn
-  // nào trong chu kỳ cho được đơn giá, mở thêm hoá đơn kỳ TRƯỚC gần nhất (hoá đơn
-  // gia hạn đơn giản, đọc chắc) làm giá tham chiếu cho web.
-  const haveUnitPrice = [...opened].some(
-    (inv) => inv.detail_scraped && inv.unit_price_vnd != null,
-  );
-  if (!haveUnitPrice && cycleStart !== null) {
-    const cs = cycleStart;
-    const prev = paid
-      .filter((inv) => !opened.has(inv) && invoiceDateMs(inv) < cs)
-      .sort((a, b) => invoiceDateMs(b) - invoiceDateMs(a))[0];
-    if (prev) {
-      await reportRunnerProgress(config, taskId, {
-        phase: "scraping",
-        message: "Đọc giá tham chiếu từ hoá đơn kỳ trước...",
-      });
-      await openAndMergeDetail(prev, taskId);
-      opened.add(prev);
-    }
-  }
-
   // Bước 4: chốt renewal_date.
   //  - Có chu kỳ chuẩn → GIỮ ngày kết thúc chu kỳ chuẩn (kể cả khi đã tiến 1 tháng
   //    cho trường hợp đúng ngày renew). KHÔNG để period hoá đơn kỳ trước ghi đè.

@@ -185,6 +185,12 @@ function findContentScriptFiles(matchHostname: string): string[] {
  * giá / subtotal / VAT / tổng / khoảng chu kỳ, rồi ĐÓNG tab. Trả
  * `ScrapedInvoiceDetail` hoặc `null` nếu không đọc được (fail an toàn — caller
  * đánh dấu detail_scraped=false, KHÔNG đoán). Tái dùng bởi luồng SYNC_BILLING.
+ *
+ * ⚠️ Tab mở FOREGROUND (active:true): trình duyệt CHỈ vẽ layout cho tab đang hiển
+ * thị. Tab nền (active:false) không được layout → getBoundingClientRect trả 0 →
+ * cú bấm "Xem chi tiết hoá đơn" bằng toạ độ trượt → panel KHÔNG mở → đọc rỗng
+ * (no_detail). Foreground cho panel mở chắc + người dùng xem được từng bước. Đọc
+ * xong ĐÓNG tab ngay, focus trả về tab trước đó.
  */
 export async function scrapeInvoiceDetailInTab(
   invoiceUrl: string,
@@ -192,7 +198,7 @@ export async function scrapeInvoiceDetailInTab(
 ): Promise<ScrapedInvoiceDetail | null> {
   let tab: chrome.tabs.Tab;
   try {
-    tab = await chrome.tabs.create({ url: invoiceUrl, active: false });
+    tab = await chrome.tabs.create({ url: invoiceUrl, active: true });
   } catch (e) {
     console.warn("[autogpt-billing] mở tab hoá đơn fail:", e);
     return null;
