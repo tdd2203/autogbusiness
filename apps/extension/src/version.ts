@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.9.25";
+export const VERSION = "0.9.26";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,19 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.9.26",
+    date: "2026-07-25",
+    kind: "fix",
+    summary:
+      "Trang Thanh toán không còn trống khi hoá đơn gia hạn (nhiều dòng proration) đọc chi tiết fail. Tổng seat lấy từ tab Kế hoạch, tổng chi lấy từ list hoá đơn — không cần chi tiết. Giá/seat ước tính từ hoá đơn kỳ trước.",
+    details: [
+      "USER REPORT 2026-07-25: sau khi sync thành công (plan/seat 46/46 PAID) trang Thanh toán vẫn trống — do hoá đơn gia hạn 25/7 nhiều dòng proration đọc chi tiết Stripe không ra số, web rơi vào no_detail và bỏ hết mọi số.",
+      "web billing-math.ts: KHÔNG còn bỏ hết khi thiếu đơn giá. Tổng seat = số seat tab Kế hoạch (seatCount, '46/46'); Tổng chi chu kỳ = Σ số tiền hoá đơn trong kỳ (từ list). Giá/seat + dự kiến: điền từ hoá đơn kỳ TRƯỚC còn đơn giá (ước tính, badge 'ước tính'); nếu không có thì để '—' nhưng seats + tổng chi vẫn hiện.",
+      "web: Tổng seat ưu tiên số tab Kế hoạch (chuẩn, không lệch bởi proration) thay vì quantity hoá đơn (subtotal÷đơn_giá của hoá đơn proration bị sai, vd 54 thay vì 46).",
+      "runner.ts: nếu không hoá đơn nào trong chu kỳ cho được đơn giá → mở thêm hoá đơn kỳ TRƯỚC gần nhất (gia hạn đơn giản, đọc chắc) làm giá tham chiếu cho web ước tính.",
+    ],
+  },
   {
     version: "0.9.25",
     date: "2026-07-25",

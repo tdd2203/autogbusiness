@@ -148,6 +148,21 @@ function findPreviousCycleBase(
   return before.reduce((a, b) => (invDateMs(b) > invDateMs(a) ? b : a));
 }
 
+/** Số seat của hoá đơn có chi tiết MỚI NHẤT trong danh sách (quantity != null).
+ * Dùng khi cần seat từ hoá đơn nhưng không lấy được giá base. null nếu rỗng. */
+function latestCycleSeat(detailInCycle: BillingInvoice[]): number | null {
+  const withQty = detailInCycle.filter((inv) => inv.quantity != null);
+  if (withQty.length === 0) return null;
+  const latest = withQty.reduce((a, b) => {
+    const da = invDateMs(a);
+    const db = invDateMs(b);
+    if (db > da) return b;
+    if (db === da && (b.quantity ?? 0) > (a.quantity ?? 0)) return b;
+    return a;
+  });
+  return latest.quantity ?? null;
+}
+
 /**
  * Tính chu kỳ billing từ list hoá đơn + renewal_date của workspace (fallback).
  * `today` cho phép inject để test (mặc định = bây giờ).
@@ -291,10 +306,36 @@ export function computeBillingCycle(
   }
 
   if (!baseInvoice || baseInvoice.unit_price_vnd == null) {
-    // Chu kỳ HIỆN TẠI chưa có hoá đơn (gốc) đọc được đơn giá. Nếu chu kỳ chuẩn
-    // đến từ tab Kế hoạch (workspaceRenewalIso) và có hoá đơn chu kỳ TRƯỚC còn
-    // đơn giá → ƯỚC TÍNH giá/dự kiến theo giá/seat kỳ trước × số seat hiện tại
-    // (đúng ngày renew mà hoá đơn mới chưa lên). Nếu không → không đoán.
+    // KHÔNG có hoá đơn gốc chu kỳ đọc được ĐƠN GIÁ (chi tiết Stripe fail, hoặc
+    // đúng ngày renew hoá đơn mới chưa lên). Ta VẪN hiển thị mọi thứ KHÔNG cần
+    // chi tiết hoá đơn:
+    //   - Tổng seat: lấy từ tab Kế hoạch (seatCount), fallback quantity hoá đơn.
+    //   - Tổng chi chu kỳ: Σ số tiền hoá đơn trong kỳ (list, không cần chi tiết).
+    // Giá/seat + dự kiến CHỈ điền khi có đơn giá — ưu tiên hoá đơn kỳ TRƯỚC còn
+    // đơn giá (ƯỚC TÍNH, note="estimated"); nếu không → giá "—" (note="no_detail")
+    // nhưng seats + tổng chi vẫn hiện.
+    const seatFromInvoice = latestCycleSeat(detailInCycle);
+    const totalSeats =
+      seatFromInvoice ?? (seatCount != null && seatCount > 0 ? seatCount : null);
+    const totalCyclePaidWithVat = cycleInvoices.reduce(
+      (sum, inv) => sum + (inv.total_vnd ?? inv.amount_vnd ?? 0),
+      0,
+    );
+    const totalCycleFees = cycleInvoices.reduce(
+      (sum, inv) => sum + (inv.service_fee_vnd ?? 0),
+      0,
+    );
+    const commonPartial = {
+      renewalDate,
+      cycleStart,
+      daysRemaining,
+      cycleInvoices,
+      totalSeats,
+      totalCyclePaidWithVat,
+      totalCycleFees,
+      totalCyclePaidWithFees: totalCyclePaidWithVat + totalCycleFees,
+    };
+
     const prevBase = workspaceRenewalIso
       ? findPreviousCycleBase(paid, cycleStart as Date)
       : null;
@@ -312,30 +353,16 @@ export function computeBillingCycle(
       const todayPriceWithVat = Math.round(
         (fullMonthPerSlotWithVat * proRataDays) / CYCLE_DAYS,
       );
-      // Số seat cho dự kiến: ưu tiên seat HIỆN TẠI (tab Kế hoạch), fallback số
-      // seat hoá đơn kỳ trước.
-      const totalSeats =
-        seatCount != null && seatCount > 0 ? seatCount : prevBase.quantity ?? null;
+      // Số seat dự kiến ưu tiên seat kỳ trước nếu list không cho seat hiện tại.
+      const seats = totalSeats ?? prevBase.quantity ?? null;
       const projectedNextCycleWithVat =
-        totalSeats != null ? totalSeats * fullMonthPerSlotWithVat : null;
-      // Tổng đã chi chu kỳ = Σ hoá đơn Paid trong chu kỳ (thường = 0 khi hoá đơn
-      // mới chưa lên; >0 nếu đã có hoá đơn true-up chưa đọc được đơn giá).
-      const totalCyclePaidWithVat = cycleInvoices.reduce(
-        (sum, inv) => sum + (inv.total_vnd ?? inv.amount_vnd ?? 0),
-        0,
-      );
-      const totalCycleFees = cycleInvoices.reduce(
-        (sum, inv) => sum + (inv.service_fee_vnd ?? 0),
-        0,
-      );
+        seats != null ? seats * fullMonthPerSlotWithVat : null;
       return {
         ...base,
+        ...commonPartial,
         note: "estimated",
         estimated: true,
-        renewalDate,
-        cycleStart,
-        daysRemaining,
-        cycleInvoices,
+        totalSeats: seats,
         baseInvoice: prevBase,
         fullMonthPerSlot,
         fullMonthPerSlotWithVat,
@@ -345,22 +372,15 @@ export function computeBillingCycle(
         todayPrice,
         todayPriceWithVat,
         todayPriceWithFee: todayPriceWithVat,
-        totalSeats,
-        totalCyclePaidWithVat,
-        totalCycleFees,
-        totalCyclePaidWithFees: totalCyclePaidWithVat + totalCycleFees,
         projectedNextCycleWithVat,
         detailedCount: 0,
       };
     }
-    // Có hoá đơn Paid trong chu kỳ nhưng chưa đọc được đơn giá → không đoán.
+    // Không có đơn giá kỳ trước → giá/seat "—", nhưng seats + tổng chi vẫn hiện.
     return {
       ...base,
+      ...commonPartial,
       note: "no_detail",
-      renewalDate,
-      cycleStart,
-      daysRemaining,
-      cycleInvoices,
     };
   }
 
@@ -382,19 +402,12 @@ export function computeBillingCycle(
   const todayPriceWithVat = Math.round(
     (fullMonthPerSlotWithVat * proRataDays) / CYCLE_DAYS,
   );
-  // Tổng seat chu kỳ = SỐ SEAT HIỆN TẠI = quantity của hoá đơn MỚI NHẤT trong
-  // chu kỳ (true-up ghi số seat mới nhất). KHÔNG cộng dồn (proration ghi tổng
-  // mới, không phải delta). Khớp số seat ở tab Kế hoạch.
-  const seatInvoices = detailInCycle.filter((inv) => inv.quantity != null);
-  const latestSeatInv = seatInvoices.reduce<BillingInvoice | null>((a, b) => {
-    if (!a) return b;
-    const da = invDateMs(a);
-    const db = invDateMs(b);
-    if (db > da) return b;
-    if (db === da && (b.quantity ?? 0) > (a.quantity ?? 0)) return b;
-    return a;
-  }, null);
-  const totalSeats = latestSeatInv?.quantity ?? null;
+  // Tổng seat chu kỳ = SỐ SEAT HIỆN TẠI. Ưu tiên số seat tab Kế hoạch (seatCount,
+  // "46/46" — chuẩn nhất, KHÔNG lệch bởi proration), fallback quantity hoá đơn mới
+  // nhất trong chu kỳ. KHÔNG cộng dồn (proration ghi tổng mới, không phải delta).
+  const totalSeats =
+    (seatCount != null && seatCount > 0 ? seatCount : null) ??
+    latestCycleSeat(detailInCycle);
 
   // Tổng ĐÃ CHI trong chu kỳ (gồm VAT) = Σ total (ưu tiên total_vnd, fallback
   // amount_vnd) của mọi hoá đơn Paid thuộc chu kỳ.
