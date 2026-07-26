@@ -102,6 +102,38 @@ describe("invoice-detail scraper (regression 2026-07-06)", () => {
     expect(isDetailToggleText("Đóng chi tiết hoá đơn ✕")).toBe(false);
   });
 
+  it("hoá đơn gia hạn NHIỀU proration (0025): seat = dòng '(per seat)' = 46, KHÔNG phải 54", () => {
+    // Tái hiện đúng cấu trúc hoá đơn thực người dùng dán: nhiều cặp Remaining/Unused
+    // (proration) + dòng chính "(per seat)". textContent nối "Số lượng {seat}" với
+    // line-total dòng đó KHÔNG khoảng trắng. subtotal (14.188.380) gồm proration →
+    // subtotal÷đơn_giá = 54 (SAI). Đúng: dòng "(per seat)" line-total 11.983.000 =
+    // 46 × 260.500 → seat = 46.
+    const inv0025 =
+      "Đã thanh toán vào ngày 25 thg 7, 2026 Số MSNS6RGC-0025 " +
+      "1 THÁNG 7 - 25 THÁNG 7, 2026 " +
+      "Remaining time on 39 × ChatGPT Business Subscription after 01 Jul 2026 Số lượng 398.157.730 ₫ " +
+      "Unused time on 35 × ChatGPT Business Subscription after 01 Jul 2026 Số lượng 35-7.321.039 ₫ " +
+      "13 THÁNG 7 - 25 THÁNG 7, 2026 " +
+      "Remaining time on 52 × ChatGPT Business Subscription after 13 Jul 2026 Số lượng 525.458.573 ₫ " +
+      "Unused time on 51 × ChatGPT Business Subscription after 13 Jul 2026 Số lượng 51-5.353.600 ₫ " +
+      "23 THÁNG 7 - 25 THÁNG 7, 2026 " +
+      "Remaining time on 46 × ChatGPT Business Subscription after 23 Jul 2026 Số lượng 46834.404 ₫ " +
+      "Unused time on 47 × ChatGPT Business Subscription after 23 Jul 2026 Số lượng 47-852.543 ₫ " +
+      "25 THÁNG 7 - 25 THÁNG 8, 2026 " +
+      "ChatGPT Business Subscription (per seat) Số lượng 4611.983.000 ₫ Mỗi 260.500 ₫ " +
+      "Tổng phụ 14.188.380 ₫ Tổng không bao gồm thuế 14.188.380 ₫ VAT – Vietnam (10%) 1.418.838 ₫ " +
+      "Số tiền đến hạn 15.607.218 ₫ Số tiền đã thanh toán 15.607.218 ₫";
+    expect(parseUnitPrice(inv0025)).toBe(260500);
+    expect(parseSubtotal(inv0025)).toBe(14188380);
+    expect(parseTotal(inv0025)).toBe(15607218);
+    // MẤU CHỐT: seat = 46 (dòng '(per seat)'), KHÔNG phải 54 (subtotal÷đơn giá).
+    expect(parseQuantity(inv0025, 14188380, 260500)).toBe(46);
+    expect(parseInvoiceNumber(inv0025)).toBe("MSNS6RGC-0025");
+    const p = parsePeriod(inv0025);
+    expect(p.start).toContain("2026-07-25");
+    expect(p.end).toContain("2026-08-25");
+  });
+
   it("đơn giá EN 'each' và số lượng suy vẫn hoạt động", () => {
     const en =
       "ChatGPT Business Subscription (per seat) 260,500 đ each Subtotal 1.302.500 đ Amount due 1.432.750 đ";

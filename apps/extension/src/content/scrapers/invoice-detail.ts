@@ -94,16 +94,49 @@ function parseSeatsFromTrueUp(text: string): number | null {
 }
 
 /**
+ * Số seat của dòng "(per seat)" TRỌN THÁNG trên hoá đơn gia hạn = SỐ SEAT HIỆN
+ * TẠI (số renew). Dòng này có line-total = seat × đơn giá (KHÔNG proration). Stripe
+ * nối "Số lượng {seat}" với line-total của dòng đó KHÔNG khoảng trắng:
+ *   "Số lượng 46" + "11.983.000" → "Số lượng 4611.983.000"
+ * → tách {seat} sao cho phần CÒN LẠI = seat × đơn giá. Các dòng Remaining/Unused
+ * là proration (line-total ≠ seat×đơn giá) nên KHÔNG khớp → chỉ dòng "(per seat)"
+ * khớp. Cần biết đơn giá (từ "Mỗi"). Chính xác hơn subtotal÷đơn_giá (subtotal gồm
+ * proration nên bị đội, vd 14.188.380÷260.500 = 54 thay vì 46).
+ */
+function parseFullMonthSeat(text: string, unitPrice: number | null): number | null {
+  if (!unitPrice || unitPrice <= 0) return null;
+  const re = /(?:số\s*lượng|quantity|数量)\s*[:：]?\s*(\d[\d.]*\d|\d)/gi;
+  let m: RegExpExecArray | null;
+  let best: number | null = null;
+  while ((m = re.exec(text)) !== null) {
+    const digits = m[1].replace(/\./g, "");
+    for (let k = 1; k < digits.length; k++) {
+      const seat = Number(digits.slice(0, k));
+      const rest = Number(digits.slice(k));
+      if (seat > 0 && seat <= 100_000 && rest === seat * unitPrice) {
+        best = seat; // dòng "(per seat)" thường ở CUỐI → giữ match cuối cùng
+        break;
+      }
+    }
+  }
+  return best;
+}
+
+/**
  * Số lượng seat của hoá đơn:
- *   1. Hoá đơn gia hạn/mua đơn giản: SUY = subtotal ÷ unit_price (chính xác).
- *   2. Hoá đơn true-up: số seat = 'Remaining time on N ×' lớn nhất.
- *   3. Fallback: 'Số lượng N' đơn (chặn dính chữ số).
+ *   1. Hoá đơn gia hạn có proration: dòng "(per seat)" trọn tháng — tách
+ *      "Số lượng {seat}{line-total}" sao cho line-total = seat×đơn giá.
+ *   2. Hoá đơn gia hạn/mua đơn giản: SUY = subtotal ÷ unit_price.
+ *   3. Hoá đơn true-up: số seat = 'Remaining time on N ×' lớn nhất.
+ *   4. Fallback: 'Số lượng N' đơn (chặn dính chữ số).
  */
 function parseQuantity(
   text: string,
   subtotal: number | null,
   unitPrice: number | null,
 ): number | null {
+  const fullMonth = parseFullMonthSeat(text, unitPrice);
+  if (fullMonth !== null) return fullMonth;
   if (subtotal !== null && unitPrice && unitPrice > 0) {
     const q = Math.round(subtotal / unitPrice);
     if (q > 0 && q <= 1_000_000 && Math.abs(q * unitPrice - subtotal) <= unitPrice) {

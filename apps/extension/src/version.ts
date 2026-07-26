@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.9.30";
+export const VERSION = "0.9.31";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,19 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.9.31",
+    date: "2026-07-26",
+    kind: "fix",
+    summary:
+      "Đếm ĐÚNG số seat trên hoá đơn gia hạn nhiều proration: lấy dòng '(per seat)' trọn tháng (46) thay vì subtotal÷đơn_giá (54 — sai vì subtotal gồm proration). Nhờ đó giá/seat, tổng seat, dự kiến kỳ sau đều đúng.",
+    details: [
+      "USER cung cấp toàn bộ chi tiết hoá đơn 0025 + giải thích cơ chế prorated billing: seat thật = 46 (dòng '(per seat)'), đơn giá 260.500, tiền gia hạn kỳ sau = 46×260.500 = 11.983.000 (KHÔNG phải 15.607.218 = đã gồm 2.205.380 proration kỳ trước).",
+      "invoice-detail.ts: thêm parseFullMonthSeat — dòng '(per seat)' trọn tháng có line-total = seat×đơn giá; Stripe nối 'Số lượng 46'+'11.983.000' → tách sao cho phần còn lại = seat×đơn giá → chỉ dòng chính khớp (proration không khớp). parseQuantity ưu tiên cách này trước subtotal÷đơn_giá.",
+      "Test regression theo đúng text hoá đơn 0025: seat=46 (không phải 54), đơn giá 260.500, subtotal 14.188.380, tổng 15.607.218, chu kỳ 25/7→25/8.",
+      "Hệ quả: web (kể cả bản đang deploy) đọc quantity=46 → Tổng seat 46, giá/seat 286.550, dự kiến 46×286.550 — đúng, không cần deploy lại web.",
+    ],
+  },
   {
     version: "0.9.30",
     date: "2026-07-25",
