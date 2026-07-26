@@ -11,6 +11,7 @@ import type { QueueItem, Workspace } from "../types";
 import { TaskCompletionBanner } from "./TaskCompletionBanner";
 import { InviteMemberModal } from "./InviteMemberModal";
 import { BulkRemoveModal } from "./BulkRemoveModal";
+import { PasteInvoiceModal } from "./PasteInvoiceModal";
 import { toast } from "./Toast";
 
 type Tab = {
@@ -43,6 +44,8 @@ export default function WorkspaceLayout() {
     emails?: string[];
   } | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
+  // Popup DÁN chi tiết hoá đơn (thay scrape) — mở khi bấm "Cập nhật giá & ngày renew".
+  const [pasteBillingOpen, setPasteBillingOpen] = useState(false);
 
   // Cho phép trang con (Members) mở modal Cập nhật hàng loạt với hành động + email
   // điền sẵn — truyền xuống qua Outlet context.
@@ -91,7 +94,6 @@ export default function WorkspaceLayout() {
   // sang panel cột phải (WorkspaceTaskRail). Giữ activeBillingTask để biết khi nào
   // chuyển sang banner KẾT QUẢ (completion).
   const {
-    syncBilling,
     activeBillingTask,
     lastBillingTask,
     showBillingCompletion,
@@ -221,14 +223,11 @@ export default function WorkspaceLayout() {
             <div className="flex items-center" style={{ gap: 8, flexWrap: "wrap" }}>
               {user?.is_super_admin && (
                 <button
-                  onClick={() => syncBilling.mutate()}
-                  disabled={syncBilling.isPending}
+                  onClick={() => setPasteBillingOpen(true)}
                   className={`btn btn-sm ${alreadySyncedBilling ? "btn-ghost" : "btn-primary"}`}
-                  title={t("billing.syncTooltip")}
+                  title={t("billing.pasteTooltip")}
                 >
-                  {syncBilling.isPending
-                    ? t("billing.syncBusy")
-                    : t("billing.syncButton")}
+                  {t("billing.syncButton")}
                 </button>
               )}
               {canSync && (
@@ -337,6 +336,12 @@ export default function WorkspaceLayout() {
             qc.invalidateQueries({ queryKey: ["members", workspaceId] });
             qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
           }}
+        />
+      )}
+      {pasteBillingOpen && workspaceId && (
+        <PasteInvoiceModal
+          workspaceId={workspaceId}
+          onClose={() => setPasteBillingOpen(false)}
         />
       )}
       {showBulkRemoveModal && workspaceId && (

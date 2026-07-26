@@ -17,7 +17,12 @@ from sqlalchemy.orm.attributes import flag_modified
 from app.audit import log_event
 from app.deps import get_session, require_extension_workspace, require_super_admin
 from app.models import User, Workspace
-from app.schemas import BillingInvoiceFeeIn, BillingSyncIn, WorkspaceOut
+from app.schemas import (
+    BillingInvoiceFeeIn,
+    BillingPasteIn,
+    BillingSyncIn,
+    WorkspaceOut,
+)
 
 from ._shared import _get_workspace_or_404, router
 
@@ -165,6 +170,107 @@ def push_billing_sync(
     db.commit()
     db.refresh(workspace)
     return workspace
+
+
+@router.post("/{workspace_id}/billing-paste", response_model=WorkspaceOut)
+def paste_billing_invoice(
+    workspace_id: UUID,
+    body: BillingPasteIn,
+    db: Session = Depends(get_session),
+    actor: User = Depends(require_super_admin),
+) -> Workspace:
+    """Super-admin DÁN chi tiết 1 hoá đơn (web đã parse) → lưu vào workspace.
+
+    Thay cho việc extension scrape trang chi tiết Stripe. Lưu hoá đơn vào JSONB
+    `billing_invoices` (merge theo invoice_number / date+amount, bảo toàn phí NHẬP
+    TAY), set `renewal_date` = period_end, `seat_total`/`seat_used` = quantity.
+    """
+    if body.quantity is None or body.total_vnd is None or body.period_end is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Không đọc được đủ dữ liệu từ text dán: cần số ghế (dòng 'per "
+                "seat'), tổng tiền và chu kỳ (period). Kiểm tra lại text hoá đơn."
+            ),
+        )
+    ws = _get_workspace_or_404(db, workspace_id)
+
+    date = body.date or body.period_start or body.period_end
+    amount = body.amount_vnd if body.amount_vnd is not None else body.total_vnd
+    row: dict = {
+        "date": date.isoformat(),
+        "amount_vnd": amount,
+        "status": body.status or "paid",
+        "detail_scraped": True,
+        "quantity": body.quantity,
+    }
+    for field in ("unit_price_vnd", "subtotal_vnd", "vat_vnd", "total_vnd", "invoice_number"):
+        val = getattr(body, field)
+        if val is not None:
+            row[field] = val
+    if body.period_start is not None:
+        row["period_start"] = body.period_start.isoformat()
+    row["period_end"] = body.period_end.isoformat()
+
+    invoices = list(ws.billing_invoices or [])
+    new_key = _invoice_key(body.invoice_number, row["date"], amount)
+    # Bảo toàn phí NHẬP TAY của hoá đơn cũ cùng khoá; thay thế nếu đã tồn tại.
+    merged: list[dict] = []
+    replaced = False
+    for old in invoices:
+        old_key = _invoice_key(
+            old.get("invoice_number"), old.get("date"), old.get("amount_vnd")
+        )
+        if old_key == new_key:
+            if old.get("service_fee_vnd") is not None:
+                row["service_fee_vnd"] = old["service_fee_vnd"]
+            merged.append(row)
+            replaced = True
+        else:
+            merged.append(old)
+    if not replaced:
+        merged.append(row)
+    ws.billing_invoices = merged
+    flag_modified(ws, "billing_invoices")
+
+    changes: dict = {"invoice": {"number": body.invoice_number, "replaced": replaced}}
+    # renewal_date = period_end (ngày kết thúc chu kỳ dịch vụ dòng "(per seat)").
+    if ws.renewal_date != body.period_end:
+        changes["renewal_date"] = {
+            "before": ws.renewal_date.isoformat() if ws.renewal_date else None,
+            "after": body.period_end.isoformat(),
+        }
+        ws.renewal_date = body.period_end
+    # seat_total/seat_used = số ghế dòng "(per seat)" (= ghế đã thanh toán kỳ này).
+    for field in ("seat_total", "seat_used"):
+        if getattr(ws, field) != body.quantity:
+            changes[field] = {"before": getattr(ws, field), "after": body.quantity}
+            setattr(ws, field, body.quantity)
+    if ws.billing_status != "PAID":
+        changes["billing_status"] = {"before": ws.billing_status, "after": "PAID"}
+        ws.billing_status = "PAID"
+    # Neo mốc tính CHI nếu workspace chưa có (giống push_billing_sync).
+    if ws.finance_start_at is None and body.period_start is not None:
+        ws.finance_start_at = body.period_start
+        changes["finance_start_at"] = {"before": None, "after": body.period_start.isoformat()}
+
+    ws.last_billing_synced_at = datetime.now(timezone.utc)
+    db.add(ws)
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=actor.id,
+        actor_label=actor.email,
+        action="WORKSPACE_BILLING_PASTED",
+        result="SUCCESS",
+        target_type="WORKSPACE",
+        target_id=str(ws.id),
+        data={"changes": changes},
+        commit=False,
+    )
+    db.commit()
+    db.refresh(ws)
+    return ws
 
 
 @router.patch("/{workspace_id}/billing-invoices/fee", response_model=WorkspaceOut)

@@ -260,6 +260,28 @@ class BillingSyncIn(BaseModel):
     invoices: list[BillingInvoice] | None = None
 
 
+class BillingPasteIn(BaseModel):
+    """Super-admin DÁN chi tiết 1 hoá đơn (parse phía web) → lưu vào workspace.
+
+    Thay cho việc để extension scrape trang chi tiết hoá đơn Stripe (mong manh).
+    Web parse text dán ra các field này rồi POST lên. Endpoint lưu hoá đơn vào
+    `billing_invoices` + set `renewal_date` = period_end + `seat_total` = quantity.
+    """
+
+    quantity: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)
+    unit_price_vnd: int | None = Field(default=None, ge=0)
+    subtotal_vnd: int | None = Field(default=None, ge=0)
+    vat_vnd: int | None = Field(default=None, ge=0)
+    total_vnd: int | None = Field(default=None, ge=0)
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    invoice_number: str | None = Field(default=None, max_length=64)
+    status: str = Field(default="paid", max_length=16)
+    # Ngày thanh toán + số tiền hoá đơn (= total) cho dòng list.
+    date: datetime | None = None
+    amount_vnd: int | None = Field(default=None, ge=0)
+
+
 class ExtensionInfoIn(BaseModel):
     """Extension report ChatGPT user đang đăng nhập trên browser."""
 
