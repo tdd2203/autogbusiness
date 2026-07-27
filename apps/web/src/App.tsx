@@ -4,7 +4,6 @@ import Queue from "./pages/Queue";
 import AuditLogs from "./pages/AuditLogs";
 import Users from "./pages/Users";
 import Settings from "./pages/Settings";
-import Billing from "./pages/Billing";
 import Workspaces from "./pages/Workspaces";
 import Members from "./pages/Members";
 import InviteMembers from "./pages/InviteMembers";
@@ -164,14 +163,6 @@ export default function App() {
           element={
             <ProtectedRoute requirePermission="USER_MANAGE">
               <Users />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="billing"
-          element={
-            <ProtectedRoute requirePermission="BILLING_VIEW">
-              <Billing />
             </ProtectedRoute>
           }
         />

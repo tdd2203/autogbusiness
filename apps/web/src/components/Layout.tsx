@@ -117,7 +117,6 @@ const NAV: NavEntry[] = [
   // "Không gian làm việc" chuyển xuống ĐẦU nhóm Tổ chức + CHỈ super-admin thấy
   // (sub-admin quản lý qua "Email đã thêm", không thao tác trực tiếp workspace).
   { to: "/workspaces", labelKey: "nav.workspaces", icon: ICONS.workspaces, section: "org", requireSuperAdmin: true },
-  { to: "/billing", labelKey: "nav.billing", perm: "BILLING_VIEW", icon: ICONS.billing, section: "org" },
   { to: "/users", labelKey: "nav.users", perm: "USER_MANAGE", icon: ICONS.users, section: "org" },
   // Quản trị Ví (feature 003) — chỉ super-admin: cấu hình phí/bank, cờ beta, duyệt rút.
   { to: "/admin/wallet", labelKey: "nav.walletAdmin", icon: ICONS.wallet, section: "org", requireSuperAdmin: true },
