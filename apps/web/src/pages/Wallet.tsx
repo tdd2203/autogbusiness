@@ -244,11 +244,13 @@ function PlainTxnRow({ t }: { t: WalletTxn }) {
   // ví (không phải nạp thường, không bị mất) — xem sepay_integration.handle_order.
   const isDupInvoice =
     t.kind === "topup" && Boolean(t.meta?.duplicate_invoice);
+  const dupRef =
+    isDupInvoice && t.meta?.order_ref ? String(t.meta.order_ref) : null;
   const kindLabel = isDupInvoice
-    ? "Nạp tiền · thanh toán trùng hoá đơn"
+    ? "Hoàn trả tiền thanh toán trùng hoá đơn"
     : (TXN_KIND_LABEL[t.kind as keyof typeof TXN_KIND_LABEL] ?? t.kind);
   const source = isDupInvoice
-    ? "Tự động · bạn thanh toán trùng 1 hoá đơn đã trả — tiền được cộng vào số dư ví, dùng/rút bình thường"
+    ? `${dupRef ? `Hoá đơn ${dupRef}. ` : ""}Số tiền đã được cộng vào ví.`
     : TXN_SOURCE[t.kind];
   const email = t.meta?.email ? String(t.meta.email) : null;
   return (
