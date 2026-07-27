@@ -72,8 +72,11 @@ export type BillingCycle = {
   fullMonthPerSlot: number | null;
   /** Giá/seat 1 tháng GỒM VAT (= total ÷ quantity, chi phí thực trả). */
   fullMonthPerSlotWithVat: number | null;
-  /** Phí ngân hàng phân bổ trên 1 seat (= tổng phí chu kỳ ÷ số seat). */
+  /** Phí ngân hàng phân bổ trên 1 seat (= tổng phí chu kỳ ÷ số seat ĐÃ TRẢ PHÍ). */
   feePerSeat: number | null;
+  /** Số seat ĐÃ TRẢ PHÍ = Σ quantity của hoá đơn có phí NH (mẫu số của feePerSeat).
+   * Khác totalSeats (seat đang dùng): phí NH tính trên số seat trên hoá đơn. */
+  feeSeats: number | null;
   /** Giá/seat 1 tháng GỒM VAT + phí ngân hàng phân bổ (chi phí thật/seat). */
   fullMonthPerSlotWithFee: number | null;
   /** Thuế suất VAT suy từ hoá đơn gốc (vd 0.1). */
@@ -186,6 +189,7 @@ export function computeBillingCycle(
     fullMonthPerSlot: null,
     fullMonthPerSlotWithVat: null,
     feePerSeat: null,
+    feeSeats: null,
     fullMonthPerSlotWithFee: null,
     vatRate: null,
     todayPrice: null,
@@ -421,12 +425,28 @@ export function computeBillingCycle(
     0,
   );
   const totalCyclePaidWithFees = totalCyclePaidWithVat + totalCycleFees;
-  // Phí ngân hàng phân bổ trên 1 seat = tổng phí chu kỳ ÷ số seat hiện tại. Giá
-  // thật/seat = giá gồm VAT + phần phí này (khi chưa nhập phí → = giá gồm VAT).
+  // Phí ngân hàng phân bổ trên 1 seat = tổng phí chu kỳ ÷ số seat ĐÃ TRẢ PHÍ
+  // (Σ quantity của hoá đơn có phí NH), KHÔNG chia cho seat hiện tại (totalSeats):
+  // phí NH phát sinh khi thanh toán cho số seat GHI TRÊN HOÁ ĐƠN (vd 183), không
+  // phải số seat đang dùng (vd 163). Chia cho 163 làm phí/seat bị đội lên sai.
+  // Khớp invoiceSeatPricing (mỗi hoá đơn chia phí cho quantity của chính nó). Numerator
+  // chỉ cộng phí của hoá đơn CÓ quantity để tỉ lệ tử/mẫu nhất quán. Giá thật/seat =
+  // giá gồm VAT + phần phí này (khi chưa nhập phí → = giá gồm VAT).
+  let feeSum = 0;
+  let feeSeats = 0;
+  for (const inv of cycleInvoices) {
+    const fee = inv.service_fee_vnd ?? 0;
+    if (fee > 0 && inv.quantity != null && inv.quantity > 0) {
+      feeSum += fee;
+      feeSeats += inv.quantity;
+    }
+  }
   const feePerSeat =
-    totalSeats != null && totalSeats > 0
-      ? Math.round(totalCycleFees / totalSeats)
-      : null;
+    feeSeats > 0
+      ? Math.round(feeSum / feeSeats)
+      : totalCycleFees === 0
+        ? 0 // không có phí NH → phí/seat = 0 (giá thật = giá gồm VAT)
+        : null; // có phí nhưng thiếu quantity để phân bổ → chưa xác định
   const fullMonthPerSlotWithFee =
     feePerSeat != null
       ? fullMonthPerSlotWithVat + feePerSeat
@@ -450,6 +470,7 @@ export function computeBillingCycle(
     fullMonthPerSlot,
     fullMonthPerSlotWithVat,
     feePerSeat,
+    feeSeats: feeSeats > 0 ? feeSeats : null,
     fullMonthPerSlotWithFee,
     vatRate,
     todayPrice,

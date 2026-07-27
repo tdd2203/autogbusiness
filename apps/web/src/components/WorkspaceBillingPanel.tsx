@@ -58,6 +58,7 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
     fullMonthPerSlot,
     fullMonthPerSlotWithVat,
     feePerSeat,
+    feeSeats,
     fullMonthPerSlotWithFee,
     vatRate,
     todayPriceWithFee,
@@ -193,7 +194,7 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
                     withVat: VND.format(fullMonthPerSlotWithVat ?? 0),
                     feePerSeat: VND.format(feePerSeat),
                     totalFees: VND.format(totalCycleFees ?? 0),
-                    seats: totalSeats ?? "?",
+                    seats: feeSeats ?? totalSeats ?? "?",
                   })
                 : t("billing.fullMonthPerSlotVatHint", {
                     preVat: VND.format(fullMonthPerSlot),
