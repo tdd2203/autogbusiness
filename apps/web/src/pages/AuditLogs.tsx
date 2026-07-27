@@ -1236,6 +1236,22 @@ function ExpandedPanel({ g }: { g: Group }) {
   const scope = scopeOf(g);
   const res = resultOf(g);
   const moneyRow = rows.find((r) => /₫/.test(r.value));
+  // TỔNG phí thực thu của nhóm. Mỗi email/kỳ bị trừ phí = 1 sự kiện riêng
+  // (WALLET_INVITE_CHARGED / WALLET_RENEW_CHARGED) mang `data.fee` của email đó.
+  // extractDetails KHỬ TRÙNG các dòng phí BẰNG NHAU (mời 4 email cùng giá → 4 dòng
+  // "330.000₫" giống hệt) còn 1 dòng, nên hộp phí trước đây hiện phí 1 email thay vì
+  // tổng (mời 4 email 330K = phải là 1.320.000₫). Cộng lại từ event thô cho đúng.
+  const CHARGE_OPS = new Set(["WALLET_INVITE_CHARGED", "WALLET_RENEW_CHARGED"]);
+  const chargeEvents = g.events.filter((e) => CHARGE_OPS.has(opOf(e.action)));
+  const feeTotal = chargeEvents.reduce((sum, e) => {
+    const f = e.data?.fee;
+    return sum + (typeof f === "number" ? f : 0);
+  }, 0);
+  const feeKind =
+    chargeEvents.length &&
+    chargeEvents.every((e) => opOf(e.action) === "WALLET_RENEW_CHARGED")
+      ? "renew_fee"
+      : "invite_fee";
   // Lưới THÔNG TIN bỏ dòng đã thể hiện ở nơi khác (hộp phí + panel Xác minh &
   // đối soát) để không lặp; các dòng này vẫn còn trong "Chi tiết kỹ thuật".
   // Cũng ẩn các CON SỐ kỹ thuật thô (số đã gỡ, số đã xác minh…) — nhiễu, không cần
@@ -1247,7 +1263,12 @@ function ExpandedPanel({ g }: { g: Group }) {
     "Verified Count",
     "Unverified Count",
   ]);
-  const infoRows = rows.filter((r) => r !== moneyRow && !INFO_SKIP.has(r.label));
+  // Loại MỌI dòng tiền (₫) khỏi lưới THÔNG TIN — tiền đã hiển thị ở hộp phí (tổng
+  // đúng). Trước đây chỉ loại `moneyRow` (dòng ₫ đầu) nên dòng "Số tiền" thứ hai (cũng
+  // bị khử trùng còn 1 email) vẫn lọt vào lưới, lặp lại con số đơn lẻ gây hiểu nhầm.
+  const infoRows = rows.filter(
+    (r) => !/₫/.test(r.value) && !INFO_SKIP.has(r.label),
+  );
   // Số dư sau giao dịch (nếu payload có) — hiển thị dưới hộp phí.
   const balanceAfter = (() => {
     for (const e of g.events) {
@@ -1406,12 +1427,17 @@ function ExpandedPanel({ g }: { g: Group }) {
                 className="mono"
                 style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 1 }}
               >
-                invite_fee
+                {feeKind}
+                {chargeEvents.length > 1 ? ` · ${chargeEvents.length} khoản` : ""}
               </div>
             </div>
             <div style={{ textAlign: "right", flexShrink: 0 }}>
               <div style={{ fontSize: 16, fontWeight: 700, color: "var(--danger)", fontFamily: "var(--font-mono)" }}>
-                {moneyRow.value.startsWith("-") ? moneyRow.value : `-${moneyRow.value}`}
+                {feeTotal > 0
+                  ? `-${fmtMoney(feeTotal)}`
+                  : moneyRow.value.startsWith("-")
+                    ? moneyRow.value
+                    : `-${moneyRow.value}`}
               </div>
               {balanceAfter && (
                 <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 1 }}>
