@@ -49,40 +49,50 @@ export default function Wallet() {
     : formatVnd(wallet?.balance ?? 0).replace(/[^\d.,-]/g, "").trim();
 
   return (
-    <div className="page-fade" style={{ maxWidth: 560, padding: "8px 4px 40px" }}>
+    <div className="page-fade" style={{ maxWidth: 1040, padding: "8px 4px 40px" }}>
       <h1 style={{ fontSize: 30, fontWeight: 800, letterSpacing: "-.02em", color: "var(--ink)", marginBottom: 6 }}>Ví</h1>
       <p style={{ fontSize: 14, lineHeight: 1.5, color: "var(--ink-3)", marginBottom: 22 }}>
         Nạp tiền để mời thành viên. Mỗi lời mời trừ phí cố định từ số dư.
       </p>
 
-      {/* Thẻ số dư */}
-      <div style={balanceCard}>
-        <div style={cardKicker}>Số dư khả dụng</div>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: 6, margin: "8px 0 4px" }}>
-          <span style={{ fontSize: 44, fontWeight: 800, lineHeight: 1, letterSpacing: "-.03em", color: "var(--ink)" }}>
-            {balanceNumber}
-          </span>
-          <span style={{ fontSize: 22, fontWeight: 700, textDecoration: "underline", textUnderlineOffset: 4, paddingBottom: 4, color: "var(--ink)" }}>
-            đ
-          </span>
-        </div>
-        {!!wallet?.invite_fee_vnd && (
-          <div style={{ fontSize: 13, color: "var(--ink-3)" }}>
-            Phí mỗi lời mời: {formatVnd(wallet.invite_fee_vnd)}
+      {/* Desktop: 2 cột — trái (số dư + rút tiền) rộng cố định, phải (lịch sử) co
+          giãn. Dưới 860px (tablet/mobile) .wallet-grid xếp dọc 1 cột (index.css)
+          nên vẫn đẹp trên điện thoại; trước đây cả trang bị kẹp maxWidth 560 →
+          desktop trông như giao diện mobile. */}
+      <div
+        className="wallet-grid"
+        style={{ display: "grid", gap: 16, gridTemplateColumns: "minmax(0,380px) minmax(0,1fr)", alignItems: "start" }}
+      >
+        <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+          {/* Thẻ số dư */}
+          <div style={balanceCard}>
+            <div style={cardKicker}>Số dư khả dụng</div>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 6, margin: "8px 0 4px" }}>
+              <span style={{ fontSize: 44, fontWeight: 800, lineHeight: 1, letterSpacing: "-.03em", color: "var(--ink)" }}>
+                {balanceNumber}
+              </span>
+              <span style={{ fontSize: 22, fontWeight: 700, textDecoration: "underline", textUnderlineOffset: 4, paddingBottom: 4, color: "var(--ink)" }}>
+                đ
+              </span>
+            </div>
+            {!!wallet?.invite_fee_vnd && (
+              <div style={{ fontSize: 13, color: "var(--ink-3)" }}>
+                Phí mỗi lời mời: {formatVnd(wallet.invite_fee_vnd)}
+              </div>
+            )}
+            {!!wallet?.held && (
+              <div style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>
+                Đang giữ (chờ rút): {formatVnd(wallet.held)}
+              </div>
+            )}
+            <button onClick={() => setShowTopup(true)} style={{ ...primaryBtn, width: "100%", marginTop: 18, padding: "15px" }}>
+              + Nạp tiền
+            </button>
           </div>
-        )}
-        {!!wallet?.held && (
-          <div style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 2 }}>
-            Đang giữ (chờ rút): {formatVnd(wallet.held)}
-          </div>
-        )}
-        <button onClick={() => setShowTopup(true)} style={{ ...primaryBtn, width: "100%", marginTop: 18, padding: "15px" }}>
-          + Nạp tiền
-        </button>
-      </div>
 
-      <div style={{ display: "grid", gap: 16, gridTemplateColumns: "1fr", marginTop: 16 }}>
-        <WithdrawSection available={wallet?.balance ?? 0} />
+          <WithdrawSection available={wallet?.balance ?? 0} />
+        </div>
+
         <TxnHistory txns={txns?.items ?? []} />
       </div>
 
@@ -229,8 +239,17 @@ const TXN_SOURCE: Partial<Record<WalletTxnKind, string>> = {
  *  giao dịch) ② thành-bại (✓ đã ghi nhận) ③ phạm vi (nguồn tự động/thủ công +
  *  thành viên liên quan + số tiền tác động). */
 function PlainTxnRow({ t }: { t: WalletTxn }) {
-  const kindLabel = TXN_KIND_LABEL[t.kind as keyof typeof TXN_KIND_LABEL] ?? t.kind;
-  const source = TXN_SOURCE[t.kind];
+  // Thanh toán TRÙNG hoá đơn: khoản này ghi là `topup` (cộng vào số dư khả dụng) kèm
+  // cờ meta.duplicate_invoice. Hiện nhãn + giải thích RIÊNG để user biết tiền đã vào
+  // ví (không phải nạp thường, không bị mất) — xem sepay_integration.handle_order.
+  const isDupInvoice =
+    t.kind === "topup" && Boolean(t.meta?.duplicate_invoice);
+  const kindLabel = isDupInvoice
+    ? "Nạp tiền · thanh toán trùng hoá đơn"
+    : (TXN_KIND_LABEL[t.kind as keyof typeof TXN_KIND_LABEL] ?? t.kind);
+  const source = isDupInvoice
+    ? "Tự động · bạn thanh toán trùng 1 hoá đơn đã trả — tiền được cộng vào số dư ví, dùng/rút bình thường"
+    : TXN_SOURCE[t.kind];
   const email = t.meta?.email ? String(t.meta.email) : null;
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, padding: "9px 0", borderTop: "1px solid var(--border)" }}>
