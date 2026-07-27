@@ -194,6 +194,40 @@ def credit_order_payment(
     )
 
 
+def credit_duplicate_invoice(
+    db: Session,
+    user_id: UUID,
+    amount: int,
+    *,
+    order_id: str,
+    order_ref: str,
+    provider_txn_id: str | None = None,
+) -> WalletTransaction:
+    """Người dùng thanh toán TRÙNG một hoá đơn (mã ORDER) đã `paid` — đây là một
+    GIAO DỊCH NGÂN HÀNG KHÁC trỏ vào cùng hoá đơn (user quét lại QR đã lưu / chuyển
+    2 lần). KHÔNG thực thi lại intent (đã mời/gia hạn rồi), mà CỘNG thẳng số tiền vào
+    ví như một khoản NẠP (kind `topup`) kèm cờ `duplicate_invoice` để đối soát — tiền
+    không bị mất (yêu cầu user 2026-07-27). Ví khoá dòng."""
+    wallet = _lock_wallet(db, user_id)
+    return _write_txn(
+        db,
+        wallet,
+        kind="topup",
+        amount=int(amount),
+        ref_type="topup",
+        ref_id=order_id,
+        meta={
+            "provider_txn_id": provider_txn_id,
+            "duplicate_invoice": True,
+            "order_ref": order_ref,
+            "note": "Thanh toán trùng hoá đơn — đã cộng vào ví",
+        },
+        actor_type="SYSTEM",
+        actor_label="sepay-webhook",
+        action="WALLET_DUPLICATE_INVOICE_CREDITED",
+    )
+
+
 # ── Phí mời + hoàn phí ──────────────────────────────────────────────────────
 
 def charge_invite(

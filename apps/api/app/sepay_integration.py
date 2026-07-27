@@ -333,10 +333,38 @@ def handle_order(db: Session, ref_code: str, event: SepayEvent, tolerance: int) 
             order.id, order.amount_vnd, event.amount,
         )
         return False  # KHÔNG credit, KHÔNG thực thi, order giữ pending
-    if order.paid_amount_vnd is not None or order.status == "paid":
-        return True  # đã xử lý tiền cho order này (paid/expired-đã-credit) → idempotent
 
     paid = int(event.amount)
+
+    if order.paid_amount_vnd is not None or order.status == "paid":
+        # Hoá đơn NÀY đã được thanh toán trước đó. Nếu webhook này là CÙNG giao dịch
+        # ngân hàng đã credit (provider_txn_id trùng) → idempotent thật, bỏ qua. Nhưng
+        # nếu là GIAO DỊCH KHÁC (user quét lại QR đã lưu / chuyển 2 lần) thì đây là
+        # THANH TOÁN TRÙNG HOÁ ĐƠN: KHÔNG thực thi lại intent, mà cộng thẳng vào ví
+        # dạng nạp tiền + cờ trùng hoá đơn để tiền không bị mất (user 2026-07-27).
+        # (idempotency `sepay_idem` chỉ chặn retry CÙNG txn — khoản trùng txn khác lọt
+        # tới đây.)
+        same_txn = bool(
+            event.provider_txn_id
+            and order.provider_txn_id
+            and event.provider_txn_id == order.provider_txn_id
+        )
+        if same_txn:
+            return True  # cùng 1 giao dịch NH → đã credit rồi, không cộng lần 2
+        wallet_service.credit_duplicate_invoice(
+            db,
+            order.user_id,
+            paid,
+            order_id=str(order.id),
+            order_ref=ref_code,
+            provider_txn_id=event.provider_txn_id,
+        )
+        db.flush()
+        logger.info(
+            "[sepay] order=%s đã paid — THANH TOÁN TRÙNG HOÁ ĐƠN, cộng ví %s (txn=%s)",
+            order.id, paid, event.provider_txn_id,
+        )
+        return True
 
     # HẾT HẠN (>5 phút hoặc đã bị đánh dấu expired): mã QR không còn thực thi (user
     # 2026-07-13: "mã chỉ tồn tại 5 phút"). Tiền chuyển trễ VẪN credit vào ví để KHÔNG

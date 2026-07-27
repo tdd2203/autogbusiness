@@ -166,6 +166,34 @@ def test_order_webhook_idempotent(client: TestClient, auth_header: dict) -> None
     assert len([m for m in _members(client, sub["token"], ws["id"]) if m["email"] == "d1@example.com"]) == 1
 
 
+def test_order_duplicate_invoice_credited_as_topup(client: TestClient, auth_header: dict) -> None:
+    """Thanh toán TRÙNG hoá đơn (user quét lại QR đã lưu → giao dịch NH khác, cùng mã
+    ORDER đã paid): KHÔNG mời lần 2, nhưng cộng thẳng khoản trùng vào ví dạng nạp tiền
+    + cờ duplicate_invoice để tiền không bị mất (user 2026-07-27)."""
+    ws = create_ws(client, auth_header, "Dup Invoice WS")
+    sub = make_beta_sub(client, auth_header, username="dupinv", balance=0)
+    assign(client, auth_header, ws["id"], sub["id"])
+    order = _invite(client, sub["token"], ws["id"], "dup1@example.com").json()["detail"]["order"]
+
+    # Lần 1: thanh toán đúng → mời + net ví 0.
+    client.post("/webhook/sepay", json=_webhook_body(order["note"], FEE, "ORD-DUP-1"))
+    assert wallet_of(client, sub["token"])["balance"] == 0
+    assert len([m for m in _members(client, sub["token"], ws["id"]) if m["email"] == "dup1@example.com"]) == 1
+
+    # Lần 2: CÙNG nội dung (mã ORDER) nhưng txn NH KHÁC → trùng hoá đơn → cộng ví FEE.
+    wh = client.post("/webhook/sepay", json=_webhook_body(order["note"], FEE, "ORD-DUP-2"))
+    assert wh.status_code == 200 and wh.json().get("success") is True
+    assert wallet_of(client, sub["token"])["balance"] == FEE
+
+    # KHÔNG mời/trừ phí lần 2; khoản trùng ghi là `topup` cờ duplicate_invoice.
+    kinds = _txn_kinds(client, sub["token"])
+    assert kinds.count("invite_fee") == 1
+    assert len([m for m in _members(client, sub["token"], ws["id"]) if m["email"] == "dup1@example.com"]) == 1
+    txns = client.get("/api/v1/wallet/transactions", headers=bearer(sub["token"])).json()["items"]
+    dup = [t for t in txns if (t.get("meta") or {}).get("duplicate_invoice")]
+    assert len(dup) == 1 and dup[0]["kind"] == "topup" and dup[0]["amount"] == FEE
+
+
 def test_invite_qr_paid_then_failed_refunds_to_wallet(client: TestClient, auth_header: dict) -> None:
     """Mời lỗi thì không trừ tiền; tiền QR ở lại ví (user 2026-07-13)."""
     ws = create_ws(client, auth_header, "QR Fail WS")
