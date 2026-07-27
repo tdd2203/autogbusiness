@@ -212,13 +212,16 @@ function TxnHistory({ txns }: { txns: WalletTxn[] }) {
       <h2 style={cardTitle}>Lịch sử giao dịch</h2>
       {rows.length === 0 && <p style={{ fontSize: 13, color: "var(--ink-3)" }}>Chưa có giao dịch nào.</p>}
       <div style={{ overflowX: "auto" }}>
-        {rows.map((r) =>
-          r.type === "withdraw" ? (
-            <WithdrawTxnRow key={r.id} txns={r.txns} />
-          ) : (
-            <PlainTxnRow key={r.txn.id} t={r.txn} />
-          ),
-        )}
+        {rows.map((r) => {
+          if (r.type === "withdraw") return <WithdrawTxnRow key={r.id} txns={r.txns} />;
+          // Nhóm cùng thời điểm: 1 bút toán → dòng thường; nhiều bút toán có phí
+          // mời/gia hạn → gộp 1 dòng (giống admin); nhiều bút toán khác (hiếm) →
+          // tách từng dòng.
+          if (r.txns.length === 1) return <PlainTxnRow key={r.txns[0].id} t={r.txns[0]} />;
+          const hasFee = r.txns.some((t) => t.kind === "invite_fee" || t.kind === "renew_fee");
+          if (hasFee) return <GroupTxnRow key={r.key} txns={r.txns} />;
+          return r.txns.map((t) => <PlainTxnRow key={t.id} t={t} />);
+        })}
       </div>
     </section>
   );
@@ -274,6 +277,66 @@ function PlainTxnRow({ t }: { t: WalletTxn }) {
         </div>
         <div style={{ fontSize: 12, color: "var(--ink-3)" }}>Còn {formatVnd(t.balance_after)}</div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Một THAO TÁC mời/gia hạn hàng loạt (nhiều bút toán cùng created_at: 1 order_topup
+ * "nạp qua hoá đơn" + N phí, hoặc N phí trừ thẳng số dư) gộp thành 1 DÒNG — thay vì
+ * hiện "Nạp qua hoá đơn +X" rồi "Phí mời −X" rối mắt như trước. Bấm để bung chi tiết
+ * từng email. Logic giống modal chi tiết phía admin (WalletAdmin › TxnGroupRow).
+ */
+function GroupTxnRow({ txns }: { txns: WalletTxn[] }) {
+  const [open, setOpen] = useState(false);
+  const fees = txns.filter((t) => t.kind === "invite_fee" || t.kind === "renew_fee");
+  const paidViaOrder = txns.some((t) => t.kind === "order_topup");
+  const isRenew = fees.every((t) => t.kind === "renew_fee");
+  const spend = fees.reduce((s, t) => s + t.amount, 0); // âm
+  const finalBalance = Math.min(...txns.map((t) => t.balance_after));
+  const title = isRenew ? "Gia hạn thành viên" : "Mời thành viên";
+  return (
+    <div style={{ borderTop: "1px solid var(--border)" }}>
+      <div
+        onClick={() => setOpen((v) => !v)}
+        style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, padding: "9px 0", cursor: "pointer" }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 15.5, color: "var(--ink)", fontWeight: 700 }}>
+              {title} · {fees.length} email
+              <span style={{ color: "var(--ink-3)", fontSize: 11, marginLeft: 6, display: "inline-block", transform: open ? "rotate(180deg)" : "none" }}>▾</span>
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: "var(--success)", background: "var(--success-bg)", padding: "2px 8px", borderRadius: 999, whiteSpace: "nowrap" }}>
+              ✓ Thành công
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3 }}>
+            {paidViaOrder ? "Thanh toán qua hoá đơn" : "Trừ từ số dư ví"}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3, fontFamily: "var(--font-mono)" }}>{new Date(txns[0].created_at).toLocaleString("vi-VN")}</div>
+        </div>
+        <div style={{ textAlign: "right", flexShrink: 0 }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: "var(--danger)", whiteSpace: "nowrap" }}>
+            {formatVnd(spend)}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--ink-3)" }}>Còn {formatVnd(finalBalance)}</div>
+        </div>
+      </div>
+      {open && (
+        <div style={{ margin: "0 0 8px 4px", borderLeft: "2px solid var(--border)", paddingLeft: 14, display: "grid", gap: 6 }}>
+          {fees.map((t) => (
+            <div key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12.5 }}>
+              <span style={{ color: "var(--ink-2)", minWidth: 0, overflowWrap: "anywhere" }}>
+                {t.meta?.email ? String(t.meta.email) : t.kind}
+              </span>
+              <span style={{ color: "var(--danger)", fontFamily: "var(--font-mono)", flexShrink: 0 }}>
+                {formatVnd(t.amount)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -353,14 +416,19 @@ function WithdrawSteps({ settled, rejected }: { settled: boolean; rejected: bool
 }
 
 type TxnRow =
-  | { type: "txn"; txn: WalletTxn }
+  | { type: "group"; key: string; txns: WalletTxn[] }
   | { type: "withdraw"; id: string; txns: WalletTxn[] };
 
-/** Gộp các bút toán cùng 1 yêu cầu rút (ref_type=withdrawal, cùng ref_id) thành
- *  một dòng; giữ nguyên thứ tự mới→cũ, các giao dịch khác giữ từng dòng. */
+/** Gộp bút toán để bớt rối (giống logic phía admin):
+ *   • Rút tiền (ref_type=withdrawal): gộp theo ref_id → 1 dòng + thanh tiến trình.
+ *   • Còn lại: gộp theo created_at — mỗi thao tác ví (mời/gia hạn hàng loạt, kèm
+ *     order_topup hay trừ thẳng số dư) dùng chung 1 timestamp (now() là hằng trong
+ *     1 transaction) → 1 dòng theo action thay vì "nạp qua hoá đơn" rồi trừ N phí.
+ *  Giữ nguyên thứ tự mới→cũ. */
 function buildTxnRows(txns: WalletTxn[]): TxnRow[] {
   const rows: TxnRow[] = [];
   const wIndex = new Map<string, number>();
+  const tIndex = new Map<string, number>();
   for (const t of txns) {
     if (t.ref_type === "withdrawal" && t.ref_id) {
       const at = wIndex.get(t.ref_id);
@@ -371,7 +439,13 @@ function buildTxnRows(txns: WalletTxn[]): TxnRow[] {
         rows.push({ type: "withdraw", id: t.ref_id, txns: [t] });
       }
     } else {
-      rows.push({ type: "txn", txn: t });
+      const at = tIndex.get(t.created_at);
+      if (at != null) {
+        (rows[at] as { txns: WalletTxn[] }).txns.push(t);
+      } else {
+        tIndex.set(t.created_at, rows.length);
+        rows.push({ type: "group", key: t.created_at, txns: [t] });
+      }
     }
   }
   return rows;

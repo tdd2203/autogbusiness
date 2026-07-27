@@ -289,23 +289,26 @@ function DetailModal({ user, onClose }: { user: WalletAdminUser; onClose: () => 
   const all = data?.items ?? [];
   const groups = useMemo(() => groupTxns(all), [all]);
   const shown = filter === "all" ? groups : groups.filter((g) => g.category === filter);
-  // TỔNG NẠP chỉ tính tiền vào ví THẬT (nạp/hoàn/điều chỉnh). order_topup nằm trong
-  // nhóm phí là tiền đi qua để trả lệnh → KHÔNG tính là nạp. TỔNG PHÍ = tổng đã trừ.
-  const { totIn, totOut } = useMemo(() => {
+  // 4 con số TÁCH BẠCH để đối soát (user 2026-07-27: "tiền vào phải bằng tiền ra,
+  // điều chỉnh và hoàn tính riêng, không gộp"):
+  //  • TỔNG NẠP  = tiền THẬT vào ví từ webhook ngân hàng: nạp chủ động (topup) +
+  //    thanh toán hoá đơn mời/gia hạn (order_topup — kể cả phần bị trừ phí ngay).
+  //  • TỔNG PHÍ  = phí mời/gia hạn đã trừ (không trừ hoàn — hoàn tính riêng).
+  //  • HOÀN      = tiền hoàn phí trả về ví (tách riêng, KHÔNG cộng vào nạp).
+  //  • ĐIỀU CHỈNH= admin sửa tay (tách riêng, có thể là sửa lỗi; +/−).
+  const { totIn, totOut, totRefund, totAdjust } = useMemo(() => {
     let tin = 0;
     let tout = 0;
-    for (const g of groups) {
-      if (g.category === "fee") {
-        for (const t of g.txns) if (t.amount < 0) tout += Math.abs(t.amount);
-      } else {
-        for (const t of g.txns) {
-          if (t.amount > 0) tin += t.amount;
-          else tout += Math.abs(t.amount);
-        }
-      }
+    let tref = 0;
+    let tadj = 0;
+    for (const t of all) {
+      if (t.kind === "topup" || t.kind === "order_topup") tin += t.amount;
+      else if (t.kind === "invite_fee" || t.kind === "renew_fee") tout += Math.abs(t.amount);
+      else if (t.kind === "invite_refund" || t.kind === "withdraw_refund") tref += t.amount;
+      else if (t.kind === "adjust") tadj += t.amount;
     }
-    return { totIn: tin, totOut: tout };
-  }, [groups]);
+    return { totIn: tin, totOut: tout, totRefund: tref, totAdjust: tadj };
+  }, [all]);
 
   async function onToggle(enabled: boolean) {
     try {
@@ -351,11 +354,48 @@ function DetailModal({ user, onClose }: { user: WalletAdminUser; onClose: () => 
           </div>
         )}
 
-        {/* Tóm tắt */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, padding: "16px 24px" }}>
-          <SummaryTile label="TỔNG NẠP" value={`+${formatVnd(totIn)}`} bg="var(--w-pos-soft)" color="var(--w-pos)" />
-          <SummaryTile label="TỔNG PHÍ" value={`−${formatVnd(totOut)}`} bg="var(--w-neg-soft)" color="var(--w-neg)" />
-          <SummaryTile label="GIAO DỊCH" value={String(all.length)} bg="var(--w-bg)" color="var(--w-ink)" />
+        {/* Tóm tắt dạng ĐẲNG THỨC đối soát (user 2026-07-27): TIỀN VÀO = TIỀN RA + CÒN LẠI
+            → TỔNG NẠP + HOÀN + ĐIỀU CHỈNH = TỔNG PHÍ (+ SỐ DƯ nếu ví còn tiền). HOÀN &
+            ĐIỀU CHỈNH chỉ hiện khi có phát sinh; khi ví về 0 và không rút thì rút gọn
+            thành A + B + C = Tổng phí. */}
+        <div style={{ padding: "16px 24px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <SummaryTile label="TỔNG NẠP" value={`+${formatVnd(totIn)}`} bg="var(--w-pos-soft)" color="var(--w-pos)" />
+            {totRefund !== 0 && (
+              <>
+                <EqOp>+</EqOp>
+                <SummaryTile label="HOÀN" value={`+${formatVnd(totRefund)}`} bg="var(--w-accent-soft)" color="var(--w-accent)" />
+              </>
+            )}
+            {totAdjust !== 0 && (
+              <>
+                <EqOp>{totAdjust >= 0 ? "+" : "−"}</EqOp>
+                <SummaryTile
+                  label="ĐIỀU CHỈNH"
+                  value={`${totAdjust >= 0 ? "+" : "−"}${formatVnd(Math.abs(totAdjust))}`}
+                  bg={totAdjust >= 0 ? "var(--w-pos-soft)" : "var(--w-neg-soft)"}
+                  color={totAdjust >= 0 ? "var(--w-pos)" : "var(--w-neg)"}
+                />
+              </>
+            )}
+            <EqOp>=</EqOp>
+            <SummaryTile label="TỔNG PHÍ" value={`−${formatVnd(totOut)}`} bg="var(--w-neg-soft)" color="var(--w-neg)" />
+            {user.balance !== 0 && (
+              <>
+                <EqOp>+</EqOp>
+                <SummaryTile
+                  label="SỐ DƯ"
+                  value={`${user.balance >= 0 ? "+" : "−"}${formatVnd(Math.abs(user.balance))}`}
+                  bg="var(--w-bg)"
+                  color="var(--w-ink)"
+                />
+              </>
+            )}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--w-muted)", marginTop: 10 }}>
+            Tiền vào (nạp + hoàn + điều chỉnh) đối soát bằng tổng phí đã trừ
+            {user.balance !== 0 ? " + số dư còn lại" : ""} · {all.length} giao dịch
+          </div>
         </div>
 
         {/* Bộ lọc chip */}
@@ -397,10 +437,19 @@ function DetailModal({ user, onClose }: { user: WalletAdminUser; onClose: () => 
 
 function SummaryTile({ label, value, bg, color }: { label: string; value: string; bg: string; color: string }) {
   return (
-    <div style={{ background: bg, borderRadius: "var(--w-radius-sm)", padding: "12px 14px" }}>
-      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", color }}>{label}</div>
-      <div style={{ fontSize: 16, fontWeight: 800, fontFamily: "var(--font-mono)", color, marginTop: 3 }}>{value}</div>
+    <div style={{ flex: "1 1 130px", minWidth: 120, background: bg, borderRadius: "var(--w-radius-sm)", padding: "12px 14px" }}>
+      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", color }}>{label} <span style={{ opacity: 0.7 }}>(đ)</span></div>
+      <div style={{ fontSize: 16, fontWeight: 800, fontFamily: "var(--font-mono)", color, marginTop: 3, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{value.replace(/\s*₫/g, "").trim()}</div>
     </div>
+  );
+}
+
+/** Dấu toán tử (+, −, =) chèn giữa các ô tóm tắt để tạo ĐẲNG THỨC đối soát. */
+function EqOp({ children }: { children: string }) {
+  return (
+    <span style={{ flex: "0 0 auto", fontSize: 18, fontWeight: 800, color: "var(--w-muted)", fontFamily: "var(--font-mono)", padding: "0 1px" }}>
+      {children}
+    </span>
   );
 }
 
