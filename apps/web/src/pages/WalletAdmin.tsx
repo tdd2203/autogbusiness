@@ -244,6 +244,41 @@ const CHIPS: { key: TxnCategory | "all"; label: string }[] = [
   { key: "refund", label: "Hoàn" },
 ];
 
+// ── Gộp giao dịch theo THAO TÁC nguyên tử ────────────────────────────────────
+// Mỗi thao tác ví (mời hàng loạt: 1 order_topup + N phí, hoặc N phí trừ thẳng số
+// dư) đều dùng chung created_at — Postgres now() là HẰNG trong 1 transaction, mà
+// mỗi request = 1 transaction → cùng timestamp ⇔ cùng 1 thao tác. Gộp để hiển thị
+// 1 DÒNG theo action, thay vì tách "nạp qua hoá đơn" rồi trừ N phí: tiền order_topup
+// chỉ ĐI QUA ví để trả ngay cho lệnh, KHÔNG phải nạp thật (chỉ hoàn về ví nếu lỗi).
+type TxnGroup = { key: string; txns: WalletTxn[]; category: TxnCategory };
+
+function groupTxns(all: WalletTxn[]): TxnGroup[] {
+  const byTime = new Map<string, WalletTxn[]>();
+  const order: string[] = [];
+  for (const t of all) {
+    if (!byTime.has(t.created_at)) {
+      byTime.set(t.created_at, []);
+      order.push(t.created_at);
+    }
+    byTime.get(t.created_at)!.push(t);
+  }
+  return order.map((k) => {
+    const txns = byTime.get(k)!;
+    const cats = txns.map((t) => txnCategory(t.kind));
+    // Nhóm có phí (mời/gia hạn) → xếp "fee" dù kèm order_topup (order_topup là nguồn
+    // trả, không phải nạp). Nhóm chỉ có order_topup (hoá đơn hết hạn → giữ lại ví) →
+    // vẫn là nạp thật.
+    const category: TxnCategory = cats.includes("fee")
+      ? "fee"
+      : cats.includes("refund")
+        ? "refund"
+        : cats.includes("topup")
+          ? "topup"
+          : "other";
+    return { key: k, txns, category };
+  });
+}
+
 function DetailModal({ user, onClose }: { user: WalletAdminUser; onClose: () => void }) {
   const { data, isLoading } = useWalletAdminUserTransactions(user.user_id);
   const { data: settings } = usePaymentSettings();
@@ -252,9 +287,25 @@ function DetailModal({ user, onClose }: { user: WalletAdminUser; onClose: () => 
   const [filter, setFilter] = useState<TxnCategory | "all">("all");
 
   const all = data?.items ?? [];
-  const shown = filter === "all" ? all : all.filter((t) => txnCategory(t.kind) === filter);
-  const totIn = all.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-  const totOut = all.filter((t) => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
+  const groups = useMemo(() => groupTxns(all), [all]);
+  const shown = filter === "all" ? groups : groups.filter((g) => g.category === filter);
+  // TỔNG NẠP chỉ tính tiền vào ví THẬT (nạp/hoàn/điều chỉnh). order_topup nằm trong
+  // nhóm phí là tiền đi qua để trả lệnh → KHÔNG tính là nạp. TỔNG PHÍ = tổng đã trừ.
+  const { totIn, totOut } = useMemo(() => {
+    let tin = 0;
+    let tout = 0;
+    for (const g of groups) {
+      if (g.category === "fee") {
+        for (const t of g.txns) if (t.amount < 0) tout += Math.abs(t.amount);
+      } else {
+        for (const t of g.txns) {
+          if (t.amount > 0) tin += t.amount;
+          else tout += Math.abs(t.amount);
+        }
+      }
+    }
+    return { totIn: tin, totOut: tout };
+  }, [groups]);
 
   async function onToggle(enabled: boolean) {
     try {
@@ -336,7 +387,7 @@ function DetailModal({ user, onClose }: { user: WalletAdminUser; onClose: () => 
           ) : shown.length === 0 ? (
             <p style={{ fontSize: 13, color: "var(--w-muted)", padding: "14px 12px" }}>Chưa có giao dịch nào.</p>
           ) : (
-            shown.map((t) => <TxnRow key={t.id} t={t} />)
+            shown.map((g) => <TxnGroupRow key={g.key} g={g} />)
           )}
         </div>
       </div>
@@ -375,6 +426,67 @@ function TxnRow({ t }: { t: WalletTxn }) {
         </div>
         <div style={{ fontSize: 12, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 2 }}>Còn {formatVnd(t.balance_after)}</div>
       </div>
+    </div>
+  );
+}
+
+/** Một NHÓM giao dịch. Nhóm 1 txn → hiển thị như cũ. Nhóm nhiều txn (mời/gia hạn
+ *  hàng loạt, có/không kèm order_topup) → gộp 1 dòng theo action, bấm để bung chi
+ *  tiết từng email. */
+function TxnGroupRow({ g }: { g: TxnGroup }) {
+  const [open, setOpen] = useState(false);
+  if (g.txns.length === 1) return <TxnRow t={g.txns[0]} />;
+
+  const fees = g.txns.filter((t) => t.kind === "invite_fee" || t.kind === "renew_fee");
+  // Nhóm nhiều txn nhưng không phải mời/gia hạn (hiếm) → render từng dòng như cũ.
+  if (fees.length === 0) return <>{g.txns.map((t) => <TxnRow key={t.id} t={t} />)}</>;
+
+  const paidViaOrder = g.txns.some((t) => t.kind === "order_topup");
+  const isRenew = fees.every((t) => t.kind === "renew_fee");
+  const spend = fees.reduce((s, t) => s + t.amount, 0); // âm
+  const finalBalance = Math.min(...g.txns.map((t) => t.balance_after));
+  const title = isRenew ? "Gia hạn thành viên" : "Mời thành viên";
+  const created = new Date(g.txns[0].created_at).toLocaleString("vi-VN");
+
+  return (
+    <div>
+      <div
+        className="wallet-admin-row"
+        style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: "14px 12px", borderRadius: "var(--w-radius-sm)", cursor: "pointer" }}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div style={{ width: 34, height: 34, flexShrink: 0, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, background: "var(--w-neg-soft)", color: "var(--w-neg)" }}>↑</div>
+        <div style={{ flex: 1, minWidth: 0, lineHeight: 1.45 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--w-ink)" }}>
+            {title} · {fees.length} email
+            <span style={{ color: "var(--w-muted)", fontSize: 11, marginLeft: 6, display: "inline-block", transform: open ? "rotate(180deg)" : "none" }}>▾</span>
+          </div>
+          <div style={{ fontSize: 12.5, color: "var(--w-muted)" }}>
+            {paidViaOrder ? "Thanh toán qua hoá đơn" : "Trừ từ số dư ví"}
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 3, opacity: 0.85 }}>{created}</div>
+        </div>
+        <div style={{ textAlign: "right", flexShrink: 0 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--w-neg)" }}>
+            −{formatVnd(Math.abs(spend)).replace("-", "")}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 2 }}>Còn {formatVnd(finalBalance)}</div>
+        </div>
+      </div>
+      {open && (
+        <div style={{ margin: "0 12px 8px 60px", borderLeft: "2px solid var(--w-line)", paddingLeft: 14, display: "grid", gap: 6 }}>
+          {fees.map((t) => (
+            <div key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12.5 }}>
+              <span style={{ color: "var(--w-muted)", minWidth: 0, overflowWrap: "anywhere" }}>
+                {t.meta?.email ? String(t.meta.email) : t.kind}
+              </span>
+              <span style={{ color: "var(--w-neg)", fontFamily: "var(--font-mono)", flexShrink: 0 }}>
+                −{formatVnd(Math.abs(t.amount)).replace("-", "")}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
