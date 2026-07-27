@@ -170,6 +170,26 @@ describe("computeBillingCycle", () => {
     expect(c.fullMonthPerSlotWithFee).toBe(286550 + Math.round(578045 / 35));
   });
 
+  it("phí NH chia cho seat ĐÃ TRẢ PHÍ (quantity hoá đơn), KHÔNG chia seat hiện tại", () => {
+    // Hoá đơn trả cho 183 seat + phí NH 578.045, nhưng hiện chỉ dùng 163 seat.
+    // Phí/seat phải = 578045/183 (khớp dòng hoá đơn), KHÔNG phải 578045/163.
+    const c = computeBillingCycle(
+      [baseInvoice({ quantity: 183, service_fee_vnd: 578045 })],
+      null,
+      TODAY,
+      163, // seatCount hiện tại (tab Kế hoạch)
+    );
+    expect(c.totalSeats).toBe(163); // seat đang dùng giữ nguyên
+    expect(c.feeSeats).toBe(183); // mẫu số phí = seat đã trả phí
+    expect(c.feePerSeat).toBe(Math.round(578045 / 183));
+    // Khớp đúng giá dòng hoá đơn (invoiceSeatPricing) cho cùng hoá đơn đó.
+    const row = invoiceSeatPricing(
+      baseInvoice({ quantity: 183, service_fee_vnd: 578045 }),
+      TODAY,
+    );
+    expect(c.fullMonthPerSlotWithFee).toBe(row.monthlyPerSeat);
+  });
+
   it("không có phí → feePerSeat = 0, giá gồm phí = giá gồm VAT", () => {
     const c = computeBillingCycle([baseInvoice()], null, TODAY);
     expect(c.feePerSeat).toBe(0);
