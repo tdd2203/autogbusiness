@@ -925,6 +925,12 @@ const DETAIL_HIDDEN = new Set([
   // Đã thể hiện ở huy hiệu Kết quả (✓/✕/⏳).
   "status",
   "result",
+  // Sổ cái ví nội bộ — số dư/held ví TỨC THỜI giữa các bước trừ. Với giao dịch thu
+  // phí (nhất là CK trực tiếp: nạp tạm vào ví rồi trừ ngay N khoản) đây là số ví
+  // thoáng qua, trông như "nạp ví" gây rối. Số dư CUỐI đã hiển thị ở hộp phí ("Số dư
+  // sau"). Ẩn khỏi lưới thông tin & chi tiết kỹ thuật.
+  "balance_after",
+  "held_after",
 ]);
 
 const MONEY_KEYS = new Set(["fee", "fee_vnd", "invite_fee_vnd", "amount"]);
