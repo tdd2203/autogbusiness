@@ -1252,6 +1252,21 @@ function ExpandedPanel({ g }: { g: Group }) {
     chargeEvents.every((e) => opOf(e.action) === "WALLET_RENEW_CHARGED")
       ? "renew_fee"
       : "invite_fee";
+  // "Chi tiết kỹ thuật": các trường TIỀN (Phí/Số tiền) bị extractDetails khử trùng
+  // còn 1 dòng dù nhóm có N khoản trừ phí → thay bằng TỔNG cho khớp hộp phí, khỏi
+  // mâu thuẫn với dòng −1.320.000₫ (và với các dòng Balance After của từng khoản).
+  // Trường không phải tiền giữ nguyên. Chỉ áp khi có sự kiện trừ phí (feeTotal > 0).
+  const techRows =
+    feeTotal > 0
+      ? rows.map((r) =>
+          /₫/.test(r.value)
+            ? {
+                label: r.label,
+                value: `${r.value.trim().startsWith("-") ? "-" : ""}${fmtMoney(feeTotal)}`,
+              }
+            : r,
+        )
+      : rows;
   // Lưới THÔNG TIN bỏ dòng đã thể hiện ở nơi khác (hộp phí + panel Xác minh &
   // đối soát) để không lặp; các dòng này vẫn còn trong "Chi tiết kỹ thuật".
   // Cũng ẩn các CON SỐ kỹ thuật thô (số đã gỡ, số đã xác minh…) — nhiễu, không cần
@@ -1494,12 +1509,12 @@ function ExpandedPanel({ g }: { g: Group }) {
                 gap: 6,
               }}
             >
-              {t("audit.panel.tech")} ({rows.length})
+              {t("audit.panel.tech")} ({techRows.length})
               <span style={{ color: "var(--ink-4)", transform: tech ? "rotate(180deg)" : "none" }}>▾</span>
             </button>
             {tech && (
               <div style={{ marginTop: 10, display: "grid", gap: 5 }}>
-                {rows.map((r) => (
+                {techRows.map((r) => (
                   <div
                     key={r.label + r.value}
                     style={{ display: "flex", gap: 8, fontSize: 12, minWidth: 0 }}
