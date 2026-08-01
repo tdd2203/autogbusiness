@@ -3,6 +3,7 @@
 Phủ FR-021..026 + US3 scenario 5 (held không dùng để trả phí mời).
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.wallet_helpers import (
@@ -10,8 +11,16 @@ from tests.wallet_helpers import (
     bearer,
     create_ws,
     make_beta_sub,
+    set_settings,
     wallet_of,
 )
+
+
+@pytest.fixture(autouse=True)
+def _pin_fee(client: TestClient, auth_header: dict) -> None:
+    """Ghim phí mời = 100k + cấu hình ngân hàng. test_held_not_usable_for_invite giả
+    định 3 email = 300k; nếu không ghim, phí mặc định test = 0 → mời miễn phí → sai."""
+    set_settings(client, auth_header, invite_fee_vnd=100_000)
 
 
 def _withdraw(client: TestClient, token: str, amount: int, bank="ACB - 123 - A", note=None):

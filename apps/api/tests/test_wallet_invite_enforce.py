@@ -17,6 +17,7 @@ from tests.wallet_helpers import (
     create_ws,
     login,
     make_beta_sub,
+    set_beta,
     set_settings,
     wallet_of,
 )
@@ -234,6 +235,9 @@ def test_non_beta_sub_invite_free(client: TestClient, auth_header: dict) -> None
     """SC-006 — user KHÔNG bật cờ Ví: mời miễn phí, không đổi luồng."""
     ws = create_ws(client, auth_header, "NonBeta WS")
     user = create_user(client, auth_header, "nonbeta", ["MEMBER_VIEW", "MEMBER_INVITE"])
+    # wallet_beta MẶC ĐỊNH True (user 2026-07-14) → phải TẮT cờ để đúng kịch bản
+    # SC-006 "user không bật Ví". Không tắt → user bị tính phí như beta.
+    set_beta(client, auth_header, user["id"], enabled=False)
     assign(client, auth_header, ws["id"], user["id"])
     token = login(client, "nonbeta")
 

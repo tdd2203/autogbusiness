@@ -177,6 +177,9 @@ def financial_report(
     # ── THU: phí mời/gia hạn theo từng kỳ của mọi member (loại test + chủ workspace) ──
     revenue_invite = 0
     revenue_renew = 0
+    # Tổng "seat-tháng" có phát sinh THU (Σ số tháng của mọi kỳ được tính) — mẫu số để
+    # suy giá vốn TB mỗi seat/tháng = TỔNG CHI ÷ seat-tháng.
+    seat_months = 0
     # Gom theo chủ sở hữu (invited_by_user_id); None = "chưa có chủ" (gộp riêng).
     agent_rev: dict[UUID | None, int] = {}
     agent_invites: dict[UUID | None, int] = {}
@@ -208,6 +211,7 @@ def financial_report(
             if bucket < _SEPAY_LIVE_DATE:
                 continue  # kỳ trước mốc SePay = dữ liệu cũ chưa qua ví → không tính THU
             amt = per_month * n_months
+            seat_months += n_months
             if is_invite:
                 revenue_invite += amt
                 agent_invites[owner_key] = agent_invites.get(owner_key, 0) + 1
@@ -249,6 +253,11 @@ def financial_report(
 
     profit = revenue - cost
 
+    # Giá vốn trung bình mỗi seat/tháng = TỔNG CHI (gồm VAT) ÷ tổng seat-tháng có THU.
+    # Đây là giá vốn TB — đã "san phẳng" phần prorate lẻ ngày của ChatGPT và chi phí seat
+    # owner/free — nên so trực tiếp được với đơn giá/tháng (vd 330k). 0 seat-tháng → None.
+    avg_cost_per_seat = round(cost / seat_months) if seat_months > 0 else None
+
     monthly = [
         FinancialReportBucket(
             month=mk,
@@ -286,4 +295,6 @@ def financial_report(
         monthly=monthly,
         by_agent=by_agent,
         cost_missing_workspaces=cost_missing,
+        seat_months=seat_months,
+        avg_cost_per_seat=avg_cost_per_seat,
     )
