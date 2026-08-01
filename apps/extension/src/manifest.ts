@@ -46,6 +46,9 @@ export const manifest: ManifestV3Export = {
   ],
   permissions: ["storage", "tabs", "scripting", "alarms"],
   host_permissions: [
+    // Backend production trên VPS (qua Cloudflare tunnel) — web nginx proxy
+    // /api/ + /webhook/ về container api, extension chỉ cần 1 origin này.
+    "https://gpt.lovevn.org/*",
     // Backend FastAPI: port riêng 18000.
     "http://localhost:18000/*",
     "http://127.0.0.1:18000/*",
