@@ -9,7 +9,11 @@ from app import models  # noqa: F401 — ensure models import
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: startup gọi `alembic upgrade head` IN-PROCESS
+    # (main.py::_run_alembic_upgrade_head). fileConfig mặc định disable MỌI logger
+    # đang tồn tại → nuốt luôn logger uvicorn + `app.*` sau bước migrate (mọi log nền
+    # auto-expire/cleanup im lặng → "tưởng không hoạt động"). Giữ False để không tắt.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
