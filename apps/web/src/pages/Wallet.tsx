@@ -233,7 +233,7 @@ function TxnHistory({ txns }: { txns: WalletTxn[] }) {
 const TXN_SOURCE: Partial<Record<WalletTxnKind, string>> = {
   invite_fee: "Tự động · trừ khi mời thành viên",
   renew_fee: "Tự động · trừ khi gia hạn",
-  invite_refund: "Tự động · hoàn khi gỡ/huỷ mời",
+  invite_refund: "Tự động · hoàn khi mời thất bại",
   order_topup: "Tự động · nạp qua hoá đơn",
   adjust: "Thủ công · quản trị điều chỉnh",
 };

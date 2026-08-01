@@ -246,10 +246,14 @@ def test_assignment_endpoints_require_super_admin(
 
 
 def test_seat_guard_blocks_when_full(client: TestClient, auth_header: dict) -> None:
+    """Seat guard hiện hành (`_assert_seat_available`): chỉ đếm member ACTIVE thật
+    (pending chưa chiếm ghế) + cho overcommit tới seat_total×1.5. seat_total=1 →
+    cap = int(1.5) = 1: mời pending khi 0 active thì QUA; đầy 1 active thì CHẶN."""
     ws = _create_ws(client, auth_header, "Seat WS", seat_total=1)
     sub = _sub(client, auth_header, ["MEMBER_INVITE", "MEMBER_VIEW"])
     _assign(client, auth_header, ws["id"], sub["id"])
 
+    # 0 active → mời pending được phép (pending không tính vào seat).
     ok = client.post(
         f"/api/v1/workspaces/{ws['id']}/members/invite",
         json={"email": "first@example.com", "role": "member"},
@@ -257,12 +261,30 @@ def test_seat_guard_blocks_when_full(client: TestClient, auth_header: dict) -> N
     )
     assert ok.status_code == 201, ok.text
 
+    # Giả lập first đã THAM GIA (active) qua bulk-upsert → chiếm trọn 1 ghế.
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-upsert",
+        json={
+            "members": [
+                {
+                    "email": "first@example.com",
+                    "chatgpt_role": "member",
+                    "status": "active",
+                }
+            ],
+            "is_full_sync": False,
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # 1 active ≥ cap 1 → sub-admin mời thêm bị chặn 409.
     full = client.post(
         f"/api/v1/workspaces/{ws['id']}/members/invite",
         json={"email": "second@example.com", "role": "member"},
         headers=_bearer(sub["token"]),
     )
-    assert full.status_code == 409
+    assert full.status_code == 409, full.text
 
 
 def test_seat_guard_super_admin_bypass(client: TestClient, auth_header: dict) -> None:
