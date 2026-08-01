@@ -106,10 +106,12 @@ function niceMax(x: number): number {
 }
 
 export default function FinancialReport() {
-  const [presetKey, setPresetKey] = useState("6m");
+  // Mặc định "Tháng này" (theo thời gian thực) — range tính từ ngày 1 tháng hiện
+  // tại → hôm nay bằng new Date() lúc mở trang.
+  const [presetKey, setPresetKey] = useState("month");
   const [showAgents, setShowAgents] = useState(false);
   const range = useMemo(
-    () => (PRESETS.find((p) => p.key === presetKey) ?? PRESETS[2]).range(),
+    () => (PRESETS.find((p) => p.key === presetKey) ?? PRESETS[0]).range(),
     [presetKey],
   );
   const { data, isLoading, isError } = useFinancialReport(range.from, range.to);
@@ -652,6 +654,12 @@ function PnlStatement({ data, rangeLabel }: { data: FinancialReport; rangeLabel:
   const gain = data.profit >= 0;
   const margin = data.revenue > 0 ? (data.profit / data.revenue) * 100 : null;
   const p = vnNum(data.profit);
+  // Trung bình mỗi seat/tháng: giá vốn từ backend (cost ÷ seat-tháng), doanh thu &
+  // lãi suy tại chỗ. Chỉ hiện khi có ít nhất 1 seat-tháng phát sinh THU trong kỳ.
+  const costPerSeat = data.avg_cost_per_seat;
+  const revPerSeat = data.seat_months > 0 ? Math.round(data.revenue / data.seat_months) : null;
+  const profitPerSeat =
+    revPerSeat !== null && costPerSeat !== null ? revPerSeat - costPerSeat : null;
   return (
     <div style={{ ...card, overflow: "hidden", display: "flex", flexDirection: "column" }}>
       <div style={{ padding: "18px 24px", borderBottom: "1px solid var(--border)" }}>
@@ -690,6 +698,47 @@ function PnlStatement({ data, rangeLabel }: { data: FinancialReport; rangeLabel:
           </span>
         </div>
       </div>
+
+      {revPerSeat !== null && (
+        <div style={{ padding: "4px 24px 18px" }}>
+          <SectionLabel>TRUNG BÌNH / SEAT · THÁNG</SectionLabel>
+          <PnlRow label="Giá thu TB / seat" value={`${vnNum(revPerSeat).num} đ`} />
+          <PnlRow
+            label="Giá vốn TB / seat"
+            value={costPerSeat !== null ? `−${vnNum(costPerSeat).num} đ` : "—"}
+          />
+          {profitPerSeat !== null && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                justifyContent: "space-between",
+                gap: 16,
+                padding: "9px 0 2px",
+                marginTop: 2,
+                borderTop: "1px solid var(--border)",
+              }}
+            >
+              <span style={{ fontSize: 13.5, fontWeight: 700, color: "var(--ink)" }}>Lãi TB / seat</span>
+              <span
+                style={{
+                  fontSize: 14,
+                  fontWeight: 700,
+                  fontFamily: "var(--font-mono)",
+                  color: profitPerSeat < 0 ? "var(--danger)" : "var(--success-strong)",
+                }}
+              >
+                {profitPerSeat < 0 ? "−" : "+"}
+                {vnNum(profitPerSeat).num} đ
+              </span>
+            </div>
+          )}
+          <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8, lineHeight: 1.5 }}>
+            Giá vốn TB = tổng chi phí ChatGPT (gồm VAT) ÷ {data.seat_months} seat·tháng có thu trong kỳ —
+            đã san phẳng phần lẻ ngày &amp; seat owner/free.
+          </div>
+        </div>
+      )}
 
       <div
         style={{
