@@ -10,6 +10,7 @@ import { useT } from "../i18n";
 import type { QueueItem, Workspace } from "../types";
 import { TaskCompletionBanner } from "./TaskCompletionBanner";
 import { InviteMemberModal } from "./InviteMemberModal";
+import { ManualAddModal } from "./ManualAddModal";
 import { BulkRemoveModal } from "./BulkRemoveModal";
 import { PasteInvoiceModal } from "./PasteInvoiceModal";
 import { toast } from "./Toast";
@@ -36,6 +37,9 @@ export default function WorkspaceLayout() {
   const { user, hasPermission } = useAuth();
   const qc = useQueryClient();
   const [showInviteModal, setShowInviteModal] = useState(false);
+  // Modal "Thêm thủ công" — bản ghi quản lý cho email đã ở trên ChatGPT (auto-create),
+  // KHÔNG mời qua extension / không trừ ví. Chỉ super-admin (xem nút bên dưới).
+  const [showManualAddModal, setShowManualAddModal] = useState(false);
   const [showBulkRemoveModal, setShowBulkRemoveModal] = useState(false);
   // Giá trị mở sẵn cho modal Cập nhật hàng loạt (khi mở từ dropdown inline trong
   // Members: chọn hành động + điền sẵn email đã tích). null = mở rỗng từ header.
@@ -242,6 +246,17 @@ export default function WorkspaceLayout() {
                     : t("member.syncButton")}
                 </button>
               )}
+              {/* "Thêm thủ công" — CHỈ super-admin: ghi nhận email đã ở trên ChatGPT
+                  (auto-create) để quản lý, không mời qua extension / không trừ ví. */}
+              {user?.is_super_admin && (
+                <button
+                  onClick={() => setShowManualAddModal(true)}
+                  className="btn btn-sm btn-ghost"
+                  title={t("manualAdd.buttonTooltip")}
+                >
+                  {t("member.manualAddButton")}
+                </button>
+              )}
               {canInvite && (
                 <button
                   onClick={openInviteForm}
@@ -335,6 +350,17 @@ export default function WorkspaceLayout() {
           onDone={() => {
             qc.invalidateQueries({ queryKey: ["members", workspaceId] });
             qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
+          }}
+        />
+      )}
+      {showManualAddModal && workspaceId && (
+        <ManualAddModal
+          workspaceId={workspaceId}
+          verifiedDomain={workspace?.verified_domain ?? null}
+          onClose={() => setShowManualAddModal(false)}
+          onDone={() => {
+            qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+            qc.invalidateQueries({ queryKey: ["member-stats", workspaceId] });
           }}
         />
       )}
