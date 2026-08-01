@@ -204,7 +204,7 @@ function UsersCard() {
 const TXN_SOURCE: Partial<Record<WalletTxnKind, string>> = {
   invite_fee: "Tự động · trừ khi mời thành viên",
   renew_fee: "Tự động · trừ khi gia hạn",
-  invite_refund: "Tự động · hoàn khi gỡ/huỷ mời",
+  invite_refund: "Tự động · hoàn khi mời thất bại",
   order_topup: "Tự động · nạp qua hoá đơn",
   withdraw_hold: "Tự động · giữ khi gửi yêu cầu rút",
   withdraw_settle: "Thủ công · quản trị đã chi rút",

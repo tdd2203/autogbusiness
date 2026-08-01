@@ -34,6 +34,32 @@ def _patch_queue(client: TestClient, api_key: str, item_id: str, body: dict):
     )
 
 
+def _backdate_members(ws_id: str, emails: list[str], minutes: int = 11) -> None:
+    """Lùi mốc mời để vượt GUARD 10 PHÚT của phantom-cleanup (completion.py, fix
+    2026-07-13): member 'tươi' <10′ lọt unverified được GIỮ chờ sync phân xử —
+    KHÔNG xoá + KHÔNG hoàn phí ngay. Test chạy tức thì nên phải giả lập member cũ."""
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import SessionLocal
+    from app.models import Member
+
+    past = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    with SessionLocal() as db:
+        rows = (
+            db.query(Member)
+            .filter(
+                Member.workspace_id == uuid.UUID(ws_id),
+                Member.email.in_([e.lower() for e in emails]),
+            )
+            .all()
+        )
+        for m in rows:
+            m.last_invited_at = past
+            m.created_at = past
+        db.commit()
+
+
 def test_refund_all_on_failed(client: TestClient, auth_header: dict) -> None:
     ws = create_ws(client, auth_header, "Refund WS")
     sub = make_beta_sub(client, auth_header, username="reffail", balance=300_000)
@@ -61,6 +87,9 @@ def test_refund_partial_on_completed_unverified(client: TestClient, auth_header:
 
     res = _bulk(client, sub["token"], ws["id"], ["p1@example.com", "p2@example.com", "p3@example.com"])
     assert wallet_of(client, sub["token"])["balance"] == 0
+
+    # Vượt guard 10′ (unverified tươi được GIỮ + chưa hoàn phí, chờ sync phân xử).
+    _backdate_members(ws["id"], ["p1@example.com", "p2@example.com", "p3@example.com"])
 
     # COMPLETED nhưng p2 không verify được → chỉ hoàn phí p2.
     r = _patch_queue(

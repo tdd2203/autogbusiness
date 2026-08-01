@@ -114,6 +114,32 @@ def _list_queue(client: TestClient, headers: dict) -> list[dict]:
     return resp.json()
 
 
+def _backdate_members(ws_id: str, emails: list[str], minutes: int = 11) -> None:
+    """Lùi mốc mời (last_invited_at/created_at) để vượt GUARD 10 PHÚT của
+    phantom-cleanup: member 'tươi' <10′ lọt unverified được GIỮ chờ sync phân xử
+    (completion.py, fix 2026-07-13) — test chạy tức thì nên phải giả lập member cũ."""
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import SessionLocal
+    from app.models import Member
+
+    past = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    with SessionLocal() as db:
+        rows = (
+            db.query(Member)
+            .filter(
+                Member.workspace_id == uuid.UUID(ws_id),
+                Member.email.in_([e.lower() for e in emails]),
+            )
+            .all()
+        )
+        for m in rows:
+            m.last_invited_at = past
+            m.created_at = past
+        db.commit()
+
+
 def _patch_task_as_extension(
     client: TestClient,
     task_id: str,
@@ -304,8 +330,15 @@ def test_reinvite_after_removed_resets_joined_at_to_now(
     remove_task = next(
         q for q in _list_queue(client, auth_header) if q["type"] == "REMOVE_MEMBER"
     )
+    # REMOVE_MEMBER chỉ được mark 'removed' khi CÓ BẰNG CHỨNG (result.data.verified
+    # =true — extension poll thấy row biến mất; chống xoá-giả, completion.py). Thiếu
+    # bằng chứng → backend GIỮ active + log MEMBER_REMOVE_UNVERIFIED.
     _patch_task_as_extension(
-        client, remove_task["id"], ws["extension_api_key"], status="COMPLETED"
+        client,
+        remove_task["id"],
+        ws["extension_api_key"],
+        status="COMPLETED",
+        result={"data": {"verified": True}},
     )
 
     # 3) Mời lại → joined_at phải được reset (KHÁC ngày tham gia lần đầu) và
@@ -1077,6 +1110,10 @@ def test_phantom_cleanup_completed_unverified_only_deletes_listed(
     queue = _list_queue(client, auth_header)
     task = next(q for q in queue if q["type"] == "INVITE_MEMBER")
 
+    # Vượt guard 10′ (member tươi lọt unverified được GIỮ chờ sync) — giả lập
+    # member đã mời >10′ để cleanup xoá NGAY như kịch bản test muốn phủ.
+    _backdate_members(ws["id"], ["verified@example.com", "rejected@example.com"])
+
     _patch_task_as_extension(
         client,
         task["id"],
@@ -1267,12 +1304,22 @@ def test_invite_failed_logs_failure_for_surviving_member(
 def test_phantom_cleanup_scoped_to_workspace(
     client: TestClient, auth_header: dict
 ) -> None:
-    """FAILED ở WS A KHÔNG được đụng tới Member của WS B (cùng email)."""
+    """FAILED ở WS A KHÔNG được đụng tới Member của WS B.
+
+    Cập nhật theo luật 2026-07-20 (`_assert_single_workspace`): 1 email chỉ được
+    active/pending ở DUY NHẤT 1 workspace — kịch bản cũ (cùng email ở 2 WS) giờ bị
+    chặn 409 ngay từ invite, nên kiểm scoping bằng 2 email khác nhau + kiểm luôn
+    luật mới."""
     ws_a = _create_workspace(client, auth_header, name="WS A")
     ws_b = _create_workspace(client, auth_header, name="WS B")
 
     _invite_one(client, ws_a["id"], email="shared@example.com", headers=auth_header)
-    _invite_one(client, ws_b["id"], email="shared@example.com", headers=auth_header)
+    # Luật 1-email-1-workspace: mời trùng email đang pending ở WS A vào WS B → 409
+    # (kể cả super-admin).
+    _invite_one(
+        client, ws_b["id"], email="shared@example.com", headers=auth_header, expect=409
+    )
+    _invite_one(client, ws_b["id"], email="other@example.com", headers=auth_header)
 
     # FAIL task của WS A
     queue = _list_queue(client, auth_header)
@@ -1292,4 +1339,4 @@ def test_phantom_cleanup_scoped_to_workspace(
     a_emails = {m["email"] for m in _list_members(client, ws_a["id"], auth_header)}
     b_emails = {m["email"] for m in _list_members(client, ws_b["id"], auth_header)}
     assert "shared@example.com" not in a_emails, "WS A phải bị xoá"
-    assert "shared@example.com" in b_emails, "WS B phải còn (khác workspace)"
+    assert "other@example.com" in b_emails, "WS B phải còn nguyên (khác workspace)"
