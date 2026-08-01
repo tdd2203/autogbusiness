@@ -12,12 +12,28 @@
 import type { QueueItem } from "../types";
 import { useT } from "../i18n";
 
+type SyncMismatch = {
+  expected_total?: number | null;
+  scraped_active?: number;
+  db_active?: number;
+  extra_in_autogpt?: string[];
+  missing_in_autogpt?: string[];
+  unresolved_count?: number;
+};
+
 type SyncDataResult = {
   total?: number;
   created?: number;
   updated?: number;
   chunks?: number;
+  mismatch?: SyncMismatch | null;
 };
+
+/** Gộp email lệch thành 1 chuỗi ngắn (tối đa `max` email) cho message. */
+function joinMismatchEmails(emails: string[], max = 5): string {
+  const head = emails.slice(0, max).join(", ");
+  return emails.length > max ? `${head} +${emails.length - max}` : head;
+}
 
 type SyncBillingResult = {
   seat_total?: number | null;
@@ -35,11 +51,41 @@ function renderDetail(task: QueueItem, t: Translator): string {
   switch (task.type) {
     case "SYNC_DATA": {
       const r = (task.result ?? {}) as SyncDataResult;
-      return t("sync.completedMembers", {
+      const base = t("sync.completedMembers", {
         total: r.total ?? 0,
         created: r.created ?? 0,
         updated: r.updated ?? 0,
       });
+      // Lệch số lượng sau sync → nối 1 dòng cảnh báo đích danh email.
+      const mm = r.mismatch;
+      if (mm) {
+        const parts: string[] = [];
+        if (mm.extra_in_autogpt?.length) {
+          parts.push(
+            t("sync.mismatchExtra", {
+              n: mm.extra_in_autogpt.length,
+              list: joinMismatchEmails(mm.extra_in_autogpt),
+            }),
+          );
+        }
+        if (mm.missing_in_autogpt?.length) {
+          parts.push(
+            t("sync.mismatchMissing", {
+              n: mm.missing_in_autogpt.length,
+              list: joinMismatchEmails(mm.missing_in_autogpt),
+            }),
+          );
+        }
+        if (mm.unresolved_count) {
+          parts.push(t("sync.mismatchUnresolved", { n: mm.unresolved_count }));
+        }
+        const detail = parts.join(" · ");
+        return `${base}\n⚠ ${t("sync.mismatchLead", {
+          chatgpt: mm.expected_total ?? "?",
+          autogpt: mm.db_active ?? "?",
+        })}${detail ? ` — ${detail}` : ""}`;
+      }
+      return base;
     }
     case "SYNC_BILLING": {
       const r = (task.result ?? {}) as SyncBillingResult;
@@ -159,7 +205,11 @@ export function TaskCompletionBanner({
         </div>
         <div
           className="notice-body"
-          style={{ marginTop: 4, wordBreak: "break-word" }}
+          style={{
+            marginTop: 4,
+            wordBreak: "break-word",
+            whiteSpace: "pre-line",
+          }}
         >
           {detail}
         </div>
