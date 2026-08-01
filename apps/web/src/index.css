@@ -495,6 +495,121 @@ body {
       grid-template-columns: minmax(0, 1fr) !important;
     }
   }
+  /* Ví cá nhân: 2 cột (số dư + rút | lịch sử) → xếp dọc 1 cột trên tablet/mobile. */
+  @media (max-width: 860px) {
+    .wallet-grid {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+  }
+
+  /* Panel chi tiết nhật ký: desktop 2 vùng (THÔNG TIN | XÁC MINH 300px, có vạch
+     ngăn dọc). Dưới 768px xếp dọc, bỏ vạch dọc, thêm vạch ngang trên khối Xác minh. */
+  @media (max-width: 768px) {
+    .audit-panel-grid {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+    .audit-panel-verify {
+      border-left: none !important;
+      padding-left: 0 !important;
+      border-top: 1px solid var(--border);
+      padding-top: 16px;
+      margin-top: 4px;
+    }
+  }
+
+  /* ---------- Bảng Thành viên → thẻ trên mobile ----------
+     Trên desktop giữ nguyên bảng 8 cột (cuộn ngang nếu cần). Dưới 768px mỗi
+     dòng <tr> thành 1 thẻ: email = tiêu đề, ô chọn nổi góc phải, các cột còn lại
+     là hàng "nhãn ↔ giá trị" (nhãn lấy từ data-label), thao tác ⋯ canh phải.
+     Giữ NGUYÊN logic render trong Members.tsx — chỉ đổi cách trình bày bằng CSS. */
+  @media (max-width: 768px) {
+    .members-table thead {
+      display: none;
+    }
+    .members-table,
+    .members-table tbody,
+    .members-table tr,
+    .members-table td {
+      display: block;
+      width: 100%;
+    }
+    .members-table tbody tr {
+      position: relative;
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface);
+      padding: 12px 14px;
+      margin-bottom: 12px;
+    }
+    .members-table tbody tr:hover {
+      background: var(--surface);
+    }
+    .members-table tbody td {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      /* box-sizing: giữ padding NẰM TRONG width:100% — nếu không, padding-right
+         của ô email (40px) cộng thêm vào bề rộng → thẻ tràn ngang, giá trị bị cắt. */
+      box-sizing: border-box;
+      padding: 7px 0 !important;
+      border: none !important;
+      white-space: normal !important;
+      text-align: left !important;
+      min-height: 0;
+      min-width: 0;
+    }
+    .members-table tbody td::before {
+      content: attr(data-label);
+      flex-shrink: 0;
+      font-family: var(--font-mono);
+      font-size: 10.5px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+    }
+    /* Email = tiêu đề thẻ: nguyên hàng đầu, chữ to, chừa chỗ ô chọn góc phải. */
+    .members-table tbody td.cell-email {
+      padding: 0 40px 8px 0 !important;
+      border-bottom: 1px solid var(--border) !important;
+      margin-bottom: 4px;
+    }
+    .members-table tbody td.cell-email::before {
+      content: none;
+    }
+    .members-table tbody td.cell-email .cell-email-link {
+      font-size: 15px;
+      font-weight: 600;
+      white-space: normal;
+      text-align: left;
+      word-break: break-all;
+      line-height: 1.35;
+    }
+    /* Ô chọn hàng loạt: nổi ở góc trên phải thẻ. */
+    .members-table tbody td.mcard-select {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: auto;
+      padding: 0 !important;
+    }
+    .members-table tbody td.mcard-select::before {
+      content: none;
+    }
+    /* Thao tác ⋯: canh phải, không nhãn. */
+    .members-table tbody td.mcard-actions {
+      justify-content: flex-end;
+      padding-top: 10px !important;
+    }
+    .members-table tbody td.mcard-actions::before {
+      content: none;
+    }
+    /* Select (loại license) trong thẻ co theo nội dung, không kéo full. */
+    .members-table tbody td .form-input {
+      width: auto;
+    }
+  }
   .cell-email {
     font-family: var(--font-mono);
     font-size: 12.5px;
