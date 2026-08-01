@@ -17,6 +17,7 @@ import {
 import { getConfig } from "../shared/storage";
 import type { ExtensionConfig, QueueItem } from "../shared/types";
 import { runPaymentChain, scrapeInvoiceDetailInTab } from "./payment-chain";
+import { markAdminActivity, setRunnerBusy } from "./idle-close";
 
 const RATE_LIMIT = {
   /** Min delay giữa 2 task bất kỳ (anti-detection). 5000→2000→1200→840 (-30%). */
@@ -26,6 +27,26 @@ const RATE_LIMIT = {
   /** Sleep min/max giữa 2 batch. 30-60s → 10-20s → 6-12s (-40%). */
   batchPauseMinMs: 6_000,
   batchPauseMaxMs: 12_000,
+};
+
+/**
+ * Lệch số lượng sau sync (backend đối chiếu ở request reconcile cuối). Đích danh
+ * email để dashboard cảnh báo admin — KHÔNG tự xoá/sửa. Xem
+ * `apps/api/app/routers/members/reconcile.py` (khối MEMBER_SYNC_MISMATCH).
+ */
+type SyncMismatch = {
+  /** ChatGPT header báo (active). null nếu extension cũ không gửi expected_total. */
+  expected_total: number | null;
+  /** Số row active extension bắt được lần scrape này. */
+  scraped_active: number;
+  /** Active trong AutoGPT sau sync. */
+  db_active: number;
+  /** Active ở AutoGPT mà ChatGPT scrape KHÔNG thấy (đã loại vùng bảo vệ 10'). */
+  extra_in_autogpt: string[];
+  /** ChatGPT scrape thấy active mà AutoGPT không active. */
+  missing_in_autogpt: string[];
+  /** Header đếm nhiều hơn số row bắt được → dòng chưa lấy được danh tính. */
+  unresolved_count: number;
 };
 
 const CHATGPT_TAB_MATCH = "https://chatgpt.com/admin/*";
@@ -1211,6 +1232,9 @@ async function reportToBackend(
       let totalCreated = 0;
       let totalUpdated = 0;
       const rogueEmailsAggregated: string[] = [];
+      // Lệch số lượng sau sync (do backend đối chiếu ở request reconcile cuối) —
+      // đích danh email để dashboard cảnh báo admin. null = khớp.
+      let syncMismatch: SyncMismatch | null = null;
       try {
         // Bước 1: upsert từng chunk KHÔNG reconcile (isFullSync:false). Reconcile
         // per-chunk sẽ mark removed oan member của chunk khác (mỗi chunk chỉ thấy
@@ -1265,9 +1289,20 @@ async function reportToBackend(
             reconcile_skip_reason?: string | null;
             joined_check_count?: number;
             joined_check_task_id?: string | null;
+            mismatch?: SyncMismatch | null;
           };
           if (Array.isArray(result.rogue_pending_emails)) {
             rogueEmailsAggregated.push(...result.rogue_pending_emails);
+          }
+          // Lệch số lượng sau sync (đích danh email) → giữ để đẩy vào task.result
+          // cho dashboard cảnh báo admin. Chỉ báo, KHÔNG tự xử lý ở đây.
+          if (result.mismatch) {
+            syncMismatch = result.mismatch;
+            console.warn(
+              `[autogpt-sync] LỆCH sau sync: ChatGPT header ${result.mismatch.expected_total ?? "?"} ` +
+                `· AutoGPT ${result.mismatch.db_active} · thừa ${result.mismatch.extra_in_autogpt.length} ` +
+                `· thiếu ${result.mismatch.missing_in_autogpt.length} · chưa xác định ${result.mismatch.unresolved_count}`,
+            );
           }
           if (result.joined_check_count) {
             // Backend đã đối chiếu tab Lời mời với danh sách chờ tham gia và tự
@@ -1315,6 +1350,8 @@ async function reportToBackend(
           updated: totalUpdated,
           chunks: Math.ceil(members.length / CHUNK_SIZE),
           rogue_pending_emails: rogueEmailsAggregated,
+          // Lệch sau sync (null nếu khớp) → dashboard hiện toast + banner cảnh báo.
+          mismatch: syncMismatch,
         },
       });
       return;
@@ -1518,9 +1555,26 @@ export function runUntilIdle(): Promise<{
   lastDetail?: string;
 }> {
   if (runUntilIdleInFlight) return runUntilIdleInFlight;
-  runUntilIdleInFlight = doRunUntilIdle().finally(() => {
-    runUntilIdleInFlight = null;
-  });
+  // Đang xử lý queue → khoá auto-close tab admin (không cắt ngang task đang chạy).
+  setRunnerBusy(true);
+  runUntilIdleInFlight = doRunUntilIdle()
+    .then(async (r) => {
+      // CHỈ đánh dấu "vừa dùng tab admin" khi THỰC SỰ có task chạy. Backup poll
+      // gọi runUntilIdle mỗi phút; nếu mark ở đây kể cả khi rỗng thì bộ đếm idle
+      // sẽ reset liên tục → tab không bao giờ đóng.
+      if (r.processed > 0) {
+        try {
+          await markAdminActivity();
+        } catch (e) {
+          console.warn("[autogpt-runner] markAdminActivity lỗi (bỏ qua)", e);
+        }
+      }
+      return r;
+    })
+    .finally(() => {
+      setRunnerBusy(false);
+      runUntilIdleInFlight = null;
+    });
   return runUntilIdleInFlight;
 }
 

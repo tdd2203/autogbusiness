@@ -7,6 +7,11 @@ import {
   setupLabelsRefreshAlarm,
 } from "./labels-sync";
 import { runPaymentChain, type PaymentChainOptions } from "./payment-chain";
+import {
+  handleIdleCloseTick,
+  isIdleCloseAlarm,
+  setupIdleCloseAlarm,
+} from "./idle-close";
 import { updateProgress } from "../shared/api";
 import { getConfig } from "../shared/storage";
 
@@ -100,6 +105,10 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     void refreshLabelBundle();
     return;
   }
+  if (isIdleCloseAlarm(alarm.name)) {
+    void handleIdleCloseTick();
+    return;
+  }
   if (alarm.name !== BACKUP_POLL_ALARM) return;
   console.log("[autogpt-poll] backup tick — checking pending tasks");
   runUntilIdle()
@@ -120,6 +129,7 @@ chrome.runtime.onInstalled.addListener((details) => {
   void reinjectDashboardBridge();
   setupBackupPoll();
   setupLabelsRefreshAlarm();
+  setupIdleCloseAlarm();
   void refreshLabelBundle();
   // Auto-connect SSE — backend sẽ push task event tới đây, KHÔNG cần user
   // thao tác gì trên extension.
@@ -131,6 +141,7 @@ chrome.runtime.onStartup.addListener(() => {
   void reinjectDashboardBridge();
   setupBackupPoll();
   setupLabelsRefreshAlarm();
+  setupIdleCloseAlarm();
   void refreshLabelBundle();
   void connectSSE();
 });
@@ -154,6 +165,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 void connectSSE();
 setupBackupPoll();
 setupLabelsRefreshAlarm();
+setupIdleCloseAlarm();
 void refreshLabelBundle();
 // Manual reload từ chrome://extensions/ KHÔNG fire onInstalled/onStartup,
 // chỉ SW restart và chạy top-level code. Phải re-inject bridge ở đây nữa để

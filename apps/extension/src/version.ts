@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.9.31";
+export const VERSION = "0.10.0";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,20 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.10.0",
+    date: "2026-07-27",
+    kind: "feature",
+    summary:
+      "Tự động ĐÓNG tab chatgpt.com/admin khi không dùng đến sau một khoảng NGẪU NHIÊN (~10 phút → ~1 tiếng). Không đóng khi đang chạy task hoặc user đang mở/xem tab đó.",
+    details: [
+      "Yêu cầu USER 2026-07-27: tab admin để lâu không dùng thì tự đóng, thời gian random không cố định (hợp triết lý 'thao tác như người dùng thật').",
+      "Alarm ~1 phút/lần quét tab admin; mỗi phiên idle bốc 1 ngưỡng random trong [10, 60] phút.",
+      "'Không dùng' = extension không chạy task (markAdminActivity) VÀ user không xem tab (tab.active=false, tab.lastAccessed cũ).",
+      "Đang chạy task (runnerBusy) → KHÔNG đóng, tránh cắt ngang. Task kế tiếp tự mở lại tab admin như cũ.",
+      "File mới: src/background/idle-close.ts; wire vào background/index.ts (alarm) + runner.ts (đánh dấu hoạt động).",
+    ],
+  },
   {
     version: "0.9.31",
     date: "2026-07-26",
