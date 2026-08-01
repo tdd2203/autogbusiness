@@ -80,7 +80,7 @@ function classify(action: string, actorType: string): Cat {
    nghiệp vụ thành viên: mời · gỡ (xoá email) · gia hạn · đổi chủ. Các sự kiện khác
    (đăng nhập, đồng bộ, đổi hạn, đánh dấu thanh toán, giao dịch ví…) để tab "Khác"
    với màu xám trung tính → màu chỉ xuất hiện ở việc đáng chú ý, tránh loạn màu. */
-type ImpGroup = "remove" | "invite" | "renew" | "owner";
+type ImpGroup = "remove" | "invite" | "renew" | "owner" | "sync";
 
 const IMP_OP_GROUP: Record<string, ImpGroup> = {
   // xoá email (gỡ thành viên)
@@ -113,6 +113,9 @@ const IMP_OP_GROUP: Record<string, ImpGroup> = {
   MEMBER_OWNER_REVOKED: "owner",
   MEMBER_OWNER_TRANSFERRED: "owner",
   MEMBER_BULK_OWNER_ASSIGN: "owner",
+  // Đồng bộ xong VẪN lệch số lượng (ChatGPT header ≠ AutoGPT) → admin PHẢI thấy
+  // để truy nguyên nhân. Đưa lên tab "Chính" (nhóm sync).
+  MEMBER_SYNC_MISMATCH: "sync",
 };
 
 /** Nhóm nghiệp vụ quan trọng của 1 action (null = không quan trọng). */
@@ -140,6 +143,7 @@ const IMP_COLOR: Record<ImpGroup, GroupColor> = {
   invite: { accent: "#3a5bd0", tint: "#eef2fd", chipBg: "#dde5fa", chipText: "#2f47a8", labelKey: "audit.grp.invite" },
   renew: { accent: "#2f8a52", tint: "#e9f4ed", chipBg: "#d3ecdc", chipText: "#1f6b3f", labelKey: "audit.grp.renew" },
   owner: { accent: "#b5822a", tint: "#faf3e6", chipBg: "#f0e2c4", chipText: "#8a6416", labelKey: "audit.grp.owner" },
+  sync: { accent: "#c0392b", tint: "#fbeeeb", chipBg: "#f4ddd8", chipText: "#a2493b", labelKey: "audit.grp.syncMismatch" },
 };
 
 // Màu trung tính cho sự kiện không quan trọng.
@@ -209,6 +213,7 @@ const ACT_TITLE: Record<string, string> = {
   MEMBER_INVITE_FAILED: "Mời thành viên thất bại",
   MEMBER_INVITE_VERIFY_RECONCILE: "Đối soát mời thành viên",
   MEMBER_RECONCILE_SKIPPED: "Bỏ qua đối soát",
+  MEMBER_SYNC_MISMATCH: "Lệch số lượng sau đồng bộ",
   MEMBER_PAYMENT_MARKED: "Đánh dấu đã thanh toán",
   MEMBER_PAYMENT_REQUESTED: "Yêu cầu thanh toán",
   MEMBER_SUBSCRIPTION_RENEWED: "Gia hạn gói thành viên",
@@ -857,7 +862,12 @@ const DETAIL_LABEL: Record<string, string> = {
   batch: "Hàng loạt",
   dry_run: "Chạy thử",
   reason: "Lý do",
-  expected_total: "Tổng kỳ vọng",
+  expected_total: "ChatGPT header (active)",
+  scraped_active: "Scrape được (active)",
+  db_active: "AutoGPT (active)",
+  extra_in_autogpt: "Thừa ở AutoGPT (ChatGPT không có)",
+  missing_in_autogpt: "Thiếu ở AutoGPT (ChatGPT có)",
+  unresolved_count: "Chưa xác định danh tính",
   name: "Tên",
   chatgpt_id: "Mã ChatGPT",
   plan: "Gói",
@@ -1377,22 +1387,33 @@ function ExpandedPanel({ g }: { g: Group }) {
   return (
     <div
       style={{
-        display: "flex",
-        gap: 28,
-        flexWrap: "wrap",
         padding: "18px 24px 22px 27px",
         borderTop: "1px solid var(--border)",
         background: "var(--surface-2, var(--bg))",
       }}
     >
+      {/* Lấp đầy bề rộng thay vì bó hẹp: lưới 2 vùng — THÔNG TIN co giãn (mỗi
+          trường là thẻ "nhãn trên · giá trị dưới" xếp kín theo chiều ngang, hết
+          cảnh dàn mỏng 1 hàng + trống bên phải) và cột XÁC MINH cố định 300px
+          neo mép phải. Dưới 768px (mobile / dạng thẻ) .audit-panel-grid xếp dọc
+          1 cột — xem index.css. */}
+      <div
+        className="audit-panel-grid"
+        style={{
+          display: "grid",
+          gridTemplateColumns: "minmax(0,1fr) 300px",
+          gap: 32,
+          alignItems: "start",
+        }}
+      >
       {/* ── THÔNG TIN ── */}
-      <div style={{ flex: "1.6 1 340px", minWidth: 260 }}>
+      <div style={{ minWidth: 0 }}>
         <div style={heading}>{t("audit.panel.info")}</div>
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
-            gap: "10px 28px",
+            gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))",
+            gap: "2px 24px",
           }}
         >
           {pairs.map((p) => (
@@ -1400,22 +1421,33 @@ function ExpandedPanel({ g }: { g: Group }) {
               key={p.label + p.value}
               style={{
                 display: "flex",
-                justifyContent: "space-between",
-                gap: 12,
-                fontSize: 12.5,
+                flexDirection: "column",
+                gap: 2,
+                padding: "8px 0",
                 borderBottom: "1px solid var(--border)",
-                paddingBottom: 6,
+                minWidth: 0,
+                // Giá trị dài (danh sách email, ID) chiếm 2 cột cho dễ đọc.
+                gridColumn: p.value.length > 40 ? "span 2" : undefined,
               }}
             >
-              <span style={{ color: "var(--ink-3)", flexShrink: 0 }}>{p.label}</span>
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 10,
+                  letterSpacing: "0.04em",
+                  textTransform: "uppercase",
+                  color: "var(--ink-3)",
+                }}
+              >
+                {p.label}
+              </span>
               <span
                 title={p.value}
                 style={{
-                  color: "var(--ink)",
+                  fontSize: 13,
                   fontWeight: 500,
-                  textAlign: "right",
-                  // Hiện ĐẦY ĐỦ (vd email đã gỡ) — xuống dòng thay vì cắt "…" vì
-                  // panel còn nhiều chỗ trống.
+                  color: "var(--ink)",
+                  // Hiện ĐẦY ĐỦ (vd email đã gỡ) — xuống dòng thay vì cắt "…".
                   overflowWrap: "anywhere",
                   minWidth: 0,
                 }}
@@ -1438,6 +1470,8 @@ function ExpandedPanel({ g }: { g: Group }) {
               borderRadius: 10,
               background: "var(--danger-bg)",
               border: "1px solid var(--danger-border, var(--border))",
+              // Không kéo dài hết cột THÔNG TIN rộng — giữ hộp phí gọn, dễ đọc.
+              maxWidth: 520,
             }}
           >
             <div style={{ minWidth: 0 }}>
@@ -1471,7 +1505,10 @@ function ExpandedPanel({ g }: { g: Group }) {
       </div>
 
       {/* ── XÁC MINH & ĐỐI SOÁT ── */}
-      <div style={{ flex: "1 1 260px", minWidth: 220 }}>
+      <div
+        className="audit-panel-verify"
+        style={{ minWidth: 0, borderLeft: "1px solid var(--border)", paddingLeft: 32 }}
+      >
         <div style={heading}>{t("audit.panel.verify")}</div>
         <VerifyItem
           color={res.color}
@@ -1546,6 +1583,7 @@ function ExpandedPanel({ g }: { g: Group }) {
             )}
           </div>
         )}
+      </div>
       </div>
     </div>
   );

@@ -422,6 +422,81 @@ def bulk_upsert_members(
                 commit=False,
             )
 
+    # ---- Đối soát LỆCH SỐ LƯỢNG cấp email (user 2026-07-30) ----
+    # Sync xong VẪN có thể lệch (vd ChatGPT header 172 mà AutoGPT 171). Sai lệch
+    # nhỏ (<10%) lọt qua guard "sync thiếu" nên trước đây KHÔNG ai được báo. Nay
+    # so 3 con số trên tab "Người dùng" (active — nơi expected_total là nguồn
+    # chuẩn) và CHỈ ĐÍCH DANH email lệch để admin tự truy nguyên nhân — KHÔNG tự
+    # xoá/sửa gì (chốt user 2026-07-30):
+    #   - expected_total : ChatGPT header báo (vd 172)
+    #   - scraped_active : số row active extension bắt được lần này
+    #   - db_active      : active trong AutoGPT sau sync (vd 171)
+    #   - extra_in_autogpt   : AutoGPT đang active mà ChatGPT scrape KHÔNG thấy
+    #                          (đã loại member trong vùng bảo vệ 10' — vừa mời lại).
+    #   - missing_in_autogpt : ChatGPT scrape thấy active mà AutoGPT KHÔNG active.
+    #   - unresolved_count   : header đếm NHIỀU hơn số row bắt được → còn dòng
+    #                          ChatGPT chưa lấy được danh tính (owner / row ảo
+    #                          virtualized chưa render) → admin mở tab kiểm tra tay.
+    # CHỈ chạy khi scope có 'active' và KHÔNG reconcile_skipped (partial scrape →
+    # số liệu vô nghĩa, đã có MEMBER_RECONCILE_SKIPPED lo).
+    mismatch: dict | None = None
+    if scopes and "active" in scopes and incoming_emails and not reconcile_skipped:
+        if body.reconcile_emails is not None:
+            _pending_lower = {
+                e.lower() for e in (body.reconcile_pending_emails or [])
+            }
+        else:
+            _pending_lower = {
+                m.email.lower() for m in body.members if m.status == "pending"
+            }
+        scraped_active_emails = incoming_emails - _pending_lower
+        db_active_emails = {
+            e.lower()
+            for (e,) in db.execute(
+                select(Member.email).where(
+                    Member.workspace_id == workspace_id,
+                    Member.status == "active",
+                )
+            ).all()
+        }
+        db_active = len(db_active_emails)
+        scraped_active = len(scraped_active_emails)
+        missing_in_autogpt = sorted(scraped_active_emails - db_active_emails)
+        raw_extra = db_active_emails - scraped_active_emails
+        extra_in_autogpt: list[str] = []
+        if raw_extra:
+            # Loại member vừa mời lại trong 10' (ChatGPT chưa kịp hiện ở tab active
+            # lúc scrape) — cùng vùng bảo vệ như khối mark-removed, tránh báo nhầm.
+            protect_cutoff = now - timedelta(minutes=10)
+            protected = {
+                e.lower()
+                for (e,) in db.execute(
+                    select(Member.email).where(
+                        Member.workspace_id == workspace_id,
+                        func.lower(Member.email).in_(raw_extra),
+                        Member.invited_by_user_id.isnot(None),
+                        func.coalesce(Member.last_invited_at, Member.created_at)
+                        > protect_cutoff,
+                    )
+                ).all()
+            }
+            extra_in_autogpt = sorted(raw_extra - protected)
+        unresolved = 0
+        if body.expected_total is not None and body.expected_total > scraped_active:
+            unresolved = body.expected_total - scraped_active
+        header_mismatch = (
+            body.expected_total is not None and body.expected_total != db_active
+        )
+        if extra_in_autogpt or missing_in_autogpt or unresolved or header_mismatch:
+            mismatch = {
+                "expected_total": body.expected_total,
+                "scraped_active": scraped_active,
+                "db_active": db_active,
+                "extra_in_autogpt": extra_in_autogpt,
+                "missing_in_autogpt": missing_in_autogpt,
+                "unresolved_count": unresolved,
+            }
+
     db.add(workspace)
     log_event(
         db,
@@ -456,6 +531,20 @@ def bulk_upsert_members(
             data={"reason": skip_reason, "expected_total": body.expected_total},
             commit=False,
         )
+    # Sync xong vẫn LỆCH số lượng → log riêng (đích danh email) để admin tra
+    # nguyên nhân. Nằm ở tab "Chính" của Nhật ký (AuditLogs: nhóm 'sync').
+    if mismatch is not None:
+        log_event(
+            db,
+            actor_type="EXTENSION",
+            actor_label=f"workspace:{workspace.name}",
+            action="MEMBER_SYNC_MISMATCH",
+            result="MISMATCH",
+            target_type="WORKSPACE",
+            target_id=str(workspace_id),
+            data=mismatch,
+            commit=False,
+        )
     db.commit()
     if joined_check_task_id:
         # Sau commit — extension pick ngay task tra tab "Người dùng".
@@ -478,6 +567,9 @@ def bulk_upsert_members(
         # Số email lệch giữa tab Lời mời và dashboard → đã enqueue tra tab Người dùng.
         "joined_check_count": len(joined_check_emails),
         "joined_check_task_id": joined_check_task_id,
+        # Lệch số lượng sau sync (đích danh email) — None nếu khớp. Extension mang
+        # xuống QueueItem.result để dashboard cảnh báo admin.
+        "mismatch": mismatch,
     }
 
 
