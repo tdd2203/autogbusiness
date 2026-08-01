@@ -8,6 +8,7 @@ Bản đồ chức năng (mỗi module có file `.md` cùng tên):
   - stats.py         : member_stats, list_members (query thống kê + danh sách)
   - activity.py      : list_member_logs (lịch sử audit 1 member — panel chi tiết)
   - invite.py        : invite_member, bulk_invite_members (+ seat guard)
+  - manual_add.py    : manual_add_members (THÊM THỦ CÔNG — bản ghi quản lý, KHÔNG mời/không phí)
   - subscription.py  : update_member_subscription (đổi thời hạn theo ngày mua + tháng — CÓ DUYỆT)
   - renew.py         : renew_member_subscription (GIA HẠN tự phục vụ — KHÔNG duyệt, tạo chu kỳ + reset chưa TT)
   - correct_add_date.py: correct_member_add_date (sửa "ngày gia hạn" ĐÚNG 1 lần — super-admin)
@@ -33,6 +34,7 @@ from . import (  # noqa: F401  (side-effect: đăng ký route lên router)
     correct_add_date,
     invite,
     lookup,
+    manual_add,
     ownership,
     reconcile,
     remove,

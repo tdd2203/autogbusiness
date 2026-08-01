@@ -22,6 +22,54 @@ import { confirm, toast } from "../components/Toast";
 import { downloadXlsx } from "../lib/xlsx";
 import { Chip } from "./Queue";
 
+// Lệch số lượng sau sync (backend đối chiếu ChatGPT header vs AutoGPT) — đích
+// danh email để cảnh báo admin. Xem reconcile.py (khối MEMBER_SYNC_MISMATCH).
+type SyncMismatch = {
+  expected_total?: number | null;
+  scraped_active?: number;
+  db_active?: number;
+  extra_in_autogpt?: string[];
+  missing_in_autogpt?: string[];
+  unresolved_count?: number;
+};
+
+/** Dựng message toast cảnh báo lệch sau sync (đích danh email, tối đa 5/nhóm). */
+function formatSyncMismatch(
+  mm: SyncMismatch,
+  t: ReturnType<typeof useT>,
+): string {
+  const short = (emails: string[]) => {
+    const head = emails.slice(0, 5).join(", ");
+    return emails.length > 5 ? `${head} +${emails.length - 5}` : head;
+  };
+  const lines: string[] = [
+    t("sync.mismatchLead", {
+      chatgpt: mm.expected_total ?? "?",
+      autogpt: mm.db_active ?? "?",
+    }),
+  ];
+  if (mm.extra_in_autogpt?.length) {
+    lines.push(
+      t("sync.mismatchExtra", {
+        n: mm.extra_in_autogpt.length,
+        list: short(mm.extra_in_autogpt),
+      }),
+    );
+  }
+  if (mm.missing_in_autogpt?.length) {
+    lines.push(
+      t("sync.mismatchMissing", {
+        n: mm.missing_in_autogpt.length,
+        list: short(mm.missing_in_autogpt),
+      }),
+    );
+  }
+  if (mm.unresolved_count) {
+    lines.push(t("sync.mismatchUnresolved", { n: mm.unresolved_count }));
+  }
+  return `${t("sync.mismatchTitle")}\n${lines.join("\n")}`;
+}
+
 // Tab lọc theo trạng thái tham gia workspace (giống ChatGPT):
 //   active  → Đang hoạt động (đã tham gia)
 //   pending → Chờ tham gia (đã mời, chưa accept)
@@ -219,6 +267,13 @@ export default function Members() {
         const typeLabel = t(`taskType.${task.type}`);
         if (task.status === "COMPLETED") {
           toast.success(t("task.completedToast", { type: typeLabel }));
+          // Sync xong vẫn LỆCH số lượng → cảnh báo đích danh email để admin tra
+          // nguyên nhân (backend đối chiếu ChatGPT header vs AutoGPT). Chỉ báo,
+          // KHÔNG tự xử lý. Toast warning ở lâu (8s) để admin kịp đọc.
+          if (task.type === "SYNC_DATA") {
+            const mm = task.result?.mismatch as SyncMismatch | null | undefined;
+            if (mm) toast.warning(formatSyncMismatch(mm, t));
+          }
         } else {
           toast.error(t("task.failedToast", { type: typeLabel }));
         }
@@ -964,7 +1019,7 @@ export default function Members() {
         <div style={{ overflowX: "auto" }}>
           {/* data-table-compact: cỡ chữ nhỏ + padding hẹp + nowrap → mọi ô nằm
               trên 1 hàng ngang, không co/xuống dòng (tràn ngang thì scroll). */}
-          <table className="data-table data-table-compact">
+          <table className="data-table data-table-compact members-table">
             <thead>
               <tr>
                 {canBulk && (
@@ -1014,7 +1069,7 @@ export default function Members() {
                 return (
                 <tr key={m.id}>
                   {canBulk && (
-                    <td style={{ textAlign: "center" }}>
+                    <td style={{ textAlign: "center" }} className="mcard-select">
                       {selectable && (
                         <input
                           type="checkbox"
@@ -1035,7 +1090,7 @@ export default function Members() {
                       {m.email}
                     </button>
                   </td>
-                  <td style={{ textAlign: "center" }}>
+                  <td style={{ textAlign: "center" }} data-label={t("member.colRole")}>
                     {m.chatgpt_role ? (
                       <span className="role-tag">
                         {t(
@@ -1049,7 +1104,7 @@ export default function Members() {
                     )}
                   </td>
                   {LICENSE_FEATURE_ENABLED && (
-                    <td style={{ textAlign: "center" }}>
+                    <td style={{ textAlign: "center" }} data-label={t("member.colLicenseType")}>
                       {canChangeLicense && m.status === "active" ? (
                         <select
                           value={m.license_type ?? ""}
@@ -1080,7 +1135,7 @@ export default function Members() {
                       )}
                     </td>
                   )}
-                  <td style={{ textAlign: "center" }}>
+                  <td style={{ textAlign: "center" }} data-label={t("member.colStatus")}>
                     <span className={STATUS_BADGE[m.status] ?? "badge badge-neutral"}>
                       {t(
                         `member.status${m.status
@@ -1093,7 +1148,7 @@ export default function Members() {
                       khi invite, hoặc ngày mua khi đổi hạn) → "Ngày hết hạn" = mốc + 30
                       luôn khớp. Fallback last_invited_at ?? created_at cho row legacy
                       chưa có mốc. Khớp cột cùng tên ở trang "Email đã add". */}
-                  <td className="cell-muted" style={{ fontSize: 13.5 }}>
+                  <td className="cell-muted" style={{ fontSize: 13.5 }} data-label={t("addedEmails.colRenewedAt")}>
                     {fmtRenewExpiry(
                       formatDateTime,
                       m.subscription_purchased_at ??
@@ -1101,7 +1156,7 @@ export default function Members() {
                         m.created_at,
                     )}
                   </td>
-                  <td style={{ fontSize: 13.5 }}>
+                  <td style={{ fontSize: 13.5 }} data-label={t("addedEmails.colExpiry")}>
                     <SubscriptionCell
                       member={m}
                       t={t}
@@ -1109,7 +1164,7 @@ export default function Members() {
                       formatDateTime={formatDateTime}
                     />
                   </td>
-                  <td style={{ textAlign: "right" }}>
+                  <td style={{ textAlign: "right" }} className="mcard-actions" data-label={t("common.actions")}>
                     <div
                       className="flex items-center justify-end"
                       style={{ gap: 6 }}
