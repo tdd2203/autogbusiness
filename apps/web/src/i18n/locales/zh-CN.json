@@ -456,6 +456,8 @@
   "sync.completedRemove": "已从工作区移除 {email}",
   "sync.completedChangeRole": "已将 {email} 角色改为 {role}",
   "sync.completedChangeLicenseType": "已将 {email} 的许可证类型改为 {license}",
+  "sync.changedCreated": "{n} 个邮箱在 ChatGPT 上存在但系统中没有 — 已自动添加：{list}",
+  "sync.changedRemoved": "{n} 个邮箱在系统中存在但 ChatGPT 上已不存在 — 已标记移除：{list}",
   "sync.mismatchTitle": "⚠ 同步完成但数量不一致 — 需要核查",
   "sync.mismatchLead": "ChatGPT 显示 {chatgpt} · AutoGPT {autogpt}",
   "sync.mismatchExtra": "AutoGPT 多出 {n} 个（ChatGPT 没有）：{list}",

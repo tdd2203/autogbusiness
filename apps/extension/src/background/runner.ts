@@ -1232,6 +1232,12 @@ async function reportToBackend(
       let totalCreated = 0;
       let totalUpdated = 0;
       const rogueEmailsAggregated: string[] = [];
+      // Đích danh email biến động (backend trả per-call, cap 50/call) — gom để
+      // đẩy vào task.result cho banner dashboard liệt kê thay đổi sau sync:
+      // created = ChatGPT có mà hệ thống chưa có; removed = hệ thống có mà
+      // ChatGPT không còn (user 2026-08-01).
+      const createdEmailsAggregated: string[] = [];
+      const removedEmailsAggregated: string[] = [];
       // Lệch số lượng sau sync (do backend đối chiếu ở request reconcile cuối) —
       // đích danh email để dashboard cảnh báo admin. null = khớp.
       let syncMismatch: SyncMismatch | null = null;
@@ -1246,9 +1252,16 @@ async function reportToBackend(
             task.workspace_id,
             chunk,
             { isFullSync: false },
-          )) as { created: number; updated: number };
+          )) as {
+            created: number;
+            updated: number;
+            created_emails?: string[];
+          };
           totalCreated += result.created;
           totalUpdated += result.updated;
+          if (Array.isArray(result.created_emails)) {
+            createdEmailsAggregated.push(...result.created_emails);
+          }
           console.log(
             `[autogpt-sync-upsert] chunk ${Math.floor(i / CHUNK_SIZE) + 1}/${Math.ceil(
               members.length / CHUNK_SIZE,
@@ -1290,9 +1303,13 @@ async function reportToBackend(
             joined_check_count?: number;
             joined_check_task_id?: string | null;
             mismatch?: SyncMismatch | null;
+            removed_emails?: string[];
           };
           if (Array.isArray(result.rogue_pending_emails)) {
             rogueEmailsAggregated.push(...result.rogue_pending_emails);
+          }
+          if (Array.isArray(result.removed_emails)) {
+            removedEmailsAggregated.push(...result.removed_emails);
           }
           // Lệch số lượng sau sync (đích danh email) → giữ để đẩy vào task.result
           // cho dashboard cảnh báo admin. Chỉ báo, KHÔNG tự xử lý ở đây.
@@ -1352,6 +1369,9 @@ async function reportToBackend(
           rogue_pending_emails: rogueEmailsAggregated,
           // Lệch sau sync (null nếu khớp) → dashboard hiện toast + banner cảnh báo.
           mismatch: syncMismatch,
+          // Đích danh email biến động sau sync → banner liệt kê thay đổi.
+          created_emails: createdEmailsAggregated,
+          removed_emails: removedEmailsAggregated,
         },
       });
       return;
@@ -2077,25 +2097,66 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
   // (KHÔNG cache React Query). Sau khi load xong + content re-inject, gửi
   // VERIFY_PENDING_INVITE → content scrape pending → trả về verify result.
   // Merge result → reportToBackend như invite COMPLETED bình thường.
-  if (
-    response.ok &&
+  //
+  // SALVAGE (v0.10.1, bug user 2026-08-01): Phase 1 chết kiểu VÔ ĐỊNH — kênh
+  // message đóng giữa chừng ("message channel closed" khi tab reload/navigate
+  // sau khi content ĐÃ click Send) hoặc CONTENT_TIMEOUT — thì invite CÓ THỂ đã
+  // đi rồi. Trước đây báo FAILED luôn → backend hoàn phí + xoá phantom, nhưng
+  // người được mời VẪN nhận lời mời → tham gia → sync auto-create member "chưa
+  // thanh toán" (mất phí oan). Nay: chạy CHÍNH vòng verify Phase 2 để phân xử —
+  // thấy email ở tab Lời mời/Người dùng → success thật; không thấy → giữ FAILED gốc.
+  const inviteSalvageMode =
+    !response.ok &&
     task.type === "INVITE_MEMBER" &&
-    (response.data as { awaiting_reload_verify?: boolean } | undefined)?.awaiting_reload_verify === true &&
-    request.kind === "INVITE_MEMBER"
+    request.kind === "INVITE_MEMBER" &&
+    (response.error_code === "CONTENT_TIMEOUT" ||
+      /message channel closed|message port closed|asynchronous response/i.test(
+        response.error_message ?? "",
+      ));
+  const inviteSalvageOriginalFailure: ExecuteActionResponse | null =
+    inviteSalvageMode ? response : null;
+  if (
+    (response.ok || inviteSalvageMode) &&
+    task.type === "INVITE_MEMBER" &&
+    request.kind === "INVITE_MEMBER" &&
+    (inviteSalvageMode ||
+      (response.ok &&
+        (response.data as { awaiting_reload_verify?: boolean } | undefined)
+          ?.awaiting_reload_verify === true))
   ) {
-    console.log(`[autogpt-runner] invite submit OK — F5 tab ${tab.id} để verify pending list`);
+    if (inviteSalvageMode) {
+      console.warn(
+        `[autogpt-runner] invite Phase 1 chết VÔ ĐỊNH (${!response.ok ? response.error_code : "?"}) — ` +
+          `KHÔNG kết luận FAILED vội, chạy verify để phân xử. Lỗi gốc: ${!response.ok ? response.error_message : ""}`,
+      );
+      await reportRunnerProgress(config, task.id, {
+        phase: "f5-verify",
+        message:
+          "Mất kết nối với trang giữa chừng (kết quả chưa rõ) — đang F5 + kiểm tra tab Lời mời để xác định lời mời đã đi chưa...",
+      });
+    } else {
+      console.log(`[autogpt-runner] invite submit OK — F5 tab ${tab.id} để verify pending list`);
+    }
     // Snapshot data submit để merge vào mọi fallback (giữ emails/count/role).
-    const submitData = ((response as { ok: true; data?: Record<string, unknown> }).data) ?? {};
-    const scrapeFailedFallback: ExecuteActionResponse = {
-      ok: true,
-      data: {
-        ...submitData,
-        verified_emails: [],
-        unverified_emails: request.emails,
-        pending_members: [],
-        verify_scrape_failed: true,
-      },
-    };
+    // Salvage mode: Phase 1 không có data → snapshot rỗng.
+    const submitData = response.ok
+      ? (((response as { ok: true; data?: Record<string, unknown> }).data) ?? {})
+      : {};
+    // Fallback khi verify không chạy được: submit-OK → COMPLETED với
+    // verify_scrape_failed (hành vi cũ); salvage → GIỮ NGUYÊN lỗi gốc (không có
+    // bằng chứng invite đã đi thì không được báo thành công).
+    const scrapeFailedFallback: ExecuteActionResponse = inviteSalvageMode
+      ? (inviteSalvageOriginalFailure as ExecuteActionResponse)
+      : {
+          ok: true,
+          data: {
+            ...submitData,
+            verified_emails: [],
+            unverified_emails: request.emails,
+            pending_members: [],
+            verify_scrape_failed: true,
+          },
+        };
 
     // v0.7.15: vòng lặp F5 THẬT + verify trong NGÂN SÁCH VERIFY_BUDGET_MS (~10s).
     // Mỗi vòng: chrome.tabs.reload → wait complete → re-inject → VERIFY_PENDING_INVITE.
@@ -2239,6 +2300,33 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
             e,
           );
         }
+      }
+    }
+
+    // SALVAGE phân xử (sau cả Phase 2 + 2b): chỉ báo thành công khi CÓ BẰNG
+    // CHỨNG (≥1 email thấy ở tab Lời mời hoặc Người dùng). Không bằng chứng /
+    // scrape fail → trả về ĐÚNG lỗi gốc Phase 1 → backend hoàn phí như cũ.
+    if (inviteSalvageMode && !response.ok) {
+      // Verify tự nó cũng lỗi → không phân xử được. Trả về lỗi GỐC Phase 1
+      // (dễ hiểu hơn lỗi phụ của vòng verify) → backend hoàn phí như cũ.
+      response = inviteSalvageOriginalFailure as ExecuteActionResponse;
+    } else if (inviteSalvageMode && response.ok) {
+      const d = (response.data as Record<string, unknown> | undefined) ?? {};
+      const verified = (d.verified_emails as string[] | undefined) ?? [];
+      if (d.verify_scrape_failed === true || verified.length === 0) {
+        console.warn(
+          "[autogpt-runner] SALVAGE: verify không tìm thấy email nào — giữ kết luận FAILED gốc của Phase 1.",
+        );
+        response = inviteSalvageOriginalFailure as ExecuteActionResponse;
+      } else {
+        // Đánh dấu để trace: task này suýt bị báo FAILED oan.
+        d.salvaged_after_indeterminate_error =
+          inviteSalvageOriginalFailure && !inviteSalvageOriginalFailure.ok
+            ? `${inviteSalvageOriginalFailure.error_code}: ${inviteSalvageOriginalFailure.error_message}`
+            : "unknown";
+        console.log(
+          `[autogpt-runner] SALVAGE THÀNH CÔNG: ${verified.length}/${request.emails.length} email xác nhận đã mời dù Phase 1 mất kết nối — báo COMPLETED thay vì FAILED oan.`,
+        );
       }
     }
   }

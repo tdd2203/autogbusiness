@@ -456,6 +456,8 @@
   "sync.completedRemove": "Đã xoá {email} khỏi workspace",
   "sync.completedChangeRole": "Đã đổi {email} sang vai trò {role}",
   "sync.completedChangeLicenseType": "Đã đổi {email} sang loại giấy phép {license}",
+  "sync.changedCreated": "{n} email có trên ChatGPT nhưng CHƯA có trong hệ thống — đã tự thêm: {list}",
+  "sync.changedRemoved": "{n} email có trong hệ thống nhưng ChatGPT KHÔNG còn — đã đánh dấu gỡ: {list}",
   "sync.mismatchTitle": "⚠ Đồng bộ xong nhưng LỆCH số lượng — cần kiểm tra",
   "sync.mismatchLead": "ChatGPT báo {chatgpt} · AutoGPT {autogpt}",
   "sync.mismatchExtra": "Thừa {n} ở AutoGPT (ChatGPT không có): {list}",

@@ -809,10 +809,21 @@ export function MemberDetailModal({
   // các dòng bên dưới chỉ hiện giờ. Không sắp xếp lại → logic hiển thị bất biến.
   // Ẩn dòng terminal độc lập (đã gộp badge vào dòng "Lời mời" tương ứng).
   const groups: { date: string; items: MemberLog[] }[] = [];
+  // Terminal chỉ được ẩn khi dòng *_QUEUED mang CÙNG queue_item_id có mặt trong
+  // logs (badge đã gộp vào đó). Member bị tạo lại (invite FAILED → sync auto-create
+  // row mới) chỉ còn log terminal khớp theo email — QUEUED trỏ member id cũ có thể
+  // vắng → ẩn nốt terminal là timeline TRỐNG dù badge đếm >0 (bug user 2026-08-01).
+  const queuedIdsPresent = new Set(
+    logs
+      .filter((l) => isInviteQueued(l) || isRemoveQueued(l))
+      .map((l) => queueIdOf(l))
+      .filter((q): q is string => !!q),
+  );
   for (const log of logs) {
-    // Ẩn terminal ĐÃ gộp (có queue_item_id). Terminal cũ thiếu queue_item_id
-    // (dữ liệu trước khi backend gắn) → giữ hiện độc lập để không mất dấu.
-    if (isTerminal(log.action) && queueIdOf(log)) continue;
+    // Ẩn terminal ĐÃ gộp (dòng QUEUED tương ứng có mặt). Terminal mồ côi (thiếu
+    // queue_item_id, hoặc QUEUED không nằm trong kết quả) → hiện độc lập.
+    const qid = isTerminal(log.action) ? queueIdOf(log) : undefined;
+    if (qid && queuedIdsPresent.has(qid)) continue;
     // Chỉ giữ 4 nhóm nghiệp vụ (mời/xoá email/gia hạn/đổi chủ) — xem chú thích
     // MODAL_TIMELINE_ACTIONS.
     if (!MODAL_TIMELINE_ACTIONS.has(log.action)) continue;
