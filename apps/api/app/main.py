@@ -48,11 +48,18 @@ from app.seed import seed_payment_settings, seed_super_admin, seed_wallet_test_a
 
 logger = logging.getLogger(__name__)
 
-# Background scheduler — cleanup expired subscriptions mỗi giờ.
+# Background scheduler — retention/dọn dẹp NẶNG chạy mỗi giờ (không cần realtime).
 SUBSCRIPTION_CLEANUP_INTERVAL_SEC = 60 * 60  # 1 giờ
 _cleanup_timer: threading.Timer | None = None
 _cleanup_lock = threading.Lock()
 _expire_lock = threading.Lock()
+
+# AUTO-REMOVE hết hạn phải "NGAY LẬP TỨC" (user 2026-07-27): trước đây gộp chung tick
+# hằng-giờ nên email hết hạn phải chờ tới ~1 tiếng mới bị enqueue gỡ → cảm giác "không
+# hoạt động". Tách riêng tick NHANH (mỗi 60″, giống order-cleanup 2′) chỉ lo quét
+# member hết hạn → enqueue gỡ sát mốc. Quét rẻ (idempotent qua `_has_open_remove_task`).
+EXPIRY_CHECK_INTERVAL_SEC = 60  # 1 phút — near-immediate
+_expiry_timer: threading.Timer | None = None
 
 # LOOP-GUARD auto-remove (bug user 2026-07-21): nếu đã TỰ ĐỘNG enqueue gỡ 1 member
 # >= AUTO_REMOVE_MAX_ATTEMPTS lần trong cửa sổ mà member VẪN quay lại (xoá không có
@@ -530,17 +537,34 @@ def _resolve_stale_pending_invites_once() -> None:
         _stale_invite_lock.release()
 
 
+def _schedule_expiry_tick() -> None:
+    """Tick NHANH (mỗi `EXPIRY_CHECK_INTERVAL_SEC`) chỉ lo AUTO-REMOVE member hết hạn
+    (user 2026-07-13: "khi 1 email hết hạn tự động thực hiện lệnh xoá, không confirm
+    thủ công"; 2026-07-27: phải NGAY LẬP TỨC, không chờ tick hằng-giờ).
+
+    Tách khỏi tick hằng-giờ để enqueue gỡ SÁT mốc hết hạn (ân hạn = 0). Nút "Dọn member
+    hết hạn" (POST /cleanup-expired) vẫn còn để admin remove tức thì không đợi tick kế.
+    """
+    global _expiry_timer
+    try:
+        _enqueue_expired_removals_once()
+    finally:
+        _expiry_timer = threading.Timer(
+            EXPIRY_CHECK_INTERVAL_SEC, _schedule_expiry_tick
+        )
+        _expiry_timer.daemon = True
+        _expiry_timer.start()
+
+
 def _schedule_cleanup_tick() -> None:
     """Tự reschedule sau mỗi tick. Hoạt động trong main process thread.
 
-    AUTO-REMOVE member hết hạn (user 2026-07-13: "khi 1 email hết hạn tự động thực
-    hiện lệnh xoá, không confirm thủ công") — `_enqueue_expired_removals_once`. Nút
-    "Dọn member hết hạn" (POST /cleanup-expired) vẫn còn để admin remove NGAY thay vì
-    chờ tick kế. Tick cũng lo retention hard-delete (member removed >30d + log phù du).
+    Lo các job retention/dọn dẹp NẶNG không cần realtime: chốt lời mời kẹt limbo +
+    retention hard-delete (member removed >90d + log phù du + OTP hết hạn). AUTO-REMOVE
+    hết hạn ĐÃ TÁCH sang `_schedule_expiry_tick` (tick nhanh) để gỡ ngay khi hết hạn.
     """
     global _cleanup_timer
     try:
-        _enqueue_expired_removals_once()
         _resolve_stale_pending_invites_once()
         _purge_old_removed_members_once()
         _purge_ephemeral_audit_logs_once()
@@ -609,15 +633,20 @@ async def lifespan(_: FastAPI):
         seed_super_admin(db)
         seed_payment_settings(db)
         seed_wallet_test_account(db)
-    # Start background scheduler — tick ngay 1 lần rồi reschedule mỗi giờ: auto-enqueue
-    # gỡ member hết hạn (user 2026-07-13) + retention hard-delete (member removed >30d +
-    # log phù du).
+    # Start background scheduler — mỗi tick chạy ngay 1 lần rồi tự reschedule:
+    #  - _schedule_expiry_tick   : AUTO-REMOVE member hết hạn NGAY (mỗi 60″, user 2026-07-27)
+    #  - _schedule_cleanup_tick  : retention/dọn dẹp nặng (mỗi giờ)
+    #  - _schedule_order_cleanup_tick : dọn lệnh thanh toán quá hạn (mỗi 2′)
+    _schedule_expiry_tick()
     _schedule_cleanup_tick()
     _schedule_order_cleanup_tick()
     try:
         yield
     finally:
-        global _cleanup_timer, _order_cleanup_timer
+        global _cleanup_timer, _order_cleanup_timer, _expiry_timer
+        if _expiry_timer is not None:
+            _expiry_timer.cancel()
+            _expiry_timer = None
         if _cleanup_timer is not None:
             _cleanup_timer.cancel()
             _cleanup_timer = None
@@ -626,7 +655,26 @@ async def lifespan(_: FastAPI):
             _order_cleanup_timer = None
 
 
+def _configure_app_logging() -> None:
+    """Cho logger `app.*` (INFO) hiển thị qua handler của uvicorn.
+
+    Trước đây chỉ `logging.getLogger(__name__)` khắp nơi mà KHÔNG cấu hình handler →
+    root logger mặc định level WARNING nuốt hết `logger.info(...)`. Hậu quả: các job nền
+    (auto-expire, order-cleanup, retention) chạy im lặng, không có cách nào quan sát →
+    "tưởng không hoạt động". Gắn handler uvicorn + set INFO để mọi tick log ra stdout.
+    """
+    app_logger = logging.getLogger("app")
+    if app_logger.handlers:  # đã cấu hình (vd reload) → khỏi gắn trùng
+        return
+    uvicorn_logger = logging.getLogger("uvicorn")
+    if uvicorn_logger.handlers:
+        app_logger.handlers = uvicorn_logger.handlers
+    app_logger.setLevel(logging.INFO)
+    app_logger.propagate = False
+
+
 def create_app() -> FastAPI:
+    _configure_app_logging()
     settings = get_settings()
     app = FastAPI(
         title="AutoGPT Dashboard API",
