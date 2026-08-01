@@ -27,6 +27,11 @@ type SyncDataResult = {
   updated?: number;
   chunks?: number;
   mismatch?: SyncMismatch | null;
+  // Đích danh email biến động sau sync (backend cap 50/list; count là số đầy đủ):
+  // created = ChatGPT có mà hệ thống chưa có (auto-create); removed = hệ thống
+  // có mà ChatGPT không còn (đã mark removed).
+  created_emails?: string[];
+  removed_emails?: string[];
 };
 
 /** Gộp email lệch thành 1 chuỗi ngắn (tối đa `max` email) cho message. */
@@ -51,11 +56,25 @@ function renderDetail(task: QueueItem, t: Translator): string {
   switch (task.type) {
     case "SYNC_DATA": {
       const r = (task.result ?? {}) as SyncDataResult;
-      const base = t("sync.completedMembers", {
+      let base = t("sync.completedMembers", {
         total: r.total ?? 0,
         created: r.created ?? 0,
         updated: r.updated ?? 0,
       });
+      // Biến động thành viên sau sync → liệt kê đích danh email (user 2026-08-01:
+      // "email này trong ChatGPT nhưng không có trong hệ thống" và ngược lại).
+      if (r.created_emails?.length) {
+        base += `\n➕ ${t("sync.changedCreated", {
+          n: r.created ?? r.created_emails.length,
+          list: joinMismatchEmails(r.created_emails, 10),
+        })}`;
+      }
+      if (r.removed_emails?.length) {
+        base += `\n➖ ${t("sync.changedRemoved", {
+          n: r.removed_emails.length,
+          list: joinMismatchEmails(r.removed_emails, 10),
+        })}`;
+      }
       // Lệch số lượng sau sync → nối 1 dòng cảnh báo đích danh email.
       const mm = r.mismatch;
       if (mm) {

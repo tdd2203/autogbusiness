@@ -67,6 +67,10 @@ def bulk_upsert_members(
         }
     created = 0
     updated = 0
+    # Đích danh email biến động để dashboard pop-up sau sync (user 2026-08-01):
+    # created = có trên ChatGPT nhưng CHƯA có trong hệ thống (auto-create);
+    # removed = hệ thống có nhưng ChatGPT KHÔNG còn (mark removed).
+    created_emails: list[str] = []
     # Default subscription cho member scrape-only (chưa từng invite qua dashboard):
     # 1 tháng = 30 ngày. Theo yêu cầu user 2026-05-19.
     # Mốc neo "Ngày gia hạn" LẦN ĐẦU = NGÀY THAM GIA thật: last_invited_at ?? joined_at
@@ -166,10 +170,12 @@ def bulk_upsert_members(
                 )
             )
             created += 1
+            created_emails.append(email)
 
     workspace.last_synced_at = now
 
     removed_count = 0
+    removed_emails: list[str] = []
     # Xác định scope reconcile:
     #   - Nếu body.scraped_statuses set → dùng list đó (chính xác per-sync)
     #   - Else fallback body.is_full_sync: True → ['active','pending']; False → []
@@ -292,6 +298,7 @@ def bulk_upsert_members(
             m.removed_at = now
             m.last_synced_at = now
             removed_count += 1
+            removed_emails.append(m.email)
 
     # Rogue pending detection: nếu scrape "Lời mời" (pending) thấy email mà
     # KHÔNG có Member record (hoặc record status='removed') → invite này không
@@ -560,6 +567,11 @@ def bulk_upsert_members(
         "created": created,
         "updated": updated,
         "removed_missing": removed_count,
+        # Đích danh email biến động (cap 50/list để payload gọn — count ở trên
+        # vẫn là số ĐẦY ĐỦ). Extension mang xuống QueueItem.result → banner
+        # dashboard liệt kê thay đổi sau sync.
+        "created_emails": created_emails[:50],
+        "removed_emails": removed_emails[:50],
         "total": len(body.members),
         "rogue_pending_emails": rogue_pending_emails,
         "reconcile_skipped": reconcile_skipped,

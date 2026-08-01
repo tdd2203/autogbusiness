@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.10.0";
+export const VERSION = "0.10.1";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,18 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.10.1",
+    date: "2026-08-01",
+    kind: "fix",
+    summary:
+      "SALVAGE verify cho INVITE: mất kết nối content giữa chừng (kết quả vô định) → F5 + kiểm tra tab Lời mời/Người dùng để phân xử, KHÔNG báo FAILED oan. Sync trả đích danh email được thêm/gỡ để dashboard pop-up thay đổi.",
+    details: [
+      "Bug user 2026-08-01: mời THÀNH CÔNG nhưng báo thất bại — kênh message chết ('message channel closed') sau khi content đã click Send → runner báo FAILED → backend hoàn phí + xoá phantom, nhưng người được mời vẫn nhận lời mời → sync auto-create member 'chưa thanh toán' (mất phí oan).",
+      "Fix: lỗi VÔ ĐỊNH (channel closed / CONTENT_TIMEOUT) với INVITE_MEMBER → chạy chính vòng verify Phase 2 (F5 + VERIFY_PENDING_INVITE + CHECK_ACTIVE_AFTER_INVITE) để phân xử: thấy ≥1 email → COMPLETED thật (đánh dấu salvaged_after_indeterminate_error); không thấy / verify lỗi → giữ nguyên FAILED gốc → hoàn phí như cũ.",
+      "SYNC_DATA result thêm created_emails/removed_emails (backend cap 50/list) → TaskCompletionBanner liệt kê '➕ email ChatGPT có mà hệ thống chưa có' và '➖ email hệ thống có mà ChatGPT không còn'.",
+    ],
+  },
   {
     version: "0.10.0",
     date: "2026-07-27",

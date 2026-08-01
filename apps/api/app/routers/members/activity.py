@@ -103,8 +103,18 @@ def list_member_logs(
             }
         ),
     )
+    # Bắt cả MEMBER_INVITE_QUEUED theo (workspace_id, email): khi lời mời cũ FAILED
+    # → member row bị xoá → sync auto-create ROW MỚI (id khác), log cũ trỏ id cũ nên
+    # 2 nhánh trên không thấy. Khớp theo email giữ được lịch sử mời/thất bại của
+    # email đó cho row mới (bug user 2026-08-01: modal đếm 1 nhưng timeline trống).
     invite_terminal_match = and_(
-        AuditLog.action.in_(("MEMBER_INVITE_VERIFIED", "MEMBER_INVITE_FAILED")),
+        AuditLog.action.in_(
+            (
+                "MEMBER_INVITE_QUEUED",
+                "MEMBER_INVITE_VERIFIED",
+                "MEMBER_INVITE_FAILED",
+            )
+        ),
         AuditLog.data.contains(
             {
                 "workspace_id": ws_s,
@@ -128,7 +138,13 @@ def list_member_logs(
         )
         ors.append(
             and_(
-                AuditLog.action.in_(("MEMBER_INVITE_VERIFIED", "MEMBER_INVITE_FAILED")),
+                AuditLog.action.in_(
+                    (
+                        "MEMBER_INVITE_QUEUED",
+                        "MEMBER_INVITE_VERIFIED",
+                        "MEMBER_INVITE_FAILED",
+                    )
+                ),
                 AuditLog.data.contains(
                     {
                         "workspace_id": ws_s,
