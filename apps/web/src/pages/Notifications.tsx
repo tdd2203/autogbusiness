@@ -5,6 +5,7 @@ import { useT } from "../i18n";
 import type { AddedMember } from "../types";
 import { TelegramSettings } from "../components/TelegramSettings";
 import { NotifyLinkModal } from "../components/NotifyLinkModal";
+import { NotificationTemplateModal } from "../components/NotificationTemplateModal";
 
 /**
  * Trang "Thông báo" (mục riêng ở sidebar, mở cho MỌI người dùng).
@@ -20,6 +21,7 @@ export default function Notifications() {
   const t = useT();
   const [q, setQ] = useState("");
   const [notifyMember, setNotifyMember] = useState<AddedMember | null>(null);
+  const [editTemplate, setEditTemplate] = useState(false);
 
   const { data: members = [], isLoading } = useQuery({
     queryKey: ["added-members", "self"],
@@ -47,10 +49,27 @@ export default function Notifications() {
 
   return (
     <div className="page-fade">
-      <div style={{ marginBottom: 32 }}>
-        <div className="breadcrumb">{t("nav.notifications")}</div>
-        <h1 className="display-h1">{t("notifications.title")}</h1>
-        <p className="page-sub">{t("notifications.subtitle")}</p>
+      <div
+        style={{
+          marginBottom: 32,
+          display: "flex",
+          gap: 16,
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+        }}
+      >
+        <div>
+          <div className="breadcrumb">{t("nav.notifications")}</div>
+          <h1 className="display-h1">{t("notifications.title")}</h1>
+          <p className="page-sub">{t("notifications.subtitle")}</p>
+        </div>
+        {/* MỘT nút duy nhất cho cả ba phạm vi mẫu (chung / theo người nhận / theo
+            email) — chọn phạm vi ngay trong modal. Rải mỗi phạm vi một nút thì không
+            ai biết mẫu nào đang thắng mẫu nào. */}
+        <button className="btn btn-sm" onClick={() => setEditTemplate(true)}>
+          {t("telegram.tplOpen")}
+        </button>
       </div>
 
       {/* Không kèm cấu hình hệ thống (token bot/webhook/nhóm digest) — thứ đó thuộc
@@ -117,11 +136,11 @@ export default function Notifications() {
                     <td style={{ fontSize: 13 }}>
                       {m.notify_telegram_chat_id ? (
                         <span style={{ color: "var(--success)" }}>
-                          🔔 {m.notify_telegram_target}
+                          {m.notify_telegram_target}
                         </span>
                       ) : m.notify_telegram_target ? (
                         <span style={{ color: "var(--warning)" }}>
-                          ⏳ {m.notify_telegram_target} · {t("telegram.targetPending")}
+                          {m.notify_telegram_target} · {t("telegram.targetPending")}
                         </span>
                       ) : (
                         <span className="cell-muted">
@@ -154,6 +173,10 @@ export default function Notifications() {
           member={notifyMember}
           onClose={() => setNotifyMember(null)}
         />
+      )}
+
+      {editTemplate && (
+        <NotificationTemplateModal onClose={() => setEditTemplate(false)} />
       )}
     </div>
   );

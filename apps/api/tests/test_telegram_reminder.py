@@ -11,7 +11,7 @@ Trọng tâm kiểm:
 
 import json
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -871,6 +871,23 @@ def test_email_command_rejects_email_taken_by_another_chat(
     assert "đã được đăng ký" in sent[-1][1]
 
 
+def test_huongdan_lists_commands_and_wrong_syntax_points_to_it(
+    client: TestClient, bot_on, sent
+) -> None:
+    """Chỉ lệnh đúng mới có phản hồi thật; gõ sai chỉ được nhắc /huongdan."""
+    _start_bot(client, ASSIGNEE_CHAT, "khach_vip")
+
+    _send_cmd(client, ASSIGNEE_CHAT, "/huongdan", "khach_vip")
+    assert "/danhsach" in sent[-1][1] and "/handung" in sent[-1][1]
+
+    for text in ("/khongcolenh", "chào bot", "/email"):
+        _send_cmd(client, ASSIGNEE_CHAT, text, "khach_vip")
+        if text == "/email":  # lệnh đúng nhưng thiếu tham số → nhắc cú pháp riêng
+            assert "/email ex1@example.com" in sent[-1][1]
+        else:
+            assert sent[-1][1] == "Sai cú pháp : /huongdan để xem hướng dẫn"
+
+
 def test_email_command_unknown_and_unsubscribe(
     client: TestClient, auth_header: dict, bot_on, sent
 ) -> None:
@@ -887,6 +904,71 @@ def test_email_command_unknown_and_unsubscribe(
         member = db.get(Member, member_id)
         assert member.notify_telegram_chat_id is None
         assert member.notify_telegram_target is None
+
+
+def _assigned_to(chat_id: int) -> dict:
+    """Email được CHỈ ĐỊNH gửi nhắc thẳng tới một chat (không qua link mời)."""
+    return {"notify_telegram_chat_id": chat_id, "notify_telegram_target": str(chat_id)}
+
+
+def test_danhsach_lists_all_watched_emails_and_handung_filters_7_days(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """`/danhsach` = TOÀN BỘ email đang theo dõi; `/handung` = còn dưới 7 ngày.
+
+    GUARD cho bug đã sửa: lệnh cũ chỉ trả email hết hạn trong 30 ngày tới, nên khách
+    vừa bấm link Thông báo cho một email còn hạn dài gõ /danhsach lại ra danh sách
+    rỗng — tưởng link hỏng.
+    """
+    ws = _make_ws(client, auth_header)
+    assigned = _assigned_to(ASSIGNEE_CHAT)
+    _add_member(client, ws, "con-lau@example.com", days_left=300, **assigned)
+    _add_member(client, ws, "sap-het@example.com", days_left=3, **assigned)
+    _add_member(client, ws, "da-het@example.com", days_left=-5, **assigned)
+    _add_member(
+        client, ws, "vo-han@example.com", days_left=1, subscription_end_at=None, **assigned
+    )
+
+    _send_cmd(client, ASSIGNEE_CHAT, "/danhsach", "khach_vip")
+    reply = sent[-1][1]
+    assert "Email bạn đang theo dõi (4)" in reply
+    for email in ("con-lau@", "sap-het@", "da-het@", "vo-han@"):
+        assert email in reply, f"/danhsach thiếu {email}"
+    assert "không giới hạn thời hạn" in reply
+    # Sắp hết hạn xếp trước, email vô thời hạn xuống cuối.
+    assert reply.index("da-het@") < reply.index("con-lau@") < reply.index("vo-han@")
+
+    sent.clear()
+    _send_cmd(client, ASSIGNEE_CHAT, "/handung", "khach_vip")
+    reply = sent[-1][1]
+    # Đã hết hạn cũng tính là "còn dưới 7 ngày" — đó là suất cần gia hạn gấp nhất.
+    assert "còn dưới 7 ngày sử dụng (2)" in reply
+    assert "sap-het@example.com" in reply and "da-het@example.com" in reply
+    assert "con-lau@example.com" not in reply and "vo-han@example.com" not in reply
+
+
+def test_handung_empty_does_not_hide_the_email_from_danhsach(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Email còn hạn dài: /handung rỗng là ĐÚNG, nhưng /danhsach vẫn phải thấy nó."""
+    ws = _make_ws(client, auth_header)
+    _add_member(
+        client, ws, "con-lau@example.com", days_left=300, **_assigned_to(ASSIGNEE_CHAT)
+    )
+
+    _send_cmd(client, ASSIGNEE_CHAT, "/handung", "khach_vip")
+    assert "Không có email nào còn dưới 7 ngày" in sent[-1][1]
+
+    _send_cmd(client, ASSIGNEE_CHAT, "/danhsach", "khach_vip")
+    assert "con-lau@example.com" in sent[-1][1]
+
+
+def test_danhsach_empty_guides_a_chat_watching_nothing(
+    client: TestClient, bot_on, sent
+) -> None:
+    _send_cmd(client, 909091, "/danhsach", "nguoi_la")
+    assert "chưa sở hữu email nào" in sent[-1][1]
+    assert "/email ex1@example.com" in sent[-1][1]
 
 
 # ── Danh sách người nhận thông báo của một tài khoản (link chia sẻ) ───────────
@@ -1606,3 +1688,141 @@ def test_email_command_rate_limited(
         _send_cmd(client, 818181, f"/email thu{i}@example.com", "ai_do")
 
     assert "quá nhiều lần" in sent[-1][1]
+
+
+# ── Mẫu theo PHẠM VI: tất cả / một người nhận / một email ─────────────────────
+
+
+def test_template_scope_member_beats_chat_beats_all(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Cụ thể hơn thì thắng: mẫu theo email > mẫu theo người nhận > mẫu chung."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    riêng = _add_member(
+        client, ws, "rieng@example.com", days_left=2, owner_id=owner_id,
+        notify_telegram_chat_id=ASSIGNEE_CHAT, notify_telegram_target="@khach",
+    )
+    _add_member(
+        client, ws, "chung@example.com", days_left=2, owner_id=owner_id,
+        notify_telegram_chat_id=ASSIGNEE_CHAT, notify_telegram_target="@khach",
+    )
+
+    for payload in (
+        {"scope": "all", "body": "CHUNG {items}", "item_line": "· {email}"},
+        {
+            "scope": "chat",
+            "chat_id": ASSIGNEE_CHAT,
+            "body": "THEO NGƯỜI NHẬN {items}",
+            "item_line": "· {email}",
+        },
+        {
+            "scope": "member",
+            "member_id": riêng,
+            "body": "THEO EMAIL {items}",
+            "item_line": "· {email}",
+        },
+    ):
+        resp = client.put("/api/v1/telegram/template", json=payload, headers=auth_header)
+        assert resp.status_code == 200, resp.text
+
+    # Tin về ĐÚNG email có mẫu riêng → mẫu theo email.
+    with SessionLocal() as db:
+        db.query(Member).filter(Member.email == "chung@example.com").update(
+            {"subscription_end_at": _now() + timedelta(days=60)}
+        )
+        db.commit()
+    _run()
+    assert sent[-1][1].startswith("THEO EMAIL")
+
+    # Tin gộp cả hai email của cùng người nhận → rơi xuống mẫu theo người nhận.
+    with SessionLocal() as db:
+        db.query(TelegramNotification).delete()
+        db.query(Member).filter(Member.email == "chung@example.com").update(
+            {"subscription_end_at": _now() + timedelta(days=2)}
+        )
+        db.commit()
+    _run()
+    assert sent[-1][1].startswith("THEO NGƯỜI NHẬN")
+
+    # Không còn mẫu theo người nhận → mẫu chung.
+    client.put(
+        "/api/v1/telegram/template",
+        json={"scope": "chat", "chat_id": ASSIGNEE_CHAT, "body": None, "item_line": None},
+        headers=auth_header,
+    )
+    with SessionLocal() as db:
+        db.query(TelegramNotification).delete()
+        db.commit()
+    _run()
+    assert sent[-1][1].startswith("CHUNG")
+
+
+def test_template_scope_isolated_and_listed(
+    client: TestClient, auth_header: dict, bot_on
+) -> None:
+    """Xoá mẫu của một phạm vi không đụng phạm vi khác; `overrides` liệt kê đủ."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(client, ws, "a@example.com", days_left=30, owner_id=owner_id)
+
+    client.put(
+        "/api/v1/telegram/template", json={"scope": "all", "body": "CHUNG {items}"},
+        headers=auth_header,
+    )
+    client.put(
+        "/api/v1/telegram/template",
+        json={"scope": "member", "member_id": member_id, "body": "RIÊNG {items}"},
+        headers=auth_header,
+    )
+
+    out = client.get(
+        f"/api/v1/telegram/template?scope=member&member_id={member_id}", headers=auth_header
+    ).json()
+    assert out["body"] == "RIÊNG {items}"
+    # Chưa đặt mẫu riêng thì khởi điểm là mẫu chung, không phải mẫu gốc hệ thống.
+    assert out["base_body"] == "CHUNG {items}"
+    assert {(o["scope"], o["label"]) for o in out["overrides"]} == {
+        ("all", None),
+        ("member", "a@example.com"),
+    }
+
+    client.put(
+        "/api/v1/telegram/template",
+        json={"scope": "member", "member_id": member_id, "body": None, "item_line": None},
+        headers=auth_header,
+    )
+    still = client.get("/api/v1/telegram/template?scope=all", headers=auth_header).json()
+    assert still["body"] == "CHUNG {items}"
+    assert [o["scope"] for o in still["overrides"]] == ["all"]
+
+
+def test_template_scope_rejects_foreign_target(
+    client: TestClient, auth_header: dict, bot_on
+) -> None:
+    """Không soạn được mẫu cho chat/email không phải của mình."""
+    _link_owner()
+    assert (
+        client.put(
+            "/api/v1/telegram/template",
+            json={"scope": "chat", "chat_id": 999999, "body": "x {items}"},
+            headers=auth_header,
+        ).status_code
+        == 404
+    )
+    assert (
+        client.put(
+            "/api/v1/telegram/template",
+            json={"scope": "member", "member_id": str(uuid4()), "body": "x {items}"},
+            headers=auth_header,
+        ).status_code
+        == 404
+    )
+    assert (
+        client.put(
+            "/api/v1/telegram/template",
+            json={"scope": "chat", "body": "thiếu chat_id {items}"},
+            headers=auth_header,
+        ).status_code
+        == 400
+    )

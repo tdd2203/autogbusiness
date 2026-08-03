@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useT } from "../i18n";
 import { toast } from "./Toast";
@@ -14,6 +14,11 @@ import type { Member } from "../types";
  * link không lộ email nào khác.
  *
  * Nếu email đã có người nhận, modal hiện trạng thái đó + nút gỡ để đổi người.
+ *
+ * Soạn nội dung tin KHÔNG nằm ở đây: mẫu có ba phạm vi (chung / theo người nhận / theo
+ * email) nên gom hết vào một cửa duy nhất ở trang Thông báo — xem
+ * `NotificationTemplateModal`. Để một nút soạn mẫu trong modal của từng email thì
+ * không ai đoán được mẫu nào đang thắng mẫu nào.
  */
 export function NotifyLinkModal({
   member,
@@ -172,169 +177,11 @@ export function NotifyLinkModal({
           </>
         )}
 
-        <TemplateEditor />
-
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <button className="btn btn-ghost" onClick={onClose}>
             {t("common.close")}
           </button>
         </div>
-      </div>
-    </div>
-  );
-}
-
-type TemplateOut = {
-  body: string | null;
-  item_line: string | null;
-  default_body: string;
-  default_item_line: string;
-  body_placeholders: string[];
-  item_placeholders: string[];
-  preview: string;
-};
-
-/**
- * Soạn NỘI DUNG thông báo riêng của tài khoản — mở ra từ chính nút "Thông báo".
- *
- * Mẫu gốc luôn hiện sẵn trong ô để sửa (không phải gõ từ số 0), và "Khôi phục mẫu gốc"
- * xoá cấu hình riêng để quay về mặc định hệ thống. Mẫu áp cho MỌI tin nhắc về email
- * của tài khoản này, kể cả tin gửi cho khách — nên đại lý xưng tên shop mình được.
- */
-function TemplateEditor() {
-  const t = useT();
-  const qc = useQueryClient();
-  const [open, setOpen] = useState(false);
-  const [body, setBody] = useState("");
-  const [line, setLine] = useState("");
-  const [touched, setTouched] = useState(false);
-
-  const { data } = useQuery({
-    queryKey: ["telegram-template"],
-    queryFn: () => api<TemplateOut>("/api/v1/telegram/template"),
-  });
-
-  // Nạp giá trị hiện tại (hoặc mẫu gốc) vào ô soạn khi mở lần đầu.
-  useEffect(() => {
-    if (!data || touched) return;
-    setBody(data.body ?? data.default_body);
-    setLine(data.item_line ?? data.default_item_line);
-  }, [data, touched]);
-
-  const save = useMutation({
-    mutationFn: (vars: { body: string | null; item_line: string | null }) =>
-      api<TemplateOut>("/api/v1/telegram/template", {
-        method: "PUT",
-        body: JSON.stringify(vars),
-      }),
-    onSuccess: (res) => {
-      qc.setQueryData(["telegram-template"], res);
-      setTouched(false);
-      toast.success(t("telegram.tplSaved"));
-    },
-    onError: (e) =>
-      toast.error(e instanceof ApiError ? String(e.detail) : t("telegram.tplError")),
-  });
-
-  if (!open) {
-    return (
-      <button
-        className="btn btn-sm"
-        style={{ alignSelf: "flex-start" }}
-        onClick={() => setOpen(true)}
-      >
-        {t("telegram.tplOpen")}
-      </button>
-    );
-  }
-
-  return (
-    <div
-      style={{
-        borderTop: "1px solid var(--border)",
-        paddingTop: 12,
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-      }}
-    >
-      <div style={{ fontWeight: 600, fontSize: 13.5 }}>{t("telegram.tplTitle")}</div>
-      <div style={{ fontSize: 12, color: "var(--ink-3)" }}>{t("telegram.tplDesc")}</div>
-
-      <label className="form-label">{t("telegram.tplBody")}</label>
-      <textarea
-        className="form-input"
-        rows={7}
-        style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
-        value={body}
-        onChange={(e) => {
-          setTouched(true);
-          setBody(e.target.value);
-        }}
-      />
-      <div style={{ fontSize: 11, color: "var(--ink-3)" }}>
-        {t("telegram.tplVars")}:{" "}
-        {(data?.body_placeholders ?? []).map((p) => `{${p}}`).join("  ")}
-      </div>
-
-      <label className="form-label">{t("telegram.tplLine")}</label>
-      <textarea
-        className="form-input"
-        rows={2}
-        style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
-        value={line}
-        onChange={(e) => {
-          setTouched(true);
-          setLine(e.target.value);
-        }}
-      />
-      <div style={{ fontSize: 11, color: "var(--ink-3)" }}>
-        {t("telegram.tplVars")}:{" "}
-        {(data?.item_placeholders ?? []).map((p) => `{${p}}`).join("  ")}
-      </div>
-
-      {data?.preview && (
-        <>
-          <label className="form-label">{t("telegram.tplPreview")}</label>
-          <pre
-            style={{
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              borderRadius: 10,
-              padding: 10,
-              fontSize: 12,
-              margin: 0,
-            }}
-          >
-            {data.preview}
-          </pre>
-        </>
-      )}
-
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button
-          className="btn btn-primary btn-sm"
-          disabled={save.isPending}
-          onClick={() => save.mutate({ body: body.trim(), item_line: line.trim() })}
-        >
-          {save.isPending ? t("common.loading") : t("common.save")}
-        </button>
-        <button
-          className="btn btn-sm"
-          disabled={save.isPending}
-          onClick={() => {
-            setBody(data?.default_body ?? "");
-            setLine(data?.default_item_line ?? "");
-            save.mutate({ body: null, item_line: null });
-          }}
-        >
-          {t("telegram.tplReset")}
-        </button>
-        <button className="btn btn-ghost btn-sm" onClick={() => setOpen(false)}>
-          {t("common.close")}
-        </button>
       </div>
     </div>
   );
