@@ -430,19 +430,49 @@ export default function AddedEmails() {
   // Menu ⋯ theo dòng — DÙNG CHUNG cho bảng (desktop) và thẻ email (mobile):
   //   active (đã tham gia) → Đổi hạn / Đổi email / Xoá;
   //   pending (chờ tham gia) → Đồng bộ / Mời lại / Đổi email / Thu hồi.
+  /** Nút "Thông báo" HIỆN SẴN trên mỗi dòng email (không giấu trong menu ⋯): mời
+   *  xong là thấy ngay chỗ lấy link gửi cho khách. Chuông đổi màu khi email đã có
+   *  người nhận → nhìn bảng là biết email nào đã gắn thông báo, email nào chưa. */
+  function notifyButton(m: AddedMember) {
+    const bound = !!m.notify_telegram_chat_id;
+    const waiting = !!m.notify_telegram_target && !m.notify_telegram_chat_id;
+    return (
+      <button
+        type="button"
+        className="btn btn-sm"
+        onClick={(e) => {
+          e.stopPropagation();
+          setNotifyMember(m);
+        }}
+        title={
+          bound
+            ? t("telegram.notifyLinkHasRecipient", { who: m.notify_telegram_target ?? "" })
+            : waiting
+              ? t("telegram.targetPending")
+              : t("telegram.notifyAction")
+        }
+        style={{
+          padding: "2px 8px",
+          fontSize: 12,
+          whiteSpace: "nowrap",
+          color: bound
+            ? "var(--success)"
+            : waiting
+              ? "var(--warning)"
+              : "var(--ink-2)",
+        }}
+      >
+        {bound ? "🔔" : waiting ? "🔔" : "🔕"} {t("telegram.notifyAction")}
+      </button>
+    );
+  }
+
   function rowMenu(m: AddedMember) {
     if (m.status === "active") {
       return (
         <RowActionsMenu
           ariaLabel={t("common.actions")}
           items={[
-            // "Thông báo" mở cho MỌI người dùng: ai add được email thì cũng phải gửi
-            // được link nhắc gia hạn cho khách của email đó.
-            {
-              key: "notify",
-              label: t("telegram.notifyAction"),
-              onClick: () => setNotifyMember(m),
-            },
             ...(canChangeSubscription
               ? [
                   {
@@ -496,11 +526,6 @@ export default function AddedEmails() {
         <RowActionsMenu
           ariaLabel={t("common.actions")}
           items={[
-            {
-              key: "notify",
-              label: t("telegram.notifyAction"),
-              onClick: () => setNotifyMember(m),
-            },
             {
               key: "sync",
               label: t("member.syncAction"),
@@ -924,6 +949,7 @@ export default function AddedEmails() {
                   >
                     {m.email}
                   </button>
+                  {notifyButton(m)}
                   {rowMenu(m)}
                 </div>
                 <div className="email-card-badges">
@@ -1051,7 +1077,19 @@ export default function AddedEmails() {
                         formatDate={formatDate}
                       />
                     </td>
-                    <td style={{ textAlign: "right" }}>{rowMenu(m)}</td>
+                    <td style={{ textAlign: "right" }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 4,
+                          alignItems: "center",
+                          justifyContent: "flex-end",
+                        }}
+                      >
+                        {notifyButton(m)}
+                        {rowMenu(m)}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>

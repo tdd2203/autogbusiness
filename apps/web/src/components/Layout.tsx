@@ -100,6 +100,12 @@ const ICONS = {
       <rect x="17" y="5" width="3" height="12" rx="0.5" />
     </svg>
   ),
+  notifications: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+    </svg>
+  ),
 };
 
 const NAV: NavEntry[] = [
@@ -109,6 +115,10 @@ const NAV: NavEntry[] = [
   { to: "/added-emails", labelKey: "nav.addedEmails", perm: "MEMBER_VIEW", icon: ICONS.addedEmails, section: "manage" },
   // "Gia hạn" tách khỏi sub-tab trong "Email đã add" → mục riêng ở sidebar.
   { to: "/renewals", labelKey: "nav.renewals", perm: "MEMBER_VIEW", icon: ICONS.renewals, section: "manage" },
+  // "Thông báo" (feature 004): kết nối Telegram, người nhận, mẫu nội dung, và trạng
+  // thái thông báo của TỪNG email. Mở cho MỌI người dùng — ai add email cũng cần gửi
+  // link nhắc gia hạn cho khách của mình.
+  { to: "/notifications", labelKey: "nav.notifications", icon: ICONS.notifications, section: "manage" },
   // Ví (feature 003) — chỉ hiện với user bật cờ thử nghiệm wallet_beta.
   { to: "/wallet", labelKey: "nav.wallet", icon: ICONS.wallet, section: "manage", requireWalletBeta: true },
   // Queue toàn cục đã BỎ khỏi sidebar (2026-06-17): dư thừa vì mỗi workspace đã có
