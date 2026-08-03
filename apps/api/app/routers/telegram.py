@@ -306,12 +306,13 @@ def _reply(chat_id: int, html: str) -> None:
         logger.warning("[telegram] trả lời %s lỗi: %s", chat_id, exc)
 
 
-def _help_text(*, with_huongdan: bool = True) -> str:
-    """Bảng lệnh.
+# /start chỉ chào mừng + cho biết đang nhận thông báo cho bao nhiêu email. Đổ nguyên
+# bảng lệnh vào đó thì lời chào dài gấp đôi mà /huongdan có sẵn đúng bảng ấy.
+_HELP_HINT = "Xem hướng dẫn các lệnh tại : /huongdan"
 
-    `with_huongdan=False` khi chính `/huongdan` trả lời: liệt kê lại đúng lệnh người
-    ta vừa gõ chỉ làm bảng dài thêm mà không cho biết gì mới.
-    """
+
+def _help_text() -> str:
+    """Bảng lệnh — chỉ `/huongdan` trả về, nên không liệt kê lại chính `/huongdan`."""
     return (
         "<b>Bot nhắc gia hạn</b>\n\n"
         "/start — kết nối &amp; nhận nhắc\n"
@@ -324,7 +325,6 @@ def _help_text(*, with_huongdan: bool = True) -> str:
         "/id — xem ID của bạn (gửi cho người bán nếu cần)\n"
         "/tat — tạm ngưng nhận nhắc\n"
         "/bat — nhận nhắc trở lại"
-        + ("\n/huongdan — xem hướng dẫn" if with_huongdan else "")
     )
 
 
@@ -776,14 +776,15 @@ def _handle_start(db: Session, chat_id: int, user_arg: str, contact: TelegramCon
         if listing:
             _reply(
                 chat_id,
-                "✅ Bot đã sẵn sàng.\n\n" + listing + "\n\n" + _help_text(),
+                "✅ Bot đã sẵn sàng.\n\n" + listing + "\n\n" + _HELP_HINT,
             )
             return
         who = f"@{contact.username}" if contact.username else f"ID <code>{chat_id}</code>"
         _reply(
             chat_id,
             "✅ Đã kết nối bot.\n\n"
-            f"Tài khoản Telegram của bạn: {who}\n\n" + _help_text(),
+            f"Tài khoản Telegram của bạn: {who}\n\n"
+            "Hiện chưa có email nào gửi thông báo tới đây.\n\n" + _HELP_HINT,
         )
         return
 
@@ -837,7 +838,7 @@ def _handle_start(db: Session, chat_id: int, user_arg: str, contact: TelegramCon
         f"{', '.join(f'≤{d} ngày' for d in settings.reminder_day_buckets())} "
         f"(gửi lúc {settings.renewal_reminder_hour}:00).\n\n"
         + (listing + "\n\n" if listing else "")
-        + _help_text(),
+        + _HELP_HINT,
     )
 
 
@@ -973,7 +974,7 @@ def _process_update(db: Session, update: dict[str, Any]) -> None:
     elif command in ("/bat", "/resume"):
         _handle_toggle(db, chat_id, True)
     elif command in ("/huongdan", "/help", "/tro_giup"):
-        _reply(chat_id, _help_text(with_huongdan=False))
+        _reply(chat_id, _help_text())
     else:
         # Gõ sai / nhắn chữ thường: KHÔNG đổ nguyên bài hướng dẫn (spam và dễ
         # khiến khách tưởng bot hiểu), chỉ chỉ đường tới /huongdan.
