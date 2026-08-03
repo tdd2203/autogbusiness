@@ -19,6 +19,7 @@ Bản đồ chức năng (mỗi module có file `.md` cùng tên):
   - ownership.py     : set_member_owner, bulk_assign_owner (gán chủ sở hữu)
   - lookup.py        : lookup_members (tra cứu member theo email — panel xem trước)
   - usage_limit.py   : bulk_set_usage_limit (đặt giới hạn tín dụng/tháng hàng loạt)
+  - notify_target.py : set_member_notify_target (CHỈ ĐỊNH người nhận nhắc gia hạn qua Telegram)
 
 `_shared.py` giữ `router` (APIRouter dùng chung) + helper chung
 (`_get_workspace_or_404`, `_visibility_filter`, `_member_or_404_visible`,
@@ -35,6 +36,7 @@ from . import (  # noqa: F401  (side-effect: đăng ký route lên router)
     invite,
     lookup,
     manual_add,
+    notify_target,
     ownership,
     reconcile,
     remove,

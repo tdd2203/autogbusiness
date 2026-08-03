@@ -1,0 +1,850 @@
+"""Nhắc gia hạn qua Telegram (feature 004) — quét, chống trùng, gộp tin, chỉ định.
+
+Nghiệp vụ đầy đủ: docs/Notifications/Renewal_Reminder_Telegram.md.
+Trọng tâm kiểm:
+  (a) mỗi email chỉ nhắc ĐÚNG 1 lần cho mỗi mốc (dedupe_key) dù job chạy lại;
+  (b) nhiều email cùng người nhận ⇒ MỘT tin gộp;
+  (c) chỉ định theo email thay thế đại lý, và fallback về đại lý khi chưa khớp được;
+  (d) lỗi vĩnh viễn (bị chặn) không retry, lỗi tạm thì có;
+  (e) email đã gia hạn trước khi gửi ⇒ bỏ (không gửi thông tin sai).
+"""
+
+import json
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.config import get_settings
+from app.db import SessionLocal
+from app.models import (
+    AuditLog,
+    Member,
+    TelegramContact,
+    TelegramNotification,
+    TelegramSettings,
+    User,
+)
+from app.services import renewal_reminder, telegram
+
+BOT_TOKEN = "test-token:do-not-use"
+WEBHOOK_SECRET = "test-webhook-secret"
+OWNER_CHAT = 555001
+ASSIGNEE_CHAT = 555002
+ADMIN_CHAT = -1009999
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@pytest.fixture
+def sent(monkeypatch) -> list[tuple[int, str]]:
+    """Bắt mọi lời gọi sendMessage thay vì gọi Telegram thật."""
+    captured: list[tuple[int, str]] = []
+
+    def fake_send(chat_id: int, html_text: str) -> telegram.SentMessage:
+        captured.append((chat_id, html_text))
+        return telegram.SentMessage(chat_id=chat_id, message_id=len(captured))
+
+    monkeypatch.setattr(telegram, "send_message", fake_send)
+    return captured
+
+
+@pytest.fixture(autouse=True)
+def _reset_runtime_config():
+    """Cấu hình bot được cache trong process → xoá trước/sau MỖI test, nếu không
+    test sau ăn phải token/nhóm digest của test trước (DB đã bị truncate)."""
+    telegram.refresh_config()
+    yield
+    telegram.refresh_config()
+
+
+@pytest.fixture
+def bot_on(monkeypatch):
+    """Bật bot + secret webhook + tắt group admin (mặc định) cho từng test."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "telegram_bot_token", BOT_TOKEN)
+    monkeypatch.setattr(settings, "telegram_webhook_secret", WEBHOOK_SECRET)
+    monkeypatch.setattr(settings, "telegram_admin_chat_id", "")
+    monkeypatch.setattr(settings, "renewal_reminder_days", "3,1")
+    telegram.refresh_config()
+    return settings
+
+
+def _webhook(client: TestClient, update: dict, secret: str = WEBHOOK_SECRET):
+    """POST update như Telegram thật: luôn kèm header secret đã đăng ký."""
+    return client.post(
+        "/webhook/telegram",
+        json=update,
+        headers={"X-Telegram-Bot-Api-Secret-Token": secret},
+    )
+
+
+def _make_ws(client: TestClient, auth_header: dict, name: str = "WS tele") -> dict:
+    resp = client.post(
+        "/api/v1/workspaces",
+        json={"name": name, "plan": "business", "seat_total": 25},
+        headers=auth_header,
+    )
+    assert resp.status_code in (200, 201), resp.text
+    return resp.json()
+
+
+def _link_owner(chat_id: int = OWNER_CHAT, username: str = "dai_ly") -> str:
+    """Gán chat Telegram cho super-admin (đóng vai đại lý sở hữu email)."""
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.username == "superadmin").one()
+        user.telegram_chat_id = chat_id
+        user.telegram_username = username
+        user.telegram_linked_at = _now()
+        db.commit()
+        return str(user.id)
+
+
+def _add_member(
+    client: TestClient,
+    ws: dict,
+    email: str,
+    *,
+    days_left: float,
+    owner_id: str | None = None,
+    **fields,
+) -> str:
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-upsert",
+        json={"members": [{"email": email, "status": "active"}], "is_full_sync": False},
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert resp.status_code in (200, 201), resp.text
+    with SessionLocal() as db:
+        member = db.query(Member).filter(Member.email == email).one()
+        member.subscription_end_at = _now() + timedelta(days=days_left)
+        member.subscription_months = 1
+        member.invited_by_user_id = owner_id
+        for key, value in fields.items():
+            setattr(member, key, value)
+        db.commit()
+        return str(member.id)
+
+
+def _run(force: bool = True) -> dict:
+    with SessionLocal() as db:
+        return renewal_reminder.run_tick(db, force_scan=force)
+
+
+def _statuses() -> list[tuple[str, int, str]]:
+    with SessionLocal() as db:
+        return [
+            (n.status, n.days_bucket, n.recipient_kind)
+            for n in db.query(TelegramNotification).all()
+        ]
+
+
+# ── Logic thuần (không cần DB) ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("@Khach_VIP", ("@khach_vip", None)),
+        ("khach_vip", ("@khach_vip", None)),
+        ("https://t.me/khach_vip", ("@khach_vip", None)),
+        ("t.me/khach_vip", ("@khach_vip", None)),
+        ("123456789", ("123456789", 123456789)),
+        ("-1001234567890", ("-1001234567890", -1001234567890)),
+        ("", (None, None)),
+        (None, (None, None)),
+    ],
+)
+def test_normalize_target(raw, expected) -> None:
+    assert renewal_reminder.normalize_target(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["abc", "a" * 33, "khach vip", "@@x"])
+def test_normalize_target_rejects_invalid(raw) -> None:
+    with pytest.raises(ValueError):
+        renewal_reminder.normalize_target(raw)
+
+
+def test_bucket_picks_smallest_applicable() -> None:
+    """Còn 2.4 ngày → mốc 3; còn 0.8 ngày → mốc 1; còn 5 ngày → chưa tới mốc nào."""
+    buckets = [3, 1]
+    assert renewal_reminder._bucket_for(2.4, buckets) == 3
+    assert renewal_reminder._bucket_for(0.8, buckets) == 1
+    assert renewal_reminder._bucket_for(5, buckets) is None
+
+
+def test_escape_html_protects_underscore_emails() -> None:
+    """Email khách hay chứa '_' và '&' — dùng HTML nên chỉ cần thoát 3 ký tự."""
+    assert telegram.escape_html("a_b&c<d>") == "a_b&amp;c&lt;d&gt;"
+
+
+def test_split_html_lines_chunks_long_lists() -> None:
+    lines = [f"• email{i}@example.com" for i in range(400)]
+    chunks = telegram.split_html_lines("HEAD", lines, "FOOT")
+    assert len(chunks) > 1
+    assert all(len(c) <= telegram.MAX_MESSAGE_CHARS + len("HEAD (tiếp)FOOT") for c in chunks)
+    assert chunks[1].startswith("HEAD (tiếp)")
+
+
+# ── Quét + chống trùng ────────────────────────────────────────────────────────
+
+
+def test_reminder_sent_once_per_bucket(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """GUARD chính: chạy job 3 lần chỉ ra ĐÚNG 1 tin cho mốc đó (dedupe_key)."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "khach1@example.com", days_left=2, owner_id=owner_id)
+
+    _run()
+    _run()
+    _run()
+
+    assert len(sent) == 1, sent
+    chat_id, text = sent[0]
+    assert chat_id == OWNER_CHAT
+    assert "khach1@example.com" in text
+    assert _statuses() == [("sent", 3, "owner")]
+
+
+def test_multiple_members_grouped_into_one_message(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Đại lý có 3 email cùng đến hạn → nhận 1 tin gộp, không phải 3 tin."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    for i in range(3):
+        _add_member(client, ws, f"khach{i}@example.com", days_left=2, owner_id=owner_id)
+
+    _run()
+
+    assert len(sent) == 1, sent
+    text = sent[0][1]
+    for i in range(3):
+        assert f"khach{i}@example.com" in text
+
+
+def test_second_bucket_fires_when_closer_to_expiry(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Mốc 3 đã nhắc; khi còn <1 ngày thì mốc 1 nhắc thêm ĐÚNG 1 lần nữa."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+    _run()
+    assert len(sent) == 1
+
+    with SessionLocal() as db:
+        member = db.get(Member, member_id)
+        member.subscription_end_at = _now() + timedelta(hours=10)
+        db.commit()
+
+    _run()
+    _run()
+
+    assert len(sent) == 2, sent
+    assert sorted(s[1] for s in _statuses()) == [1, 3]
+
+
+def test_unlimited_and_far_members_not_notified(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Vô thời hạn (end NULL) và còn xa hạn → không nhắc."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "xa@example.com", days_left=20, owner_id=owner_id)
+    _add_member(
+        client, ws, "vohan@example.com", days_left=2, owner_id=owner_id,
+        subscription_end_at=None, subscription_months=None,
+    )
+
+    _run()
+
+    assert sent == []
+
+
+def test_expired_member_not_notified(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Đã hết hạn thuộc luồng auto-remove, không nhắc gia hạn nữa."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "hethan@example.com", days_left=-1, owner_id=owner_id)
+
+    _run()
+
+    assert sent == []
+
+
+def test_owner_without_link_gets_nothing(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Đại lý chưa liên kết Telegram → không có ai để gửi (không lỗi, không tin)."""
+    ws = _make_ws(client, auth_header)
+    with SessionLocal() as db:
+        owner_id = str(db.query(User).filter(User.username == "superadmin").one().id)
+    _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+
+    _run()
+
+    assert sent == []
+
+
+def test_notify_disabled_stops_reminders(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    owner_id = _link_owner()
+    with SessionLocal() as db:
+        user = db.get(User, owner_id)
+        user.telegram_notify_enabled = False
+        db.commit()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+
+    _run()
+
+    assert sent == []
+
+
+# ── Chỉ định người nhận theo email ────────────────────────────────────────────
+
+
+def test_assignee_replaces_owner(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Chỉ định bằng ID số đã resolve → tin về khách, KHÔNG về đại lý."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(
+        client, ws, "khach@example.com", days_left=2, owner_id=owner_id,
+        notify_telegram_target=str(ASSIGNEE_CHAT),
+        notify_telegram_chat_id=ASSIGNEE_CHAT,
+    )
+
+    _run()
+
+    assert [c for c, _ in sent] == [ASSIGNEE_CHAT]
+
+
+def test_unresolved_username_falls_back_to_owner_then_resolves(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """@username chưa bấm /start → nhắc tạm về đại lý (KHÔNG mất tin); sau khi họ
+    /start thì mốc kế tiếp đi đúng địa chỉ khách."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(
+        client, ws, "khach@example.com", days_left=2, owner_id=owner_id,
+        notify_telegram_target="@khach_vip",
+    )
+
+    _run()
+    assert [c for c, _ in sent] == [OWNER_CHAT]
+
+    # Khách bấm /start → webhook ghi sổ liên hệ và khớp ngược chỉ định.
+    resp = _webhook(
+        client,
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 1,
+                "chat": {"id": ASSIGNEE_CHAT, "type": "private"},
+                "from": {"id": ASSIGNEE_CHAT, "username": "Khach_VIP", "first_name": "Khach"},
+                "text": "/start",
+            },
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    with SessionLocal() as db:
+        assert db.get(Member, member_id).notify_telegram_chat_id == ASSIGNEE_CHAT
+        member = db.get(Member, member_id)
+        member.subscription_end_at = _now() + timedelta(hours=10)  # sang mốc 1
+        db.commit()
+
+    sent.clear()
+    _run()
+
+    assert [c for c, _ in sent] == [ASSIGNEE_CHAT]
+
+
+def test_notify_target_endpoint(client: TestClient, auth_header: dict, bot_on) -> None:
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(client, ws, "khach@example.com", days_left=2)
+    url = f"/api/v1/workspaces/{ws['id']}/members/{member_id}/notify-target"
+
+    resp = client.patch(url, json={"target": "@Khach_VIP"}, headers=auth_header)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "member_id": member_id,
+        "target": "@khach_vip",
+        "chat_id": None,
+        "resolved": False,
+    }
+
+    # Người đó đã từng /start → khớp được ngay khi đặt chỉ định.
+    with SessionLocal() as db:
+        db.add(TelegramContact(chat_id=ASSIGNEE_CHAT, username="khach_vip"))
+        db.commit()
+    resp = client.patch(url, json={"target": "khach_vip"}, headers=auth_header)
+    assert resp.json()["resolved"] is True
+    assert resp.json()["chat_id"] == ASSIGNEE_CHAT
+
+    # Xoá chỉ định → về lại đại lý.
+    resp = client.patch(url, json={"target": None}, headers=auth_header)
+    assert resp.json() == {
+        "member_id": member_id,
+        "target": None,
+        "chat_id": None,
+        "resolved": False,
+    }
+
+    assert client.patch(url, json={"target": "abc"}, headers=auth_header).status_code == 400
+
+
+# ── Nhóm admin ────────────────────────────────────────────────────────────────
+
+
+def test_admin_group_gets_digest(
+    client: TestClient, auth_header: dict, bot_on, sent, monkeypatch
+) -> None:
+    monkeypatch.setattr(bot_on, "telegram_admin_chat_id", str(ADMIN_CHAT))
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+
+    _run()
+
+    chats = sorted(c for c, _ in sent)
+    assert chats == sorted([ADMIN_CHAT, OWNER_CHAT])
+    digest = next(text for chat, text in sent if chat == ADMIN_CHAT)
+    assert "superadmin" in digest  # digest nêu rõ email thuộc đại lý nào
+
+
+# ── Lỗi gửi ───────────────────────────────────────────────────────────────────
+
+
+def test_blocked_recipient_not_retried(
+    client: TestClient, auth_header: dict, bot_on, monkeypatch
+) -> None:
+    """Bot bị chặn = lỗi VĨNH VIỄN → đánh dấu blocked, tick sau không gửi lại."""
+    calls: list[int] = []
+
+    def fake_send(chat_id: int, html_text: str):
+        calls.append(chat_id)
+        raise telegram.TelegramError("blocked", "Forbidden: bot was blocked by the user")
+
+    monkeypatch.setattr(telegram, "send_message", fake_send)
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+
+    _run()
+    _run()
+
+    assert len(calls) == 1
+    assert _statuses() == [("blocked", 3, "owner")]
+    with SessionLocal() as db:
+        contact = db.get(TelegramContact, OWNER_CHAT)
+        assert contact is not None and contact.blocked_at is not None
+
+    # Sang MỐC KẾ TIẾP cũng không thử nữa: đã chặn thì mọi lượt quét sau bỏ qua chat đó.
+    with SessionLocal() as db:
+        member = db.get(Member, member_id)
+        member.subscription_end_at = _now() + timedelta(hours=10)
+        db.commit()
+    _run()
+
+    assert len(calls) == 1
+    assert _statuses() == [("blocked", 3, "owner")]
+
+
+def test_temporary_error_is_retried(
+    client: TestClient, auth_header: dict, bot_on, monkeypatch
+) -> None:
+    """Lỗi mạng → 'failed' rồi tick sau gửi lại thành công."""
+    attempts: list[int] = []
+
+    def flaky(chat_id: int, html_text: str):
+        attempts.append(chat_id)
+        if len(attempts) == 1:
+            raise telegram.TelegramError("network", "Không kết nối được Telegram")
+        return telegram.SentMessage(chat_id=chat_id, message_id=7)
+
+    monkeypatch.setattr(telegram, "send_message", flaky)
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+
+    _run()
+    assert _statuses() == [("failed", 3, "owner")]
+
+    _run()
+    assert len(attempts) == 2
+    assert _statuses() == [("sent", 3, "owner")]
+
+
+def test_renewed_before_send_is_skipped(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Gia hạn xong TRƯỚC khi tin kịp gửi → bỏ tin, không nhắn thông tin đã sai."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+
+    with SessionLocal() as db:
+        renewal_reminder.scan_and_claim(db)
+        member = db.get(Member, member_id)
+        member.subscription_end_at = _now() + timedelta(days=32)
+        db.commit()
+        renewal_reminder.flush_pending(db)
+
+    assert sent == []
+    assert _statuses() == [("skipped", 3, "owner")]
+
+
+# ── Liên kết tài khoản qua bot ────────────────────────────────────────────────
+
+
+def test_link_flow_via_deep_link(
+    client: TestClient, auth_header: dict, bot_on, sent, monkeypatch
+) -> None:
+    monkeypatch.setattr(bot_on, "telegram_bot_username", "my_test_bot")
+
+    resp = client.post("/api/v1/telegram/link", headers=auth_header)
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["token"]
+    assert resp.json()["deep_link"] == f"https://t.me/my_test_bot?start={token}"
+
+    resp = _webhook(
+        client,
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 1,
+                "chat": {"id": OWNER_CHAT, "type": "private"},
+                "from": {"id": OWNER_CHAT, "username": "dai_ly", "first_name": "Dai"},
+                "text": f"/start {token}",
+            },
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    status = client.get("/api/v1/telegram/status", headers=auth_header).json()
+    assert status["linked"] is True
+    assert status["telegram_chat_id"] == OWNER_CHAT
+    assert status["telegram_username"] == "dai_ly"
+
+    # Token dùng-một-lần: dùng lại không liên kết được nữa.
+    client.delete("/api/v1/telegram/link", headers=auth_header)
+    _webhook(
+        client,
+        {
+            "update_id": 2,
+            "message": {
+                "message_id": 2,
+                "chat": {"id": 777, "type": "private"},
+                "from": {"id": 777, "username": "ke_gian", "first_name": "X"},
+                "text": f"/start {token}",
+            },
+        },
+    )
+    status = client.get("/api/v1/telegram/status", headers=auth_header).json()
+    assert status["linked"] is False
+
+
+def test_webhook_rejects_wrong_secret(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    payload = {
+        "update_id": 1,
+        "message": {
+            "message_id": 1,
+            "chat": {"id": OWNER_CHAT, "type": "private"},
+            "from": {"id": OWNER_CHAT, "username": "ai_do", "first_name": "X"},
+            "text": "/start",
+        },
+    }
+
+    resp = _webhook(client, payload, secret="sai-secret")
+    assert resp.status_code == 200  # luôn 200 để Telegram khỏi retry vô hạn
+    assert resp.json() == {"ok": False}
+    with SessionLocal() as db:
+        assert db.get(TelegramContact, OWNER_CHAT) is None
+
+    resp = _webhook(client, payload)
+    assert resp.json() == {"ok": True}
+    with SessionLocal() as db:
+        assert db.get(TelegramContact, OWNER_CHAT) is not None
+
+
+def test_webhook_fail_closed_without_secret(
+    client: TestClient, auth_header: dict, bot_on, sent, monkeypatch
+) -> None:
+    """CHƯA đặt secret ⇒ TỪ CHỐI mọi update.
+
+    Nếu chấp nhận update không xác thực, bất kỳ ai biết '@username' khách đang được
+    chỉ định đều POST được một '/start' giả mạo để GÁN username đó vào chat_id của
+    mình → chiếm kênh nhận nhắc và đọc được email khách hàng. Đây là guard chống ca đó.
+    """
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(
+        client, ws, "khach@example.com", days_left=2, notify_telegram_target="@khach_vip"
+    )
+    monkeypatch.setattr(bot_on, "telegram_webhook_secret", "")
+
+    resp = client.post(
+        "/webhook/telegram",
+        json={
+            "update_id": 1,
+            "message": {
+                "message_id": 1,
+                "chat": {"id": 424242, "type": "private"},
+                "from": {"id": 424242, "username": "khach_vip", "first_name": "Ke gian"},
+                "text": "/start",
+            },
+        },
+    )
+
+    assert resp.json() == {"ok": False}
+    with SessionLocal() as db:
+        assert db.get(TelegramContact, 424242) is None
+        # Quan trọng nhất: chỉ định của email KHÔNG bị gán sang chat lạ.
+        assert db.get(Member, member_id).notify_telegram_chat_id is None
+
+
+def test_setup_webhook_requires_secret(
+    client: TestClient, auth_header: dict, bot_on, monkeypatch
+) -> None:
+    """Đăng ký webhook khi chưa có secret ⇒ 400 (đăng ký xong cũng từ chối hết)."""
+    monkeypatch.setattr(bot_on, "telegram_webhook_secret", "")
+    resp = client.post("/api/v1/telegram/admin/webhook", json={}, headers=auth_header)
+    assert resp.status_code == 400
+    assert "TELEGRAM_WEBHOOK_SECRET" in str(resp.json()["detail"])
+
+
+def test_endpoints_503_when_bot_not_configured(
+    client: TestClient, auth_header: dict, monkeypatch
+) -> None:
+    """Chưa cấu hình token → tính năng tắt hẳn, KHÔNG làm hỏng nghiệp vụ khác."""
+    monkeypatch.setattr(get_settings(), "telegram_bot_token", "")
+    telegram.refresh_config()
+    assert client.post("/api/v1/telegram/link", headers=auth_header).status_code == 503
+    assert client.post("/api/v1/telegram/admin/run-now", headers=auth_header).status_code == 503
+    assert client.get("/api/v1/telegram/status", headers=auth_header).json()["bot_configured"] is False
+
+
+# ── Nhập token bot từ giao diện (không cần SSH sửa .env) ──────────────────────
+
+
+@pytest.fixture
+def bot_off(monkeypatch):
+    """Không có cấu hình .env → mọi thứ đọc từ bảng telegram_settings."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "telegram_bot_token", "")
+    monkeypatch.setattr(settings, "telegram_bot_username", "")
+    monkeypatch.setattr(settings, "telegram_webhook_secret", "")
+    monkeypatch.setattr(settings, "telegram_admin_chat_id", "")
+    telegram.refresh_config()
+    yield settings
+    telegram.refresh_config()
+
+
+def test_admin_saves_bot_token_from_ui(
+    client: TestClient, auth_header: dict, bot_off, monkeypatch
+) -> None:
+    """Super-admin dán token → getMe xác thực → mã hoá lưu DB → bot dùng được ngay.
+
+    Token KHÔNG được lưu thô và KHÔNG bao giờ trả ngược ra API/audit.
+    """
+    monkeypatch.setattr(telegram, "verify_token", lambda tok: {"username": "my_shop_bot"})
+    assert client.get("/api/v1/telegram/status", headers=auth_header).json()["bot_configured"] is False
+
+    resp = client.put(
+        "/api/v1/telegram/admin/token",
+        json={"bot_token": "123456789:AAF-fake-token-for-test"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["bot_username"] == "my_shop_bot"
+
+    status = client.get("/api/v1/telegram/status", headers=auth_header).json()
+    assert status["bot_configured"] is True
+    assert status["bot_username"] == "my_shop_bot"
+
+    admin = client.get("/api/v1/telegram/admin/status", headers=auth_header).json()
+    assert admin["config_source"] == "db"
+
+    with SessionLocal() as db:
+        row = db.get(TelegramSettings, 1)
+        assert row.bot_token_encrypted and "123456789" not in row.bot_token_encrypted
+        assert telegram.decrypt_secret(row.bot_token_encrypted) == "123456789:AAF-fake-token-for-test"
+        # Secret webhook sinh tự động → webhook dùng được ngay, admin khỏi tự nghĩ.
+        assert row.webhook_secret
+        audits = db.query(AuditLog).filter(AuditLog.action == "TELEGRAM_BOT_TOKEN_SET").all()
+        assert len(audits) == 1
+        assert "123456789" not in json.dumps(audits[0].data or {})
+
+    # Gỡ token → tắt lại.
+    assert client.delete("/api/v1/telegram/admin/token", headers=auth_header).status_code == 204
+    assert client.get("/api/v1/telegram/status", headers=auth_header).json()["bot_configured"] is False
+
+
+def test_admin_token_rejected_when_invalid(
+    client: TestClient, auth_header: dict, bot_off, monkeypatch
+) -> None:
+    def boom(tok: str):
+        raise telegram.TelegramError("unauthorized", "Unauthorized")
+
+    monkeypatch.setattr(telegram, "verify_token", boom)
+    resp = client.put(
+        "/api/v1/telegram/admin/token",
+        json={"bot_token": "123456789:sai-token-hoan-toan"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 400
+    with SessionLocal() as db:
+        assert db.get(TelegramSettings, 1) is None
+
+
+def test_env_token_wins_over_ui(client: TestClient, auth_header: dict, bot_on) -> None:
+    """Đã đặt .env thì UI không được ghi đè (tránh hai nguồn sự thật)."""
+    resp = client.put(
+        "/api/v1/telegram/admin/token",
+        json={"bot_token": "123456789:AAF-token-khac"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 409
+
+
+def test_admin_chat_saved_from_ui_reaches_digest(
+    client: TestClient, auth_header: dict, bot_off, sent, monkeypatch
+) -> None:
+    """Nhóm digest đặt ở giao diện được job nhắc dùng thật."""
+    monkeypatch.setattr(telegram, "verify_token", lambda tok: {"username": "my_shop_bot"})
+    resp = client.put(
+        "/api/v1/telegram/admin/token",
+        json={"bot_token": "123456789:AAF-fake-token-for-test"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    resp = client.put(
+        "/api/v1/telegram/admin/admin-chat",
+        json={"admin_chat_id": str(ADMIN_CHAT)},
+        headers=auth_header,
+    )
+    assert resp.json()["admin_chat_ids"] == [ADMIN_CHAT]
+
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+    _run()
+
+    assert sorted(c for c, _ in sent) == sorted([ADMIN_CHAT, OWNER_CHAT])
+
+
+# ── Khách TỰ đăng ký nhận nhắc bằng lệnh /email ───────────────────────────────
+
+
+def _start_bot(client: TestClient, chat_id: int, username: str | None = None):
+    return _webhook(
+        client,
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 1,
+                "chat": {"id": chat_id, "type": "private"},
+                "from": {"id": chat_id, "username": username, "first_name": "Khach"},
+                "text": "/start",
+            },
+        },
+    )
+
+
+def _send_cmd(client: TestClient, chat_id: int, text: str, username: str | None = None):
+    return _webhook(
+        client,
+        {
+            "update_id": 2,
+            "message": {
+                "message_id": 2,
+                "chat": {"id": chat_id, "type": "private"},
+                "from": {"id": chat_id, "username": username, "first_name": "Khach"},
+                "text": text,
+            },
+        },
+    )
+
+
+def test_email_command_subscribes_and_receives(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Đường 2: khách bấm Start rồi gõ '/email <địa chỉ>' → nhận nhắc cho ĐÚNG email đó
+    (thay cho đại lý), không cần admin thao tác gì."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+
+    _start_bot(client, ASSIGNEE_CHAT, "khach_vip")
+    _send_cmd(client, ASSIGNEE_CHAT, "/email Khach@Example.com", "khach_vip")
+
+    with SessionLocal() as db:
+        member = db.get(Member, member_id)
+        assert member.notify_telegram_chat_id == ASSIGNEE_CHAT
+        assert member.notify_telegram_target == "@khach_vip"
+
+    sent.clear()
+    _run()
+    assert [c for c, _ in sent] == [ASSIGNEE_CHAT]
+
+
+def test_email_command_rejects_email_taken_by_another_chat(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Không cho người lạ CHIẾM kênh nhận nhắc của email đã có người đăng ký."""
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(
+        client, ws, "khach@example.com", days_left=2,
+        notify_telegram_target=str(ASSIGNEE_CHAT), notify_telegram_chat_id=ASSIGNEE_CHAT,
+    )
+
+    _start_bot(client, 909090, "ke_gian")
+    _send_cmd(client, 909090, "/email khach@example.com", "ke_gian")
+
+    with SessionLocal() as db:
+        assert db.get(Member, member_id).notify_telegram_chat_id == ASSIGNEE_CHAT
+    assert "đã được đăng ký" in sent[-1][1]
+
+
+def test_email_command_unknown_and_unsubscribe(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(client, ws, "khach@example.com", days_left=2)
+
+    _start_bot(client, ASSIGNEE_CHAT, "khach_vip")
+    _send_cmd(client, ASSIGNEE_CHAT, "/email khong-ton-tai@example.com", "khach_vip")
+    assert "Không tìm thấy" in sent[-1][1]
+
+    _send_cmd(client, ASSIGNEE_CHAT, "/email khach@example.com", "khach_vip")
+    _send_cmd(client, ASSIGNEE_CHAT, "/huyemail khach@example.com", "khach_vip")
+    with SessionLocal() as db:
+        member = db.get(Member, member_id)
+        assert member.notify_telegram_chat_id is None
+        assert member.notify_telegram_target is None
+
+
+def test_email_command_rate_limited(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Chống DÒ email: quá nhiều lần thử trong cửa sổ ngắn thì chặn."""
+    from app.routers import telegram as tele_router
+
+    tele_router._email_cmd_hits.clear()
+    _start_bot(client, 818181, "ai_do")
+    for i in range(tele_router._EMAIL_CMD_MAX + 2):
+        _send_cmd(client, 818181, f"/email thu{i}@example.com", "ai_do")
+
+    assert "quá nhiều lần" in sent[-1][1]

@@ -39,6 +39,7 @@ from app.routers import (
     queue,
     sepay_webhook,
     subscription_requests,
+    telegram,
     ui_labels,
     users,
     wallet,
@@ -108,6 +109,16 @@ PENDING_ORDER_TTL = timedelta(minutes=10)
 ORDER_CLEANUP_INTERVAL_SEC = 120  # 2 phút
 _order_cleanup_timer: threading.Timer | None = None
 _order_purge_lock = threading.Lock()
+
+# Nhắc gia hạn qua Telegram (feature 004). Tick 5′ vì hai việc khác nhịp nhau:
+#  - QUÉT tạo tin: chỉ chạy trong GIỜ gửi (RENEWAL_REMINDER_HOUR, mặc định 9h VN) →
+#    tick 5′ đảm bảo rơi vào giờ đó dù server khởi động lại lúc nào.
+#  - GỬI/RETRY: chạy mọi tick → lỗi mạng tạm thời được thử lại trong vòng vài phút.
+# Chống trùng nằm ở dedupe_key (UNIQUE) chứ KHÔNG dựa vào nhịp tick, nên tick chạy
+# thừa hoàn toàn vô hại. TELEGRAM_BOT_TOKEN rỗng ⇒ tick thoát ngay (tính năng tắt).
+TELEGRAM_REMINDER_INTERVAL_SEC = 300  # 5 phút
+_reminder_timer: threading.Timer | None = None
+_reminder_lock = threading.Lock()
 
 
 def _purge_stale_orders_once() -> None:
@@ -577,6 +588,39 @@ def _schedule_cleanup_tick() -> None:
         _cleanup_timer.start()
 
 
+def _run_renewal_reminder_once() -> None:
+    """Quét email sắp hết hạn → gửi nhắc Telegram. Best-effort: mọi lỗi chỉ log.
+
+    Đứng NGOÀI lifecycle nghiệp vụ: Telegram hỏng KHÔNG được phép ảnh hưởng tới
+    mời/gia hạn/auto-remove. Lock riêng chặn tick chồng (hot-reload / tick chậm)."""
+    from app.services import renewal_reminder, telegram
+
+    if not telegram.bot_configured():
+        return
+    if not _reminder_lock.acquire(blocking=False):
+        return
+    try:
+        with SessionLocal() as db:
+            renewal_reminder.run_tick(db)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[tele-reminder] tick failed: %s", e)
+    finally:
+        _reminder_lock.release()
+
+
+def _schedule_reminder_tick() -> None:
+    """Tự reschedule mỗi `TELEGRAM_REMINDER_INTERVAL_SEC` (xem chú thích hằng số)."""
+    global _reminder_timer
+    try:
+        _run_renewal_reminder_once()
+    finally:
+        _reminder_timer = threading.Timer(
+            TELEGRAM_REMINDER_INTERVAL_SEC, _schedule_reminder_tick
+        )
+        _reminder_timer.daemon = True
+        _reminder_timer.start()
+
+
 def _schedule_order_cleanup_tick() -> None:
     """Tick nhanh (mỗi 2′) dọn lệnh thanh toán pending quá 10′ chưa trả tiền — tách
     khỏi tick hằng-giờ để xoá sát mốc hết hạn 10′ (user 2026-07-14)."""
@@ -637,13 +681,15 @@ async def lifespan(_: FastAPI):
     #  - _schedule_expiry_tick   : AUTO-REMOVE member hết hạn NGAY (mỗi 60″, user 2026-07-27)
     #  - _schedule_cleanup_tick  : retention/dọn dẹp nặng (mỗi giờ)
     #  - _schedule_order_cleanup_tick : dọn lệnh thanh toán quá hạn (mỗi 2′)
+    #  - _schedule_reminder_tick : nhắc gia hạn qua Telegram (mỗi 5′, feature 004)
     _schedule_expiry_tick()
     _schedule_cleanup_tick()
     _schedule_order_cleanup_tick()
+    _schedule_reminder_tick()
     try:
         yield
     finally:
-        global _cleanup_timer, _order_cleanup_timer, _expiry_timer
+        global _cleanup_timer, _order_cleanup_timer, _expiry_timer, _reminder_timer
         if _expiry_timer is not None:
             _expiry_timer.cancel()
             _expiry_timer = None
@@ -653,6 +699,9 @@ async def lifespan(_: FastAPI):
         if _order_cleanup_timer is not None:
             _order_cleanup_timer.cancel()
             _order_cleanup_timer = None
+        if _reminder_timer is not None:
+            _reminder_timer.cancel()
+            _reminder_timer = None
 
 
 def _configure_app_logging() -> None:
@@ -710,6 +759,7 @@ def create_app() -> FastAPI:
     app.include_router(ui_labels.router)
     app.include_router(wallet.router)
     app.include_router(sepay_webhook.router)
+    app.include_router(telegram.router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict[str, str]:

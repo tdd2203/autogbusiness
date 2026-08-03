@@ -5,8 +5,9 @@ import { useAuth } from "../hooks/useAuth";
 import { useFormatDate, useT } from "../i18n";
 import { UiLabelsManager } from "../components/UiLabelsManager";
 import { SystemLanguageManager } from "../components/SystemLanguageManager";
+import { TelegramSettings } from "../components/TelegramSettings";
 
-type SettingsTab = "account" | "security" | "uiLabels" | "systemLang";
+type SettingsTab = "account" | "security" | "telegram" | "uiLabels" | "systemLang";
 
 export default function Settings() {
   const t = useT();
@@ -77,6 +78,13 @@ export default function Settings() {
           >
             {t("settings.sectionSecurity")}
           </button>
+          {/* Telegram: MỌI tài khoản (đại lý cần tự kết nối để nhận nhắc gia hạn). */}
+          <button
+            onClick={() => setTab("telegram")}
+            className={tab === "telegram" ? "settings-link active" : "settings-link"}
+          >
+            {t("settings.sectionTelegram")}
+          </button>
           {user?.is_super_admin && (
             <button
               onClick={() => setTab("uiLabels")}
@@ -129,6 +137,8 @@ export default function Settings() {
               </div>
             </div>
           )}
+
+          {tab === "telegram" && <TelegramSettings />}
 
           {tab === "uiLabels" && user?.is_super_admin && <UiLabelsManager />}
 
