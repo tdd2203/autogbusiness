@@ -617,6 +617,57 @@ def test_webhook_fail_closed_without_secret(
         assert db.get(Member, member_id).notify_telegram_chat_id is None
 
 
+def test_setup_webhook_registers_secret_in_use(
+    client: TestClient, auth_header: dict, bot_off, monkeypatch
+) -> None:
+    """Đăng ký webhook phải dùng secret ĐANG HIỆU LỰC (ở đây là secret sinh trong DB
+    khi lưu token qua giao diện).
+
+    Bug thật 2026-08-03: chỗ này lấy secret từ .env (rỗng khi cấu hình bằng UI) nên
+    Telegram gửi update không kèm secret → handler fail-closed chặn hết → bot im lặng
+    hoàn toàn, không có lỗi nào nhìn thấy được.
+    """
+    monkeypatch.setattr(telegram, "verify_token", lambda tok: {"username": "my_shop_bot"})
+    client.put(
+        "/api/v1/telegram/admin/token",
+        json={"bot_token": "123456789:AAF-fake-token-for-test"},
+        headers=auth_header,
+    )
+    with SessionLocal() as db:
+        db_secret = db.get(TelegramSettings, 1).webhook_secret
+    assert db_secret
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        telegram, "set_webhook", lambda url, secret: captured.update(url=url, secret=secret) or {}
+    )
+
+    resp = client.post(
+        "/api/v1/telegram/admin/webhook",
+        json={"public_url": "https://gpt.example.org"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured["url"] == "https://gpt.example.org/webhook/telegram"
+    assert captured["secret"] == db_secret
+
+    # Và update mang đúng secret đó phải được xử lý (không bị chặn oan).
+    resp = client.post(
+        "/webhook/telegram",
+        json={
+            "update_id": 1,
+            "message": {
+                "message_id": 1,
+                "chat": {"id": 515151, "type": "private"},
+                "from": {"id": 515151, "username": "ai_do", "first_name": "X"},
+                "text": "/start",
+            },
+        },
+        headers={"X-Telegram-Bot-Api-Secret-Token": db_secret},
+    )
+    assert resp.json() == {"ok": True}
+
+
 def test_setup_webhook_requires_secret(
     client: TestClient, auth_header: dict, bot_on, monkeypatch
 ) -> None:

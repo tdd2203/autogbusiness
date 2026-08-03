@@ -1418,7 +1418,11 @@ def setup_webhook(
         )
     url = f"{base}/webhook/telegram"
     try:
-        telegram.set_webhook(url, settings.telegram_webhook_secret)
+        # PHẢI dùng secret ĐANG HIỆU LỰC (env hoặc DB), không phải riêng env: token
+        # nhập từ giao diện thì secret nằm trong DB, lấy nhầm env rỗng ⇒ Telegram gửi
+        # update KHÔNG kèm secret ⇒ handler fail-closed chặn sạch, bot im lặng hoàn
+        # toàn mà không có lỗi nào nhìn thấy được. (Bug thật, 2026-08-03.)
+        telegram.set_webhook(url, telegram.webhook_secret())
     except telegram.TelegramError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
