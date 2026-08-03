@@ -8,11 +8,13 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Identity,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -1088,9 +1090,14 @@ class TelegramLinkToken(Base):
 class TelegramTemplate(Base):
     """Mẫu nội dung thông báo RIÊNG của một tài khoản (đại lý tự soạn).
 
-    Không đặt gì ở đây ⇒ dùng **mẫu gốc** trong `services/renewal_reminder`. Đặt rồi
-    thì mọi tin nhắc về email CỦA TÀI KHOẢN NÀY dùng mẫu riêng — kể cả tin gửi cho
-    khách cuối (đại lý muốn xưng tên shop mình) và cho người nhận được mời.
+    Không đặt gì ⇒ dùng **mẫu gốc** trong `services/renewal_reminder`.
+
+    Một tài khoản có NHIỀU mẫu, mỗi mẫu một PHẠM VI — vì cùng một đại lý cần nói khác
+    nhau tuỳ nơi (tin cho khách lẻ của một email khác tin cho nhân viên trực):
+      - `scope='all'`    — mẫu chung, dùng khi không có mẫu nào cụ thể hơn.
+      - `scope='chat'`   — áp cho mọi tin gửi tới `chat_id` đó.
+      - `scope='member'` — áp cho tin nói về đúng email `member_id`.
+    Cụ thể hơn thì thắng: member > chat > all (`renewal_reminder._pick_template`).
 
     Hai ô, đều không bắt buộc:
       - `body`: thân tin, chèn `{items}` để bung danh sách email.
@@ -1104,9 +1111,52 @@ class TelegramTemplate(Base):
     """
 
     __tablename__ = "telegram_templates"
+    # Ràng buộc đặt ở DB chứ không chỉ ở tầng API: hai request lưu song song thì kiểm
+    # tra trong Python không đủ, mà hai mẫu cùng một phạm vi thì lúc gửi không biết lấy
+    # cái nào. Phải khớp từng chữ với migration 0052 — test dựng schema bằng
+    # `create_all`, lệch một dấu là test xanh trong khi production đỏ.
+    __table_args__ = (
+        CheckConstraint(
+            "(scope = 'all' AND chat_id IS NULL AND member_id IS NULL)"
+            " OR (scope = 'chat' AND chat_id IS NOT NULL AND member_id IS NULL)"
+            " OR (scope = 'member' AND member_id IS NOT NULL AND chat_id IS NULL)",
+            name="ck_telegram_templates_scope_target",
+        ),
+        Index(
+            "ux_telegram_templates_all",
+            "user_id",
+            unique=True,
+            postgresql_where=text("scope = 'all'"),
+        ),
+        Index(
+            "ux_telegram_templates_chat",
+            "user_id",
+            "chat_id",
+            unique=True,
+            postgresql_where=text("scope = 'chat'"),
+        ),
+        Index(
+            "ux_telegram_templates_member",
+            "user_id",
+            "member_id",
+            unique=True,
+            postgresql_where=text("scope = 'member'"),
+        ),
+    )
 
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # 'all' | 'chat' | 'member' — DB có check constraint buộc đúng cột đi kèm phạm vi,
+    # và unique riêng từng phạm vi để không bao giờ có hai mẫu tranh nhau một chỗ.
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="all")
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    member_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("members.id", ondelete="CASCADE"), nullable=True
     )
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
     item_line: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -389,24 +389,64 @@ def unknown_placeholders(template: str, allowed: tuple[str, ...]) -> list[str]:
     return sorted({name for name in found if name not in allowed})
 
 
+Tpl = tuple[str | None, str | None]
+
+
+class TemplateStore:
+    """Mẫu tự soạn của các chủ tài khoản liên quan, tra theo phạm vi.
+
+    Nạp một lượt rồi tra nhiều lần: một đợt flush có thể dựng hàng chục tin, mà mỗi tin
+    lại cần biết "chat này / email này có mẫu riêng không".
+    """
+
+    def __init__(self, rows: list[TelegramTemplate]) -> None:
+        self._all: dict[UUID, Tpl] = {}
+        self._chat: dict[tuple[UUID, int], Tpl] = {}
+        self._member: dict[UUID, Tpl] = {}
+        for row in rows:
+            value = (row.body, row.item_line)
+            if row.scope == "chat" and row.chat_id is not None:
+                self._chat[(row.user_id, row.chat_id)] = value
+            elif row.scope == "member" and row.member_id is not None:
+                self._member[row.member_id] = value
+            else:
+                self._all[row.user_id] = value
+
+    def pick(self, owner_ids: set[UUID], chat_id: int, member_ids: list[UUID]) -> Tpl | None:
+        """Mẫu áp cho MỘT tin: cụ thể hơn thì thắng — email > người nhận > tất cả.
+
+        Tin gộp email của NHIỀU chủ tài khoản (digest admin, người theo dõi nhiều tài
+        khoản) luôn dùng mẫu gốc: lấy mẫu của một chủ áp cho email của chủ khác là sai.
+
+        Mẫu theo email chỉ áp khi tin nói về ĐÚNG email đó. Tin gộp nhiều email thì
+        không có cách nào áp một thân tin riêng cho từng dòng, nên rơi xuống mẫu của
+        người nhận rồi tới mẫu chung.
+        """
+        if len(owner_ids) != 1:
+            return None
+        owner_id = next(iter(owner_ids))
+        if len(member_ids) == 1:
+            by_member = self._member.get(member_ids[0])
+            if by_member is not None:
+                return by_member
+        return self._chat.get((owner_id, chat_id)) or self._all.get(owner_id)
+
+
 def _render_message(
     kind: str,
     bucket: int,
     items: list[tuple[Member, str | None, str | None, UUID | None]],
     now: datetime,
-    templates: dict[UUID, tuple[str | None, str | None]] | None = None,
+    custom: tuple[str | None, str | None] | None = None,
 ) -> list[str]:
     """Dựng (một hoặc nhiều) tin HTML cho 1 người nhận.
 
     `items` = (member, tên workspace, username chủ sở hữu, id chủ sở hữu).
-    `templates` = mẫu tự soạn theo user_id. Chỉ áp khi MỌI email trong tin cùng một
-    chủ tài khoản — tin gộp nhiều chủ (digest admin, người theo dõi nhiều tài khoản)
-    thì dùng mẫu gốc, vì lấy mẫu của một chủ áp cho email của chủ khác là sai.
+    `custom` = (body, item_line) tự soạn đã chọn sẵn cho tin này — xem `_pick_template`.
+    Truyền None để buộc dùng mẫu gốc (đường lui khi mẫu tự soạn hỏng HTML).
     """
     esc = telegram.escape_html
     link = _dashboard_link()
-    owner_ids = {oid for _, _, _, oid in items if oid}
-    custom = templates.get(next(iter(owner_ids))) if templates and len(owner_ids) == 1 else None
     body_tpl = (custom[0] if custom else None) or default_body(kind)
     line_tpl = (custom[1] if custom else None) or default_item_line(kind)
 
@@ -490,14 +530,15 @@ def flush_pending(db: Session, now: datetime | None = None) -> dict:
 
     # Mẫu tự soạn của các chủ tài khoản liên quan (thường 1–2 hàng).
     owner_ids = {row[3] for row in detail.values() if row[3]}
-    templates: dict[UUID, tuple[str | None, str | None]] = {}
-    if owner_ids:
-        for tpl in (
+    templates = TemplateStore(
+        list(
             db.execute(select(TelegramTemplate).where(TelegramTemplate.user_id.in_(owner_ids)))
             .scalars()
             .all()
-        ):
-            templates[tpl.user_id] = (tpl.body, tpl.item_line)
+        )
+        if owner_ids
+        else []
+    )
 
     groups: dict[tuple[int, str, int], list[TelegramNotification]] = {}
     stats = {"sent": 0, "failed": 0, "blocked": 0, "skipped": 0}
@@ -526,14 +567,19 @@ def flush_pending(db: Session, now: datetime | None = None) -> dict:
     for (chat_id, kind, bucket), notifs in groups.items():
         items = [detail[n.member_id] for n in notifs if n.member_id in detail]
         items.sort(key=lambda it: it[0].subscription_end_at or now)
-        messages = _render_message(kind, bucket, items, now, templates)
+        custom = templates.pick(
+            {oid for _, _, _, oid in items if oid},
+            chat_id,
+            [member.id for member, _, _, _ in items],
+        )
+        messages = _render_message(kind, bucket, items, now, custom)
         try:
             last_message_id = _send_all(chat_id, messages)
         except telegram.TelegramError as exc:
             # HTML hỏng trong MẪU TỰ SOẠN → Telegram từ chối cả tin. Gửi lại bằng MẪU
             # GỐC: lỗi soạn thảo của một người không được phép làm mất thông báo (và
             # người nhận thì chẳng biết đường nào mà sửa).
-            if _is_markup_error(exc) and templates:
+            if _is_markup_error(exc) and custom:
                 try:
                     last_message_id = _send_all(
                         chat_id, _render_message(kind, bucket, items, now, None)

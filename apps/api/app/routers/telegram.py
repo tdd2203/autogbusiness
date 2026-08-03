@@ -58,9 +58,12 @@ INVITE_TOKEN_TTL = timedelta(days=7)
 # Số link mời còn hiệu lực tối đa của MỘT tài khoản. Mỗi người nhận thường cần 1 link
 # riêng (phạm vi khác nhau), nhưng quá số này thì chính chủ cũng không quản nổi ai là ai.
 MAX_ACTIVE_INVITES = 20
-# Số dòng tối đa khi trả lời lệnh /danhsach trong chat.
-LIST_COMMAND_LIMIT = 15
-LIST_COMMAND_HORIZON = timedelta(days=30)
+# Số dòng tối đa khi trả lời /danhsach hoặc /handung. Danh sách dài tự cắt thành nhiều
+# tin (Telegram tối đa 4096 ký tự/tin); vượt mốc này thì chỉ đếm số còn lại để bot
+# không bắn ra hàng chục tin liên tiếp.
+LIST_COMMAND_LIMIT = 200
+# Ngưỡng của /handung — "email còn dưới 7 ngày sử dụng".
+EXPIRING_COMMAND_HORIZON = timedelta(days=7)
 # Số email tối đa liệt kê ngay trong lời chào sau khi bấm link nhận thông báo. Có giới
 # hạn vì tin Telegram tối đa 4096 ký tự — phần dư chỉ đếm số, xem tiếp bằng /danhsach.
 WELCOME_LIST_LIMIT = 20
@@ -133,19 +136,60 @@ class TelegramInviteOut(BaseModel):
     recipients: int = 0
 
 
-class TelegramTemplateOut(BaseModel):
-    """Mẫu riêng của tôi + mẫu gốc + danh sách biến + bản xem trước."""
+class TelegramTemplateScopeOut(BaseModel):
+    """Một phạm vi ĐÃ có mẫu riêng — để web đánh dấu trong ô chọn phạm vi."""
 
+    scope: str
+    chat_id: int | None = None
+    member_id: UUID | None = None
+    # Tên hiển thị của người nhận/email (đã xoá thì để trống, dòng mẫu vẫn còn đó).
+    label: str | None = None
+    updated_at: datetime
+
+
+class TelegramRecipientOut(BaseModel):
+    """Một chat Telegram đang nhận thông báo của tôi — nguồn cho ô chọn người nhận."""
+
+    chat_id: int
+    label: str
+    # 'owner' = chính tôi | 'subscriber' = người được mời qua link | 'assignee' = khách
+    # được chỉ định cho một email cụ thể.
+    kind: str
+
+
+class TelegramTemplateOut(BaseModel):
+    """Mẫu của MỘT phạm vi + mẫu gốc + danh sách biến + bản xem trước."""
+
+    scope: str = "all"
+    chat_id: int | None = None
+    member_id: UUID | None = None
     body: str | None = None
     item_line: str | None = None
     default_body: str
     default_item_line: str
+    # Mẫu ĐANG có hiệu lực cho phạm vi này khi chưa đặt mẫu riêng (mẫu chung nếu đã
+    # soạn, không thì mẫu gốc). Web lấy làm nội dung khởi điểm — soạn mẫu cho một
+    # người nhận mà phải gõ lại từ đầu cả mẫu chung thì chẳng ai làm.
+    base_body: str
+    base_item_line: str
     body_placeholders: list[str]
     item_placeholders: list[str]
     preview: str
+    # Chính bộ dữ liệu đã dựng nên `preview`. Trả kèm để web dựng lại bản xem trước
+    # NGAY LÚC GÕ (khỏi phải Lưu mới thấy) mà vẫn ra đúng con số như server.
+    sample: dict[str, Any]
+    # Mọi phạm vi đang có mẫu riêng + danh sách chọn được — gửi kèm để mở modal là đủ
+    # dữ liệu vẽ ô chọn phạm vi, khỏi gọi thêm 2 endpoint nữa.
+    overrides: list[TelegramTemplateScopeOut] = Field(default_factory=list)
+    recipients: list[TelegramRecipientOut] = Field(default_factory=list)
 
 
 class TelegramTemplateIn(BaseModel):
+    """Lưu mẫu cho MỘT phạm vi. Bỏ trống cả body lẫn item_line = xoá mẫu phạm vi đó."""
+
+    scope: str = "all"
+    chat_id: int | None = None
+    member_id: UUID | None = None
     body: str | None = Field(default=None, max_length=4000)
     item_line: str | None = Field(default=None, max_length=1000)
 
@@ -270,10 +314,12 @@ def _help_text() -> str:
         "ví dụ : /email ex1@example.com\n\n"
         "/huyemail &lt;địa chỉ&gt; — thôi nhận nhắc email đó\n"
         "ví dụ : /huyemail ex1@example.com\n\n"
-        "/danhsach — xem email sắp hết hạn\n"
+        "/danhsach — xem toàn bộ email bạn đang theo dõi\n"
+        "/handung — email còn dưới 7 ngày sử dụng\n"
         "/id — xem ID của bạn (gửi cho người bán nếu cần)\n"
         "/tat — tạm ngưng nhận nhắc\n"
-        "/bat — nhận nhắc trở lại"
+        "/bat — nhận nhắc trở lại\n"
+        "/huongdan — xem hướng dẫn"
     )
 
 
@@ -469,6 +515,64 @@ def _watch_conditions(db: Session, chat_id: int) -> list:
     return conditions
 
 
+def _watch_members(
+    db: Session,
+    chat_id: int,
+    limit: int,
+    *,
+    expiring_before: datetime | None = None,
+) -> tuple[int, list[Member]]:
+    """(tổng số, tối đa `limit` dòng đầu) email mà CHAT NÀY đang theo dõi.
+
+    `expiring_before` = chỉ lấy email CÓ hạn và hạn rơi trước mốc đó (email vô thời hạn
+    bị loại — chúng không bao giờ cần gia hạn).
+    """
+    # SessionLocal đặt autoflush=False: đăng ký/chỉ định vừa `db.add` ở trên chưa xuống
+    # DB nên truy vấn bên dưới sẽ không thấy. Flush (chưa commit) để đọc đúng.
+    db.flush()
+    where = [Member.status.in_(("active", "pending")), or_(*_watch_conditions(db, chat_id))]
+    if expiring_before is not None:
+        where += [
+            Member.subscription_end_at.is_not(None),
+            Member.subscription_end_at <= expiring_before,
+        ]
+    total = db.execute(select(func.count()).select_from(Member).where(*where)).scalar_one()
+    if not total:
+        return 0, []
+    members = (
+        db.execute(
+            select(Member)
+            .where(*where)
+            # Email chưa đặt hạn xuống cuối: người nhận quan tâm cái sắp hết hạn trước.
+            .order_by(Member.subscription_end_at.is_(None), Member.subscription_end_at)
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    return total, members
+
+
+def _member_line(member: Member, now: datetime) -> str:
+    """1 dòng "• email — hết hạn ...". Chỉ mốc hết hạn, không kèm "còn N ngày" — thông
+    tin đó lặp lại đúng ngày tháng vừa in ngay bên cạnh."""
+    esc = telegram.escape_html
+    end_at = member.subscription_end_at
+    if end_at is None:
+        tail = "không giới hạn thời hạn"
+    elif end_at <= now:
+        tail = f"đã hết hạn {esc(renewal_reminder._fmt_dt(end_at))}"
+    else:
+        tail = f"hết hạn {esc(renewal_reminder._fmt_dt(end_at))}"
+    return f"• <code>{esc(member.email)}</code> — {tail}"
+
+
+def _reply_lines(chat_id: int, header: str, lines: list[str], footer: str = "") -> None:
+    """Trả lời một danh sách, tự cắt thành nhiều tin nếu vượt giới hạn ký tự."""
+    for chunk in telegram.split_html_lines(header, lines, footer):
+        _reply(chat_id, chunk)
+
+
 def _watch_list_html(db: Session, chat_id: int, now: datetime) -> str:
     """Khối "email bạn sẽ nhận thông báo" để chèn vào lời chào sau khi bấm link.
 
@@ -476,38 +580,10 @@ def _watch_list_html(db: Session, chat_id: int, now: datetime) -> str:
     Người vừa bấm link cần thấy NGAY mình theo dõi những email nào (bấm nhầm link của
     người khác thì biết liền), thay vì phải gõ thêm /danhsach.
     """
-    # SessionLocal đặt autoflush=False: đăng ký/chỉ định vừa `db.add` ở trên chưa xuống
-    # DB nên truy vấn bên dưới sẽ không thấy. Flush (chưa commit) để đọc đúng.
-    db.flush()
-    where = (Member.status.in_(("active", "pending")), or_(*_watch_conditions(db, chat_id)))
-    total = db.execute(select(func.count()).select_from(Member).where(*where)).scalar_one()
+    total, members = _watch_members(db, chat_id, WELCOME_LIST_LIMIT)
     if not total:
         return ""
-    members = (
-        db.execute(
-            select(Member)
-            .where(*where)
-            # Email chưa đặt hạn xuống cuối: người nhận quan tâm cái sắp hết hạn trước.
-            .order_by(Member.subscription_end_at.is_(None), Member.subscription_end_at)
-            .limit(WELCOME_LIST_LIMIT)
-        )
-        .scalars()
-        .all()
-    )
-
-    esc = telegram.escape_html
-    lines = []
-    for member in members:
-        end_at = member.subscription_end_at
-        if end_at is None:
-            tail = "không giới hạn thời hạn"
-        elif end_at <= now:
-            tail = f"đã hết hạn {esc(renewal_reminder._fmt_dt(end_at))}"
-        else:
-            # Chỉ mốc hết hạn, không kèm "còn N ngày" — giống hệt /danhsach.
-            tail = f"hết hạn {esc(renewal_reminder._fmt_dt(end_at))}"
-        lines.append(f"• <code>{esc(member.email)}</code> — {tail}")
-
+    lines = [_member_line(m, now) for m in members]
     text = f"📋 <b>Email bạn sẽ nhận thông báo ({total})</b>\n" + "\n".join(lines)
     if total > len(members):
         text += f"\n… và {total - len(members)} email khác."
@@ -623,7 +699,8 @@ def _handle_invite_subscription(
             else "Hiện chưa có email nào trong danh sách. Có email mới bạn sẽ được nhắc tự động."
         )
         + "\n\nChủ tài khoản có thể chỉnh bạn nhận toàn bộ hay chỉ một số email.\n"
-        "Gõ /danhsach để xem email sắp hết hạn bạn đang theo dõi.",
+        "Gõ /danhsach để xem toàn bộ email bạn đang theo dõi, "
+        "/handung để xem email còn dưới 7 ngày.",
     )
 
 
@@ -760,48 +837,60 @@ def _handle_start(db: Session, chat_id: int, user_arg: str, contact: TelegramCon
 
 
 def _handle_list(db: Session, chat_id: int, now: datetime) -> None:
-    """`/danhsach` — email sắp hết hạn liên quan tới chính chat này."""
-    horizon = now + LIST_COMMAND_HORIZON
-    user = _linked_owner(db, chat_id)
+    """`/danhsach` — TOÀN BỘ email chat này đang theo dõi, KHÔNG lọc theo hạn.
 
-    stmt = (
-        select(Member)
-        .where(
-            Member.status.in_(("active", "pending")),
-            Member.subscription_end_at.is_not(None),
-            Member.subscription_end_at > now,
-            Member.subscription_end_at <= horizon,
-        )
-        .order_by(Member.subscription_end_at)
-        .limit(LIST_COMMAND_LIMIT)
-    )
-    if user is not None:
-        stmt = stmt.where(Member.invited_by_user_id == user.id)
-        empty_text = "✅ Không có email nào của bạn hết hạn trong 30 ngày tới."
-    else:
-        # Không phải chính chủ → email được CHỈ ĐỊNH tới chat này + email thuộc các tài
-        # khoản đã MỜI chat này nhận thông báo (theo phạm vi từng đăng ký).
-        stmt = stmt.where(or_(*_watch_conditions(db, chat_id)))
-        empty_text = (
-            "Chưa có email nào gửi thông báo tới chat này.\n"
-            "Gõ /email &lt;địa chỉ&gt; để nhận nhắc cho email của bạn.\n"
-            "ví dụ : /email ex1@example.com"
-        )
-
-    members = db.execute(stmt).scalars().all()
+    Trước đây lệnh này chỉ trả email hết hạn trong 30 ngày tới: khách vừa bấm link
+    "Thông báo" của một email còn hạn dài (hoặc email vô thời hạn) gõ /danhsach ra
+    danh sách rỗng và tưởng link hỏng. Phần lọc theo hạn chuyển sang /handung.
+    """
+    total, members = _watch_members(db, chat_id, LIST_COMMAND_LIMIT)
     if not members:
-        _reply(chat_id, empty_text)
+        # Một câu chung cho cả đại lý đã liên kết lẫn khách lẻ: /email dùng được ở cả
+        # hai trường hợp nên không cần tách nhánh theo _linked_owner.
+        _reply(
+            chat_id,
+            "Bạn chưa sở hữu email nào cả.\n"
+            "Gõ /email &lt;địa chỉ&gt; để nhận thông báo gia hạn cho email của bạn.\n"
+            "ví dụ : /email ex1@example.com",
+        )
         return
 
-    esc = telegram.escape_html
-    # Chỉ email + mốc hết hạn: thêm "còn N ngày" chỉ lặp lại thông tin ngày tháng
-    # vừa in ngay bên cạnh, làm danh sách dài mà không cho biết gì mới.
-    lines = [
-        f"• <code>{esc(m.email)}</code> — hết hạn "
-        f"{esc(renewal_reminder._fmt_dt(m.subscription_end_at))}"
-        for m in members
-    ]
-    _reply(chat_id, "📋 <b>Email sắp hết hạn (30 ngày tới)</b>\n\n" + "\n".join(lines))
+    footer = "Gõ /handung để xem email còn dưới 7 ngày sử dụng."
+    if total > len(members):
+        footer = f"… và {total - len(members)} email khác.\n{footer}"
+    _reply_lines(
+        chat_id,
+        f"📋 <b>Email bạn đang theo dõi ({total})</b>",
+        [_member_line(m, now) for m in members],
+        footer,
+    )
+
+
+def _handle_expiring(db: Session, chat_id: int, now: datetime) -> None:
+    """`/handung` — email còn dưới 7 ngày sử dụng.
+
+    Email ĐÃ hết hạn cũng nằm trong danh sách này: đó chính là những suất cần gia hạn
+    gấp nhất, bỏ chúng ra thì người nhận không còn chỗ nào thấy được. Email vô thời hạn
+    thì không bao giờ xuất hiện (xem `_watch_members`).
+    """
+    total, members = _watch_members(
+        db, chat_id, LIST_COMMAND_LIMIT, expiring_before=now + EXPIRING_COMMAND_HORIZON
+    )
+    if not members:
+        _reply(
+            chat_id,
+            "✅ Không có email nào còn dưới 7 ngày sử dụng.\n"
+            "Gõ /danhsach để xem toàn bộ email bạn đang theo dõi.",
+        )
+        return
+
+    footer = f"… và {total - len(members)} email khác." if total > len(members) else ""
+    _reply_lines(
+        chat_id,
+        f"⏳ <b>Email còn dưới 7 ngày sử dụng ({total})</b>",
+        [_member_line(m, now) for m in members],
+        footer,
+    )
 
 
 def _handle_toggle(db: Session, chat_id: int, enabled: bool) -> None:
@@ -865,6 +954,8 @@ def _process_update(db: Session, update: dict[str, Any]) -> None:
         _handle_email_unsubscribe(db, chat_id, arg)
     elif command in ("/danhsach", "/list"):
         _handle_list(db, chat_id, now)
+    elif command in ("/handung", "/han_dung", "/saphethan"):
+        _handle_expiring(db, chat_id, now)
     elif command == "/id":
         who = f"@{contact.username}" if contact.username else "(chưa đặt username)"
         _reply(
@@ -876,10 +967,12 @@ def _process_update(db: Session, update: dict[str, Any]) -> None:
         _handle_toggle(db, chat_id, False)
     elif command in ("/bat", "/resume"):
         _handle_toggle(db, chat_id, True)
-    elif command in ("/help", "/tro_giup"):
+    elif command in ("/huongdan", "/help", "/tro_giup"):
         _reply(chat_id, _help_text())
     else:
-        _reply(chat_id, _help_text())
+        # Gõ sai / nhắn chữ thường: KHÔNG đổ nguyên bài hướng dẫn (spam và dễ
+        # khiến khách tưởng bot hiểu), chỉ chỉ đường tới /huongdan.
+        _reply(chat_id, "Sai cú pháp : /huongdan để xem hướng dẫn")
 
     db.commit()
 
@@ -1254,21 +1347,26 @@ def delete_subscription_invite(
 
 @router.get("/api/v1/telegram/template", response_model=TelegramTemplateOut)
 def get_template(
+    scope: str = "all",
+    chat_id: int | None = None,
+    member_id: UUID | None = None,
     db: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ) -> TelegramTemplateOut:
-    """Mẫu nội dung thông báo của tôi + MẪU GỐC để đối chiếu/khôi phục."""
-    row = db.get(TelegramTemplate, user.id)
-    return TelegramTemplateOut(
-        body=row.body if row else None,
-        item_line=row.item_line if row else None,
-        default_body=renewal_reminder.default_body("owner"),
-        default_item_line=renewal_reminder.default_item_line("owner"),
-        body_placeholders=list(renewal_reminder.TEMPLATE_PLACEHOLDERS["body"]),
-        item_placeholders=list(renewal_reminder.TEMPLATE_PLACEHOLDERS["item_line"]),
-        preview=_preview_template(
-            row.body if row else None, row.item_line if row else None, user.username
-        ),
+    """Mẫu của MỘT phạm vi + MẪU GỐC để đối chiếu/khôi phục.
+
+    Không truyền gì = phạm vi 'all' (mẫu chung) — giữ nguyên hành vi cũ cho client cũ.
+    """
+    scope, chat_id, member_id = _check_template_scope(db, user, scope, chat_id, member_id)
+    row = _template_row(db, user, scope, chat_id, member_id)
+    return _template_out(
+        db,
+        user,
+        scope,
+        chat_id,
+        member_id,
+        row.body if row else None,
+        row.item_line if row else None,
     )
 
 
@@ -1278,11 +1376,14 @@ def save_template(
     db: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ) -> TelegramTemplateOut:
-    """Lưu mẫu riêng. Bỏ trống cả hai ô = quay về mẫu gốc.
+    """Lưu mẫu cho một phạm vi. Bỏ trống cả hai ô = xoá mẫu đó (quay về mẫu ngoài).
 
     Chặn biến `{lạ}` NGAY LÚC LƯU: phát hiện lúc gửi thì tin đã đi rồi, người nhận
     thấy một chỗ trống khó hiểu mà đại lý không biết.
     """
+    scope, chat_id, member_id = _check_template_scope(
+        db, user, payload.scope, payload.chat_id, payload.member_id
+    )
     body = (payload.body or "").strip() or None
     item_line = (payload.item_line or "").strip() or None
 
@@ -1302,13 +1403,15 @@ def save_template(
                 ),
             )
 
-    row = db.get(TelegramTemplate, user.id)
+    row = _template_row(db, user, scope, chat_id, member_id)
     if body is None and item_line is None:
         if row is not None:
             db.delete(row)
     else:
         if row is None:
-            row = TelegramTemplate(user_id=user.id)
+            row = TelegramTemplate(
+                user_id=user.id, scope=scope, chat_id=chat_id, member_id=member_id
+            )
             db.add(row)
         row.body = body
         row.item_line = item_line
@@ -1320,18 +1423,195 @@ def save_template(
         action="TELEGRAM_TEMPLATE_UPDATED" if (body or item_line) else "TELEGRAM_TEMPLATE_RESET",
         target_type="USER",
         target_id=str(user.id),
+        # Phạm vi nào bị đổi — không ghi thì log chỉ nói "đã sửa mẫu" mà không biết mẫu nào.
+        data={"scope": scope, "chat_id": chat_id, "member_id": str(member_id) if member_id else None},
         commit=False,
     )
     db.commit()
+    return _template_out(db, user, scope, chat_id, member_id, body, item_line)
+
+
+def _check_template_scope(
+    db: Session, user: User, scope: str, chat_id: int | None, member_id: UUID | None
+) -> tuple[str, int | None, UUID | None]:
+    """Chuẩn hoá + kiểm tra phạm vi. Trả về đúng bộ (scope, chat_id, member_id) để lưu.
+
+    Chặn ngay ở đây chứ không tin client: soạn mẫu cho chat/email của người khác là
+    nhìn trộm được họ đang theo dõi gì (và ghi đè nội dung tin của họ).
+    """
+    if scope not in ("all", "chat", "member"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Phạm vi phải là 'all', 'chat' hoặc 'member'",
+        )
+    if scope == "all":
+        return "all", None, None
+    if scope == "chat":
+        if chat_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Thiếu chat_id cho mẫu theo người nhận",
+            )
+        if chat_id not in {r.chat_id for r in _recipient_options(db, user)}:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Người nhận không nằm trong danh sách nhận thông báo của bạn",
+            )
+        return "chat", chat_id, None
+    if member_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Thiếu member_id cho mẫu theo email"
+        )
+    stmt = select(Member.id).where(Member.id == member_id)
+    if not user.is_super_admin:
+        stmt = stmt.where(Member.invited_by_user_id == user.id)
+    if db.execute(stmt).scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Email không tồn tại hoặc bạn không có quyền truy cập",
+        )
+    return "member", None, member_id
+
+
+def _template_row(
+    db: Session, user: User, scope: str, chat_id: int | None, member_id: UUID | None
+) -> TelegramTemplate | None:
+    stmt = select(TelegramTemplate).where(
+        TelegramTemplate.user_id == user.id, TelegramTemplate.scope == scope
+    )
+    if scope == "chat":
+        stmt = stmt.where(TelegramTemplate.chat_id == chat_id)
+    elif scope == "member":
+        stmt = stmt.where(TelegramTemplate.member_id == member_id)
+    return db.execute(stmt).scalars().first()
+
+
+def _recipient_options(db: Session, user: User) -> list[TelegramRecipientOut]:
+    """Mọi chat Telegram đang nhận thông báo CỦA TÔI — ba nguồn, gộp theo chat_id.
+
+    Một người có thể vừa là chính chủ vừa được chỉ định cho một email; gộp lại để ô
+    chọn không hiện hai dòng trỏ cùng một chat (mà mẫu thì chỉ có một).
+    """
+    out: dict[int, TelegramRecipientOut] = {}
+    if user.telegram_chat_id:
+        out[user.telegram_chat_id] = TelegramRecipientOut(
+            chat_id=user.telegram_chat_id, label=user.username, kind="owner"
+        )
+    subs = (
+        db.execute(
+            select(TelegramSubscription)
+            .where(TelegramSubscription.user_id == user.id)
+            .order_by(TelegramSubscription.created_at)
+        )
+        .scalars()
+        .all()
+    )
+    for sub in subs:
+        out.setdefault(
+            sub.chat_id,
+            TelegramRecipientOut(
+                chat_id=sub.chat_id,
+                label=sub.display_name or f"chat {sub.chat_id}",
+                kind="subscriber",
+            ),
+        )
+    assigned = db.execute(
+        select(Member.notify_telegram_chat_id, Member.notify_telegram_target)
+        .where(
+            Member.invited_by_user_id == user.id,
+            Member.notify_telegram_chat_id.is_not(None),
+        )
+        .distinct()
+    ).all()
+    for assigned_chat_id, target in assigned:
+        out.setdefault(
+            assigned_chat_id,
+            TelegramRecipientOut(
+                chat_id=assigned_chat_id,
+                label=target or f"chat {assigned_chat_id}",
+                kind="assignee",
+            ),
+        )
+    return list(out.values())
+
+
+def _template_overrides(db: Session, user: User) -> list[TelegramTemplateScopeOut]:
+    """Các phạm vi ĐANG có mẫu riêng, kèm tên để web hiện "đã tuỳ chỉnh" ngay trên ô chọn."""
+    rows = (
+        db.execute(select(TelegramTemplate).where(TelegramTemplate.user_id == user.id))
+        .scalars()
+        .all()
+    )
+    emails = dict(
+        db.execute(
+            select(Member.id, Member.email).where(
+                Member.id.in_([r.member_id for r in rows if r.member_id])
+            )
+        ).all()
+    )
+    labels = {r.chat_id: r.label for r in _recipient_options(db, user)}
+    return [
+        TelegramTemplateScopeOut(
+            scope=row.scope,
+            chat_id=row.chat_id,
+            member_id=row.member_id,
+            label=emails.get(row.member_id) if row.member_id else labels.get(row.chat_id or 0),
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
+
+
+def _template_out(
+    db: Session,
+    user: User,
+    scope: str,
+    chat_id: int | None,
+    member_id: UUID | None,
+    body: str | None,
+    item_line: str | None,
+) -> TelegramTemplateOut:
+    default_body = renewal_reminder.default_body("owner")
+    default_item_line = renewal_reminder.default_item_line("owner")
+    shared = _template_row(db, user, "all", None, None) if scope != "all" else None
     return TelegramTemplateOut(
+        scope=scope,
+        chat_id=chat_id,
+        member_id=member_id,
         body=body,
         item_line=item_line,
-        default_body=renewal_reminder.default_body("owner"),
-        default_item_line=renewal_reminder.default_item_line("owner"),
+        default_body=default_body,
+        default_item_line=default_item_line,
+        base_body=(shared.body if shared else None) or default_body,
+        base_item_line=(shared.item_line if shared else None) or default_item_line,
         body_placeholders=list(renewal_reminder.TEMPLATE_PLACEHOLDERS["body"]),
         item_placeholders=list(renewal_reminder.TEMPLATE_PLACEHOLDERS["item_line"]),
         preview=_preview_template(body, item_line, user.username),
+        sample=_preview_sample(user.username),
+        overrides=_template_overrides(db, user),
+        recipients=_recipient_options(db, user),
     )
+
+
+def _preview_sample(owner_username: str) -> dict[str, Any]:
+    """DỮ LIỆU MẪU cho bản xem trước — một nguồn duy nhất.
+
+    Server dựng `preview` từ đây, và web cũng nhận nguyên bộ này để dựng lại lúc người
+    dùng đang gõ. Hai nơi cùng một bộ số thì bản xem trước lúc gõ không "nhảy" khác đi
+    sau khi bấm Lưu.
+    """
+    items = [
+        {"email": "khach_a@gmail.com", "expiry": "06/08/2026 09:15", "days_left": "còn 2 ngày 20 giờ"},
+        {"email": "khach_b@gmail.com", "expiry": "07/08/2026 14:00", "days_left": "còn 3 ngày"},
+    ]
+    return {
+        "items": items,
+        "count": len(items),
+        "bucket": 3,
+        "link": f"{get_settings().frontend_origin.rstrip('/')}/renewals",
+        "owner": owner_username,
+        "workspace": "Workspace 1",
+    }
 
 
 def _preview_template(
@@ -1340,26 +1620,17 @@ def _preview_template(
     """Xem trước bằng DỮ LIỆU MẪU — người dùng thấy ngay tin thật trông thế nào."""
     line_tpl = item_line or renewal_reminder.default_item_line("owner")
     body_tpl = body or renewal_reminder.default_body("owner")
-    demo = [
-        {"email": "khach_a@gmail.com", "expiry": "06/08/2026 09:15", "days_left": "còn 2 ngày 20 giờ"},
-        {"email": "khach_b@gmail.com", "expiry": "07/08/2026 14:00", "days_left": "còn 3 ngày"},
-    ]
+    sample = _preview_sample(owner_username)
+    common = {"bucket": sample["bucket"], "owner": sample["owner"]}
     lines = "\n".join(
         renewal_reminder.render_template(
-            line_tpl,
-            {**d, "bucket": 3, "owner": owner_username, "workspace": "Workspace 1"},
+            line_tpl, {**item, **common, "workspace": sample["workspace"]}
         )
-        for d in demo
+        for item in sample["items"]
     )
     return renewal_reminder.render_template(
         body_tpl,
-        {
-            "items": lines,
-            "count": len(demo),
-            "bucket": 3,
-            "link": f"{get_settings().frontend_origin.rstrip('/')}/renewals",
-            "owner": owner_username,
-        },
+        {**common, "items": lines, "count": sample["count"], "link": sample["link"]},
     )
 
 

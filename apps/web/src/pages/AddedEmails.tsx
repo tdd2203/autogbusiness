@@ -431,7 +431,7 @@ export default function AddedEmails() {
   //   active (đã tham gia) → Đổi hạn / Đổi email / Xoá;
   //   pending (chờ tham gia) → Đồng bộ / Mời lại / Đổi email / Thu hồi.
   /** Nút "Thông báo" HIỆN SẴN trên mỗi dòng email (không giấu trong menu ⋯): mời
-   *  xong là thấy ngay chỗ lấy link gửi cho khách. Chuông đổi màu khi email đã có
+   *  xong là thấy ngay chỗ lấy link gửi cho khách. Nút đổi màu khi email đã có
    *  người nhận → nhìn bảng là biết email nào đã gắn thông báo, email nào chưa. */
   function notifyButton(m: AddedMember) {
     const bound = !!m.notify_telegram_chat_id;
@@ -462,7 +462,7 @@ export default function AddedEmails() {
               : "var(--ink-2)",
         }}
       >
-        {bound ? "🔔" : waiting ? "🔔" : "🔕"} {t("telegram.notifyAction")}
+        {t("telegram.notifyAction")}
       </button>
     );
   }
