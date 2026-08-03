@@ -24,10 +24,11 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -39,6 +40,7 @@ from app.models import (
     TelegramLinkToken,
     TelegramNotification,
     TelegramSettings,
+    TelegramSubscription,
     User,
 )
 from app.services import renewal_reminder, telegram
@@ -49,6 +51,9 @@ router = APIRouter(tags=["telegram"])
 
 # Deep-link chỉ sống ngắn: đủ để chuyển sang app Telegram và bấm Start.
 LINK_TOKEN_TTL = timedelta(minutes=15)
+# Link MỜI nhận thông báo sống lâu hơn: chủ tài khoản gửi qua Zalo/chat cho nhân viên,
+# người ta không bấm ngay trong 15 phút. Vẫn có hạn để link cũ không tồn tại mãi.
+INVITE_TOKEN_TTL = timedelta(days=7)
 # Số dòng tối đa khi trả lời lệnh /danhsach trong chat.
 LIST_COMMAND_LIMIT = 15
 LIST_COMMAND_HORIZON = timedelta(days=30)
@@ -80,6 +85,27 @@ class TelegramLinkOut(BaseModel):
 
 class TelegramPrefIn(BaseModel):
     enabled: bool
+
+
+class TelegramSubscriptionOut(BaseModel):
+    """1 người nhận thông báo của tài khoản đang đăng nhập."""
+
+    id: UUID
+    chat_id: int
+    display_name: str | None = None
+    # 'all' = nhận mọi email của tài khoản (kể cả email thêm sau) | 'selected'
+    scope: str
+    member_ids: list[str] = Field(default_factory=list)
+    enabled: bool
+    created_at: datetime
+
+
+class TelegramSubscriptionIn(BaseModel):
+    """Cập nhật phạm vi/trạng thái người nhận. Trường None = giữ nguyên."""
+
+    scope: str | None = None
+    member_ids: list[UUID] | None = None
+    enabled: bool | None = None
 
 
 class TelegramTokenIn(BaseModel):
@@ -206,6 +232,14 @@ def _email_cmd_allowed(chat_id: int, now: datetime) -> bool:
     hits.append(now)
     _email_cmd_hits[chat_id] = hits
     return len(hits) <= _EMAIL_CMD_MAX
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 def _find_member_by_email(db: Session, email: str) -> Member | None:
@@ -336,6 +370,68 @@ def _handle_email_unsubscribe(db: Session, chat_id: int, arg: str) -> None:
     )
 
 
+def _handle_invite_subscription(
+    db: Session,
+    chat_id: int,
+    row: TelegramLinkToken,
+    contact: TelegramContact,
+    now: datetime,
+) -> None:
+    """Ai đó bấm LINK MỜI của một tài khoản → thành người nhận thông báo của tài khoản
+    đó (mặc định nhận TOÀN BỘ; chủ tài khoản thu hẹp phạm vi sau ở Cài đặt).
+
+    Link mời KHÔNG đánh dấu used_at: chủ tài khoản thường gửi cho vài người và mỗi
+    người tạo một bản ghi riêng (xem docstring TelegramLinkToken).
+    """
+    owner = db.get(User, row.user_id)
+    if owner is None or not owner.is_active:
+        _reply(chat_id, "⚠️ Tài khoản mời bạn không còn hiệu lực.")
+        return
+
+    display = f"@{contact.username}" if contact.username else (contact.display_name or str(chat_id))
+    existing = db.execute(
+        select(TelegramSubscription).where(
+            TelegramSubscription.user_id == owner.id,
+            TelegramSubscription.chat_id == chat_id,
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        db.add(
+            TelegramSubscription(
+                user_id=owner.id,
+                chat_id=chat_id,
+                display_name=display[:128],
+                scope="all",
+                member_ids=[],
+                enabled=True,
+            )
+        )
+    else:
+        # Bấm lại link = BẬT LẠI, nhưng GIỮ NGUYÊN phạm vi chủ tài khoản đã tinh chỉnh
+        # (nếu reset về 'all' thì mỗi lần họ bấm nhầm link lại phá cấu hình).
+        existing.enabled = True
+        existing.display_name = display[:128]
+        db.add(existing)
+
+    log_event(
+        db,
+        actor_type="SYSTEM",
+        actor_label=f"telegram:{contact.username or chat_id}",
+        action="TELEGRAM_SUBSCRIPTION_ADDED",
+        target_type="USER",
+        target_id=str(owner.id),
+        data={"chat_id": chat_id, "display_name": display},
+        commit=False,
+    )
+    _reply(
+        chat_id,
+        f"✅ Bạn sẽ nhận thông báo nhắc gia hạn của tài khoản "
+        f"<b>{telegram.escape_html(owner.username)}</b>.\n\n"
+        "Chủ tài khoản có thể chỉnh bạn nhận toàn bộ hay chỉ một số email.\n"
+        "Gõ /danhsach để xem email sắp hết hạn bạn đang theo dõi.",
+    )
+
+
 def _handle_start(db: Session, chat_id: int, user_arg: str, contact: TelegramContact, now: datetime) -> None:
     """`/start <token>` = liên kết tài khoản dashboard; `/start` trơn = chỉ ghi sổ."""
     if not user_arg:
@@ -352,6 +448,11 @@ def _handle_start(db: Session, chat_id: int, user_arg: str, contact: TelegramCon
         return
 
     row = db.get(TelegramLinkToken, user_arg)
+    # Link MỜI dùng được nhiều lần (chỉ hết hiệu lực khi quá hạn); link KẾT NỐI chính
+    # chủ dùng-một-lần. Xem docstring TelegramLinkToken.
+    if row is not None and row.purpose == "invite_sub" and row.expires_at > now:
+        _handle_invite_subscription(db, chat_id, row, contact, now)
+        return
     if row is None or row.used_at is not None or row.expires_at <= now:
         _reply(
             chat_id,
@@ -415,10 +516,31 @@ def _handle_list(db: Session, chat_id: int, now: datetime) -> None:
         stmt = stmt.where(Member.invited_by_user_id == user.id)
         empty_text = "✅ Không có email nào của bạn hết hạn trong 30 ngày tới."
     else:
-        stmt = stmt.where(Member.notify_telegram_chat_id == chat_id)
+        # Không phải chính chủ → gộp hai đường: email được CHỈ ĐỊNH tới chat này, và
+        # email thuộc các tài khoản đã MỜI chat này nhận thông báo (theo phạm vi).
+        subs = (
+            db.execute(
+                select(TelegramSubscription).where(
+                    TelegramSubscription.chat_id == chat_id,
+                    TelegramSubscription.enabled.is_(True),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        conditions = [Member.notify_telegram_chat_id == chat_id]
+        for sub in subs:
+            if sub.scope == "selected":
+                ids = [UUID(x) for x in (sub.member_ids or []) if _is_uuid(x)]
+                if ids:
+                    conditions.append(Member.id.in_(ids))
+            else:
+                conditions.append(Member.invited_by_user_id == sub.user_id)
+        stmt = stmt.where(or_(*conditions))
         empty_text = (
-            "Chưa có email nào được chỉ định nhắc tới chat này.\n"
-            "Nếu bạn là đại lý, hãy liên kết tài khoản ở Dashboard → Cài đặt → Telegram."
+            "Chưa có email nào gửi thông báo tới chat này.\n"
+            "Nếu bạn là đại lý, hãy liên kết tài khoản ở Dashboard → Cài đặt → Telegram; "
+            "nếu bạn là khách, gõ /email &lt;địa chỉ&gt; để nhận nhắc cho email của mình."
         )
 
     members = db.execute(stmt).scalars().all()
@@ -589,11 +711,21 @@ def create_link_token(
             detail="Không lấy được thông tin bot từ Telegram (kiểm tra TELEGRAM_BOT_TOKEN)",
         )
     now = datetime.now(timezone.utc)
-    # Dọn token cũ của chính user này: mỗi lần bấm 'Kết nối' chỉ còn 1 mã hiệu lực.
-    db.execute(delete(TelegramLinkToken).where(TelegramLinkToken.user_id == user.id))
+    # Dọn token KẾT NỐI cũ của chính user này: mỗi lần bấm 'Kết nối' chỉ còn 1 mã hiệu
+    # lực. KHÔNG đụng token 'invite_sub' — đó là link mời người khác, sống độc lập.
+    db.execute(
+        delete(TelegramLinkToken).where(
+            TelegramLinkToken.user_id == user.id,
+            TelegramLinkToken.purpose == "link_self",
+        )
+    )
     token = secrets.token_urlsafe(24)
     row = TelegramLinkToken(
-        token=token, user_id=user.id, created_at=now, expires_at=now + LINK_TOKEN_TTL
+        token=token,
+        user_id=user.id,
+        purpose="link_self",
+        created_at=now,
+        expires_at=now + LINK_TOKEN_TTL,
     )
     db.add(row)
     db.commit()
@@ -639,6 +771,170 @@ def update_preferences(
     db.commit()
     db.refresh(user)
     return telegram_status(user)
+
+
+@router.get("/api/v1/telegram/subscriptions", response_model=list[TelegramSubscriptionOut])
+def list_subscriptions(
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> list[TelegramSubscriptionOut]:
+    """Những tài khoản Telegram đang nhận thông báo CỦA TÔI (mời qua link chia sẻ)."""
+    rows = (
+        db.execute(
+            select(TelegramSubscription)
+            .where(TelegramSubscription.user_id == user.id)
+            .order_by(TelegramSubscription.created_at)
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        TelegramSubscriptionOut(
+            id=row.id,
+            chat_id=row.chat_id,
+            display_name=row.display_name,
+            scope=row.scope,
+            member_ids=list(row.member_ids or []),
+            enabled=row.enabled,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+@router.post("/api/v1/telegram/subscriptions/invite", response_model=TelegramLinkOut)
+def create_subscription_invite(
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> TelegramLinkOut:
+    """Tạo LINK MỜI: ai bấm vào + Start sẽ nhận thông báo của tài khoản này.
+
+    Khác link 'Kết nối Telegram' (chính chủ, dùng-một-lần): link này **dùng nhiều lần**
+    trong thời hạn để chủ tài khoản gửi cho vài người; mỗi người bấm tạo một người
+    nhận riêng, và chủ tài khoản gỡ/tuỳ chỉnh phạm vi từng người bất cứ lúc nào.
+    """
+    _require_bot()
+    bot = _safe_bot_username()
+    if not bot:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Không lấy được thông tin bot từ Telegram (kiểm tra token bot)",
+        )
+    now = datetime.now(timezone.utc)
+    db.execute(
+        delete(TelegramLinkToken).where(
+            TelegramLinkToken.user_id == user.id,
+            TelegramLinkToken.purpose == "invite_sub",
+        )
+    )
+    token = secrets.token_urlsafe(24)
+    row = TelegramLinkToken(
+        token=token,
+        user_id=user.id,
+        purpose="invite_sub",
+        created_at=now,
+        expires_at=now + INVITE_TOKEN_TTL,
+    )
+    db.add(row)
+    db.commit()
+    return TelegramLinkOut(
+        deep_link=f"https://t.me/{bot}?start={token}",
+        token=token,
+        expires_at=row.expires_at,
+    )
+
+
+@router.patch(
+    "/api/v1/telegram/subscriptions/{subscription_id}",
+    response_model=TelegramSubscriptionOut,
+)
+def update_subscription(
+    subscription_id: UUID,
+    payload: TelegramSubscriptionIn,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> TelegramSubscriptionOut:
+    """Tuỳ chỉnh người nhận: nhận toàn bộ hay chỉ vài email, bật/tắt tạm thời."""
+    row = db.get(TelegramSubscription, subscription_id)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy")
+
+    if payload.scope is not None:
+        if payload.scope not in ("all", "selected"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="scope phải là 'all' hoặc 'selected'"
+            )
+        row.scope = payload.scope
+    if payload.member_ids is not None:
+        # Chỉ nhận email CỦA CHÍNH user — chặn việc trỏ người nhận sang email người khác.
+        owned = set(
+            db.execute(
+                select(Member.id).where(
+                    Member.id.in_(payload.member_ids),
+                    Member.invited_by_user_id == user.id,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        row.member_ids = [str(mid) for mid in payload.member_ids if mid in owned]
+    if payload.enabled is not None:
+        row.enabled = payload.enabled
+    if row.scope == "selected" and not row.member_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chọn ít nhất 1 email, hoặc đổi sang nhận toàn bộ",
+        )
+
+    db.add(row)
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.username,
+        action="TELEGRAM_SUBSCRIPTION_UPDATED",
+        target_type="USER",
+        target_id=str(user.id),
+        data={"chat_id": row.chat_id, "scope": row.scope, "count": len(row.member_ids or [])},
+        commit=False,
+    )
+    db.commit()
+    db.refresh(row)
+    return TelegramSubscriptionOut(
+        id=row.id,
+        chat_id=row.chat_id,
+        display_name=row.display_name,
+        scope=row.scope,
+        member_ids=list(row.member_ids or []),
+        enabled=row.enabled,
+        created_at=row.created_at,
+    )
+
+
+@router.delete(
+    "/api/v1/telegram/subscriptions/{subscription_id}", status_code=status.HTTP_204_NO_CONTENT
+)
+def delete_subscription(
+    subscription_id: UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> None:
+    row = db.get(TelegramSubscription, subscription_id)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Không tìm thấy")
+    db.delete(row)
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.username,
+        action="TELEGRAM_SUBSCRIPTION_REMOVED",
+        target_type="USER",
+        target_id=str(user.id),
+        data={"chat_id": row.chat_id},
+        commit=False,
+    )
+    db.commit()
 
 
 @router.post("/api/v1/telegram/test")

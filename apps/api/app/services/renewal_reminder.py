@@ -41,6 +41,7 @@ from app.models import (
     Member,
     TelegramContact,
     TelegramNotification,
+    TelegramSubscription,
     User,
     Workspace,
 )
@@ -167,23 +168,46 @@ def _dedupe_key(member_id: UUID, bucket: int, chat_id: int) -> str:
     return f"{EVENT_RENEWAL}:{member_id}:{bucket}d:{chat_id}"
 
 
+def subscription_covers(sub: TelegramSubscription, member: Member) -> bool:
+    """Người nhận này có nhận thông báo của email đó không.
+
+    scope='all' phủ cả email THÊM SAU NÀY (đúng nghĩa 'toàn bộ thông báo của tài
+    khoản'); scope='selected' chỉ phủ đúng danh sách đã chọn."""
+    if sub.scope != "selected":
+        return True
+    return str(member.id) in (sub.member_ids or [])
+
+
 def _recipients_for(
     db: Session,
     member: Member,
     owner: User | None,
     admin_chat_ids: list[int],
     blocked_chats: set[int],
+    subscriptions: list[TelegramSubscription],
 ) -> list[tuple[int, str, UUID | None]]:
     """Danh sách (chat_id, recipient_kind, user_id) sẽ nhận nhắc cho email này.
 
     `blocked_chats` = những chat đã chặn bot → bỏ qua hẳn, không tạo tin để rồi
     gửi thất bại mỗi mốc. Họ /start lại thì webhook xoá dấu chặn và nhận lại bình thường.
+
+    `subscriptions` = danh sách phát của CHỦ TÀI KHOẢN (người khác được mời qua link).
+    Họ nhận SONG SONG với người được chỉ định theo email — đó là hai khái niệm khác
+    nhau: chỉ định = khách cuối của đúng email đó; đăng ký = nhân viên/đối tác theo dõi
+    giúp chủ tài khoản.
     """
     out: list[tuple[int, str, UUID | None]] = []
 
+    def add(chat_id: int, kind: str, user_id: UUID | None) -> None:
+        if chat_id in blocked_chats:
+            return
+        if any(chat_id == existing for existing, _, _ in out):
+            return  # một người trùng nhiều vai → chỉ nhận 1 tin
+        out.append((chat_id, kind, user_id))
+
     assignee_chat = resolve_assignee_chat_id(db, member)
     if assignee_chat and assignee_chat not in blocked_chats:
-        out.append((assignee_chat, "assignee", None))
+        add(assignee_chat, "assignee", None)
     # CỐ Ý rơi xuống nhánh đại lý khi người được chỉ định chưa khớp được HOẶC đã chặn
     # bot: thà đại lý nhận rồi tự nhắc khách còn hơn không ai biết email sắp hết hạn.
     elif (
@@ -191,17 +215,17 @@ def _recipients_for(
         and owner.is_active
         and owner.telegram_chat_id
         and owner.telegram_notify_enabled
-        and owner.telegram_chat_id not in blocked_chats
     ):
         # Chưa chỉ định (hoặc chỉ định chưa khớp được) → đại lý nhận, không mất tin.
-        out.append((owner.telegram_chat_id, "owner", owner.id))
+        add(owner.telegram_chat_id, "owner", owner.id)
+
+    for sub in subscriptions:
+        if subscription_covers(sub, member):
+            add(sub.chat_id, "subscriber", sub.user_id)
 
     if not (owner is not None and owner.is_test):
         for admin_chat in admin_chat_ids:
-            if admin_chat in blocked_chats:
-                continue
-            if all(admin_chat != chat for chat, _, _ in out):
-                out.append((admin_chat, "admin", None))
+            add(admin_chat, "admin", None)
     return out
 
 
@@ -239,6 +263,18 @@ def scan_and_claim(db: Session, now: datetime | None = None) -> dict:
         .all()
     )
 
+    # Danh sách phát của từng chủ tài khoản — nạp 1 lần rồi tra theo owner (tránh
+    # N+1 khi quét hàng nghìn email).
+    subs_by_user: dict[UUID, list[TelegramSubscription]] = {}
+    for sub in (
+        db.execute(
+            select(TelegramSubscription).where(TelegramSubscription.enabled.is_(True))
+        )
+        .scalars()
+        .all()
+    ):
+        subs_by_user.setdefault(sub.user_id, []).append(sub)
+
     claimed = 0
     considered = 0
     for member, owner in rows:
@@ -248,7 +284,12 @@ def scan_and_claim(db: Session, now: datetime | None = None) -> dict:
             continue
         considered += 1
         for chat_id, kind, user_id in _recipients_for(
-            db, member, owner, admin_chat_ids, blocked_chats
+            db,
+            member,
+            owner,
+            admin_chat_ids,
+            blocked_chats,
+            subs_by_user.get(owner.id, []) if owner is not None else [],
         ):
             stmt = (
                 pg_insert(TelegramNotification)
@@ -307,6 +348,14 @@ def _render_message(
     if kind == "admin":
         header = f"📋 <b>Tổng hợp sắp hết hạn</b> — còn ≤{bucket} ngày · {len(items)} email"
         footer = f"Xử lý tại: {esc(link)}"
+    elif kind == "subscriber":
+        # Người được MỜI nhận thông báo của một tài khoản: nêu rõ thông báo này của ai
+        # (một người có thể theo dõi nhiều tài khoản) và KHÔNG kèm link dashboard —
+        # họ thường không có tài khoản đăng nhập.
+        owners = {owner for _, _, owner in items if owner}
+        who = f" (tài khoản {esc(', '.join(sorted(owners)))})" if owners else ""
+        header = f"⏰ <b>Nhắc gia hạn</b>{who} — {len(items)} email còn ≤{bucket} ngày"
+        footer = "Bạn nhận tin này vì được mời theo dõi thông báo của tài khoản trên."
     elif kind == "assignee":
         header = f"⏰ <b>Tài khoản ChatGPT sắp hết hạn</b> — còn ≤{bucket} ngày"
         footer = "Vui lòng liên hệ nơi bạn đã mua để gia hạn trước khi hết hạn."

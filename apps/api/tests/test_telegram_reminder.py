@@ -11,6 +11,7 @@ Trọng tâm kiểm:
 
 import json
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +24,7 @@ from app.models import (
     TelegramContact,
     TelegramNotification,
     TelegramSettings,
+    TelegramSubscription,
     User,
 )
 from app.services import renewal_reminder, telegram
@@ -834,6 +836,205 @@ def test_email_command_unknown_and_unsubscribe(
         member = db.get(Member, member_id)
         assert member.notify_telegram_chat_id is None
         assert member.notify_telegram_target is None
+
+
+# ── Danh sách người nhận thông báo của một tài khoản (link chia sẻ) ───────────
+
+
+SUBSCRIBER_CHAT = 606001
+SUBSCRIBER2_CHAT = 606002
+
+
+def _invite_and_join(
+    client: TestClient, auth_header: dict, chat_id: int, username: str
+) -> str:
+    """Chủ tài khoản tạo link mời → người kia bấm Start → thành người nhận."""
+    resp = client.post("/api/v1/telegram/subscriptions/invite", headers=auth_header)
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["token"]
+    _webhook(
+        client,
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 1,
+                "chat": {"id": chat_id, "type": "private"},
+                "from": {"id": chat_id, "username": username, "first_name": "NV"},
+                "text": f"/start {token}",
+            },
+        },
+    )
+    return token
+
+
+def test_invite_link_grants_all_notifications(
+    client: TestClient, auth_header: dict, bot_on, sent, monkeypatch
+) -> None:
+    """Bấm link mời ⇒ nhận TOÀN BỘ thông báo của tài khoản đó, kể cả email thêm SAU."""
+    monkeypatch.setattr(bot_on, "telegram_bot_username", "my_test_bot")
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "khach1@example.com", days_left=2, owner_id=owner_id)
+
+    _invite_and_join(client, auth_header, SUBSCRIBER_CHAT, "nhan_vien")
+
+    subs = client.get("/api/v1/telegram/subscriptions", headers=auth_header).json()
+    assert len(subs) == 1
+    assert subs[0]["scope"] == "all"
+    assert subs[0]["display_name"] == "@nhan_vien"
+
+    # Email thêm SAU khi mời vẫn phải tới người nhận (đúng nghĩa "toàn bộ").
+    _add_member(client, ws, "khach2@example.com", days_left=2, owner_id=owner_id)
+    sent.clear()
+    _run()
+
+    chats = sorted(c for c, _ in sent)
+    assert chats == sorted([OWNER_CHAT, SUBSCRIBER_CHAT])
+    sub_msg = next(text for chat, text in sent if chat == SUBSCRIBER_CHAT)
+    assert "khach1@example.com" in sub_msg and "khach2@example.com" in sub_msg
+    assert "superadmin" in sub_msg  # nêu rõ thông báo của tài khoản nào
+
+
+def test_subscription_scope_selected(
+    client: TestClient, auth_header: dict, bot_on, sent, monkeypatch
+) -> None:
+    """Thu hẹp phạm vi: người nhận chỉ nhận đúng email được chọn."""
+    monkeypatch.setattr(bot_on, "telegram_bot_username", "my_test_bot")
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    m1 = _add_member(client, ws, "chon@example.com", days_left=2, owner_id=owner_id)
+    _add_member(client, ws, "khongchon@example.com", days_left=2, owner_id=owner_id)
+
+    _invite_and_join(client, auth_header, SUBSCRIBER_CHAT, "nhan_vien")
+    sub_id = client.get("/api/v1/telegram/subscriptions", headers=auth_header).json()[0]["id"]
+
+    resp = client.patch(
+        f"/api/v1/telegram/subscriptions/{sub_id}",
+        json={"scope": "selected", "member_ids": [m1]},
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["member_ids"] == [m1]
+
+    sent.clear()
+    _run()
+
+    sub_msg = next(text for chat, text in sent if chat == SUBSCRIBER_CHAT)
+    assert "chon@example.com" in sub_msg
+    assert "khongchon@example.com" not in sub_msg
+    # Chủ tài khoản vẫn nhận đủ cả hai.
+    owner_msg = next(text for chat, text in sent if chat == OWNER_CHAT)
+    assert "khongchon@example.com" in owner_msg
+
+
+def test_subscription_pause_and_remove(
+    client: TestClient, auth_header: dict, bot_on, sent, monkeypatch
+) -> None:
+    monkeypatch.setattr(bot_on, "telegram_bot_username", "my_test_bot")
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+    _invite_and_join(client, auth_header, SUBSCRIBER_CHAT, "nhan_vien")
+    sub_id = client.get("/api/v1/telegram/subscriptions", headers=auth_header).json()[0]["id"]
+
+    client.patch(
+        f"/api/v1/telegram/subscriptions/{sub_id}",
+        json={"enabled": False},
+        headers=auth_header,
+    )
+    sent.clear()
+    _run()
+    assert SUBSCRIBER_CHAT not in [c for c, _ in sent]
+
+    assert (
+        client.delete(f"/api/v1/telegram/subscriptions/{sub_id}", headers=auth_header).status_code
+        == 204
+    )
+    assert client.get("/api/v1/telegram/subscriptions", headers=auth_header).json() == []
+
+
+def test_subscription_scope_rejects_foreign_emails(
+    client: TestClient, auth_header: dict, bot_on, monkeypatch
+) -> None:
+    """Không cho trỏ người nhận sang email KHÔNG thuộc tài khoản mình."""
+    monkeypatch.setattr(bot_on, "telegram_bot_username", "my_test_bot")
+    ws = _make_ws(client, auth_header)
+    # Email không có chủ (invited_by_user_id = None) → không thuộc super-admin.
+    foreign = _add_member(client, ws, "cuanguoikhac@example.com", days_left=2)
+    _invite_and_join(client, auth_header, SUBSCRIBER_CHAT, "nhan_vien")
+    sub_id = client.get("/api/v1/telegram/subscriptions", headers=auth_header).json()[0]["id"]
+
+    resp = client.patch(
+        f"/api/v1/telegram/subscriptions/{sub_id}",
+        json={"scope": "selected", "member_ids": [foreign]},
+        headers=auth_header,
+    )
+    # Lọc sạch email lạ → không còn email nào hợp lệ → từ chối, giữ nguyên cấu hình cũ.
+    assert resp.status_code == 400
+    with SessionLocal() as db:
+        assert db.get(TelegramSubscription, UUID(sub_id)).scope == "all"
+
+
+def test_invite_link_reusable_and_self_link_untouched(
+    client: TestClient, auth_header: dict, bot_on, sent, monkeypatch
+) -> None:
+    """Link MỜI dùng được nhiều lần (nhiều người cùng nhận); tạo link kết nối chính
+    chủ KHÔNG được xoá mất link mời đang phát cho nhân viên."""
+    monkeypatch.setattr(bot_on, "telegram_bot_username", "my_test_bot")
+    token = _invite_and_join(client, auth_header, SUBSCRIBER_CHAT, "nhan_vien_1")
+
+    # Người thứ hai dùng LẠI đúng link đó.
+    _webhook(
+        client,
+        {
+            "update_id": 2,
+            "message": {
+                "message_id": 2,
+                "chat": {"id": SUBSCRIBER2_CHAT, "type": "private"},
+                "from": {"id": SUBSCRIBER2_CHAT, "username": "nhan_vien_2", "first_name": "NV2"},
+                "text": f"/start {token}",
+            },
+        },
+    )
+    subs = client.get("/api/v1/telegram/subscriptions", headers=auth_header).json()
+    assert sorted(s["chat_id"] for s in subs) == sorted([SUBSCRIBER_CHAT, SUBSCRIBER2_CHAT])
+
+    # Tạo link kết nối chính chủ rồi dùng lại link MỜI → vẫn còn hiệu lực.
+    client.post("/api/v1/telegram/link", headers=auth_header)
+    _webhook(
+        client,
+        {
+            "update_id": 3,
+            "message": {
+                "message_id": 3,
+                "chat": {"id": 606003, "type": "private"},
+                "from": {"id": 606003, "username": "nhan_vien_3", "first_name": "NV3"},
+                "text": f"/start {token}",
+            },
+        },
+    )
+    subs = client.get("/api/v1/telegram/subscriptions", headers=auth_header).json()
+    assert len(subs) == 3
+
+
+def test_subscriber_and_assignee_both_receive(
+    client: TestClient, auth_header: dict, bot_on, sent, monkeypatch
+) -> None:
+    """Chỉ định theo email (khách cuối) và người nhận theo tài khoản (nhân viên) là
+    HAI khái niệm khác nhau → cùng nhận, còn chủ tài khoản nhường cho khách."""
+    monkeypatch.setattr(bot_on, "telegram_bot_username", "my_test_bot")
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(
+        client, ws, "khach@example.com", days_left=2, owner_id=owner_id,
+        notify_telegram_target=str(ASSIGNEE_CHAT), notify_telegram_chat_id=ASSIGNEE_CHAT,
+    )
+    _invite_and_join(client, auth_header, SUBSCRIBER_CHAT, "nhan_vien")
+
+    sent.clear()
+    _run()
+
+    assert sorted(c for c, _ in sent) == sorted([ASSIGNEE_CHAT, SUBSCRIBER_CHAT])
 
 
 def test_email_command_rate_limited(
