@@ -603,6 +603,10 @@ function TelegramAdminPanel() {
   });
 
   const fromEnv = data?.config_source === "env";
+  // Token đã lưu trong DB ⇒ ẩn ô nhập, chỉ hiện bot đang chạy. Muốn đổi bot phải
+  // bấm "Gỡ token" trước: token không bao giờ đọc lại được nên một cú dán đè nhầm
+  // khi kênh đang chạy ổn là mất luôn cấu hình cũ.
+  const tokenSaved = !fromEnv && data?.bot_configured === true;
 
   const setupWebhook = useMutation({
     mutationFn: () =>
@@ -651,41 +655,83 @@ function TelegramAdminPanel() {
         ) : (
           <>
             <label className="form-label">{t("telegram.adminTokenLabel")}</label>
-            <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 8 }}>
-              {t("telegram.adminTokenHint")}
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <input
-                className="form-input"
-                type="password"
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="123456789:AAF..."
-                style={{ flex: "1 1 260px" }}
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-              />
-              <button
-                className="btn btn-primary"
-                disabled={token.trim().length < 20 || saveToken.isPending}
-                onClick={() => saveToken.mutate()}
-              >
-                {saveToken.isPending ? t("common.loading") : t("common.save")}
-              </button>
-              {data?.bot_configured && (
-                <button
-                  className="btn btn-danger"
-                  disabled={clearToken.isPending}
-                  onClick={async () => {
-                    if (await confirm(t("telegram.adminTokenClearConfirm"), { danger: true })) {
-                      clearToken.mutate();
-                    }
-                  }}
+            {tokenSaved ? (
+              <>
+                <div
+                  className="notice success"
+                  style={{ marginTop: 8, marginBottom: 8 }}
                 >
-                  {t("telegram.adminTokenClear")}
-                </button>
-              )}
-            </div>
+                  <div
+                    className="notice-body"
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    <span className="badge badge-success">
+                      {t("telegram.adminTokenActive")}
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontWeight: 500,
+                        color: "var(--ink)",
+                      }}
+                    >
+                      {data?.bot_username
+                        ? `@${data.bot_username}`
+                        : t("telegram.adminBotUnknown")}
+                    </span>
+                    <button
+                      className="btn btn-sm btn-danger"
+                      style={{ marginLeft: "auto" }}
+                      disabled={clearToken.isPending}
+                      onClick={async () => {
+                        if (
+                          await confirm(t("telegram.adminTokenClearConfirm"), {
+                            danger: true,
+                          })
+                        ) {
+                          clearToken.mutate();
+                        }
+                      }}
+                    >
+                      {t("telegram.adminTokenClear")}
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
+                  {t("telegram.adminTokenLockedHint")}
+                </div>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 12, color: "var(--ink-3)", marginBottom: 8 }}>
+                  {t("telegram.adminTokenHint")}
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <input
+                    className="form-input"
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="123456789:AAF..."
+                    style={{ flex: "1 1 260px" }}
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                  />
+                  <button
+                    className="btn btn-primary"
+                    disabled={token.trim().length < 20 || saveToken.isPending}
+                    onClick={() => saveToken.mutate()}
+                  >
+                    {saveToken.isPending ? t("common.loading") : t("common.save")}
+                  </button>
+                </div>
+              </>
+            )}
 
             <label className="form-label" style={{ marginTop: 16 }}>
               {t("telegram.adminChatLabel")}
