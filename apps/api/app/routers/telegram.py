@@ -306,7 +306,12 @@ def _reply(chat_id: int, html: str) -> None:
         logger.warning("[telegram] trả lời %s lỗi: %s", chat_id, exc)
 
 
-def _help_text() -> str:
+def _help_text(*, with_huongdan: bool = True) -> str:
+    """Bảng lệnh.
+
+    `with_huongdan=False` khi chính `/huongdan` trả lời: liệt kê lại đúng lệnh người
+    ta vừa gõ chỉ làm bảng dài thêm mà không cho biết gì mới.
+    """
     return (
         "<b>Bot nhắc gia hạn</b>\n\n"
         "/start — kết nối &amp; nhận nhắc\n"
@@ -318,8 +323,8 @@ def _help_text() -> str:
         "/handung — email còn dưới 7 ngày sử dụng\n"
         "/id — xem ID của bạn (gửi cho người bán nếu cần)\n"
         "/tat — tạm ngưng nhận nhắc\n"
-        "/bat — nhận nhắc trở lại\n"
-        "/huongdan — xem hướng dẫn"
+        "/bat — nhận nhắc trở lại"
+        + ("\n/huongdan — xem hướng dẫn" if with_huongdan else "")
     )
 
 
@@ -968,7 +973,7 @@ def _process_update(db: Session, update: dict[str, Any]) -> None:
     elif command in ("/bat", "/resume"):
         _handle_toggle(db, chat_id, True)
     elif command in ("/huongdan", "/help", "/tro_giup"):
-        _reply(chat_id, _help_text())
+        _reply(chat_id, _help_text(with_huongdan=False))
     else:
         # Gõ sai / nhắn chữ thường: KHÔNG đổ nguyên bài hướng dẫn (spam và dễ
         # khiến khách tưởng bot hiểu), chỉ chỉ đường tới /huongdan.

@@ -879,6 +879,8 @@ def test_huongdan_lists_commands_and_wrong_syntax_points_to_it(
 
     _send_cmd(client, ASSIGNEE_CHAT, "/huongdan", "khach_vip")
     assert "/danhsach" in sent[-1][1] and "/handung" in sent[-1][1]
+    # Bảng lệnh do chính /huongdan trả về thì không liệt kê lại /huongdan nữa.
+    assert "/huongdan —" not in sent[-1][1]
 
     for text in ("/khongcolenh", "chào bot", "/email"):
         _send_cmd(client, ASSIGNEE_CHAT, text, "khach_vip")
