@@ -58,7 +58,17 @@ type Subscription = {
   created_at: string;
 };
 
-export function TelegramSettings() {
+/**
+ * `showSystemConfig` — bảng CẤU HÌNH HỆ THỐNG (token bot, nhóm digest, webhook, số
+ * liệu gửi) chỉ hiện ở **Cài đặt**, KHÔNG hở ra trang "Thông báo" của người dùng:
+ * đó là cấu hình máy chủ dùng chung, không phải thứ đại lý cần thấy khi làm việc
+ * hằng ngày (và cũng không nên mời gọi bấm nhầm "Gỡ token" giữa lúc đang chạy).
+ */
+export function TelegramSettings({
+  showSystemConfig = true,
+}: {
+  showSystemConfig?: boolean;
+} = {}) {
   const t = useT();
   const qc = useQueryClient();
   const formatDateTime = useFormatDateTime();
@@ -230,7 +240,7 @@ export function TelegramSettings() {
 
       <SubscriptionsPanel botConfigured={status?.bot_configured === true} />
 
-      {isSuper && <TelegramAdminPanel />}
+      {isSuper && showSystemConfig && <TelegramAdminPanel />}
     </div>
   );
 }
