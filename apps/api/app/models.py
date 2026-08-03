@@ -1043,7 +1043,9 @@ class TelegramLinkToken(Base):
     - `purpose='invite_sub'`: chủ tài khoản tạo link để **mời NGƯỜI KHÁC nhận thông
       báo của mình** (nhân viên, khách…). Link này **dùng được nhiều lần** tới khi hết
       hạn — chủ tài khoản thường gửi cho vài người; mỗi người bấm Start tạo 1 bản ghi
-      `TelegramSubscription` riêng.
+      `TelegramSubscription` riêng. Phạm vi email **gắn sẵn vào link** (`scope`/
+      `member_ids`) nên gửi link nào thì người bấm nhận đúng những email đã chọn cho
+      họ — không có khoảng thời gian "lỡ nhận hết rồi mới thu hẹp".
     - `purpose='invite_member'` (kèm `member_id`): link cho **ĐÚNG MỘT EMAIL** — đại lý
       mời email xong bấm nút "Thông báo" là ra link này rồi gửi cho khách; khách bấm
       Start là thành người nhận nhắc gia hạn của riêng email đó (khỏi phải gõ
@@ -1068,6 +1070,14 @@ class TelegramLinkToken(Base):
     member_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("members.id", ondelete="CASCADE"), nullable=True
     )
+    # ── Chỉ dùng với purpose='invite_sub' ────────────────────────────────────
+    # Tên gợi nhớ do chủ tài khoản đặt ("Nhân viên A", "Kế toán") — cần vì một tài
+    # khoản phát NHIỀU link cùng lúc, mỗi link một phạm vi khác nhau.
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Phạm vi gắn sẵn: 'all' | 'selected'. NULL = 'all' (link phát trước khi có cột này).
+    scope: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Danh sách member.id (chuỗi UUID) khi scope='selected'.
+    member_ids: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -1130,6 +1140,11 @@ class TelegramSubscription(Base):
     chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
     # Tên/@username ghi lại lúc người đó bấm Start — để chủ tài khoản nhận ra ai là ai.
     display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Link mời GẦN NHẤT đã đưa người này vào (token). Không đặt FK: link hết hạn/bị gỡ
+    # thì người nhận vẫn phải còn. Dùng để phân biệt bấm LẠI đúng link đó (giữ nguyên
+    # phạm vi chủ tài khoản đã tinh chỉnh) với bấm link KHÁC (cộng thêm phạm vi của
+    # link mới vào phạm vi đang có — bấm link chỉ thêm, không bao giờ bớt).
+    invite_token: Mapped[str | None] = mapped_column(String(48), nullable=True)
     # 'all' = mọi email của chủ tài khoản (kể cả email thêm sau này)
     # 'selected' = chỉ các email trong `member_ids`
     scope: Mapped[str] = mapped_column(

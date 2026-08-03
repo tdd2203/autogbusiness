@@ -391,6 +391,25 @@ body {
     background: var(--bg);
   }
 
+  /* Nút chỉ hiện KHI CẦN: bảng vài trăm dòng mà dòng nào cũng có nút màu thì mắt
+     không biết nhìn đâu, còn cột dữ liệu bị nút lấn át. Rê chuột (hoặc tab bàn phím)
+     vào dòng mới hiện nút — vẫn bấm được bình thường, chỉ là không ồn ào.
+     Máy cảm ứng không hover được ⇒ luôn hiện, nếu không thì không tài nào bấm. */
+  .row-reveal {
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+  tr:hover .row-reveal,
+  tr:focus-within .row-reveal,
+  .row-reveal:focus-visible {
+    opacity: 1;
+  }
+  @media (hover: none) {
+    .row-reveal {
+      opacity: 1;
+    }
+  }
+
   /* ---------- Email cards (danh sách email trên mobile) ----------
      Trên mobile, bảng "Email đã thêm" đổi sang danh sách thẻ (mỗi email 1 thẻ):
      dòng đầu = checkbox + email + menu ⋯; dòng 2 = chip không gian + trạng thái +
