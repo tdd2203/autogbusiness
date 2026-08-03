@@ -129,10 +129,14 @@ export default function Notifications() {
                         </span>
                       )}
                     </td>
+                    {/* Nút nằm im cho tới khi rê chuột vào dòng: bảng này để TRA CỨU
+                        "email nào ai đang nhận", lấy link chỉ là việc thỉnh thoảng —
+                        xem .row-reveal trong index.css. */}
                     <td style={{ textAlign: "right" }}>
                       <button
-                        className="btn btn-sm btn-primary"
+                        className="btn btn-sm row-reveal"
                         onClick={() => setNotifyMember(m)}
+                        title={t("notifications.getLinkHint")}
                       >
                         {t("notifications.getLink")}
                       </button>
