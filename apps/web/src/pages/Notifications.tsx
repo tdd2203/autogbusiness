@@ -53,7 +53,10 @@ export default function Notifications() {
         <p className="page-sub">{t("notifications.subtitle")}</p>
       </div>
 
-      <TelegramSettings />
+      {/* Không kèm cấu hình hệ thống (token bot/webhook/nhóm digest) — thứ đó thuộc
+          Cài đặt → Telegram, chỉ super-admin đụng tới. Ở đây chỉ có việc của người
+          dùng: kênh của mình, người nhận, và thông báo theo từng email. */}
+      <TelegramSettings showSystemConfig={false} />
 
       <div style={{ marginTop: 32 }}>
         <h3 className="display-h3">{t("notifications.perEmailTitle")}</h3>
