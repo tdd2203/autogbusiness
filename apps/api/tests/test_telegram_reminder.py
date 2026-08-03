@@ -871,6 +871,25 @@ def test_email_command_rejects_email_taken_by_another_chat(
     assert "đã được đăng ký" in sent[-1][1]
 
 
+def test_start_greets_with_count_and_points_to_huongdan(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """/start chỉ chào + cho biết đang nhận thông báo cho bao nhiêu email.
+
+    Bảng lệnh đầy đủ là việc của /huongdan; đổ vào đây thì lời chào dài gấp đôi.
+    """
+    ws = _make_ws(client, auth_header)
+    _add_member(
+        client, ws, "khach@example.com", days_left=30, **_assigned_to(ASSIGNEE_CHAT)
+    )
+
+    _start_bot(client, ASSIGNEE_CHAT, "khach_vip")
+    reply = sent[-1][1]
+    assert "Email bạn sẽ nhận thông báo (1)" in reply
+    assert "Xem hướng dẫn các lệnh tại : /huongdan" in reply
+    assert "/tat —" not in reply, "lời chào không được đổ nguyên bảng lệnh"
+
+
 def test_huongdan_lists_commands_and_wrong_syntax_points_to_it(
     client: TestClient, bot_on, sent
 ) -> None:
