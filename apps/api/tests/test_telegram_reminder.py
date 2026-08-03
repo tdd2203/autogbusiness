@@ -931,7 +931,7 @@ def test_danhsach_lists_all_watched_emails_and_handung_filters_7_days(
 
     _send_cmd(client, ASSIGNEE_CHAT, "/danhsach", "khach_vip")
     reply = sent[-1][1]
-    assert "Email bạn đang theo dõi (4)" in reply
+    assert "Email bạn sở hữu (4)" in reply
     for email in ("con-lau@", "sap-het@", "da-het@", "vo-han@"):
         assert email in reply, f"/danhsach thiếu {email}"
     assert "không giới hạn thời hạn" in reply
