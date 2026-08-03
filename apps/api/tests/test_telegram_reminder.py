@@ -1037,6 +1037,177 @@ def test_subscriber_and_assignee_both_receive(
     assert sorted(c for c, _ in sent) == sorted([ASSIGNEE_CHAT, SUBSCRIBER_CHAT])
 
 
+# ── Nút "Thông báo": link theo TỪNG email ─────────────────────────────────────
+
+
+def test_member_notify_link_binds_recipient(
+    client: TestClient, auth_header: dict, bot_on, sent, monkeypatch
+) -> None:
+    """Đại lý bấm 'Thông báo' trên email → gửi link cho khách → khách bấm Start là
+    nhận nhắc cho ĐÚNG email đó (không phải gõ /email)."""
+    monkeypatch.setattr(bot_on, "telegram_bot_username", "my_test_bot")
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+
+    resp = client.post(
+        "/api/v1/telegram/notify-link", json={"member_id": member_id}, headers=auth_header
+    )
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["token"]
+    assert resp.json()["deep_link"] == f"https://t.me/my_test_bot?start={token}"
+
+    _webhook(
+        client,
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 1,
+                "chat": {"id": ASSIGNEE_CHAT, "type": "private"},
+                "from": {"id": ASSIGNEE_CHAT, "username": "khach_vip", "first_name": "Khach"},
+                "text": f"/start {token}",
+            },
+        },
+    )
+    with SessionLocal() as db:
+        member = db.get(Member, member_id)
+        assert member.notify_telegram_chat_id == ASSIGNEE_CHAT
+        assert member.notify_telegram_target == "@khach_vip"
+    assert "khach@example.com" in sent[-1][1]
+
+    sent.clear()
+    _run()
+    assert [c for c, _ in sent] == [ASSIGNEE_CHAT]
+
+
+def test_member_notify_link_respects_existing_recipient(
+    client: TestClient, auth_header: dict, bot_on, sent, monkeypatch
+) -> None:
+    monkeypatch.setattr(bot_on, "telegram_bot_username", "my_test_bot")
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(
+        client, ws, "khach@example.com", days_left=2,
+        notify_telegram_target=str(ASSIGNEE_CHAT), notify_telegram_chat_id=ASSIGNEE_CHAT,
+    )
+    token = client.post(
+        "/api/v1/telegram/notify-link", json={"member_id": member_id}, headers=auth_header
+    ).json()["token"]
+
+    _webhook(
+        client,
+        {
+            "update_id": 1,
+            "message": {
+                "message_id": 1,
+                "chat": {"id": 707070, "type": "private"},
+                "from": {"id": 707070, "username": "ke_gian", "first_name": "X"},
+                "text": f"/start {token}",
+            },
+        },
+    )
+    with SessionLocal() as db:
+        assert db.get(Member, member_id).notify_telegram_chat_id == ASSIGNEE_CHAT
+    assert "đã được đăng ký" in sent[-1][1]
+
+
+# ── Mẫu nội dung tự soạn ──────────────────────────────────────────────────────
+
+
+def test_custom_template_applied_to_messages(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Mẫu riêng của đại lý áp cho tin nhắc email của họ (kể cả tin gửi khách)."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+
+    resp = client.put(
+        "/api/v1/telegram/template",
+        json={
+            "body": "🔔 SHOP ABC — {count} tài khoản sắp hết hạn\n\n{items}\n\nZalo 0900 để gia hạn.",
+            "item_line": "· {email} → {expiry}",
+        },
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    assert "SHOP ABC" in resp.json()["preview"]
+
+    _run()
+
+    text = sent[0][1]
+    assert text.startswith("🔔 SHOP ABC — 1 tài khoản sắp hết hạn")
+    assert "· khach@example.com →" in text
+    assert "Zalo 0900 để gia hạn." in text
+
+    # Khôi phục mẫu gốc → tin quay về câu chữ hệ thống.
+    client.put(
+        "/api/v1/telegram/template", json={"body": None, "item_line": None}, headers=auth_header
+    )
+    tpl = client.get("/api/v1/telegram/template", headers=auth_header).json()
+    assert tpl["body"] is None and "Nhắc gia hạn" in tpl["default_body"]
+
+
+def test_template_rejects_unknown_placeholder(
+    client: TestClient, auth_header: dict, bot_on
+) -> None:
+    resp = client.put(
+        "/api/v1/telegram/template",
+        json={"body": "Chào {ten_khach}, {items}"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 400
+    assert "ten_khach" in str(resp.json()["detail"])
+
+
+def test_template_without_items_still_lists_emails(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Quên {items} thì vẫn phải liệt kê email — tin thiếu danh sách là vô nghĩa."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+    client.put(
+        "/api/v1/telegram/template", json={"body": "Nhắc nhẹ nhé"}, headers=auth_header
+    )
+
+    _run()
+
+    assert "khach@example.com" in sent[0][1]
+
+
+def test_broken_html_template_falls_back_to_default(
+    client: TestClient, auth_header: dict, bot_on, monkeypatch
+) -> None:
+    """HTML hỏng trong mẫu tự soạn → gửi lại bằng mẫu gốc, KHÔNG mất thông báo."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+    client.put(
+        "/api/v1/telegram/template",
+        json={"body": "<b>Chưa đóng thẻ {items}"},
+        headers=auth_header,
+    )
+
+    delivered: list[str] = []
+
+    def picky_send(chat_id: int, html_text: str):
+        if "<b>Chưa đóng thẻ" in html_text:
+            raise telegram.TelegramError(
+                "unknown", "Bad Request: can't parse entities: Unclosed start tag"
+            )
+        delivered.append(html_text)
+        return telegram.SentMessage(chat_id=chat_id, message_id=1)
+
+    monkeypatch.setattr(telegram, "send_message", picky_send)
+
+    _run()
+
+    assert len(delivered) == 1
+    assert "Nhắc gia hạn" in delivered[0]
+    assert "khach@example.com" in delivered[0]
+    assert _statuses() == [("sent", 3, "owner")]
+
+
 def test_email_command_rate_limited(
     client: TestClient, auth_header: dict, bot_on, sent
 ) -> None:

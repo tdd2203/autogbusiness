@@ -42,6 +42,7 @@ from app.models import (
     TelegramContact,
     TelegramNotification,
     TelegramSubscription,
+    TelegramTemplate,
     User,
     Workspace,
 )
@@ -323,49 +324,130 @@ def scan_and_claim(db: Session, now: datetime | None = None) -> dict:
 # ── Dựng nội dung ─────────────────────────────────────────────────────────────
 
 
+def _dashboard_link() -> str:
+    return f"{get_settings().frontend_origin.rstrip('/')}/renewals"
+
+
+# Biến dùng được trong mẫu tự soạn. Đổi/ thêm ở đây thì SỬA LUÔN bảng hướng dẫn trong
+# giao diện (i18n `telegram.tplPlaceholders`) — người dùng chỉ biết qua chỗ đó.
+TEMPLATE_PLACEHOLDERS = {
+    "body": ("items", "count", "bucket", "link", "owner"),
+    "item_line": ("email", "expiry", "days_left", "bucket", "owner", "workspace"),
+}
+
+
+def default_item_line(kind: str = "owner") -> str:
+    line = "• <code>{email}</code> — hết hạn {expiry} ({days_left})"
+    if kind == "admin":
+        line += "\n   chủ: {owner} · {workspace}"
+    return line
+
+
+def default_body(kind: str = "owner") -> str:
+    """Mẫu GỐC theo từng loại người nhận — cũng là mẫu hiện ra để người dùng sửa."""
+    if kind == "admin":
+        return (
+            "📋 <b>Tổng hợp sắp hết hạn</b> — còn ≤{bucket} ngày · {count} email\n\n"
+            "{items}\n\n"
+            "Xử lý tại: {link}"
+        )
+    if kind == "subscriber":
+        return (
+            "⏰ <b>Nhắc gia hạn</b> (tài khoản {owner}) — {count} email còn ≤{bucket} ngày\n\n"
+            "{items}\n\n"
+            "Bạn nhận tin này vì được mời theo dõi thông báo của tài khoản trên."
+        )
+    if kind == "assignee":
+        return (
+            "⏰ <b>Tài khoản ChatGPT sắp hết hạn</b> — còn ≤{bucket} ngày\n\n"
+            "{items}\n\n"
+            "Vui lòng liên hệ nơi bạn đã mua để gia hạn trước khi hết hạn."
+        )
+    return (
+        "⏰ <b>Nhắc gia hạn</b> — {count} email còn ≤{bucket} ngày\n\n"
+        "{items}\n\n"
+        "Gia hạn tại: {link}\n"
+        "<i>Hết hạn là hệ thống tự gỡ email khỏi workspace (không có ân hạn).</i>"
+    )
+
+
+def render_template(template: str, values: dict[str, object]) -> str:
+    """Thay biến `{ten}` bằng giá trị. KHÔNG dùng str.format để dấu `{` `}` người dùng
+    gõ lung tung (emoji kaomoji, JSON…) không làm vỡ toàn bộ tin."""
+    out = template
+    for key, value in values.items():
+        out = out.replace("{" + key + "}", str(value))
+    return out
+
+
+def unknown_placeholders(template: str, allowed: tuple[str, ...]) -> list[str]:
+    """Các biến `{lạ}` trong mẫu — API chặn ngay lúc lưu để người dùng biết mình gõ sai
+    thay vì phát hiện khi tin đã gửi thiếu nội dung."""
+    import re
+
+    found = re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", template or "")
+    return sorted({name for name in found if name not in allowed})
+
+
 def _render_message(
     kind: str,
     bucket: int,
-    items: list[tuple[Member, str | None, str | None]],
+    items: list[tuple[Member, str | None, str | None, UUID | None]],
     now: datetime,
+    templates: dict[UUID, tuple[str | None, str | None]] | None = None,
 ) -> list[str]:
-    """Dựng (một hoặc nhiều) tin HTML cho 1 người nhận. `items` = (member, tên
-    workspace, username chủ sở hữu)."""
+    """Dựng (một hoặc nhiều) tin HTML cho 1 người nhận.
+
+    `items` = (member, tên workspace, username chủ sở hữu, id chủ sở hữu).
+    `templates` = mẫu tự soạn theo user_id. Chỉ áp khi MỌI email trong tin cùng một
+    chủ tài khoản — tin gộp nhiều chủ (digest admin, người theo dõi nhiều tài khoản)
+    thì dùng mẫu gốc, vì lấy mẫu của một chủ áp cho email của chủ khác là sai.
+    """
     esc = telegram.escape_html
-    settings = get_settings()
-    link = f"{settings.frontend_origin.rstrip('/')}/renewals"
+    link = _dashboard_link()
+    owner_ids = {oid for _, _, _, oid in items if oid}
+    custom = templates.get(next(iter(owner_ids))) if templates and len(owner_ids) == 1 else None
+    body_tpl = (custom[0] if custom else None) or default_body(kind)
+    line_tpl = (custom[1] if custom else None) or default_item_line(kind)
+
+    owners = sorted({owner for _, _, owner, _ in items if owner})
+    owner_text = ", ".join(owners) if owners else "chưa có chủ"
 
     lines: list[str] = []
-    for member, workspace_name, owner_username in items:
+    for member, workspace_name, owner_username, _ in items:
         end_at = member.subscription_end_at
-        left = _fmt_left(end_at, now) if end_at else ""
-        base = f"• <code>{esc(member.email)}</code> — hết hạn {esc(_fmt_dt(end_at))} ({esc(left)})"
-        if kind == "admin":
-            owner_text = owner_username or "chưa có chủ"
-            base += f"\n   chủ: {esc(owner_text)} · {esc(workspace_name or '—')}"
-        lines.append(base)
-
-    if kind == "admin":
-        header = f"📋 <b>Tổng hợp sắp hết hạn</b> — còn ≤{bucket} ngày · {len(items)} email"
-        footer = f"Xử lý tại: {esc(link)}"
-    elif kind == "subscriber":
-        # Người được MỜI nhận thông báo của một tài khoản: nêu rõ thông báo này của ai
-        # (một người có thể theo dõi nhiều tài khoản) và KHÔNG kèm link dashboard —
-        # họ thường không có tài khoản đăng nhập.
-        owners = {owner for _, _, owner in items if owner}
-        who = f" (tài khoản {esc(', '.join(sorted(owners)))})" if owners else ""
-        header = f"⏰ <b>Nhắc gia hạn</b>{who} — {len(items)} email còn ≤{bucket} ngày"
-        footer = "Bạn nhận tin này vì được mời theo dõi thông báo của tài khoản trên."
-    elif kind == "assignee":
-        header = f"⏰ <b>Tài khoản ChatGPT sắp hết hạn</b> — còn ≤{bucket} ngày"
-        footer = "Vui lòng liên hệ nơi bạn đã mua để gia hạn trước khi hết hạn."
-    else:
-        header = f"⏰ <b>Nhắc gia hạn</b> — {len(items)} email còn ≤{bucket} ngày"
-        footer = (
-            f"Gia hạn tại: {esc(link)}\n"
-            "<i>Hết hạn là hệ thống tự gỡ email khỏi workspace (không có ân hạn).</i>"
+        lines.append(
+            render_template(
+                line_tpl,
+                {
+                    "email": esc(member.email),
+                    "expiry": esc(_fmt_dt(end_at)) if end_at else "—",
+                    "days_left": esc(_fmt_left(end_at, now)) if end_at else "—",
+                    "bucket": bucket,
+                    "owner": esc(owner_username or "chưa có chủ"),
+                    "workspace": esc(workspace_name or "—"),
+                },
+            )
         )
-    return telegram.split_html_lines(header, lines, footer)
+
+    # `{items}` là chỗ bung danh sách — tách thân tin ra header/footer quanh nó để tin
+    # dài vẫn cắt được thành nhiều phần mà không mất ngữ cảnh (split_html_lines).
+    rendered_body = render_template(
+        body_tpl,
+        {
+            "items": "\x00ITEMS\x00",
+            "count": len(items),
+            "bucket": bucket,
+            "link": esc(link),
+            "owner": esc(owner_text),
+        },
+    )
+    if "\x00ITEMS\x00" in rendered_body:
+        header, _, footer = rendered_body.partition("\x00ITEMS\x00")
+    else:
+        # Mẫu quên `{items}` → vẫn phải liệt kê email, nếu không tin thành vô nghĩa.
+        header, footer = rendered_body, ""
+    return telegram.split_html_lines(header.rstrip("\n"), lines, footer.strip("\n"))
 
 
 # ── Gửi & retry ───────────────────────────────────────────────────────────────
@@ -396,15 +478,26 @@ def flush_pending(db: Session, now: datetime | None = None) -> dict:
         return {"sent": 0, "failed": 0, "blocked": 0, "skipped": 0}
 
     member_ids = {n.member_id for n in pending if n.member_id}
-    detail: dict[UUID, tuple[Member, str | None, str | None]] = {}
+    detail: dict[UUID, tuple[Member, str | None, str | None, UUID | None]] = {}
     if member_ids:
-        for member, workspace_name, owner_username in db.execute(
-            select(Member, Workspace.name, User.username)
+        for member, workspace_name, owner_username, owner_id in db.execute(
+            select(Member, Workspace.name, User.username, User.id)
             .outerjoin(Workspace, Workspace.id == Member.workspace_id)
             .outerjoin(User, User.id == Member.invited_by_user_id)
             .where(Member.id.in_(member_ids))
         ).all():
-            detail[member.id] = (member, workspace_name, owner_username)
+            detail[member.id] = (member, workspace_name, owner_username, owner_id)
+
+    # Mẫu tự soạn của các chủ tài khoản liên quan (thường 1–2 hàng).
+    owner_ids = {row[3] for row in detail.values() if row[3]}
+    templates: dict[UUID, tuple[str | None, str | None]] = {}
+    if owner_ids:
+        for tpl in (
+            db.execute(select(TelegramTemplate).where(TelegramTemplate.user_id.in_(owner_ids)))
+            .scalars()
+            .all()
+        ):
+            templates[tpl.user_id] = (tpl.body, tpl.item_line)
 
     groups: dict[tuple[int, str, int], list[TelegramNotification]] = {}
     stats = {"sent": 0, "failed": 0, "blocked": 0, "skipped": 0}
@@ -433,25 +526,42 @@ def flush_pending(db: Session, now: datetime | None = None) -> dict:
     for (chat_id, kind, bucket), notifs in groups.items():
         items = [detail[n.member_id] for n in notifs if n.member_id in detail]
         items.sort(key=lambda it: it[0].subscription_end_at or now)
-        messages = _render_message(kind, bucket, items, now)
+        messages = _render_message(kind, bucket, items, now, templates)
         try:
-            last_message_id = 0
-            for text in messages:
-                last_message_id = telegram.send_message(chat_id, text).message_id
+            last_message_id = _send_all(chat_id, messages)
         except telegram.TelegramError as exc:
-            permanent = exc.permanent
-            for notif in notifs:
-                notif.attempts += 1
-                notif.error = f"{exc.code}: {exc.description}"[:1000]
-                notif.status = "blocked" if permanent else "failed"
-                db.add(notif)
-            stats["blocked" if permanent else "failed"] += len(notifs)
-            if exc.code in ("blocked", "not_started"):
-                _mark_contact_blocked(db, chat_id, now)
-            logger.warning(
-                "[tele-reminder] gửi tới %s thất bại (%s): %s", chat_id, exc.code, exc.description
-            )
-            continue
+            # HTML hỏng trong MẪU TỰ SOẠN → Telegram từ chối cả tin. Gửi lại bằng MẪU
+            # GỐC: lỗi soạn thảo của một người không được phép làm mất thông báo (và
+            # người nhận thì chẳng biết đường nào mà sửa).
+            if _is_markup_error(exc) and templates:
+                try:
+                    last_message_id = _send_all(
+                        chat_id, _render_message(kind, bucket, items, now, None)
+                    )
+                    logger.warning(
+                        "[tele-reminder] mẫu tự soạn lỗi HTML (%s) → đã gửi bằng mẫu gốc",
+                        exc.description,
+                    )
+                    exc = None  # type: ignore[assignment]
+                except telegram.TelegramError as fallback_exc:
+                    exc = fallback_exc
+            if exc is not None:
+                permanent = exc.permanent
+                for notif in notifs:
+                    notif.attempts += 1
+                    notif.error = f"{exc.code}: {exc.description}"[:1000]
+                    notif.status = "blocked" if permanent else "failed"
+                    db.add(notif)
+                stats["blocked" if permanent else "failed"] += len(notifs)
+                if exc.code in ("blocked", "not_started"):
+                    _mark_contact_blocked(db, chat_id, now)
+                logger.warning(
+                    "[tele-reminder] gửi tới %s thất bại (%s): %s",
+                    chat_id,
+                    exc.code,
+                    exc.description,
+                )
+                continue
 
         for notif in notifs:
             notif.status = "sent"
@@ -466,6 +576,20 @@ def flush_pending(db: Session, now: datetime | None = None) -> dict:
     if stats["sent"] or stats["failed"] or stats["blocked"]:
         logger.info("[tele-reminder] gửi xong: %s", stats)
     return stats
+
+
+def _send_all(chat_id: int, messages: list[str]) -> int:
+    """Gửi lần lượt các phần của một tin (đã cắt theo giới hạn 4096 ký tự)."""
+    last_message_id = 0
+    for text in messages:
+        last_message_id = telegram.send_message(chat_id, text).message_id
+    return last_message_id
+
+
+def _is_markup_error(exc: telegram.TelegramError) -> bool:
+    """Telegram từ chối vì HTML sai (thẻ không đóng, ký tự < chưa thoát…)."""
+    text = (exc.description or "").lower()
+    return "can't parse entities" in text or "unsupported start tag" in text
 
 
 def _mark_contact_blocked(db: Session, chat_id: int, now: datetime) -> None:
