@@ -1044,6 +1044,10 @@ class TelegramLinkToken(Base):
       báo của mình** (nhân viên, khách…). Link này **dùng được nhiều lần** tới khi hết
       hạn — chủ tài khoản thường gửi cho vài người; mỗi người bấm Start tạo 1 bản ghi
       `TelegramSubscription` riêng.
+    - `purpose='invite_member'` (kèm `member_id`): link cho **ĐÚNG MỘT EMAIL** — đại lý
+      mời email xong bấm nút "Thông báo" là ra link này rồi gửi cho khách; khách bấm
+      Start là thành người nhận nhắc gia hạn của riêng email đó (khỏi phải gõ
+      `/email <địa chỉ>`). Email đã có người nhận khác thì link báo từ chối.
 
     ⚠️ Khác biệt "một lần vs nhiều lần" là CỐ Ý: link_self là chứng minh danh tính nên
     phải dùng-một-lần; invite_sub chỉ cấp quyền NHẬN thông báo (không đụng tài khoản),
@@ -1056,15 +1060,49 @@ class TelegramLinkToken(Base):
     user_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    # 'link_self' | 'invite_sub'
+    # 'link_self' | 'invite_sub' | 'invite_member'
     purpose: Mapped[str] = mapped_column(
         String(16), nullable=False, default="link_self", server_default="link_self"
+    )
+    # Chỉ dùng với purpose='invite_member': email mà link này gắn thông báo tới.
+    member_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("members.id", ondelete="CASCADE"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TelegramTemplate(Base):
+    """Mẫu nội dung thông báo RIÊNG của một tài khoản (đại lý tự soạn).
+
+    Không đặt gì ở đây ⇒ dùng **mẫu gốc** trong `services/renewal_reminder`. Đặt rồi
+    thì mọi tin nhắc về email CỦA TÀI KHOẢN NÀY dùng mẫu riêng — kể cả tin gửi cho
+    khách cuối (đại lý muốn xưng tên shop mình) và cho người nhận được mời.
+
+    Hai ô, đều không bắt buộc:
+      - `body`: thân tin, chèn `{items}` để bung danh sách email.
+      - `item_line`: mẫu MỘT dòng email trong danh sách đó.
+    Chỗ trống dùng biến `{...}` — xem TEMPLATE_PLACEHOLDERS. Biến lạ ⇒ API trả 400
+    ngay lúc lưu, không để tới lúc gửi mới hỏng.
+
+    Tin dùng parse_mode=HTML nên đại lý bôi đậm/nghiêng được. HTML hỏng khiến Telegram
+    từ chối (400 'can't parse entities') → hệ thống TỰ gửi lại bằng mẫu gốc để thông
+    báo không bao giờ bị mất chỉ vì lỗi soạn thảo (xem renewal_reminder.flush_pending).
+    """
+
+    __tablename__ = "telegram_templates"
+
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    item_line: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=_utcnow
+    )
 
 
 class TelegramSubscription(Base):

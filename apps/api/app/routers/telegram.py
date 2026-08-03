@@ -41,6 +41,7 @@ from app.models import (
     TelegramNotification,
     TelegramSettings,
     TelegramSubscription,
+    TelegramTemplate,
     User,
 )
 from app.services import renewal_reminder, telegram
@@ -98,6 +99,29 @@ class TelegramSubscriptionOut(BaseModel):
     member_ids: list[str] = Field(default_factory=list)
     enabled: bool
     created_at: datetime
+
+
+class TelegramTemplateOut(BaseModel):
+    """Mẫu riêng của tôi + mẫu gốc + danh sách biến + bản xem trước."""
+
+    body: str | None = None
+    item_line: str | None = None
+    default_body: str
+    default_item_line: str
+    body_placeholders: list[str]
+    item_placeholders: list[str]
+    preview: str
+
+
+class TelegramTemplateIn(BaseModel):
+    body: str | None = Field(default=None, max_length=4000)
+    item_line: str | None = Field(default=None, max_length=1000)
+
+
+class TelegramMemberLinkIn(BaseModel):
+    """Email cần tạo link thông báo (nút 'Thông báo' trên dòng email)."""
+
+    member_id: UUID
 
 
 class TelegramSubscriptionIn(BaseModel):
@@ -432,6 +456,65 @@ def _handle_invite_subscription(
     )
 
 
+def _handle_member_notify_link(
+    db: Session,
+    chat_id: int,
+    row: TelegramLinkToken,
+    contact: TelegramContact,
+) -> None:
+    """Khách bấm link "Thông báo" của MỘT email → thành người nhận nhắc cho email đó.
+
+    Bản không-cần-gõ của lệnh `/email <địa chỉ>`: đại lý gửi link nên khách không thể
+    gõ sai địa chỉ, và không lộ thông tin email nào khác. Cùng luật chống chiếm kênh:
+    email đã có người nhận khác thì từ chối.
+    """
+    member = db.get(Member, row.member_id) if row.member_id else None
+    if member is None or member.status not in ("active", "pending"):
+        _reply(chat_id, "⚠️ Email trong link không còn hoạt động. Liên hệ nơi bạn đã mua.")
+        return
+
+    email_html = telegram.escape_html(member.email)
+    if member.notify_telegram_chat_id and member.notify_telegram_chat_id != chat_id:
+        _reply(
+            chat_id,
+            f"⚠️ <code>{email_html}</code> đã được đăng ký nhận thông báo ở một tài "
+            "khoản Telegram khác. Liên hệ nơi bạn đã mua nếu cần đổi người nhận.",
+        )
+        return
+
+    if member.notify_telegram_chat_id != chat_id:
+        member.notify_telegram_target = (
+            f"@{contact.username}" if contact.username else str(chat_id)
+        )
+        member.notify_telegram_chat_id = chat_id
+        db.add(member)
+        log_event(
+            db,
+            actor_type="SYSTEM",
+            actor_label=f"telegram:{contact.username or chat_id}",
+            action="MEMBER_NOTIFY_TARGET_SELF_SET",
+            target_type="MEMBER",
+            target_id=str(member.id),
+            data={"email": member.email, "chat_id": chat_id, "via": "link"},
+            commit=False,
+        )
+
+    settings = get_settings()
+    end_text = (
+        f"\nHạn hiện tại: <b>{telegram.escape_html(renewal_reminder._fmt_dt(member.subscription_end_at))}</b>"
+        if member.subscription_end_at
+        else "\nTài khoản này hiện không giới hạn thời hạn."
+    )
+    _reply(
+        chat_id,
+        f"✅ Bạn sẽ nhận nhắc gia hạn cho <code>{email_html}</code>."
+        + end_text
+        + "\n\nNhắc trước khi hết hạn "
+        + ", ".join(f"{d} ngày" for d in settings.reminder_day_buckets())
+        + ".\nGõ /huyemail để thôi nhận.",
+    )
+
+
 def _handle_start(db: Session, chat_id: int, user_arg: str, contact: TelegramContact, now: datetime) -> None:
     """`/start <token>` = liên kết tài khoản dashboard; `/start` trơn = chỉ ghi sổ."""
     if not user_arg:
@@ -448,11 +531,15 @@ def _handle_start(db: Session, chat_id: int, user_arg: str, contact: TelegramCon
         return
 
     row = db.get(TelegramLinkToken, user_arg)
-    # Link MỜI dùng được nhiều lần (chỉ hết hiệu lực khi quá hạn); link KẾT NỐI chính
-    # chủ dùng-một-lần. Xem docstring TelegramLinkToken.
-    if row is not None and row.purpose == "invite_sub" and row.expires_at > now:
-        _handle_invite_subscription(db, chat_id, row, contact, now)
-        return
+    # Link MỜI / link THÔNG BÁO THEO EMAIL dùng được nhiều lần (chỉ hết hiệu lực khi
+    # quá hạn); link KẾT NỐI chính chủ dùng-một-lần. Xem docstring TelegramLinkToken.
+    if row is not None and row.expires_at > now:
+        if row.purpose == "invite_sub":
+            _handle_invite_subscription(db, chat_id, row, contact, now)
+            return
+        if row.purpose == "invite_member":
+            _handle_member_notify_link(db, chat_id, row, contact)
+            return
     if row is None or row.used_at is not None or row.expires_at <= now:
         _reply(
             chat_id,
@@ -832,6 +919,175 @@ def create_subscription_invite(
         token=token,
         user_id=user.id,
         purpose="invite_sub",
+        created_at=now,
+        expires_at=now + INVITE_TOKEN_TTL,
+    )
+    db.add(row)
+    db.commit()
+    return TelegramLinkOut(
+        deep_link=f"https://t.me/{bot}?start={token}",
+        token=token,
+        expires_at=row.expires_at,
+    )
+
+
+@router.get("/api/v1/telegram/template", response_model=TelegramTemplateOut)
+def get_template(
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> TelegramTemplateOut:
+    """Mẫu nội dung thông báo của tôi + MẪU GỐC để đối chiếu/khôi phục."""
+    row = db.get(TelegramTemplate, user.id)
+    return TelegramTemplateOut(
+        body=row.body if row else None,
+        item_line=row.item_line if row else None,
+        default_body=renewal_reminder.default_body("owner"),
+        default_item_line=renewal_reminder.default_item_line("owner"),
+        body_placeholders=list(renewal_reminder.TEMPLATE_PLACEHOLDERS["body"]),
+        item_placeholders=list(renewal_reminder.TEMPLATE_PLACEHOLDERS["item_line"]),
+        preview=_preview_template(
+            row.body if row else None, row.item_line if row else None, user.username
+        ),
+    )
+
+
+@router.put("/api/v1/telegram/template", response_model=TelegramTemplateOut)
+def save_template(
+    payload: TelegramTemplateIn,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> TelegramTemplateOut:
+    """Lưu mẫu riêng. Bỏ trống cả hai ô = quay về mẫu gốc.
+
+    Chặn biến `{lạ}` NGAY LÚC LƯU: phát hiện lúc gửi thì tin đã đi rồi, người nhận
+    thấy một chỗ trống khó hiểu mà đại lý không biết.
+    """
+    body = (payload.body or "").strip() or None
+    item_line = (payload.item_line or "").strip() or None
+
+    for value, key in ((body, "body"), (item_line, "item_line")):
+        if not value:
+            continue
+        bad = renewal_reminder.unknown_placeholders(
+            value, renewal_reminder.TEMPLATE_PLACEHOLDERS[key]
+        )
+        if bad:
+            allowed = ", ".join(f"{{{p}}}" for p in renewal_reminder.TEMPLATE_PLACEHOLDERS[key])
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Biến không hợp lệ: {', '.join('{' + b + '}' for b in bad)}. "
+                    f"Chỉ dùng: {allowed}"
+                ),
+            )
+
+    row = db.get(TelegramTemplate, user.id)
+    if body is None and item_line is None:
+        if row is not None:
+            db.delete(row)
+    else:
+        if row is None:
+            row = TelegramTemplate(user_id=user.id)
+            db.add(row)
+        row.body = body
+        row.item_line = item_line
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.username,
+        action="TELEGRAM_TEMPLATE_UPDATED" if (body or item_line) else "TELEGRAM_TEMPLATE_RESET",
+        target_type="USER",
+        target_id=str(user.id),
+        commit=False,
+    )
+    db.commit()
+    return TelegramTemplateOut(
+        body=body,
+        item_line=item_line,
+        default_body=renewal_reminder.default_body("owner"),
+        default_item_line=renewal_reminder.default_item_line("owner"),
+        body_placeholders=list(renewal_reminder.TEMPLATE_PLACEHOLDERS["body"]),
+        item_placeholders=list(renewal_reminder.TEMPLATE_PLACEHOLDERS["item_line"]),
+        preview=_preview_template(body, item_line, user.username),
+    )
+
+
+def _preview_template(
+    body: str | None, item_line: str | None, owner_username: str
+) -> str:
+    """Xem trước bằng DỮ LIỆU MẪU — người dùng thấy ngay tin thật trông thế nào."""
+    line_tpl = item_line or renewal_reminder.default_item_line("owner")
+    body_tpl = body or renewal_reminder.default_body("owner")
+    demo = [
+        {"email": "khach_a@gmail.com", "expiry": "06/08/2026 09:15", "days_left": "còn 2 ngày 20 giờ"},
+        {"email": "khach_b@gmail.com", "expiry": "07/08/2026 14:00", "days_left": "còn 3 ngày"},
+    ]
+    lines = "\n".join(
+        renewal_reminder.render_template(
+            line_tpl,
+            {**d, "bucket": 3, "owner": owner_username, "workspace": "Workspace 1"},
+        )
+        for d in demo
+    )
+    return renewal_reminder.render_template(
+        body_tpl,
+        {
+            "items": lines,
+            "count": len(demo),
+            "bucket": 3,
+            "link": f"{get_settings().frontend_origin.rstrip('/')}/renewals",
+            "owner": owner_username,
+        },
+    )
+
+
+@router.post("/api/v1/telegram/notify-link", response_model=TelegramLinkOut)
+def create_member_notify_link(
+    payload: TelegramMemberLinkIn,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> TelegramLinkOut:
+    """Link "Thông báo" cho MỘT email — gửi cho khách để họ nhận nhắc gia hạn email đó.
+
+    Dùng ngay sau khi mời thành công: đại lý bấm nút Thông báo trên dòng email → gửi
+    link → khách bấm Start. Khách không phải gõ địa chỉ nên không gõ sai, và link
+    không lộ bất kỳ email nào khác.
+
+    Quyền: chỉ email THUỘC người gọi (super-admin thấy tất cả) — dùng chung bộ lọc
+    visibility với các endpoint member khác.
+    """
+    _require_bot()
+    bot = _safe_bot_username()
+    if not bot:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Không lấy được thông tin bot từ Telegram (kiểm tra token bot)",
+        )
+    stmt = select(Member).where(Member.id == payload.member_id)
+    if not user.is_super_admin:
+        stmt = stmt.where(Member.invited_by_user_id == user.id)
+    member = db.execute(stmt).scalar_one_or_none()
+    if member is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Email không tồn tại hoặc bạn không có quyền truy cập",
+        )
+
+    now = datetime.now(timezone.utc)
+    # Mỗi email chỉ giữ 1 link đang hiệu lực: bấm lại nút = link mới, link cũ hết dùng.
+    db.execute(
+        delete(TelegramLinkToken).where(
+            TelegramLinkToken.purpose == "invite_member",
+            TelegramLinkToken.member_id == member.id,
+        )
+    )
+    token = secrets.token_urlsafe(24)
+    row = TelegramLinkToken(
+        token=token,
+        user_id=user.id,
+        purpose="invite_member",
+        member_id=member.id,
         created_at=now,
         expires_at=now + INVITE_TOKEN_TTL,
     )

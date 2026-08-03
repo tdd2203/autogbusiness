@@ -13,6 +13,7 @@ import { Chip } from "./Queue";
 import { MemberDetailModal } from "../components/MemberDetailModal";
 import { ChangeEmailModal } from "../components/ChangeEmailModal";
 import { ChangeSubscriptionModal } from "../components/ChangeSubscriptionModal";
+import { NotifyLinkModal } from "../components/NotifyLinkModal";
 import { RowActionsMenu, type RowActionItem } from "../components/RowActionsMenu";
 import { isRenewalDue } from "../components/RenewalsPanel";
 import { confirm, toast } from "../components/Toast";
@@ -109,6 +110,9 @@ export default function AddedEmails() {
   const [changeSubMember, setChangeSubMember] = useState<AddedMember | null>(
     null,
   );
+  // Email đang mở modal "Thông báo" — lấy link gửi cho khách để họ nhận nhắc gia hạn
+  // của đúng email đó. Có mặt ngay sau khi mời thành công (email vào danh sách này).
+  const [notifyMember, setNotifyMember] = useState<AddedMember | null>(null);
   // Mời lại email HẾT HẠN + ví thiếu → QR thanh toán.
   const [reinviteQr, setReinviteQr] = useState<OrderQr | null>(null);
 
@@ -432,6 +436,13 @@ export default function AddedEmails() {
         <RowActionsMenu
           ariaLabel={t("common.actions")}
           items={[
+            // "Thông báo" mở cho MỌI người dùng: ai add được email thì cũng phải gửi
+            // được link nhắc gia hạn cho khách của email đó.
+            {
+              key: "notify",
+              label: t("telegram.notifyAction"),
+              onClick: () => setNotifyMember(m),
+            },
             ...(canChangeSubscription
               ? [
                   {
@@ -485,6 +496,11 @@ export default function AddedEmails() {
         <RowActionsMenu
           ariaLabel={t("common.actions")}
           items={[
+            {
+              key: "notify",
+              label: t("telegram.notifyAction"),
+              onClick: () => setNotifyMember(m),
+            },
             {
               key: "sync",
               label: t("member.syncAction"),
@@ -632,6 +648,12 @@ export default function AddedEmails() {
           workspaceId={changeSubMember.workspace_id}
           member={changeSubMember}
           onClose={() => setChangeSubMember(null)}
+        />
+      )}
+      {notifyMember && (
+        <NotifyLinkModal
+          member={notifyMember}
+          onClose={() => setNotifyMember(null)}
         />
       )}
 
