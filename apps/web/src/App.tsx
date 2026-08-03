@@ -9,6 +9,7 @@ import Members from "./pages/Members";
 import InviteMembers from "./pages/InviteMembers";
 import AddedEmails from "./pages/AddedEmails";
 import Renewals from "./pages/Renewals";
+import Notifications from "./pages/Notifications";
 import Wallet from "./pages/Wallet";
 import WalletAdmin from "./pages/WalletAdmin";
 import FinancialReport from "./pages/FinancialReport";
@@ -123,6 +124,9 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        {/* "Thông báo" (feature 004) — mở cho MỌI người dùng đã đăng nhập: kết nối
+            Telegram, người nhận, mẫu nội dung + trạng thái thông báo từng email. */}
+        <Route path="notifications" element={<Notifications />} />
         {/* Ví (feature 003) — bảo vệ ở FE bằng ProtectedRoute; backend chặn thật
             bằng require_wallet_enabled (403 nếu chưa bật cờ). */}
         <Route path="wallet" element={<Wallet />} />
