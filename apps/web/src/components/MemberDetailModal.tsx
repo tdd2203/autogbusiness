@@ -13,8 +13,9 @@
  * Xem MemberDetailModal.md TRƯỚC KHI SỬA.
  */
 import { useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { api } from "../lib/api";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, ApiError } from "../lib/api";
+import { toast } from "./Toast";
 import { LICENSE_FEATURE_ENABLED } from "../lib/featureFlags";
 import { useFormatDate, useFormatDateTime, useT } from "../i18n";
 import { useAuth } from "../hooks/useAuth";
@@ -698,6 +699,113 @@ export function MemberDetailModal({
     </span>
   );
 
+  const qc = useQueryClient();
+  // Người nhận NHẮC GIA HẠN chỉ định cho riêng email này (feature 004). Bỏ trống =
+  // nhắc về đại lý đã add. Nhập @username thì phải chờ người đó bấm /start bot mới
+  // gửi được (ràng buộc Telegram) — trạng thái đó hiện bằng chip "chờ kết nối".
+  const [editingNotify, setEditingNotify] = useState(false);
+  const [notifyInput, setNotifyInput] = useState(member.notify_telegram_target ?? "");
+  const saveNotifyTarget = useMutation({
+    mutationFn: (target: string | null) =>
+      api<{ target: string | null; chat_id: number | null; resolved: boolean }>(
+        `/api/v1/workspaces/${workspaceId}/members/${member.id}/notify-target`,
+        { method: "PATCH", body: JSON.stringify({ target }) },
+      ),
+    onSuccess: () => {
+      setEditingNotify(false);
+      qc.invalidateQueries({ queryKey: ["members"] });
+      qc.invalidateQueries({ queryKey: ["added-members"] });
+      toast.success(t("telegram.targetSaved"));
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? String(e.detail) : t("telegram.targetError")),
+  });
+  const notifyValue: ReactNode = editingNotify ? (
+    <div style={{ display: "grid", gap: 6 }}>
+      <input
+        className="form-input"
+        placeholder={t("telegram.targetPlaceholder")}
+        value={notifyInput}
+        onChange={(e) => setNotifyInput(e.target.value)}
+      />
+      <div style={{ fontSize: 11, color: "var(--ink-3)", textAlign: "left" }}>
+        {t("telegram.targetHint")}
+      </div>
+      <div style={{ display: "flex", gap: 6 }}>
+        <button
+          type="button"
+          className="btn btn-primary btn-sm"
+          disabled={saveNotifyTarget.isPending}
+          onClick={() => saveNotifyTarget.mutate(notifyInput.trim() || null)}
+        >
+          {saveNotifyTarget.isPending ? t("common.loading") : t("common.save")}
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          disabled={saveNotifyTarget.isPending}
+          onClick={() => setEditingNotify(false)}
+        >
+          {t("common.cancel")}
+        </button>
+      </div>
+    </div>
+  ) : (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        justifyContent: "flex-end",
+        whiteSpace: "nowrap",
+      }}
+    >
+      <span>{member.notify_telegram_target ?? "—"}</span>
+      {member.notify_telegram_target && (
+        <span
+          title={
+            member.notify_telegram_chat_id
+              ? t("telegram.targetReady")
+              : t("telegram.targetPending")
+          }
+          style={{
+            fontSize: 9.5,
+            fontWeight: 500,
+            color: member.notify_telegram_chat_id ? "var(--success)" : "var(--warning)",
+            background: "var(--surface-2)",
+            border: "1px solid var(--border)",
+            padding: "1px 5px",
+            borderRadius: 5,
+          }}
+        >
+          {member.notify_telegram_chat_id
+            ? t("telegram.targetReady")
+            : t("telegram.targetPending")}
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={() => {
+          setNotifyInput(member.notify_telegram_target ?? "");
+          setEditingNotify(true);
+        }}
+        title={t("common.edit")}
+        style={{
+          fontSize: 9.5,
+          fontWeight: 500,
+          background: "var(--warning-bg)",
+          color: "var(--warning)",
+          border: "1px solid var(--warning-border)",
+          padding: "1px 6px",
+          borderRadius: 5,
+          cursor: "pointer",
+        }}
+      >
+        {t("common.edit")}
+      </button>
+    </span>
+  );
+
   const { data: logs = [], isLoading } = useQuery({
     queryKey: ["member-logs", workspaceId, member.id],
     queryFn: () =>
@@ -962,6 +1070,13 @@ export function MemberDetailModal({
       value: member.subscription_end_at
         ? fmtSec(member.subscription_end_at)
         : t("memberDetail.unlimited"),
+    },
+    // Người nhận nhắc gia hạn chỉ định cho email này (feature 004). full=true khi
+    // đang sửa → hàng bung full width để chứa ô nhập + ghi chú.
+    {
+      label: t("telegram.targetLabel"),
+      value: notifyValue,
+      full: editingNotify,
     },
     {
       label: t("memberDetail.shortJoined"),

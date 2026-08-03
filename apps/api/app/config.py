@@ -53,6 +53,62 @@ class Settings(BaseSettings):
     otp_max_attempts: int = Field(5, alias="OTP_MAX_ATTEMPTS")
     otp_resend_cooldown_sec: int = Field(60, alias="OTP_RESEND_COOLDOWN_SEC")
 
+    # ---- Nhắc gia hạn qua Telegram (services/telegram.py + renewal_reminder.py) ----
+    # Token bot lấy từ @BotFather. RỖNG = TẮT HẲN tính năng (job nền không chạy,
+    # endpoint trả 503) — mặc định an toàn cho dev/test.
+    telegram_bot_token: str = Field("", alias="TELEGRAM_BOT_TOKEN")
+    # @username của bot — chỉ để dựng deep-link t.me/<bot>?start=<token>. Rỗng =
+    # tự hỏi Bot API (getMe) rồi cache trong process.
+    telegram_bot_username: str = Field("", alias="TELEGRAM_BOT_USERNAME")
+    # Secret gửi kèm setWebhook; Telegram trả lại ở header X-Telegram-Bot-Api-Secret-Token.
+    # Rỗng = KHÔNG kiểm tra (chỉ dùng local). Prod PHẢI set để chặn giả mạo update.
+    telegram_webhook_secret: str = Field("", alias="TELEGRAM_WEBHOOK_SECRET")
+    # Chat nhận BẢN TỔNG HỢP (group admin). Nhiều đích ngăn cách bằng dấu phẩy.
+    # ID group thường ÂM (vd -1001234567890). Rỗng = không gửi digest.
+    telegram_admin_chat_id: str = Field("", alias="TELEGRAM_ADMIN_CHAT_ID")
+
+    # Các mốc nhắc TRƯỚC hạn (số ngày còn lại), ngăn cách bằng dấu phẩy. Mặc định
+    # "3,1" = nhắc khi còn ≤3 ngày và khi còn ≤1 ngày. Mỗi email chỉ nhận ĐÚNG 1 tin
+    # cho mỗi mốc (chặn trùng bằng dedupe_key trong bảng telegram_notifications).
+    renewal_reminder_days: str = Field("3,1", alias="RENEWAL_REMINDER_DAYS")
+    # Giờ gửi trong ngày (giờ địa phương theo offset dưới). Job nền quét mỗi 5′ nhưng
+    # CHỈ tạo tin mới trong giờ này → không nhắn lúc nửa đêm.
+    renewal_reminder_hour: int = Field(9, alias="RENEWAL_REMINDER_HOUR")
+    # Lệch giờ địa phương so với UTC (VN = +7, không có DST nên offset cố định là
+    # ĐÚNG TUYỆT ĐỐI — tránh phụ thuộc tzdata có thể thiếu trong image slim).
+    renewal_reminder_utc_offset: int = Field(7, alias="RENEWAL_REMINDER_UTC_OFFSET")
+
+    def telegram_admin_chat_ids(self) -> list[int]:
+        """Parse `TELEGRAM_ADMIN_CHAT_ID` → danh sách id số. Bỏ qua phần rác."""
+        out: list[int] = []
+        for part in (self.telegram_admin_chat_id or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                out.append(int(part))
+            except ValueError:
+                continue
+        return out
+
+    def reminder_day_buckets(self) -> list[int]:
+        """Parse `RENEWAL_REMINDER_DAYS` → danh sách mốc ngày GIẢM DẦN (vd [3, 1]).
+
+        Rỗng/rác → về mặc định [3, 1]. Giảm dần vì logic chọn mốc lấy giá trị NHỎ
+        NHẤT còn áp dụng được (xem renewal_reminder._bucket_for)."""
+        out: list[int] = []
+        for part in (self.renewal_reminder_days or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                value = int(part)
+            except ValueError:
+                continue
+            if value > 0:
+                out.append(value)
+        return sorted(set(out), reverse=True) or [3, 1]
+
 
 @lru_cache
 def get_settings() -> Settings:

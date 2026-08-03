@@ -73,6 +73,24 @@ class User(Base):
     topup_code: Mapped[str | None] = mapped_column(String(24), nullable=True, index=True)
     token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     permissions: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    # --- Nhắc gia hạn qua Telegram (feature 004-telegram-renewal-reminder) ---
+    # chat_id RIÊNG của user với bot, có sau khi user bấm deep-link t.me/<bot>?start=<token>
+    # (webhook /webhook/telegram xử lý). NULL = chưa liên kết → không nhận nhắc riêng.
+    # KHÔNG unique: một người có thể dùng chung 1 Telegram cho nhiều tài khoản dashboard.
+    telegram_chat_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, index=True
+    )
+    # @username Telegram tại thời điểm liên kết (lowercase, KHÔNG có '@'). Chỉ để hiển
+    # thị/đối chiếu — Bot API KHÔNG gửi tin theo username nên luôn gửi bằng chat_id.
+    telegram_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    telegram_linked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Công tắc nhận nhắc của riêng user (lệnh /stop trong bot hoặc toggle ở Cài đặt).
+    # False = đã liên kết nhưng tạm ngưng nhận — vẫn giữ chat_id để bật lại.
+    telegram_notify_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
     # Mốc kết thúc lệnh-cấm chống-spam. Khi user lặp lại CÙNG (loại lệnh, email)
     # liên tiếp quá 3 lần (task FAILED không tính), endpoint set cột này = now+10
     # phút + bump token_version (đá session) → mọi request 401, login bị chặn tới
@@ -462,6 +480,17 @@ class Member(Base):
     # sửa → còn quyền sửa. (Tái dùng cột cũ của tính năng "đồng bộ ngày thêm" đã gỡ.)
     add_date_corrected_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # --- Người nhận nhắc gia hạn RIÊNG cho email này (feature 004) ---
+    # Người dùng nhập '@username' hoặc ID số; lưu NGUYÊN VĂN đã chuẩn hoá ở đây để UI
+    # hiển thị lại đúng thứ đã nhập. Khi ĐÃ đặt và resolve được chat_id, tin nhắc của
+    # email này gửi cho NGƯỜI ĐƯỢC CHỈ ĐỊNH *thay cho* đại lý đã add (nghĩa "chỉ định").
+    # Chưa resolve được (người đó chưa bấm /start bot) → tạm gửi về đại lý, không mất tin.
+    notify_telegram_target: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # chat_id đã resolve. Nhập ID số → điền ngay; nhập @username → điền khi người đó
+    # /start bot (webhook khớp username trong bảng telegram_contacts).
+    notify_telegram_chat_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True, index=True
     )
 
     workspace = relationship("Workspace")
@@ -927,3 +956,149 @@ class PaymentSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=_utcnow
     )
+
+
+# =============================================================================
+# Nhắc gia hạn qua Telegram (feature 004-telegram-renewal-reminder)
+# Xem docs/Notifications/Renewal_Reminder_Telegram.md trước khi sửa.
+# =============================================================================
+
+
+class TelegramSettings(Base):
+    """Cấu hình bot Telegram do super-admin nhập TỪ GIAO DIỆN (singleton id=1).
+
+    Vì sao có bảng này thay vì chỉ đọc .env: đổi token/nhóm nhận tổng hợp mà phải SSH
+    vào VPS sửa .env rồi restart container thì gần như không ai làm. Mô hình này học
+    từ dự án Tele_Bot (`master/services/bot_registry_service.py`): **xác thực token
+    bằng getMe trước khi lưu**, **mã hoá Fernet khi cất vào DB**, và cache lại để
+    khỏi giải mã mỗi lần gửi.
+
+    Thứ tự ưu tiên khi chạy: **.env thắng** (giữ nguyên hành vi cũ cho dev/test và
+    cho phép khoá cứng cấu hình ở môi trường nhạy cảm); .env trống thì mới dùng bảng này.
+
+    Khoá Fernet suy ra từ `JWT_SECRET` (không thêm biến môi trường mới — nếu bắt đặt
+    thêm 1 biến nữa thì lại phải SSH, đúng thứ đang muốn tránh). Hệ quả: **đổi
+    JWT_SECRET ⇒ không giải mã được token cũ** → hệ thống coi như chưa cấu hình và
+    super-admin nhập lại token (xem services/telegram._decrypt).
+    """
+
+    __tablename__ = "telegram_settings"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_telegram_settings_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    # Token @BotFather đã mã hoá Fernet. NULL = chưa cấu hình qua UI.
+    bot_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # @username bot lấy từ getMe lúc lưu (không có '@') — dựng deep-link, khỏi gọi lại.
+    bot_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Secret webhook SINH TỰ ĐỘNG khi lưu token (không bắt admin tự nghĩ chuỗi ngẫu
+    # nhiên). Webhook bắt buộc phải có secret — xem routers/telegram.telegram_webhook.
+    webhook_secret: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Nhóm nhận BẢN TỔNG HỢP, nhiều đích ngăn bằng dấu phẩy (ID group thường ÂM).
+    admin_chat_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    updated_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=_utcnow
+    )
+
+
+class TelegramContact(Base):
+    """MỌI người đã từng bấm /start bot — sổ địa chỉ để 'chỉ định bằng @username'.
+
+    LÝ DO TỒN TẠI: Bot API **không gửi được tin theo @username** (chat_id chỉ nhận số,
+    hoặc @username của KÊNH công khai) và bot **không được phép nhắn trước** cho người
+    chưa /start (403 'bot can't initiate conversation with a user'). Bảng này ghi lại
+    (username → chat_id) ngay khi ai đó /start, nhờ vậy admin chỉ định `@ai_do` cho một
+    email thì hệ thống tự khớp ra chat_id khi người ấy mở bot.
+    """
+
+    __tablename__ = "telegram_contacts"
+
+    # chat_id của cuộc trò chuyện RIÊNG với bot (= user id Telegram, luôn > 0).
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    # Lowercase, KHÔNG có '@'. NULL = tài khoản Telegram không đặt username → chỉ có
+    # thể chỉ định bằng ID số.
+    username: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    # Set khi Telegram trả 403 (bot bị chặn / tài khoản bị vô hiệu). Người nhận bị
+    # chặn thì KHÔNG gửi nữa cho tới khi họ /start lại (webhook xoá mốc này).
+    blocked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class TelegramLinkToken(Base):
+    """Mã dùng-một-lần cho deep-link liên kết tài khoản: t.me/<bot>?start=<token>.
+
+    Người dùng bấm nút 'Kết nối Telegram' ở Cài đặt → tạo hàng này → mở Telegram →
+    bot nhận '/start <token>' → gán chat_id vào đúng user. Token ngắn hạn + dùng 1 lần
+    nên lộ link cũng không chiếm được tài khoản khác.
+    """
+
+    __tablename__ = "telegram_link_tokens"
+
+    token: Mapped[str] = mapped_column(String(48), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TelegramNotification(Base):
+    """Nhật ký + KHOÁ CHỐNG TRÙNG của mỗi tin nhắc gia hạn.
+
+    Vòng đời 1 hàng = 1 (email × người nhận × mốc nhắc):
+      pending → sent            (gửi được)
+              → blocked         (bot bị chặn / người nhận chưa /start → thôi thử lại)
+              → failed (retry)  (lỗi tạm: mạng, 429…) — job nền thử lại tới `attempts` = 3
+              → skipped         (email đã gia hạn/bị gỡ TRƯỚC khi tin kịp gửi → bỏ,
+                                 không gửi thông tin đã sai)
+
+    `dedupe_key` UNIQUE là thứ đảm bảo **mỗi email chỉ nhắc ĐÚNG 1 lần cho mỗi mốc**
+    dù job chạy lại bao nhiêu lần (INSERT ... ON CONFLICT DO NOTHING = giành chỗ).
+    Nhiều hàng cùng một người nhận được GỘP thành 1 tin nhắn (xem renewal_reminder.py).
+    """
+
+    __tablename__ = "telegram_notifications"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    # 'renewal_reminder' (nhắc trước hạn) | 'test' (gửi thử từ Cài đặt).
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    # "<event>:<member_id>:<bucket>d:<chat_id>" — xem renewal_reminder._dedupe_key.
+    dedupe_key: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    member_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("members.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    # User dashboard liên quan (chủ sở hữu email). NULL nếu người nhận là khách được
+    # chỉ định hoặc group admin.
+    user_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    # 'owner' (đại lý đã add email) | 'assignee' (người được chỉ định) | 'admin' (digest).
+    # Quyết định LỜI VĂN của tin nhắn — xem renewal_reminder._render_message.
+    recipient_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Mốc nhắc (số ngày còn lại): 3 hoặc 1 theo RENEWAL_REMINDER_DAYS.
+    days_bucket: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 'pending' | 'sent' | 'failed' | 'blocked'
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending", index=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

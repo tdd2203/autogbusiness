@@ -427,6 +427,11 @@ class MemberOut(BaseModel):
     # Phí mời RIÊNG của member (VND) do super-admin đặt (feature 003). NULL = dùng
     # phí mặc định payment_settings.invite_fee_vnd.
     fee_vnd: int | None = None
+    # Người nhận nhắc gia hạn CHỈ ĐỊNH cho email này (feature 004). NULL = nhắc về
+    # đại lý đã add. `notify_telegram_chat_id` NULL trong khi target là '@username'
+    # nghĩa là người đó CHƯA bấm /start bot → UI hiện "chờ kết nối".
+    notify_telegram_target: str | None = None
+    notify_telegram_chat_id: int | None = None
     # Lịch sử chu kỳ gia hạn (sắp theo cycle_number) — trạng thái thanh toán từng kỳ.
     # Endpoint không kèm chu kỳ để rỗng; danh sách member workspace + tab "Email đã add"
     # đổ đầy để modal "Chi tiết thành viên" hiện mục "Kỳ thanh toán" GIỐNG NHAU ở cả hai

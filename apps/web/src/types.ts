@@ -119,6 +119,12 @@ export type Member = {
   /** Phí mời RIÊNG của member (VND) do super-admin đặt (feature 003). NULL = dùng
    *  phí mặc định (payment_settings.invite_fee_vnd). */
   fee_vnd?: number | null;
+  /** Người nhận nhắc gia hạn CHỈ ĐỊNH cho email này (feature 004): "@username" hoặc
+   *  ID số. NULL = nhắc về đại lý đã add email. */
+  notify_telegram_target?: string | null;
+  /** chat_id đã khớp của người được chỉ định. NULL khi target là "@username" mà
+   *  người đó CHƯA bấm /start bot → UI hiện "chờ kết nối", nhắc tạm về đại lý. */
+  notify_telegram_chat_id?: number | null;
   /** Lịch sử chu kỳ gia hạn (sắp theo cycle_number). Đổ đầy ở CẢ danh sách member
    *  workspace (GET /workspaces/{id}/members) LẪN tab "Email đã add" → modal "Chi tiết
    *  thành viên" hiện mục "Kỳ thanh toán" giống nhau ở hai nơi. Rỗng/undefined nếu
