@@ -314,7 +314,7 @@ def _help_text() -> str:
         "ví dụ : /email ex1@example.com\n\n"
         "/huyemail &lt;địa chỉ&gt; — thôi nhận nhắc email đó\n"
         "ví dụ : /huyemail ex1@example.com\n\n"
-        "/danhsach — xem toàn bộ email bạn đang theo dõi\n"
+        "/danhsach — xem toàn bộ email bạn sở hữu\n"
         "/handung — email còn dưới 7 ngày sử dụng\n"
         "/id — xem ID của bạn (gửi cho người bán nếu cần)\n"
         "/tat — tạm ngưng nhận nhắc\n"
@@ -699,7 +699,7 @@ def _handle_invite_subscription(
             else "Hiện chưa có email nào trong danh sách. Có email mới bạn sẽ được nhắc tự động."
         )
         + "\n\nChủ tài khoản có thể chỉnh bạn nhận toàn bộ hay chỉ một số email.\n"
-        "Gõ /danhsach để xem toàn bộ email bạn đang theo dõi, "
+        "Gõ /danhsach để xem toàn bộ email bạn sở hữu, "
         "/handung để xem email còn dưới 7 ngày.",
     )
 
@@ -860,7 +860,7 @@ def _handle_list(db: Session, chat_id: int, now: datetime) -> None:
         footer = f"… và {total - len(members)} email khác.\n{footer}"
     _reply_lines(
         chat_id,
-        f"📋 <b>Email bạn đang theo dõi ({total})</b>",
+        f"📋 <b>Email bạn sở hữu ({total})</b>",
         [_member_line(m, now) for m in members],
         footer,
     )
@@ -880,7 +880,7 @@ def _handle_expiring(db: Session, chat_id: int, now: datetime) -> None:
         _reply(
             chat_id,
             "✅ Không có email nào còn dưới 7 ngày sử dụng.\n"
-            "Gõ /danhsach để xem toàn bộ email bạn đang theo dõi.",
+            "Gõ /danhsach để xem toàn bộ email bạn sở hữu.",
         )
         return
 
