@@ -1035,11 +1035,19 @@ class TelegramContact(Base):
 
 
 class TelegramLinkToken(Base):
-    """Mã dùng-một-lần cho deep-link liên kết tài khoản: t.me/<bot>?start=<token>.
+    """Mã cho deep-link `t.me/<bot>?start=<token>` — HAI mục đích khác nhau:
 
-    Người dùng bấm nút 'Kết nối Telegram' ở Cài đặt → tạo hàng này → mở Telegram →
-    bot nhận '/start <token>' → gán chat_id vào đúng user. Token ngắn hạn + dùng 1 lần
-    nên lộ link cũng không chiếm được tài khoản khác.
+    - `purpose='link_self'` (mặc định): chính chủ bấm 'Kết nối Telegram' ở Cài đặt →
+      gán chat_id vào tài khoản của họ. **Dùng-một-lần**, hạn ngắn: lộ link cũng không
+      chiếm được tài khoản khác.
+    - `purpose='invite_sub'`: chủ tài khoản tạo link để **mời NGƯỜI KHÁC nhận thông
+      báo của mình** (nhân viên, khách…). Link này **dùng được nhiều lần** tới khi hết
+      hạn — chủ tài khoản thường gửi cho vài người; mỗi người bấm Start tạo 1 bản ghi
+      `TelegramSubscription` riêng.
+
+    ⚠️ Khác biệt "một lần vs nhiều lần" là CỐ Ý: link_self là chứng minh danh tính nên
+    phải dùng-một-lần; invite_sub chỉ cấp quyền NHẬN thông báo (không đụng tài khoản),
+    và chủ tài khoản có thể gỡ từng người nhận bất cứ lúc nào.
     """
 
     __tablename__ = "telegram_link_tokens"
@@ -1048,11 +1056,59 @@ class TelegramLinkToken(Base):
     user_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    # 'link_self' | 'invite_sub'
+    purpose: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="link_self", server_default="link_self"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TelegramSubscription(Base):
+    """MỘT người nhận thông báo của MỘT tài khoản dashboard, kèm phạm vi nhận.
+
+    Sinh ra khi ai đó bấm link mời (`purpose='invite_sub'`) của chủ tài khoản. Mặc
+    định nhận **toàn bộ** thông báo của tài khoản đó; chủ tài khoản có thể thu hẹp
+    xuống **chỉ vài email** trong trang Cài đặt → Telegram → Người nhận thông báo.
+
+    Khác `Member.notify_telegram_*` (chỉ định theo TỪNG email, thường là khách cuối):
+    bảng này là **danh sách phát** của chủ tài khoản (nhân viên/đối tác), nên người
+    nhận ở đây vẫn nhận song song với người được chỉ định theo email.
+    """
+
+    __tablename__ = "telegram_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "chat_id", name="uq_tele_sub_user_chat"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    # Chủ tài khoản — NGUỒN thông báo (email do người này add).
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    # Tên/@username ghi lại lúc người đó bấm Start — để chủ tài khoản nhận ra ai là ai.
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # 'all' = mọi email của chủ tài khoản (kể cả email thêm sau này)
+    # 'selected' = chỉ các email trong `member_ids`
+    scope: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="all", server_default="all"
+    )
+    # Danh sách member.id (chuỗi UUID) khi scope='selected'. Lưu JSONB thay vì bảng
+    # nối: chỉ đọc theo cả cụm khi quét nhắc, không cần truy vấn ngược theo member.
+    member_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=_utcnow
+    )
 
 
 class TelegramNotification(Base):

@@ -4,6 +4,7 @@ import { api, ApiError } from "../lib/api";
 import { useFormatDateTime, useT } from "../i18n";
 import { useAuth } from "../hooks/useAuth";
 import { confirm, toast } from "./Toast";
+import type { AddedMember } from "../types";
 
 /**
  * Tab "Telegram" trong Cài đặt (feature 004) — hai phần:
@@ -45,6 +46,17 @@ type AdminStatus = {
 };
 
 type LinkOut = { deep_link: string; token: string; expires_at: string };
+
+/** 1 tài khoản Telegram đang nhận thông báo CỦA TÔI (mời qua link chia sẻ). */
+type Subscription = {
+  id: string;
+  chat_id: number;
+  display_name: string | null;
+  scope: "all" | "selected";
+  member_ids: string[];
+  enabled: boolean;
+  created_at: string;
+};
 
 export function TelegramSettings() {
   const t = useT();
@@ -216,7 +228,315 @@ export function TelegramSettings() {
         </div>
       )}
 
+      <SubscriptionsPanel botConfigured={status?.bot_configured === true} />
+
       {isSuper && <TelegramAdminPanel />}
+    </div>
+  );
+}
+
+/**
+ * "Người nhận thông báo" — danh sách phát của CHÍNH tài khoản đang đăng nhập.
+ *
+ * Chủ tài khoản tạo 1 link chia sẻ, gửi cho ai thì người đó bấm Start là nhận được
+ * TOÀN BỘ thông báo của tài khoản này; sau đó chủ tài khoản có thể thu hẹp từng
+ * người xuống chỉ vài email. Khác "chỉ định theo email" ở modal chi tiết (dành cho
+ * khách cuối của đúng email đó) — hai đường chạy song song.
+ */
+function SubscriptionsPanel({ botConfigured }: { botConfigured: boolean }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
+  const [editing, setEditing] = useState<Subscription | null>(null);
+
+  const { data: subs = [] } = useQuery({
+    queryKey: ["telegram-subscriptions"],
+    queryFn: () => api<Subscription[]>("/api/v1/telegram/subscriptions"),
+  });
+
+  const invite = useMutation({
+    mutationFn: () =>
+      api<LinkOut>("/api/v1/telegram/subscriptions/invite", { method: "POST" }),
+    onSuccess: (res) => setInviteLink(res.deep_link),
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? String(e.detail) : t("telegram.linkError")),
+  });
+
+  const remove = useMutation({
+    mutationFn: (id: string) =>
+      api<void>(`/api/v1/telegram/subscriptions/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["telegram-subscriptions"] });
+      toast.success(t("telegram.subRemoved"));
+    },
+  });
+
+  const toggle = useMutation({
+    mutationFn: (vars: { id: string; enabled: boolean }) =>
+      api<Subscription>(`/api/v1/telegram/subscriptions/${vars.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: vars.enabled }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["telegram-subscriptions"] }),
+  });
+
+  return (
+    <div style={{ marginTop: 32, paddingTop: 24, borderTop: "1px solid var(--line)" }}>
+      <h3 className="display-h3">{t("telegram.subTitle")}</h3>
+      <p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 4, marginBottom: 16 }}>
+        {t("telegram.subDesc")}
+      </p>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        <button
+          className="btn btn-primary"
+          disabled={!botConfigured || invite.isPending}
+          onClick={() => invite.mutate()}
+        >
+          {invite.isPending ? t("telegram.connecting") : t("telegram.subCreateLink")}
+        </button>
+      </div>
+
+      {inviteLink && (
+        <div className="notice" style={{ marginBottom: 16 }}>
+          <div className="notice-body">
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, wordBreak: "break-all" }}>
+              {inviteLink}
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <button
+                className="btn btn-sm"
+                onClick={() => {
+                  navigator.clipboard?.writeText(inviteLink);
+                  toast.success(t("telegram.subLinkCopied"));
+                }}
+              >
+                {t("telegram.subCopyLink")}
+              </button>
+              <a className="btn btn-sm" href={inviteLink} target="_blank" rel="noopener noreferrer">
+                {t("telegram.openTelegram")}
+              </a>
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12, color: "var(--ink-3)" }}>
+              {t("telegram.subLinkHint")}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {subs.length === 0 ? (
+        <div className="cell-muted" style={{ fontSize: 13 }}>
+          {t("telegram.subEmpty")}
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table className="data-table data-table-compact">
+            <thead>
+              <tr>
+                <th>{t("telegram.subColRecipient")}</th>
+                <th>{t("telegram.subColScope")}</th>
+                <th style={{ width: 210 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {subs.map((s) => (
+                <tr key={s.id}>
+                  <td>
+                    <div style={{ fontWeight: 500, color: "var(--ink)" }}>
+                      {s.display_name || `ID ${s.chat_id}`}
+                    </div>
+                    <div className="cell-muted" style={{ fontSize: 12 }}>
+                      {s.enabled ? t("telegram.notifyOn") : t("telegram.notifyOff")}
+                    </div>
+                  </td>
+                  <td>
+                    {s.scope === "all"
+                      ? t("telegram.subScopeAll")
+                      : t("telegram.subScopeSelected", { n: s.member_ids.length })}
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      <button className="btn btn-sm" onClick={() => setEditing(s)}>
+                        {t("telegram.subEditScope")}
+                      </button>
+                      <button
+                        className="btn btn-sm"
+                        onClick={() => toggle.mutate({ id: s.id, enabled: !s.enabled })}
+                      >
+                        {s.enabled ? t("telegram.subPause") : t("telegram.subResume")}
+                      </button>
+                      <button
+                        className="btn btn-sm btn-danger"
+                        onClick={async () => {
+                          if (await confirm(t("telegram.subRemoveConfirm"), { danger: true })) {
+                            remove.mutate(s.id);
+                          }
+                        }}
+                      >
+                        {t("common.delete")}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {editing && (
+        <ScopeModal subscription={editing} onClose={() => setEditing(null)} />
+      )}
+    </div>
+  );
+}
+
+/** Chọn người nhận này nhận TOÀN BỘ email của tôi hay chỉ vài email cụ thể. */
+function ScopeModal({
+  subscription,
+  onClose,
+}: {
+  subscription: Subscription;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const qc = useQueryClient();
+  const [scope, setScope] = useState<Subscription["scope"]>(subscription.scope);
+  const [ids, setIds] = useState<string[]>(subscription.member_ids);
+  const [q, setQ] = useState("");
+
+  // Danh sách email của chính tôi — cùng queryKey với trang "Email đã add" nên
+  // thường đã có sẵn trong cache, không phải tải lại.
+  const { data: members = [] } = useQuery({
+    queryKey: ["added-members", "self"],
+    queryFn: () => api<AddedMember[]>("/api/v1/added-members"),
+  });
+
+  const save = useMutation({
+    mutationFn: () =>
+      api<Subscription>(`/api/v1/telegram/subscriptions/${subscription.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ scope, member_ids: scope === "selected" ? ids : [] }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["telegram-subscriptions"] });
+      toast.success(t("telegram.subSaved"));
+      onClose();
+    },
+    onError: (e) =>
+      toast.error(e instanceof ApiError ? String(e.detail) : t("telegram.targetError")),
+  });
+
+  const filtered = members.filter((m) =>
+    q.trim() ? m.email.toLowerCase().includes(q.trim().toLowerCase()) : true,
+  );
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      style={{ padding: 24 }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          width: "min(560px, 100%)",
+          maxHeight: "82vh",
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: 16,
+          padding: 20,
+          display: "flex",
+          flexDirection: "column",
+          gap: 12,
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="display-h3" style={{ margin: 0 }}>
+          {t("telegram.subEditScope")} — {subscription.display_name || subscription.chat_id}
+        </h3>
+
+        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 14 }}>
+          <input
+            type="radio"
+            checked={scope === "all"}
+            onChange={() => setScope("all")}
+          />
+          {t("telegram.subScopeAllLabel")}
+        </label>
+        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 14 }}>
+          <input
+            type="radio"
+            checked={scope === "selected"}
+            onChange={() => setScope("selected")}
+          />
+          {t("telegram.subScopeSelectedLabel")}
+        </label>
+
+        {scope === "selected" && (
+          <>
+            <input
+              className="form-input"
+              placeholder={t("members.searchPlaceholder")}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+            <div
+              style={{
+                overflowY: "auto",
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                padding: 8,
+                maxHeight: 280,
+              }}
+            >
+              {filtered.length === 0 ? (
+                <div className="cell-muted" style={{ fontSize: 13, padding: 8 }}>
+                  {t("telegram.subNoEmails")}
+                </div>
+              ) : (
+                filtered.map((m) => (
+                  <label
+                    key={m.id}
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "center",
+                      padding: "4px 2px",
+                      fontSize: 13,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={ids.includes(m.id)}
+                      onChange={(e) =>
+                        setIds((prev) =>
+                          e.target.checked
+                            ? [...prev, m.id]
+                            : prev.filter((x) => x !== m.id),
+                        )
+                      }
+                    />
+                    <span style={{ fontFamily: "var(--font-mono)" }}>{m.email}</span>
+                  </label>
+                ))
+              )}
+            </div>
+          </>
+        )}
+
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button className="btn btn-ghost" onClick={onClose}>
+            {t("common.cancel")}
+          </button>
+          <button
+            className="btn btn-primary"
+            disabled={save.isPending || (scope === "selected" && ids.length === 0)}
+            onClick={() => save.mutate()}
+          >
+            {save.isPending ? t("common.loading") : t("common.save")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
