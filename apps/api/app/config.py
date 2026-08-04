@@ -78,6 +78,20 @@ class Settings(BaseSettings):
     # ĐÚNG TUYỆT ĐỐI — tránh phụ thuộc tzdata có thể thiếu trong image slim).
     renewal_reminder_utc_offset: int = Field(7, alias="RENEWAL_REMINDER_UTC_OFFSET")
 
+    # ---- Giới hạn tài nguyên (tối ưu RAM 2026-08-04) ----
+    # Kết nối DB thường trực (db.py). Mỗi kết nối = 1 backend process phía
+    # Postgres (~5–10MB RSS) nên pool giữ nhỏ; `max_overflow` là kết nối TẠM,
+    # SQLAlchemy đóng ngay khi trả về pool → không tốn RAM lúc rảnh.
+    # ⚠️ pool_size + max_overflow PHẢI nhỏ hơn `max_connections` của Postgres
+    # (đặt trong docker-compose.yml), chừa chỗ cho alembic lúc startup + psql tay.
+    db_pool_size: int = Field(5, alias="DB_POOL_SIZE")
+    db_max_overflow: int = Field(10, alias="DB_MAX_OVERFLOW")
+    # Tái tạo kết nối cũ hơn ngưỡng này (giây) — tránh dùng lại kết nối đã bị
+    # Postgres/tunnel đóng phía kia mà pool chưa biết.
+    db_pool_recycle_sec: int = Field(1800, alias="DB_POOL_RECYCLE_SEC")
+    # Số thread tối đa của threadpool anyio (xem main.py::_apply_thread_limit).
+    thread_pool_size: int = Field(16, alias="THREAD_POOL_SIZE")
+
     def telegram_admin_chat_ids(self) -> list[int]:
         """Parse `TELEGRAM_ADMIN_CHAT_ID` → danh sách id số. Bỏ qua phần rác."""
         out: list[int] = []
