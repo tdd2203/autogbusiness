@@ -14,12 +14,14 @@ Bản đồ chức năng (mỗi module có file `.md` cùng tên):
   - correct_add_date.py: correct_member_add_date (sửa "ngày gia hạn" ĐÚNG 1 lần — super-admin)
   - change_email.py  : change_member_email (đổi email — xoá cũ + mời mới, giữ hạn)
   - remove.py        : remove_member, bulk_remove, cleanup_expired (xoá)
+  - data_actions.py  : export_member_data, delete_member_data (2 mục menu "..." mới của ChatGPT)
   - role_license.py  : change role / change license / bulk change license
   - reconcile.py     : bulk_upsert, reconcile_after_invite (API cho EXTENSION)
   - ownership.py     : set_member_owner, bulk_assign_owner (gán chủ sở hữu)
   - lookup.py        : lookup_members (tra cứu member theo email — panel xem trước)
   - usage_limit.py   : bulk_set_usage_limit (đặt giới hạn tín dụng/tháng hàng loạt)
   - notify_target.py : set_member_notify_target (CHỈ ĐỊNH người nhận nhắc gia hạn qua Telegram)
+  - payments.py      : list_member_payments (DÒNG TIỀN của email — sổ cái ví + hoá đơn QR)
 
 `_shared.py` giữ `router` (APIRouter dùng chung) + helper chung
 (`_get_workspace_or_404`, `_visibility_filter`, `_member_or_404_visible`,
@@ -33,11 +35,13 @@ from . import (  # noqa: F401  (side-effect: đăng ký route lên router)
     activity,
     change_email,
     correct_add_date,
+    data_actions,
     invite,
     lookup,
     manual_add,
     notify_target,
     ownership,
+    payments,
     reconcile,
     remove,
     renew,

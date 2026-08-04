@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.10.1";
+export const VERSION = "0.11.1";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,50 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.11.1",
+    date: "2026-08-04",
+    kind: "fix",
+    summary:
+      "Mời xong không kết luận hỏng vội nữa: tin thông báo 'đã gửi lời mời' của ChatGPT hơn việc email đã kịp hiện trong danh sách chờ hay chưa. Ngân sách kiểm tra 10s → 30s.",
+    details: [
+      "Bug: quét tab 'Lời mời đang chờ xử lý' trong 10 giây mà không thấy email nào ⇒ báo FAILED. Backend hiểu FAILED = mời hỏng → hoàn phí + xoá bản ghi, trong khi lời mời có thể ĐÃ gửi thật (người nhận vẫn vào được team) → email dùng miễn phí, sổ sách sai.",
+      "Phạm vi thực tế (đã kiểm chứng trên production): 19/77 ca lỗi mang mã VERIFY_FAILED nhưng ca gần nhất là 13/7, trong khi hệ thống bắt đầu thu phí 15/7 — nên CHƯA ca nào làm mất tiền. Đây là vá phòng ngừa cho giai đoạn đã có thu phí, không phải sửa thiệt hại đang xảy ra.",
+      "content/execute-invite-inner.ts phân biệt 2 mức bằng chứng: 'toast' (đọc được chữ xác nhận theo INVITE_SUCCESS_TOAST_PATTERNS — vi/en/zh) và 'dialog_closed' (chỉ thấy hộp thoại đóng). Trước đây gộp làm một.",
+      "background/invite-outcome.ts (MỚI, có test): có toast xác nhận mà danh sách chưa hiện ⇒ KHÔNG báo hỏng và KHÔNG dọn phantom — trả COMPLETED + để email ở diện chưa xác minh, backend hoãn 10 phút rồi resolver 20 phút phân xử bằng bằng chứng. Không có xác nhận nào + quét sạch mà trắng tay ⇒ vẫn FAILED như cũ.",
+      "KHÔNG chèn nhịp nghỉ cố định quanh F5 (đã cân nhắc rồi bỏ — user 2026-08-04): mời trót lọt là ca gần như luôn xảy ra, bắt mỗi lệnh chờ thêm 6 giây để phòng một rủi ro hiếm là đắt. Chỉ nới trần ngân sách để ca CHẬM có thêm cơ hội, ca nhanh không mất gì.",
+    ],
+  },
+  {
+    version: "0.11.0",
+    date: "2026-08-04",
+    kind: "feature",
+    summary:
+      "2 action MỚI: Xuất dữ liệu / Xoá dữ liệu 1 thành viên (2 mục ChatGPT vừa thêm vào menu '...'). Quyền riêng, mặc định TẮT với mọi tài khoản phụ — chỉ admin dùng được.",
+    details: [
+      "Yêu cầu user 2026-08-04: làm luôn 2 action, nút mặc định LÀM MỜ, quyền tắt sẵn khi tạo tài khoản mới lẫn tài khoản hiện có, chỉ admin dùng.",
+      "EXTENSION: actions/member-data/ (execute-member-data.ts) — lọc email ở tab Người dùng → mở menu '...' → chọn ĐÚNG mục theo kind (loại trừ chéo với mục kia + 'Loại bỏ thành viên') → chốt tiêu đề dialog → bấm xác nhận → verify dialog đóng. Không thấy dialog lẫn toast ⇒ FAILED (không báo thành công giả cho thao tác không hoàn tác).",
+      "menu-guard.ts chuyển từ actions/remove/ lên actions/ (dùng chung REMOVE + 2 action mới): thêm pickDataMenuItemIndex + isDataTextOfKind, 26 test.",
+      "RUNNER: taskToRequest 2 kind mới, CONTENT_TIMEOUTS 150s, thêm vào MEMBER_LIST_TASKS (ép tab về /admin/members sạch) và DRY_RUN_BLOCKED_TYPES.",
+      "BACKEND: quyền MEMBER_EXPORT_DATA / MEMBER_DELETE_DATA (GRANTABLE nhưng KHÔNG default, KHÔNG backfill), QueueType EXPORT_MEMBER_DATA / DELETE_MEMBER_DATA, endpoint POST /members/{id}/export-data | delete-data (chỉ member active, idempotent theo task đang mở), ngưỡng treo 3 phút.",
+      "WEB: 2 mục trong menu '⋯' của member đang hoạt động — luôn hiện nhưng LÀM MỜ khi chưa được cấp quyền; 'Xoá dữ liệu' là mục danger có xác nhận riêng.",
+    ],
+  },
+  {
+    version: "0.10.2",
+    date: "2026-08-04",
+    kind: "fix",
+    summary:
+      "ChatGPT thêm 'Xuất dữ liệu' + 'Xoá dữ liệu' vào menu '...' của member ĐÃ THAM GIA. Chặn cứng để REMOVE_MEMBER không bao giờ click nhầm 'Xoá dữ liệu' (xoá sạch dữ liệu member, không hoàn tác).",
+    details: [
+      "User report 2026-08-04 (ảnh UI vi + en): menu row member đã tham gia giờ có 3 mục — Xuất dữ liệu / Xoá dữ liệu / Loại bỏ thành viên (Export data / Delete data / Remove member).",
+      "Rủi ro: TEXT_FALLBACKS.removeMenuItem chứa nhãn lỏng 'Xoá', 'Xóa', 'Delete', '删除'. Hôm nay nhãn đúng ('Loại bỏ thành viên') vẫn khớp trước nên chưa sai, nhưng ChatGPT đổi chữ 1 lần nữa (đã đổi ở v0.4.4, v0.7.14) là fallback rơi trúng 'Xoá dữ liệu' — dialog đó cũng có nút đỏ 'Xóa' nên confirm bấm luôn.",
+      "menu-guard.ts (mới, thuần hàm + test): deny-list nhãn 'Xuất/Xoá dữ liệu' cho cả 3 locale; chọn item theo 2 vòng — khớp CHÍNH XÁC trước, substring sau; item dữ liệu bị loại ở mọi vòng.",
+      "execute-remove.ts: lọc cả label DB `menu_remove_member` (harvest nhầm → reportLabelMismatch + bỏ qua), lọc cả kết quả selector CSS, và CHỐT CHẶN CUỐI — tiêu đề dialog vừa mở phải KHÔNG phải 'Xoá dữ liệu', nếu nhầm thì ESC + FAILED_UI_CHANGED thay vì bấm xác nhận.",
+      "harvest-labels: không bao giờ ghi item 'Xuất/Xoá dữ liệu' vào `menu_remove_member` (harvest có click thử item để đọc dialog → ghi nhầm là hỏng vĩnh viễn).",
+      "Không đổi hành vi khi UI bình thường: menu 3 mục vẫn chọn đúng 'Loại bỏ thành viên'/'Remove member'/'移除成员' (19 test).",
+    ],
+  },
   {
     version: "0.10.1",
     date: "2026-08-01",

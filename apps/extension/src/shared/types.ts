@@ -28,6 +28,8 @@ export type QueueItem = {
     | "CHANGE_ROLE"
     | "CHANGE_LICENSE_TYPE"
     | "SET_USAGE_LIMIT"
+    | "EXPORT_MEMBER_DATA"
+    | "DELETE_MEMBER_DATA"
     | "SYNC_DATA"
     | "SYNC_BILLING"
     | "REVOKE_INVITES"

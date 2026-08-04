@@ -93,6 +93,9 @@ QueueType = Literal[
     "HARVEST_LABELS",
     "PURCHASE_SEAT",
     "SET_USAGE_LIMIT",
+    # 2 mục menu "..." mới của ChatGPT cho member đã tham gia (xem members/data_actions.py)
+    "EXPORT_MEMBER_DATA",
+    "DELETE_MEMBER_DATA",
 ]
 QueueStatus = Literal["PENDING", "IN_PROGRESS", "COMPLETED", "FAILED"]
 
@@ -384,6 +387,53 @@ class SubscriptionCycleOut(BaseModel):
     payment_status: str = "unpaid"
     payment_requested_at: datetime | None = None
     paid_at: datetime | None = None
+
+
+class MemberPaymentEntryOut(BaseModel):
+    """1 dòng SỔ CÁI VÍ liên quan tới email (tiền thật rời/về ví).
+
+    `amount` có dấu: âm = trừ ví (phí mời/gia hạn), dương = cộng lại (hoàn phí).
+    `kind`: invite_fee | invite_refund | renew_fee (xem WalletTransaction)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    kind: str
+    amount: int
+    balance_after: int
+    ref_type: str | None = None
+    ref_id: str | None = None
+    meta: dict | None = None
+    created_at: datetime
+
+
+class MemberPaymentOrderOut(BaseModel):
+    """1 hoá đơn QR (chỉ tạo khi ví KHÔNG đủ) — để truy vết, KHÔNG cộng vào tổng."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    ref_code: str
+    kind: str
+    amount_vnd: int
+    # pending | paid | cancelled | expired
+    status: str
+    paid_amount_vnd: int | None = None
+    created_at: datetime
+    paid_at: datetime | None = None
+    fulfillment_error: str | None = None
+
+
+class MemberPaymentsOut(BaseModel):
+    """Dòng tiền của 1 email. `net_total` = đã thu − đã hoàn (theo sổ cái ví):
+    0 ⇒ email này chưa thu được đồng nào (thu rồi hoàn hết)."""
+
+    email: EmailStr
+    entries: list[MemberPaymentEntryOut] = Field(default_factory=list)
+    orders: list[MemberPaymentOrderOut] = Field(default_factory=list)
+    charged_total: int = 0
+    refunded_total: int = 0
+    net_total: int = 0
 
 
 class MemberOut(BaseModel):

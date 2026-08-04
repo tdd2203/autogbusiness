@@ -13,6 +13,11 @@ import { findRowMenuButton } from "../member-row";
 import { dbLabelsFor, reportLabelMismatch } from "../../../shared/ui-labels";
 import { clickTabAndWait } from "../sync";
 import { clearMemberFilter, filterOnceAndResolve } from "./member-filter";
+import {
+  isDataMenuItemText,
+  pickRemoveMenuItemIndex,
+  sanitizeRemoveLabels,
+} from "../menu-guard";
 
 const LOG = "[autogpt-remove]";
 
@@ -39,18 +44,39 @@ function dumpMenuItems(): string[] {
     .filter(Boolean);
 }
 
-/** Tìm item menu khớp 1 trong các nhãn (substring sau normalize). */
+/**
+ * Tìm item menu khớp 1 trong các nhãn — BỎ QUA item "Xuất dữ liệu"/"Xoá dữ liệu"
+ * (xem [`menu-guard.ts`](../menu-guard.ts)). Ưu tiên khớp CHÍNH XÁC rồi mới substring.
+ */
 function findMenuItemByText(texts: readonly string[]): HTMLElement | null {
   const items = openMenuItems();
-  for (const t of texts) {
-    const needle = normalizeMatchText(t);
-    if (!needle) continue;
-    for (const el of items) {
-      const hay = normalizeMatchText(el.textContent ?? "");
-      if (hay === needle || hay.includes(needle)) return el;
-    }
-  }
-  return null;
+  const idx = pickRemoveMenuItemIndex(
+    items.map((e) => e.textContent ?? ""),
+    texts,
+  );
+  return idx >= 0 ? items[idx] : null;
+}
+
+/**
+ * Tiêu đề dialog đang mở (heading, fallback dòng text đầu) — dùng để chốt ta đang
+ * ở dialog "Loại bỏ thành viên" chứ không phải "Xoá dữ liệu".
+ */
+function openDialogTitle(): string {
+  const d = document.querySelector('[role="alertdialog"], [role="dialog"]');
+  if (!d) return "";
+  const heading = d.querySelector<HTMLElement>(
+    'h1, h2, h3, [role="heading"], [data-testid*="title" i]',
+  );
+  const raw = heading?.textContent ?? d.textContent ?? "";
+  return raw.trim().split("\n")[0]?.trim() ?? "";
+}
+
+/** Đóng dialog đang mở (best-effort) khi ta phát hiện mở nhầm dialog. */
+async function escapeDialog(): Promise<void> {
+  document.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+  );
+  await sleep(400);
 }
 
 /** Nút xác nhận xoá trong dialog — quét cả `[role="dialog"]`/`[role="alertdialog"]`. */
@@ -199,7 +225,17 @@ export async function executeRemove(
   await humanClick(menuBtn);
 
   // Đợi menu mở rồi tìm item "Loại bỏ thành viên" (vi) / "Remove" (en) / …
-  const dbRemove = dbLabelsFor("menu_remove_member", "/admin/members");
+  // Label DB cũng phải qua deny-list: nếu HARVEST_LABELS từng ghi nhầm
+  // "Xoá dữ liệu" vào `menu_remove_member` thì nó đứng ĐẦU danh sách dò → sẽ xoá
+  // sạch dữ liệu member. Chặn + báo mismatch để dashboard thấy label hỏng.
+  const dbRemoveRaw = dbLabelsFor("menu_remove_member", "/admin/members");
+  const { safe: dbRemove, blocked: dbBlocked } = sanitizeRemoveLabels(dbRemoveRaw);
+  if (dbBlocked.length > 0) {
+    console.warn(
+      `${LOG} label DB menu_remove_member trỏ vào item DỮ LIỆU ${JSON.stringify(dbBlocked)} → BỎ QUA (không click).`,
+    );
+    reportLabelMismatch("menu_remove_member", dbBlocked[0], "/admin/members");
+  }
   const removeTexts =
     dbRemove.length > 0
       ? [...dbRemove, ...TEXT_FALLBACKS.removeMenuItem]
@@ -207,10 +243,13 @@ export async function executeRemove(
   let removeItem: HTMLElement | null = null;
   try {
     removeItem = await waitFor(() => {
-      return (
-        querySelectorFirst<HTMLElement>(SELECTORS.removeMenuItem) ??
-        findMenuItemByText(removeTexts)
-      );
+      // Selector CSS cũng phải qua deny-list (phòng ChatGPT đặt
+      // data-testid="delete-member-data" — khớp `*="remove" i` là hỏng).
+      const bySelector = querySelectorFirst<HTMLElement>(SELECTORS.removeMenuItem);
+      if (bySelector && !isDataMenuItemText(bySelector.textContent ?? "")) {
+        return bySelector;
+      }
+      return findMenuItemByText(removeTexts);
     }, 5000);
   } catch {
     if (dbRemove.length > 0) {
@@ -225,12 +264,33 @@ export async function executeRemove(
       error_message:
         seen.length === 0
           ? "Menu '...' không mở (không thấy item nào). ChatGPT có thể đổi nút menu row."
-          : `Menu mở nhưng không có item xoá. Item thấy: ${JSON.stringify(seen)}`,
+          : `Menu mở nhưng không có item xoá THÀNH VIÊN (item "Xuất/Xoá dữ liệu" bị ` +
+            `chặn cố ý — xem menu-guard.ts). Item thấy: ${JSON.stringify(seen)}`,
     };
   }
 
   await randomDelay();
   await humanClick(removeItem);
+
+  // CHỐT CHẶN CUỐI trước khi bấm nút đỏ: dialog vừa mở phải là "Loại bỏ thành
+  // viên", KHÔNG phải "Xoá dữ liệu" (dialog đó cũng có nút đỏ "Xóa" → nhánh
+  // confirm bên dưới sẽ bấm nhầm và xoá sạch dữ liệu member, không hoàn tác).
+  const dialogTitle = await waitFor(
+    () => (confirmDialogOpen() ? openDialogTitle() || " " : null),
+    5000,
+  ).catch(() => "");
+  if (dialogTitle && isDataMenuItemText(dialogTitle)) {
+    console.warn(`${LOG} mở NHẦM dialog "${dialogTitle}" → ESC, không bấm xác nhận.`);
+    await escapeDialog();
+    return {
+      ok: false,
+      error_code: "FAILED_UI_CHANGED",
+      error_message:
+        `Click item xoá thành viên nhưng ChatGPT mở dialog "${dialogTitle}" ` +
+        `(thao tác trên DỮ LIỆU member, không phải loại bỏ thành viên) → đã huỷ, ` +
+        `KHÔNG xác nhận. Nhãn menu ChatGPT đã đổi — cần harvest lại label.`,
+    };
+  }
 
   // Đợi confirm dialog → nút đỏ "Xóa" (vi) / "Remove" (en). Bỏ qua "Hủy bỏ".
   const dbConfirm = dbLabelsFor("confirm_remove_button", "/admin/members");

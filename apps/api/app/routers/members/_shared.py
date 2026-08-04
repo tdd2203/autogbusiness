@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import Select, and_, or_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -25,6 +25,7 @@ from app.models import (
     MemberSubscriptionCycle,
     QueueItem,
     User,
+    WalletTransaction,
     Workspace,
 )
 
@@ -360,6 +361,84 @@ def void_refunded_invite_periods(
         m.paid_marked_by_id = None
         voided.append(m.email)
     return voided
+
+
+def net_collected_for_member(db: Session, member: Member) -> int:
+    """Tiền THỰC THU của email này = tổng sổ cái ví (âm là trừ, dương là hoàn) đảo dấu.
+    `0` ⇒ chưa thu được đồng nào (thu rồi hoàn hết). Ghép theo CẢ email lẫn member_id —
+    phí mời neo `ref_id = queue_item_id` (chỉ có email trong meta), phí gia hạn neo
+    `ref_id = member_id`. Cùng công thức với endpoint `payments.py` (đọc `payments.md`
+    §3 trước khi đổi)."""
+    total = db.execute(
+        select(func.coalesce(func.sum(WalletTransaction.amount), 0)).where(
+            or_(
+                func.lower(WalletTransaction.meta["email"].astext)
+                == member.email.lower(),
+                WalletTransaction.ref_id == str(member.id),
+            )
+        )
+    ).scalar_one()
+    return -int(total or 0)
+
+
+def flag_refunded_invite_debt(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    emails: list[str],
+    now: datetime,
+) -> list[Member]:
+    """HOÀN PHÍ nhưng email VẪN Ở TRONG TEAM (`active`) → đánh dấu **CHƯA THANH TOÁN**.
+
+    Vì sao KHÔNG void hạn như `void_refunded_invite_periods`: member `active` là dịch
+    vụ ĐANG được giao thật. Void đặt `subscription_end_at = None`, mà theo
+    `EXPIRY_RULES.md` §5 nghĩa là **vô thời hạn** — hoá ra tặng luôn dịch vụ vĩnh viễn,
+    tệ hơn cả việc mất 1 tháng. Nên: giữ nguyên hạn, chỉ lật nhãn thanh toán về `unpaid`
+    để KHOẢN NỢ HIỆN RA (bảng "Email đã add" + khối Dòng tiền ở panel chi tiết).
+
+    Vì sao có hàm này (kiểm chứng 2026-08-04, ca stockbox.m): `void_refunded_invite_
+    periods` CHỈ đụng `pending`/`removed`. Nếu đồng bộ kịp lật member sang `active`
+    TRƯỚC khi task mời báo FAILED thì hoàn phí xong member vẫn giữ nguyên kỳ 'đã thanh
+    toán' + hạn dùng — nhìn màn hình tưởng đã trả tiền, thực tế thu 0 ₫. Thất thoát ẩn.
+
+    CHỈ đánh dấu khi email đó thực sự KHÔNG còn đồng nào thu được
+    (`net_collected_for_member <= 0`) — nếu vẫn còn tiền (vd đã gia hạn có thu phí) thì
+    khoản 'paid' đó là THẬT, tuyệt đối không được lật thành nợ.
+
+    Trả list member đã đánh dấu (để caller ghi audit). KHÔNG commit — caller commit."""
+    if not emails:
+        return []
+    lowered = [e.lower() for e in emails]
+    members = (
+        db.execute(
+            select(Member).where(
+                Member.workspace_id == workspace_id,
+                Member.email.in_(lowered),
+                Member.status == "active",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    flagged: list[Member] = []
+    for m in members:
+        looks_paid = m.payment_status == "paid" or any(
+            c.payment_status == "paid" for c in m.subscription_cycles
+        )
+        if not looks_paid:
+            continue  # đã hiện "chưa thanh toán" rồi → không cần đụng
+        if net_collected_for_member(db, m) > 0:
+            continue  # vẫn còn tiền thu được → nhãn 'đã trả' là THẬT
+        m.payment_status = "unpaid"
+        m.paid_at = None
+        m.paid_marked_by_id = None
+        for c in m.subscription_cycles:
+            if c.payment_status == "paid":
+                c.payment_status = "unpaid"
+                c.paid_at = None
+                c.paid_marked_by_id = None
+        flagged.append(m)
+    return flagged
 
 
 def _has_open_remove_task(db: Session, member: Member) -> bool:

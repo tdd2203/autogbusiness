@@ -8,6 +8,7 @@ import {
 import { ROLE_LABELS, findUiControlByTexts } from "../../../i18n-ui";
 import { SELECTORS, TEXT_FALLBACKS } from "../../../selectors";
 import { findRowMenuButton } from "../../member-row";
+import { isDataMenuItemText } from "../../menu-guard";
 import { recordIfText, step, type Ctx, type HarvestItem } from "../ctx";
 import { navigateSpaVerified } from "../nav";
 import { harvestRevokeFlow } from "../revoke-probe/harvest-revoke-flow";
@@ -112,10 +113,21 @@ export async function harvestMembers(
       await sleep(300);
 
       await step(ctx, "Đọc menu items Remove / Change role");
-      const removeItem = queryByAnyText(
+      // Deny-list: menu member đã tham gia (ChatGPT 2026-08) có thêm "Xuất dữ
+      // liệu"/"Xoá dữ liệu". Harvest CLICK item tìm được để đọc dialog xác nhận →
+      // nếu ghi nhầm item dữ liệu vào `menu_remove_member`, mọi REMOVE_MEMBER sau
+      // đó sẽ xoá SẠCH dữ liệu member. Thà không harvest được còn hơn ghi nhầm.
+      let removeItem = queryByAnyText(
         '[role="menuitem"]',
         TEXT_FALLBACKS.removeMenuItem,
       );
+      if (removeItem && isDataMenuItemText(removeItem.textContent ?? "")) {
+        await step(
+          ctx,
+          `⚠ Bỏ qua item "${(removeItem.textContent ?? "").trim()}" (thao tác DỮ LIỆU, không phải loại bỏ thành viên)`,
+        );
+        removeItem = null;
+      }
       recordIfText(out, ctx, "menu_remove_member", removeItem);
 
       const changeItem = queryByAnyText(

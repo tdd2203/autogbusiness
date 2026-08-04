@@ -23,6 +23,14 @@ class Permission(StrEnum):
     # Quyền yêu cầu đặt giới hạn tín dụng/tháng cho member. Sub-admin có quyền này
     # vẫn phải được super-admin DUYỆT từng lệnh + chỉ đặt trong ngân sách được cấp.
     MEMBER_SET_USAGE_LIMIT = "MEMBER_SET_USAGE_LIMIT"
+    # 2 mục MỚI trong menu "..." của member đã tham gia trên ChatGPT (2026-08).
+    # Cả 2 KHÔNG nằm trong quyền mặc định của tài khoản phụ và KHÔNG backfill cho
+    # tài khoản cũ ⇒ mặc định CHỈ super-admin dùng được; super-admin cấp tay mới mở.
+    # MEMBER_EXPORT_DATA: yêu cầu ChatGPT xuất dữ liệu (hội thoại) của 1 member.
+    MEMBER_EXPORT_DATA = "MEMBER_EXPORT_DATA"
+    # MEMBER_DELETE_DATA: XOÁ TOÀN BỘ dữ liệu của 1 member — KHÔNG HOÀN TÁC, phá huỷ
+    # nặng hơn cả MEMBER_REMOVE (remove chỉ gỡ khỏi workspace, dữ liệu còn nguyên).
+    MEMBER_DELETE_DATA = "MEMBER_DELETE_DATA"
     # Sync 1 member lẻ / batch pending (tab "Chờ tham gia") + sync billing. Mặc định
     # BẬT cho sub-admin — thao tác nhẹ, chỉ đọc lại trạng thái vài email.
     WORKSPACE_SYNC_TRIGGER = "WORKSPACE_SYNC_TRIGGER"
@@ -50,6 +58,10 @@ GRANTABLE: frozenset[Permission] = frozenset(
         Permission.MEMBER_INVITE,
         Permission.MEMBER_REMOVE,
         Permission.MEMBER_SET_USAGE_LIMIT,
+        # Cấp được nhưng KHÔNG default-on (không có trong perms mặc định sub-admin,
+        # không migration backfill) ⇒ khoá sẵn với mọi tài khoản phụ cũ lẫn mới.
+        Permission.MEMBER_EXPORT_DATA,
+        Permission.MEMBER_DELETE_DATA,
         Permission.WORKSPACE_SYNC_TRIGGER,
         Permission.WORKSPACE_FULL_SYNC,
         Permission.QUEUE_VIEW,

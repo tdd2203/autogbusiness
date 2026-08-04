@@ -1,4 +1,5 @@
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { RunningTaskBubble } from "./RunningTaskBubble";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../hooks/useAuth";
 import {
@@ -517,6 +518,11 @@ export default function Layout() {
       <main className="app-main">
         <Outlet />
       </main>
+
+      {/* Bong bóng "đang có lệnh chạy" — nổi ở góc, hiện trên MỌI trang (kể cả điện
+          thoại) khi có task đang chờ/chạy. Tự ẩn khi panel hàng đợi cột phải đã hiện.
+          Xem RunningTaskBubble.md. */}
+      <RunningTaskBubble />
     </div>
   );
 }

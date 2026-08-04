@@ -411,20 +411,38 @@ class TemplateStore:
             else:
                 self._all[row.user_id] = value
 
-    def pick(self, owner_ids: set[UUID], chat_id: int, member_ids: list[UUID]) -> Tpl | None:
+    # Mẫu theo EMAIL chỉ áp cho đúng người mà nó được soạn cho: khách được chỉ định của
+    # email đó, hoặc chính đại lý khi email chưa chỉ định ai. Đó đúng là hai vế `if/elif`
+    # của `_recipients_for` (chỉ một trong hai nhận tin về một email), cũng là hai giá trị
+    # `telegram._template_audience` trả về cho phạm vi 'member'. Người theo dõi KHÔNG nằm
+    # trong đó: họ xem giúp cả tài khoản, mẫu nhắm vào khách của một email áp cho họ là
+    # sai người — họ đã có mẫu riêng theo người nhận.
+    MEMBER_SCOPE_KINDS = frozenset({"assignee", "owner"})
+
+    def pick(
+        self, kind: str, owner_ids: set[UUID], chat_id: int, member_ids: list[UUID]
+    ) -> Tpl | None:
         """Mẫu áp cho MỘT tin: cụ thể hơn thì thắng — email > người nhận > tất cả.
 
-        Tin gộp email của NHIỀU chủ tài khoản (digest admin, người theo dõi nhiều tài
-        khoản) luôn dùng mẫu gốc: lấy mẫu của một chủ áp cho email của chủ khác là sai.
+        Digest của nhóm admin hệ thống KHÔNG bao giờ dùng mẫu tự soạn: đó là bản tổng
+        hợp toàn hệ thống, mẫu gốc của nó có thêm dòng `chủ · workspace` để phân biệt
+        email của đại lý nào. Chặn theo `kind` chứ không chỉ theo số lượng chủ tài khoản
+        — hệ thống ít đại lý thì digest thường chỉ gồm email của MỘT chủ, và khi đó mẫu
+        của chủ đó sẽ chiếm luôn tin admin (bảng "Ai nhận tin nào" hứa ngược lại).
+
+        Tin gộp email của NHIỀU chủ tài khoản (người theo dõi nhiều tài khoản) cũng dùng
+        mẫu gốc: lấy mẫu của một chủ áp cho email của chủ khác là sai.
 
         Mẫu theo email chỉ áp khi tin nói về ĐÚNG email đó. Tin gộp nhiều email thì
         không có cách nào áp một thân tin riêng cho từng dòng, nên rơi xuống mẫu của
         người nhận rồi tới mẫu chung.
         """
+        if kind == "admin":
+            return None
         if len(owner_ids) != 1:
             return None
         owner_id = next(iter(owner_ids))
-        if len(member_ids) == 1:
+        if len(member_ids) == 1 and kind in self.MEMBER_SCOPE_KINDS:
             by_member = self._member.get(member_ids[0])
             if by_member is not None:
                 return by_member
@@ -567,6 +585,7 @@ def flush_pending(db: Session, now: datetime | None = None) -> dict:
         items = [detail[n.member_id] for n in notifs if n.member_id in detail]
         items.sort(key=lambda it: it[0].subscription_end_at or now)
         custom = templates.pick(
+            kind,
             {oid for _, _, _, oid in items if oid},
             chat_id,
             [member.id for member, _, _, _ in items],

@@ -13,13 +13,17 @@
 #   ./scripts/db-pull.sh --restore   # kéo xong restore luôn vào container Mac
 #                                    #   (đè DB local — DB local chỉ là bản sao)
 #
-# Muốn backup đầy đủ 1 phát: ssh root@103.74.100.4 /root/backups/autogpt-backup.sh
+# Muốn backup đầy đủ 1 phát: ssh "$DEPLOY_SERVER" /root/backups/autogpt-backup.sh
 # rồi chạy script này để kéo về Mac.
+#
+# Địa chỉ VPS đọc từ `.env` ở gốc dự án (DEPLOY_SERVER) — KHÔNG hardcode vì repo
+# này public trên GitHub. Xem scripts/_target.sh.
 
 set -euo pipefail
 
-SERVER="root@103.74.100.4"
-REMOTE_DIR="/root/backups/autogpt"
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_target.sh"
+require_deploy_server
+REMOTE_DIR="$(target_get DEPLOY_BACKUP_DIR /root/backups/autogpt)"
 LOCAL_DIR="$HOME/Backups/autogpt"
 PG_CONTAINER="autogpt-postgres"
 
@@ -28,7 +32,7 @@ for arg in "$@"; do
   case "$arg" in
     --fresh) FRESH=1 ;;
     --restore) RESTORE=1 ;;
-    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "Unknown flag: $arg" >&2; exit 1 ;;
   esac
 done

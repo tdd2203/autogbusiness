@@ -43,6 +43,7 @@ from app.models import (
     TelegramSubscription,
     TelegramTemplate,
     User,
+    Workspace,
 )
 from app.services import renewal_reminder, telegram
 
@@ -178,6 +179,10 @@ class TelegramTemplateOut(BaseModel):
     # Chính bộ dữ liệu đã dựng nên `preview`. Trả kèm để web dựng lại bản xem trước
     # NGAY LÚC GÕ (khỏi phải Lưu mới thấy) mà vẫn ra đúng con số như server.
     sample: dict[str, Any]
+    # Bản xem trước thứ hai, dựng bằng EMAIL THẬT của phạm vi đang sửa. `None` khi phạm
+    # vi chưa có email nào — web nói thẳng ra thay vì vẽ một bong bóng trống.
+    preview_real: str | None = None
+    sample_real: dict[str, Any] | None = None
     # Mọi phạm vi đang có mẫu riêng + danh sách chọn được — gửi kèm để mở modal là đủ
     # dữ liệu vẽ ô chọn phạm vi, khỏi gọi thêm 2 endpoint nữa.
     overrides: list[TelegramTemplateScopeOut] = Field(default_factory=list)
@@ -1607,6 +1612,7 @@ def _template_out(
     shared = _template_row(db, user, "all", None, None) if scope != "all" else None
     base_body = (shared.body if shared else None) or default_body
     base_item_line = (shared.item_line if shared else None) or default_item_line
+    real = _preview_real_sample(db, user, scope, chat_id, member_id)
     return TelegramTemplateOut(
         scope=scope,
         chat_id=chat_id,
@@ -1623,6 +1629,12 @@ def _template_out(
         # thì mẫu gốc của đúng loại người nhận), chứ không phải mẫu gốc của đại lý.
         preview=_preview_template(body or base_body, item_line or base_item_line, user.username),
         sample=_preview_sample(user.username),
+        preview_real=(
+            _render_sample(body or base_body, item_line or base_item_line, real)
+            if real
+            else None
+        ),
+        sample_real=real,
         overrides=_template_overrides(db, user),
         recipients=_recipient_options(db, user),
         audience=audience,
@@ -1650,13 +1662,102 @@ def _preview_sample(owner_username: str) -> dict[str, Any]:
     }
 
 
-def _preview_template(
-    body: str | None, item_line: str | None, owner_username: str
-) -> str:
-    """Xem trước bằng DỮ LIỆU MẪU — người dùng thấy ngay tin thật trông thế nào."""
-    line_tpl = item_line or renewal_reminder.default_item_line("owner")
-    body_tpl = body or renewal_reminder.default_body("owner")
-    sample = _preview_sample(owner_username)
+# Số email THẬT tối đa đem vào bản xem trước. Đủ thấy danh sách nhiều dòng trông thế
+# nào mà không biến ô soạn mẫu thành một trang danh sách thứ hai.
+PREVIEW_REAL_LIMIT = 5
+
+
+def _preview_real_members(
+    db: Session, user: User, scope: str, chat_id: int | None, member_id: UUID | None
+) -> list[Member]:
+    """Email THẬT rơi vào phạm vi đang sửa — gần hết hạn nhất trước.
+
+    Lọc đúng như lúc gửi thật (`renewal_reminder._recipients_for`): chat của chính đại
+    lý chỉ nhận email CHƯA chỉ định khách, người được mời nhận theo phạm vi đăng ký,
+    khách được chỉ định chỉ nhận email của mình. Lọc khác đi thì bản xem trước "thật"
+    lại vẽ ra một tin không bao giờ được gửi.
+    """
+    rows = (
+        db.execute(
+            select(Member)
+            .where(
+                Member.invited_by_user_id == user.id,
+                Member.status.in_(("active", "pending")),
+                Member.subscription_end_at.is_not(None),
+            )
+            .order_by(Member.subscription_end_at)
+            .limit(200)
+        )
+        .scalars()
+        .all()
+    )
+    if scope == "member":
+        return [m for m in rows if m.id == member_id][:PREVIEW_REAL_LIMIT]
+    if scope == "chat" and chat_id is not None:
+        if user.telegram_chat_id == chat_id:
+            keep = [m for m in rows if not m.notify_telegram_chat_id]
+        else:
+            subs = (
+                db.execute(
+                    select(TelegramSubscription).where(
+                        TelegramSubscription.user_id == user.id,
+                        TelegramSubscription.chat_id == chat_id,
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            keep = (
+                [m for m in rows if any(renewal_reminder.subscription_covers(s, m) for s in subs)]
+                if subs
+                else [m for m in rows if m.notify_telegram_chat_id == chat_id]
+            )
+        return keep[:PREVIEW_REAL_LIMIT]
+    return rows[:PREVIEW_REAL_LIMIT]
+
+
+def _preview_real_sample(
+    db: Session, user: User, scope: str, chat_id: int | None, member_id: UUID | None
+) -> dict[str, Any] | None:
+    """Bộ dữ liệu THẬT cho bản xem trước thứ hai — `None` khi phạm vi chưa có email nào.
+
+    Dữ liệu giả cho biết mẫu trông thế nào; dữ liệu thật cho biết mẫu ấy áp lên đúng
+    những email mình đang có. `count` đếm số dòng thật sự hiện ra để tin xem trước
+    không tự mâu thuẫn với chính danh sách bên dưới nó.
+    """
+    members = _preview_real_members(db, user, scope, chat_id, member_id)
+    if not members:
+        return None
+    now = datetime.now(timezone.utc)
+    settings = get_settings()
+    buckets = settings.reminder_day_buckets()
+    nearest = (members[0].subscription_end_at - now).total_seconds() / 86400
+    esc = telegram.escape_html
+    return {
+        "items": [
+            {
+                "email": esc(m.email),
+                "expiry": esc(renewal_reminder._fmt_dt(m.subscription_end_at)),
+                "days_left": esc(renewal_reminder._fmt_left(m.subscription_end_at, now)),
+            }
+            for m in members
+        ],
+        "count": len(members),
+        # Email còn hạn dài chưa thuộc mốc nào → lấy mốc lớn nhất, đúng mốc nó sẽ rơi vào.
+        "bucket": renewal_reminder._bucket_for(nearest, buckets) or max(buckets),
+        "link": f"{settings.frontend_origin.rstrip('/')}/renewals",
+        "owner": esc(user.username),
+        "workspace": esc(_workspace_name(db, members[0]) or "—"),
+    }
+
+
+def _workspace_name(db: Session, member: Member) -> str | None:
+    ws = db.get(Workspace, member.workspace_id)
+    return ws.name if ws else None
+
+
+def _render_sample(body_tpl: str, line_tpl: str, sample: dict[str, Any]) -> str:
+    """Dựng tin từ mẫu + MỘT bộ dữ liệu bất kỳ (giả hay thật) — khớp `buildPreview` bên web."""
     common = {"bucket": sample["bucket"], "owner": sample["owner"]}
     lines = "\n".join(
         renewal_reminder.render_template(
@@ -1667,6 +1768,17 @@ def _preview_template(
     return renewal_reminder.render_template(
         body_tpl,
         {**common, "items": lines, "count": sample["count"], "link": sample["link"]},
+    )
+
+
+def _preview_template(
+    body: str | None, item_line: str | None, owner_username: str
+) -> str:
+    """Xem trước bằng DỮ LIỆU MẪU — người dùng thấy ngay tin thật trông thế nào."""
+    return _render_sample(
+        body or renewal_reminder.default_body("owner"),
+        item_line or renewal_reminder.default_item_line("owner"),
+        _preview_sample(owner_username),
     )
 
 
@@ -1824,7 +1936,7 @@ def send_test_message(user: User = Depends(get_current_user)) -> dict:
     try:
         sent = telegram.send_message(
             user.telegram_chat_id,
-            "🔔 <b>Tin thử</b> — kênh nhắc gia hạn đang hoạt động bình thường.",
+            "<b>Thông báo thử</b> — bot nhắc gia hạn đang hoạt động bình thường.",
         )
     except telegram.TelegramError as exc:
         raise HTTPException(

@@ -1670,6 +1670,48 @@ def test_template_starts_from_the_default_of_the_real_audience(
     assert out["audience"] == "owner"
 
 
+def test_template_previews_with_the_real_emails_of_that_scope(
+    client: TestClient, auth_header: dict, bot_on
+) -> None:
+    """Xem trước phải dựng được bằng EMAIL THẬT, không chỉ dữ liệu giả.
+
+    Người soạn cần biết mẫu của mình áp lên đúng những gì mình đang có; nhìn
+    'khach_a@gmail.com' thì không trả lời được câu đó.
+    """
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "chua-giao@example.com", days_left=5, owner_id=owner_id)
+    _add_member(
+        client,
+        ws,
+        "da-giao@example.com",
+        days_left=2,
+        owner_id=owner_id,
+        **_assigned_to(ASSIGNEE_CHAT),
+    )
+
+    out = client.get("/api/v1/telegram/template", headers=auth_header).json()
+    assert out["sample_real"]["count"] == 2
+    assert "chua-giao@example.com" in out["preview_real"]
+    # Dữ liệu giả vẫn còn — hai bản phục vụ hai câu hỏi khác nhau.
+    assert "khach_a@gmail.com" in out["preview"]
+
+    # Chat của chính đại lý: email ĐÃ giao khách không tới đây nữa, nên không được
+    # hiện ra trong bản xem trước của chat đó.
+    out = client.get(
+        f"/api/v1/telegram/template?scope=chat&chat_id={OWNER_CHAT}", headers=auth_header
+    ).json()
+    assert "chua-giao@example.com" in out["preview_real"]
+    assert "da-giao@example.com" not in out["preview_real"]
+
+    # Chat của khách được chỉ định: chỉ thấy đúng email của họ.
+    out = client.get(
+        f"/api/v1/telegram/template?scope=chat&chat_id={ASSIGNEE_CHAT}", headers=auth_header
+    ).json()
+    assert out["sample_real"]["count"] == 1
+    assert "da-giao@example.com" in out["preview_real"]
+
+
 def test_template_rejects_unknown_placeholder(
     client: TestClient, auth_header: dict, bot_on
 ) -> None:
@@ -1811,6 +1853,83 @@ def test_template_scope_member_beats_chat_beats_all(
         db.commit()
     _run()
     assert sent[-1][1].startswith("CHUNG")
+
+
+def test_admin_digest_never_uses_a_custom_template(
+    client: TestClient, auth_header: dict, bot_on, sent, monkeypatch
+) -> None:
+    """Digest nhóm admin luôn dùng mẫu gốc — kể cả khi chỉ có ĐÚNG MỘT đại lý.
+
+    Chặn theo "tin gộp nhiều chủ" là không đủ: hệ thống ít đại lý thì digest thường chỉ
+    gồm email của một chủ, và mẫu của chủ đó sẽ chiếm luôn tin admin, mất dòng
+    `chủ · workspace` — đúng thứ khiến digest có ích.
+    """
+    monkeypatch.setattr(bot_on, "telegram_admin_chat_id", str(ADMIN_CHAT))
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "khach@example.com", days_left=2, owner_id=owner_id)
+
+    client.put(
+        "/api/v1/telegram/template",
+        json={"body": "SHOP ABC {items}", "item_line": "· {email}"},
+        headers=auth_header,
+    )
+
+    _run()
+
+    digest = next(text for chat, text in sent if chat == ADMIN_CHAT)
+    assert "SHOP ABC" not in digest
+    assert digest.startswith("📋 <b>Tổng hợp sắp hết hạn</b>")
+    assert "superadmin" in digest  # dòng "chủ: … · workspace" của mẫu gốc còn nguyên
+    # Còn đại lý thì vẫn nhận đúng mẫu mình soạn.
+    assert next(text for chat, text in sent if chat == OWNER_CHAT).startswith("SHOP ABC")
+
+
+def test_member_template_only_reaches_who_that_email_notifies(
+    client: TestClient, auth_header: dict, bot_on, sent, monkeypatch
+) -> None:
+    """Mẫu theo email tới khách của email đó / chính đại lý — KHÔNG tới người theo dõi.
+
+    Người được mời theo dõi xem giúp cả tài khoản; tin gộp của họ có thể tình cờ chỉ còn
+    một email, và khi đó mẫu viết cho khách lẻ áp vào họ là sai người.
+    """
+    monkeypatch.setattr(bot_on, "telegram_bot_username", "my_test_bot")
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(
+        client, ws, "khach@example.com", days_left=2, owner_id=owner_id,
+        notify_telegram_target="@khach", notify_telegram_chat_id=ASSIGNEE_CHAT,
+    )
+    _invite_and_join(client, auth_header, SUBSCRIBER_CHAT, "nhan_vien")
+    client.put(
+        "/api/v1/telegram/template",
+        json={
+            "scope": "member",
+            "member_id": member_id,
+            "body": "SHOP ABC — tài khoản của bạn\n\n{items}",
+            "item_line": "· {email}",
+        },
+        headers=auth_header,
+    )
+
+    sent.clear()
+    _run()
+
+    assert next(text for chat, text in sent if chat == ASSIGNEE_CHAT).startswith("SHOP ABC")
+    sub_msg = next(text for chat, text in sent if chat == SUBSCRIBER_CHAT)
+    assert "SHOP ABC" not in sub_msg
+    assert "được mời theo dõi" in sub_msg
+
+    # Gỡ chỉ định → chính đại lý nhận tin của email đó, và mẫu theo email vẫn phải áp.
+    with SessionLocal() as db:
+        db.query(Member).filter(Member.id == UUID(member_id)).update(
+            {"notify_telegram_target": None, "notify_telegram_chat_id": None}
+        )
+        db.commit()
+    sent.clear()
+    _run()
+
+    assert next(text for chat, text in sent if chat == OWNER_CHAT).startswith("SHOP ABC")
 
 
 def test_template_scope_isolated_and_listed(

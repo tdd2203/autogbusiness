@@ -9,6 +9,7 @@ import {
   executeCheckActiveAfterInvite,
 } from "./actions/invite";
 import { executeRemove } from "./actions/remove";
+import { executeMemberData } from "./actions/member-data";
 import { executeSyncMember, executeSyncMembersBatch } from "./actions/sync-member";
 import { executeChangeRole } from "./actions/change-role";
 import { executeChangeLicenseType } from "./actions/change-license-type";
@@ -97,6 +98,10 @@ async function dispatch(
       return executeCheckActiveAfterInvite(msg.taskId, msg.emails);
     case "REMOVE_MEMBER":
       return executeRemove(msg.taskId, msg.email);
+    case "EXPORT_MEMBER_DATA":
+      return executeMemberData(msg.taskId, msg.email, "export");
+    case "DELETE_MEMBER_DATA":
+      return executeMemberData(msg.taskId, msg.email, "delete");
     case "SET_USAGE_LIMIT":
       return executeSetUsageLimit(
         msg.taskId,
