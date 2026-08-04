@@ -30,6 +30,10 @@ from app.schemas import (
 
 router = APIRouter(prefix="/api/v1/added-members", tags=["added-members"])
 
+# Số member đọc mỗi lô khi duyệt danh sách dài (xem `list_added_members`). Chỉ ảnh
+# hưởng RAM/số truy vấn phụ của selectinload, KHÔNG ảnh hưởng dữ liệu trả về.
+_LIST_CHUNK = 200
+
 
 def _recompute_member_payment_status(member: Member) -> None:
     """Tính lại `Member.payment_status` TỔNG HỢP từ các chu kỳ (nguồn sự thật).
@@ -116,23 +120,44 @@ def list_added_members(
     # còn lại chưa chủ) để quản lý đầy đủ + gán/chuyển quyền sở hữu. Owner hiển
     # thị qua invited_by_username (None = chưa chủ).
 
+    # RAM (2026-08-04): trước đây `db.execute(stmt).scalars()` nạp TOÀN BỘ member +
+    # workspace + chủ + chu kỳ vào identity map của session RỒI mới dựng output →
+    # đỉnh RAM = (ORM + Pydantic) cho cả bảng. Giờ đọc theo LÔ (`yield_per`) và
+    # `expunge` từng lô sau khi đã dựng xong output của lô đó, nên phần ORM luôn bị
+    # chặn ở 1 lô thay vì tăng theo số email.
+    #
+    # KẾT QUẢ TRẢ VỀ KHÔNG ĐỔI: vẫn là TOÀN BỘ danh sách, cùng thứ tự (order_by giữ
+    # nguyên), cùng nội dung từng phần tử — đây thuần tuý là đổi cách nạp.
+    #
+    # Vì sao expunge an toàn ở đây:
+    #  - `expunge` chỉ TÁCH object khỏi session, không xoá giá trị đã nạp và không
+    #    ghi gì xuống DB.
+    #  - `_recompute_member_payment_status` CỐ Ý chỉ sửa trong bộ nhớ để hiển thị;
+    #    trước giờ session cũng đóng mà KHÔNG commit nên thay đổi đó chưa từng được
+    #    lưu. Expunge giữ nguyên đúng hành vi đó.
+    #  - Mọi thuộc tính cần dùng đều đã đọc xong TRƯỚC khi expunge lô.
+    # `selectinload` chạy được cùng `yield_per` (một truy vấn phụ cho mỗi lô).
     rows: list[AddedMemberOut] = []
-    for member in db.execute(stmt).scalars():
-        # HARDENING (2026-07-14): payment_status cấp member = TỔNG HỢP TỪ CYCLES (nguồn
-        # sự thật). Cờ lưu có thể lệch nếu một mẻ nền dựng/đổi kỳ mà không recompute
-        # (vd migration cycle 13/7). Tính lại tại đây để hiển thị + đếm LUÔN khớp kỳ,
-        # không bao giờ tái diễn cảnh "chưa thanh toán" mà badge "đã thanh toán".
-        _recompute_member_payment_status(member)
-        out = AddedMemberOut.model_validate(member)
-        out.workspace_name = member.workspace.name if member.workspace else None
-        out.invited_by_username = (
-            member.invited_by.username if member.invited_by else None
-        )
-        out.cycles = [
-            SubscriptionCycleOut.model_validate(c)
-            for c in member.subscription_cycles
-        ]
-        rows.append(out)
+    result = db.execute(stmt.execution_options(yield_per=_LIST_CHUNK)).scalars()
+    for chunk in result.partitions():
+        for member in chunk:
+            # HARDENING (2026-07-14): payment_status cấp member = TỔNG HỢP TỪ CYCLES (nguồn
+            # sự thật). Cờ lưu có thể lệch nếu một mẻ nền dựng/đổi kỳ mà không recompute
+            # (vd migration cycle 13/7). Tính lại tại đây để hiển thị + đếm LUÔN khớp kỳ,
+            # không bao giờ tái diễn cảnh "chưa thanh toán" mà badge "đã thanh toán".
+            _recompute_member_payment_status(member)
+            out = AddedMemberOut.model_validate(member)
+            out.workspace_name = member.workspace.name if member.workspace else None
+            out.invited_by_username = (
+                member.invited_by.username if member.invited_by else None
+            )
+            out.cycles = [
+                SubscriptionCycleOut.model_validate(c)
+                for c in member.subscription_cycles
+            ]
+            rows.append(out)
+        for member in chunk:
+            db.expunge(member)
     return rows
 
 

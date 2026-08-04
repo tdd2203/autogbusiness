@@ -22,6 +22,7 @@ lợi nhuận THÁNG có thể lệch pha, tổng theo kỳ dài thì hội tụ
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from typing import NamedTuple
 from uuid import UUID
 
 from fastapi import Depends, Query
@@ -46,6 +47,25 @@ _DAYS_PER_MONTH = 30
 # add") CHỈ tính từ ngày này trở đi. Kỳ mời/gia hạn có mốc trước đây = dữ liệu cũ chưa
 # đi qua SePay → KHÔNG tính THU. Chỉ lọc trong báo cáo, không sửa/xoá dữ liệu gốc.
 _SEPAY_LIVE_DATE = date(2026, 7, 10)
+
+# Số hàng đọc mỗi lô khi quét member/workspace (xem `financial_report`). Chỉ ảnh
+# hưởng RAM, KHÔNG ảnh hưởng con số báo cáo.
+_SCAN_CHUNK = 500
+
+
+class _OwnerInfo(NamedTuple):
+    """Vài cột của `User` mà báo cáo thực sự cần (RAM 2026-08-04).
+
+    Trước đây báo cáo nạp NGUYÊN ORM `User` của mọi tài khoản chỉ để đọc 5 field
+    này. NamedTuple nhẹ hơn nhiều lần và không nằm trong identity map của session.
+    Giữ đúng tên field như `User` để `_member_per_month_fee` dùng chung được.
+    """
+
+    id: UUID
+    username: str
+    email: str | None
+    is_test: bool
+    invite_fee_vnd: int | None
 
 
 def _month_key(d: date) -> str:
@@ -103,7 +123,7 @@ def _months_between(start: datetime, end: datetime) -> int:
 
 
 def _member_per_month_fee(
-    member: Member, owner: User | None, default_fee: int
+    member: Member, owner: _OwnerInfo | None, default_fee: int
 ) -> int:
     """Đơn giá/tháng hiệu lực của 1 member = COALESCE(member.fee_vnd, chủ sở hữu
     user.invite_fee_vnd, global default). Chủ là admin (không đặt phí riêng) hoặc
@@ -172,7 +192,22 @@ def financial_report(
     cost_by_month: dict[str, int] = {k: 0 for k in months}
 
     default_fee = int(get_payment_settings(db).invite_fee_vnd or 0)
-    users = {u.id: u for u in db.execute(select(User)).scalars().all()}
+    # RAM: chỉ lấy 5 cột báo cáo thực sự đọc, thay vì nạp nguyên ORM User của mọi
+    # tài khoản vào identity map. Nội dung dùng tới không đổi (xem _OwnerInfo).
+    users: dict[UUID, _OwnerInfo] = {
+        row.id: _OwnerInfo(
+            row.id, row.username, row.email, row.is_test, row.invite_fee_vnd
+        )
+        for row in db.execute(
+            select(
+                User.id,
+                User.username,
+                User.email,
+                User.is_test,
+                User.invite_fee_vnd,
+            )
+        )
+    }
 
     # ── THU: phí mời/gia hạn theo từng kỳ của mọi member (loại test + chủ workspace) ──
     revenue_invite = 0
@@ -185,59 +220,71 @@ def financial_report(
     agent_invites: dict[UUID | None, int] = {}
     agent_renews: dict[UUID | None, int] = {}
 
-    members = (
-        db.execute(
-            select(Member).options(selectinload(Member.subscription_cycles))
-        )
-        .scalars()
-        .all()
+    # RAM: quét member theo LÔ rồi `expunge` từng lô. Vòng lặp chỉ cộng dồn số
+    # (không giữ lại member nào) nên bộ nhớ ORM phẳng theo lô thay vì tăng theo cả
+    # bảng — trước đây `.all()` giữ MỌI member + MỌI chu kỳ cùng lúc. Con số cộng
+    # ra không đổi: cùng tập hàng, cùng thứ tự, cùng công thức.
+    member_stmt = (
+        select(Member)
+        .options(selectinload(Member.subscription_cycles))
+        .execution_options(yield_per=_SCAN_CHUNK)
     )
-    for m in members:
-        # Chủ workspace (role owner) = vô thời hạn/miễn phí — không tính doanh thu.
-        if m.chatgpt_role == "owner":
-            continue
-        owner = users.get(m.invited_by_user_id) if m.invited_by_user_id else None
-        # Member thuộc tài khoản test → loại khỏi báo cáo.
-        if owner is not None and owner.is_test:
-            continue
-        per_month = _member_per_month_fee(m, owner, default_fee)
-        if per_month <= 0:
-            continue
-        owner_key = m.invited_by_user_id  # có thể None → nhóm "chưa có chủ"
-        for is_invite, n_months, when in _member_revenue_events(m, now):
-            bucket = when.astimezone(timezone.utc).date()
-            if bucket < from_date or bucket > to_date:
+    for chunk in db.execute(member_stmt).scalars().partitions():
+        for m in chunk:
+            # Chủ workspace (role owner) = vô thời hạn/miễn phí — không tính doanh thu.
+            if m.chatgpt_role == "owner":
                 continue
-            if bucket < _SEPAY_LIVE_DATE:
-                continue  # kỳ trước mốc SePay = dữ liệu cũ chưa qua ví → không tính THU
-            amt = per_month * n_months
-            seat_months += n_months
-            if is_invite:
-                revenue_invite += amt
-                agent_invites[owner_key] = agent_invites.get(owner_key, 0) + 1
-            else:
-                revenue_renew += amt
-                agent_renews[owner_key] = agent_renews.get(owner_key, 0) + 1
-            agent_rev[owner_key] = agent_rev.get(owner_key, 0) + amt
-            mk = _month_key(bucket)
-            if mk in rev_by_month:
-                rev_by_month[mk] += amt
+            owner = users.get(m.invited_by_user_id) if m.invited_by_user_id else None
+            # Member thuộc tài khoản test → loại khỏi báo cáo.
+            if owner is not None and owner.is_test:
+                continue
+            per_month = _member_per_month_fee(m, owner, default_fee)
+            if per_month <= 0:
+                continue
+            owner_key = m.invited_by_user_id  # có thể None → nhóm "chưa có chủ"
+            for is_invite, n_months, when in _member_revenue_events(m, now):
+                bucket = when.astimezone(timezone.utc).date()
+                if bucket < from_date or bucket > to_date:
+                    continue
+                if bucket < _SEPAY_LIVE_DATE:
+                    continue  # kỳ trước mốc SePay = dữ liệu cũ chưa qua ví → không tính THU
+                amt = per_month * n_months
+                seat_months += n_months
+                if is_invite:
+                    revenue_invite += amt
+                    agent_invites[owner_key] = agent_invites.get(owner_key, 0) + 1
+                else:
+                    revenue_renew += amt
+                    agent_renews[owner_key] = agent_renews.get(owner_key, 0) + 1
+                agent_rev[owner_key] = agent_rev.get(owner_key, 0) + amt
+                mk = _month_key(bucket)
+                if mk in rev_by_month:
+                    rev_by_month[mk] += amt
+        for m in chunk:
+            db.expunge(m)
 
     revenue = revenue_invite + revenue_renew
 
     # ── CHI: hoá đơn Stripe 'paid' của mọi workspace, chỉ tính từ finance_start_at ──
-    workspaces = db.execute(select(Workspace)).scalars().all()
+    # RAM: chỉ 3 cột dùng tới, đọc theo lô. `billing_invoices` là JSONB chứa cả
+    # lịch sử hoá đơn Stripe chi tiết — trước đây `.all()` giữ lịch sử của MỌI
+    # workspace trong RAM cùng lúc, giờ chỉ giữ 1 lô. Cách tính CHI không đổi.
+    ws_stmt = select(
+        Workspace.billing_invoices,
+        Workspace.finance_start_at,
+        Workspace.created_at,
+    ).execution_options(yield_per=_SCAN_CHUNK)
     cost = 0
     cost_missing = 0
-    for ws in workspaces:
-        invoices = ws.billing_invoices or []
+    for ws_invoices, ws_finance_start_at, ws_created_at in db.execute(ws_stmt):
+        invoices = ws_invoices or []
         paid = [inv for inv in invoices if inv.get("status") == "paid"]
         if not paid:
             cost_missing += 1
             continue
         # Mốc bắt đầu tính CHI: finance_start_at (backfill = đầu chu kỳ hiện tại);
         # chưa set → fallback created_at (workspace mới tính từ khi onboard).
-        anchor = ws.finance_start_at or ws.created_at
+        anchor = ws_finance_start_at or ws_created_at
         fstart = anchor.astimezone(timezone.utc).date() if anchor is not None else None
         for inv in paid:
             d = _parse_invoice_date(inv)

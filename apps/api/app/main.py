@@ -670,8 +670,31 @@ def _run_alembic_upgrade_head() -> None:
         )
 
 
+def _apply_thread_limit() -> None:
+    """Hạ trần threadpool anyio từ 40 (mặc định) xuống `THREAD_POOL_SIZE`.
+
+    MỌI endpoint trong dự án này khai báo `def` (sync, không phải `async def`) nên
+    Starlette đẩy hết vào threadpool anyio. Trần 40 vừa tốn stack thread vừa vô
+    nghĩa: gần như request nào cũng chạm DB, mà pool DB chỉ mở tối đa
+    `DB_POOL_SIZE + DB_MAX_OVERFLOW` (=15) kết nối → 25 thread còn lại chỉ nằm
+    chờ checkout chứ không chạy nhanh hơn. Đặt 16 = pool DB + biên cho endpoint
+    không đụng DB (vd /health, gọi Telegram/HostMail qua urllib).
+
+    KHÔNG ảnh hưởng SSE `/queue/stream`: chỗ đó dùng `asyncio.to_thread` (executor
+    mặc định của asyncio, một pool KHÁC), không lấy token của limiter này.
+
+    Phải gọi TRONG event loop đang chạy — limiter là RunVar gắn theo loop.
+    """
+    import anyio.to_thread
+
+    size = max(1, get_settings().thread_pool_size)
+    anyio.to_thread.current_default_thread_limiter().total_tokens = size
+    logger.info("[startup] threadpool anyio giới hạn %d thread (mặc định 40)", size)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    _apply_thread_limit()
     _run_alembic_upgrade_head()
     with SessionLocal() as db:
         seed_super_admin(db)

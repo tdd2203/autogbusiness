@@ -22,6 +22,9 @@
 #   ./scripts/deploy-server.sh              # rsync + build + up + health check
 #   ./scripts/deploy-server.sh --sync-only  # chỉ rsync, không build/restart
 #
+# Server đang chạy bản nào?  ssh root@103.74.100.4 'cat /opt/autogbusiness/VERSION'
+# (mỗi lần deploy ghi lại commit + branch + có sửa chưa commit hay không + giờ).
+#
 # Permission denied? chmod +x scripts/deploy-server.sh
 
 set -euo pipefail
@@ -34,7 +37,7 @@ SYNC_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --sync-only) SYNC_ONLY=1 ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "Unknown flag: $arg" >&2; exit 1 ;;
   esac
 done
@@ -58,7 +61,27 @@ if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "$SERVER" true 2>/dev/null; then
   exit 1
 fi
 
-# ----- 1. Rsync source lên VPS -----
+# ----- 1. Build dashboard TẠI ĐÂY (không build trên VPS) -----
+# Từ 2026-08-04 image web là serve-only: `npm install` + `vite build` ngốn 1–2GB,
+# chạy trên VPS là đỉnh RAM lớn nhất của cả hệ thống. Build ở máy dev rồi rsync
+# `dist/` (chưa tới 1MB) lên — VPS chỉ còn copy file vào nginx.
+step "Build dashboard (apps/web) tại máy này"
+if ! command -v npm >/dev/null 2>&1; then
+  err "Không tìm thấy npm trên PATH — cài Node.js trước (web build ở máy dev, không build trên VPS)."
+  exit 1
+fi
+WEB="$ROOT/apps/web"
+if [ ! -d "$WEB/node_modules" ]; then
+  warn "node_modules chưa có — npm install..."
+  (cd "$WEB" && npm install)
+fi
+(cd "$WEB" && npm run build)
+if [ ! -f "$WEB/dist/index.html" ]; then
+  err "Build xong nhưng không thấy apps/web/dist/index.html — dừng, không deploy bản hỏng."
+  exit 1
+fi
+
+# ----- 2. Rsync source lên VPS -----
 step "Rsync source → $SERVER:$REMOTE_DIR"
 # --delete: xoá file server-side đã bị xoá ở local. File nằm trong --exclude
 # (như .env) KHÔNG bị xoá (rsync chỉ xoá excluded khi có --delete-excluded).
@@ -74,19 +97,43 @@ rsync -az --delete \
   --exclude logs/ \
   "$ROOT/" "$SERVER:$REMOTE_DIR/"
 
+# ----- 2b. Dấu phiên bản trên server (VERSION) -----
+# Deploy đi thẳng từ working tree nên KHÔNG tự suy ra được "server đang chạy commit
+# nào". Ghi hẳn 1 file dấu vết lên VPS. Xem bất cứ lúc nào:
+#   ssh root@103.74.100.4 'cat /opt/autogbusiness/VERSION'
+# Sinh SAU rsync vì `--delete` sẽ xoá file lạ ở đầu mỗi lần deploy rồi ghi lại đây.
+# `dirty=yes` = bản đang chạy có thay đổi CHƯA commit ⇒ commit ghi kèm KHÔNG dựng
+# lại được nguyên trạng bằng git, chỉ để định vị mốc gần nhất.
+COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+if [ -n "$(git status --porcelain 2>/dev/null)" ]; then DIRTY="yes"; else DIRTY="no"; fi
+ssh "$SERVER" "cat > '$REMOTE_DIR/VERSION'" <<EOF
+commit=$COMMIT
+branch=$BRANCH
+dirty=$DIRTY
+deployed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+deployed_by=$(whoami)@$(hostname -s)
+EOF
+if [ "$DIRTY" = "yes" ]; then
+  warn "Đang deploy commit $COMMIT + thay đổi CHƯA commit (dirty)."
+else
+  echo "Phiên bản: commit $COMMIT ($BRANCH)"
+fi
+
 if [ "$SYNC_ONLY" -eq 1 ]; then
   warn "--sync-only: đã rsync xong, không build/restart."
   exit 0
 fi
 
-# ----- 2. Build + up trên VPS -----
+# ----- 3. Build + up trên VPS -----
 step "Build + up trên VPS (api, web, cloudflared)"
+# `build web` giờ chỉ COPY dist/ đã rsync ở bước 2 → gần như không tốn RAM.
 # api lifespan tự alembic upgrade head lúc startup → migration DB tự áp dụng.
 ssh "$SERVER" "cd $REMOTE_DIR \
   && docker compose build api web \
   && docker compose --profile remote up -d"
 
-# ----- 3. Health check -----
+# ----- 4. Health check -----
 step "Health check"
 ok=0
 for i in $(seq 1 20); do
@@ -111,4 +158,7 @@ else
   exit 1
 fi
 
-printf "\n%s=== DONE — production: %s ===%s\n" "$C_GREEN" "$PUBLIC_URL" "$C_RESET"
+DIRTY_NOTE=""
+if [ "$DIRTY" = "yes" ]; then DIRTY_NOTE=" + sửa chưa commit"; fi
+printf "\n%s=== DONE — production: %s (commit %s%s) ===%s\n" \
+  "$C_GREEN" "$PUBLIC_URL" "$COMMIT" "$DIRTY_NOTE" "$C_RESET"

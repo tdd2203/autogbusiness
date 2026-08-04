@@ -1,5 +1,6 @@
+# ⚠️ KHÔNG thêm lại `dist` vào đây: từ 2026-08-04 Dockerfile là serve-only và
+# COPY thẳng dist/ đã build sẵn ở máy dev (xem apps/web/Dockerfile).
 node_modules
-dist
 .env
 .env.*
 *.tsbuildinfo

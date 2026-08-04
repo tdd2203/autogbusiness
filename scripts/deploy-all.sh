@@ -79,11 +79,31 @@ fi
 
 # ----- 2. Deploy stack qua Docker (api + web) -----
 if [ "$SKIP_STACK" -ne 1 ]; then
-  step "Docker up --build api web"
   if ! docker info >/dev/null 2>&1; then
     err "Docker daemon chưa chạy — mở Docker Desktop rồi chạy lại."
     exit 1
   fi
+
+  # Từ 2026-08-04 image web là serve-only (xem apps/web/Dockerfile): build vite
+  # phải chạy Ở ĐÂY chứ không trong Docker — `npm install` + `vite build` ngốn
+  # 1–2GB, tách ra khỏi Docker để bước build image gần như không tốn RAM.
+  step "Build dashboard (apps/web)"
+  if ! command -v npm >/dev/null 2>&1; then
+    err "Không tìm thấy npm trên PATH — cài Node.js trước (web build ngoài Docker)."
+    exit 1
+  fi
+  WEB="$ROOT/apps/web"
+  if [ ! -d "$WEB/node_modules" ]; then
+    warn "node_modules chưa có — npm install..."
+    (cd "$WEB" && npm install)
+  fi
+  (cd "$WEB" && npm run build)
+  if [ ! -f "$WEB/dist/index.html" ]; then
+    err "Build xong nhưng không thấy apps/web/dist/index.html — dừng."
+    exit 1
+  fi
+
+  step "Docker up --build api web"
   # api lifespan tự alembic upgrade head + seed super-admin lúc startup.
   $DOCKER_COMPOSE up -d --build api web
 
