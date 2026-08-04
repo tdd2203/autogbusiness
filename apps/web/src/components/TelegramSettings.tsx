@@ -114,104 +114,121 @@ export function TelegramSettings({
     },
   });
 
-  const scheduleText = status
-    ? t("telegram.scheduleValue", {
-        days: status.reminder_days.map((d) => `≤${d}d`).join(", "),
-        hour: String(status.reminder_hour).padStart(2, "0"),
-      })
+  const account = status?.linked
+    ? status.telegram_username
+      ? `@${status.telegram_username}`
+      : `ID ${status.telegram_chat_id}`
     : "—";
 
   return (
-    <div className="settings-section">
-      <h3 className="display-h3">{t("telegram.title")}</h3>
-      <p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 4, marginBottom: 20 }}>
-        {t("telegram.desc")}
-      </p>
-
-      {status && !status.bot_configured && (
-        <div className="notice warn" style={{ marginBottom: 20 }}>
-          <div className="notice-body">{t("telegram.notConfigured")}</div>
-        </div>
-      )}
-
-      {/* Đã kết nối: nói thẳng "thành công" ngay đầu khối. Cái badge nhỏ ở hàng
-          "Tài khoản Telegram" dễ bị lướt qua, trong khi đây là câu trả lời cho câu
-          hỏi duy nhất người dùng có lúc này: "xong chưa?". */}
-      {status?.linked && (
-        <div className="notice success" style={{ marginBottom: 20 }}>
-          <div className="notice-body">
-            {t("telegram.connectedNotice", {
-              who: status.telegram_username
-                ? `@${status.telegram_username}`
-                : `ID ${status.telegram_chat_id}`,
-            })}
+    <div className="tg-stack">
+      {/* THẺ 1 — kênh của tôi. Trạng thái nằm ngay cạnh tiêu đề (chip), thông số
+          xếp thành lưới, bật/tắt là công tắc: nhìn một cái là biết "xong chưa, đang
+          gửi cho ai, gửi lúc nào" mà không phải đọc hết mấy dòng chữ. */}
+      <section className="tg-card">
+        <div className="tg-head">
+          <div className="tg-icon" aria-hidden="true">
+            ✈
+          </div>
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 5 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <h3 className="tg-h">{t("telegram.title")}</h3>
+              {status?.linked ? (
+                <span className="badge badge-success">{t("telegram.statusLinked")}</span>
+              ) : (
+                <span className="badge badge-neutral">{t("telegram.statusUnlinked")}</span>
+              )}
+            </div>
+            <p className="tg-sub">{t("telegram.desc")}</p>
           </div>
         </div>
-      )}
 
-      <div className="info-row">
-        <div className="key">{t("telegram.account")}</div>
-        <div className="val">
-          {status?.linked ? (
-            <>
-              <span className="badge badge-success">{t("telegram.statusLinked")}</span>{" "}
-              {status.telegram_username ? `@${status.telegram_username}` : `ID ${status.telegram_chat_id}`}
-            </>
-          ) : (
-            <span className="badge badge-neutral">{t("telegram.statusUnlinked")}</span>
+        {status && !status.bot_configured && (
+          <div style={{ padding: "14px 20px 0" }}>
+            <div className="notice warn">
+              <div className="notice-body">{t("telegram.notConfigured")}</div>
+            </div>
+          </div>
+        )}
+
+        <div className="tg-meta">
+          <div className="tg-meta-item">
+            <div className="tg-meta-key">{t("telegram.account")}</div>
+            <div className="tg-meta-val">{account}</div>
+          </div>
+          {status?.linked && status.linked_at && (
+            <div className="tg-meta-item">
+              <div className="tg-meta-key">{t("telegram.linkedAt")}</div>
+              <div className="tg-meta-val">{formatDateTime(status.linked_at)}</div>
+            </div>
           )}
-        </div>
-      </div>
-
-      {status?.linked && status.linked_at && (
-        <div className="info-row">
-          <div className="key">{t("telegram.linkedAt")}</div>
-          <div className="val">{formatDateTime(status.linked_at)}</div>
-        </div>
-      )}
-
-      <div className="info-row">
-        <div className="key">{t("telegram.schedule")}</div>
-        <div className="val">{scheduleText}</div>
-      </div>
-
-      {status?.linked && (
-        <div className="info-row">
-          <div className="key">{t("telegram.notifyEnabled")}</div>
-          <div className="val">
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={status.notify_enabled}
-                disabled={toggle.isPending}
-                onChange={(e) => toggle.mutate(e.target.checked)}
-              />
-              {status.notify_enabled ? t("telegram.notifyOn") : t("telegram.notifyOff")}
-            </label>
+          <div className="tg-meta-item">
+            <div className="tg-meta-key">{t("telegram.schedule")}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              {(status?.reminder_days ?? []).map((d) => (
+                <span key={d} className="tg-chip">
+                  {t("telegram.scheduleDayChip", { d: String(d) })}
+                </span>
+              ))}
+              {status && (
+                <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>
+                  {t("telegram.scheduleHour", {
+                    hour: String(status.reminder_hour).padStart(2, "0"),
+                  })}
+                </span>
+              )}
+            </div>
           </div>
         </div>
-      )}
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 20 }}>
-        {!status?.linked ? (
-          <button
-            className="btn btn-primary"
-            disabled={!status?.bot_configured || link.isPending}
-            onClick={() => link.mutate()}
-          >
-            {link.isPending ? t("telegram.connecting") : t("telegram.connect")}
-          </button>
-        ) : (
-          <>
+        {status?.linked && (
+          <div className="tg-line">
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>{t("telegram.notifyEnabled")}</div>
+              <div style={{ fontSize: 12.5, color: "var(--ink-3)" }}>
+                {status.notify_enabled
+                  ? `${t("telegram.notifyOn")} · ${account}`
+                  : t("telegram.notifyOff")}
+              </div>
+            </div>
             <button
-              className="btn"
+              type="button"
+              className="tg-switch"
+              aria-pressed={status.notify_enabled}
+              aria-label={t("telegram.notifyEnabled")}
+              disabled={toggle.isPending}
+              onClick={() => toggle.mutate(!status.notify_enabled)}
+            >
+              <span />
+            </button>
+          </div>
+        )}
+
+        <div className="tg-foot">
+          {!status?.linked ? (
+            <button
+              className="btn btn-primary"
+              disabled={!status?.bot_configured || link.isPending}
+              onClick={() => link.mutate()}
+            >
+              {link.isPending ? t("telegram.connecting") : t("telegram.connect")}
+            </button>
+          ) : (
+            <button
+              className="btn btn-ghost"
               disabled={test.isPending}
               onClick={() => test.mutate()}
             >
               {t("telegram.sendTest")}
             </button>
+          )}
+          <button className="btn btn-ghost" onClick={refresh}>
+            {t("telegram.refresh")}
+          </button>
+          {status?.linked && (
             <button
               className="btn btn-danger"
+              style={{ marginLeft: "auto" }}
               disabled={unlink.isPending}
               onClick={async () => {
                 if (await confirm(t("telegram.unlinkConfirm"), { danger: true })) {
@@ -221,30 +238,29 @@ export function TelegramSettings({
             >
               {t("telegram.unlink")}
             </button>
-          </>
-        )}
-        <button className="btn" onClick={refresh}>
-          {t("telegram.refresh")}
-        </button>
-      </div>
-
-      {deepLink && !status?.linked && (
-        <div className="notice" style={{ marginTop: 16 }}>
-          <div className="notice-body">
-            <a href={deepLink} target="_blank" rel="noopener noreferrer">
-              {t("telegram.openTelegram")}
-            </a>
-            <div style={{ marginTop: 6, fontSize: 12, color: "var(--ink-3)" }}>
-              {t("telegram.linkHint")}
-            </div>
-            {awaiting && (
-              <div style={{ marginTop: 6, fontSize: 12, color: "var(--ink-2)" }}>
-                ⏳ {t("telegram.connectWaiting")}
-              </div>
-            )}
-          </div>
+          )}
         </div>
-      )}
+
+        {deepLink && !status?.linked && (
+          <div style={{ padding: "0 20px 16px" }}>
+            <div className="notice">
+              <div className="notice-body">
+                <a href={deepLink} target="_blank" rel="noopener noreferrer">
+                  {t("telegram.openTelegram")}
+                </a>
+                <div style={{ marginTop: 6, fontSize: 12, color: "var(--ink-3)" }}>
+                  {t("telegram.linkHint")}
+                </div>
+                {awaiting && (
+                  <div style={{ marginTop: 6, fontSize: 12, color: "var(--ink-2)" }}>
+                    ⏳ {t("telegram.connectWaiting")}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
 
       <SubscriptionsPanel botConfigured={status?.bot_configured === true} />
 
@@ -265,12 +281,30 @@ export function TelegramSettings({
  * Khác "chỉ định theo email" ở modal chi tiết (dành cho khách cuối của đúng email
  * đó) — hai đường chạy song song.
  */
+/**
+ * Chép link + báo "Đã sao chép link" bằng toast success (nổi giữa trên màn hình).
+ * Trả false khi trình duyệt chặn clipboard (trang http, chưa cấp quyền) để chỗ gọi
+ * còn kịp bày link ra cho người dùng chép tay — báo "đã chép" trong khi chưa chép
+ * được là mất link.
+ */
+async function copyLink(text: string, okMsg: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast.success(okMsg);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function SubscriptionsPanel({ botConfigured }: { botConfigured: boolean }) {
   const t = useT();
   const qc = useQueryClient();
   const formatDateTime = useFormatDateTime();
   const [creating, setCreating] = useState(false);
   const [freshLink, setFreshLink] = useState<Invite | null>(null);
+  // Link vừa tạo mà KHÔNG chép được vào clipboard → phải bày ra để chép tay.
+  const [copyFailed, setCopyFailed] = useState<Invite | null>(null);
   const [editing, setEditing] = useState<Subscription | null>(null);
 
   // Vừa tạo link xong = đang gửi cho ai đó và chờ họ bấm. Hỏi lại đều để tên người
@@ -306,6 +340,7 @@ function SubscriptionsPanel({ botConfigured }: { botConfigured: boolean }) {
       api<void>(`/api/v1/telegram/invites/${token}`, { method: "DELETE" }),
     onSuccess: (_r, token) => {
       if (freshLink?.token === token) setFreshLink(null);
+      if (copyFailed?.token === token) setCopyFailed(null);
       qc.invalidateQueries({ queryKey: ["telegram-invites"] });
       toast.success(t("telegram.subLinkRevoked"));
     },
@@ -337,197 +372,208 @@ function SubscriptionsPanel({ botConfigured }: { botConfigured: boolean }) {
       : t("telegram.subScopeSelected", { n });
 
   return (
-    <div style={{ marginTop: 32, paddingTop: 24, borderTop: "1px solid var(--line)" }}>
-      <h3 className="display-h3">{t("telegram.subTitle")}</h3>
-      <p style={{ fontSize: 13, color: "var(--ink-3)", marginTop: 4, marginBottom: 16 }}>
-        {t("telegram.subDesc")}
-      </p>
+    <>
+      {/* Hai thẻ đứng cạnh nhau vì đó là hai nửa của MỘT việc: bên trái tạo link,
+          bên phải là link vừa tạo ra. Trước đây phải cuộn xuống bảng mới thấy link
+          của mình. */}
+      <div className="tg-grid">
+        <section className="tg-card tg-pad">
+          <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+            <h3 className="tg-h">{t("telegram.subTitle")}</h3>
+            <p className="tg-sub">{t("telegram.subDesc")}</p>
+          </div>
 
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-        <button
-          className="btn btn-primary"
-          disabled={!botConfigured}
-          onClick={() => setCreating(true)}
-        >
-          {t("telegram.subCreateLink")}
-        </button>
+          {/* Ba câu, đánh số — thay đoạn văn 5 dòng cũ. Luật "bấm thêm link là CỘNG
+              THÊM email" là chỗ dễ hiểu nhầm nhất nên vẫn phải nói, chỉ là nói gọn. */}
+          <ol className="tg-steps">
+            <li>
+              <span className="tg-step-n">1</span>
+              <span>{t("telegram.subStep1")}</span>
+            </li>
+            <li>
+              <span className="tg-step-n">2</span>
+              <span>{t("telegram.subStep2")}</span>
+            </li>
+            <li>
+              <span className="tg-step-n">3</span>
+              <span>{t("telegram.subStep3")}</span>
+            </li>
+          </ol>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              className="btn btn-primary"
+              disabled={!botConfigured}
+              onClick={() => setCreating(true)}
+            >
+              {t("telegram.subCreateLink")}
+            </button>
+          </div>
+
+          {/* Đường bình thường: tạo xong link đã nằm sẵn trong clipboard + toast giữa
+              trên màn hình, không bày thêm gì. Khối này CHỈ hiện khi trình duyệt chặn
+              clipboard (trang http, chưa cấp quyền) — không có nó thì link vừa tạo coi
+              như mất. */}
+          {copyFailed && (
+            <div className="notice">
+              <div className="notice-body">
+                <div
+                  style={{ fontFamily: "var(--font-mono)", fontSize: 12, wordBreak: "break-all" }}
+                >
+                  {copyFailed.deep_link}
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                  <button
+                    className="btn btn-sm btn-primary"
+                    onClick={async () => {
+                      if (await copyLink(copyFailed.deep_link, t("telegram.subLinkCopied"))) {
+                        setCopyFailed(null);
+                      }
+                    }}
+                  >
+                    {t("telegram.subCopyLink")}
+                  </button>
+                  <button className="btn btn-sm btn-ghost" onClick={() => setCopyFailed(null)}>
+                    {t("common.close")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="tg-card tg-pad">
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <h4 className="tg-h-sm">{t("telegram.subLinksTitle")}</h4>
+            {invites.length > 0 && (
+              <span className="table-meta">
+                {t("telegram.subLinkCount", { n: invites.length })}
+              </span>
+            )}
+          </div>
+          <div className={invites.length > 4 ? "tg-list tg-list-scroll" : "tg-list"}>
+            {invites.length === 0 ? (
+              <div className="tg-empty">{t("telegram.subLinksEmpty")}</div>
+            ) : (
+              invites.map((inv) => (
+                <div className="tg-item" key={inv.token}>
+                  <div className="tg-item-main">
+                    <div className="tg-item-title">
+                      <span className="tg-dot" />
+                      <span className="tg-item-name">
+                        {inv.label || t("telegram.subNoLabel")}
+                      </span>
+                    </div>
+                    <div
+                      className="tg-item-sub"
+                      title={t("telegram.subLinkMeta", {
+                        scope: scopeText(inv.scope, inv.member_ids.length),
+                        clicks: inv.recipients,
+                        expires: formatDateTime(inv.expires_at),
+                      })}
+                    >
+                      {t("telegram.subLinkMeta", {
+                        scope: scopeText(inv.scope, inv.member_ids.length),
+                        clicks: inv.recipients,
+                        expires: formatDateTime(inv.expires_at),
+                      })}
+                    </div>
+                  </div>
+                  <div className="tg-item-acts">
+                    <button
+                      className="btn btn-sm btn-ghost"
+                      onClick={async () => {
+                        if (!(await copyLink(inv.deep_link, t("telegram.subLinkCopied")))) {
+                          setCopyFailed(inv);
+                        }
+                      }}
+                    >
+                      {t("telegram.subCopyLink")}
+                    </button>
+                    <button
+                      className="btn btn-sm btn-danger"
+                      disabled={revoke.isPending}
+                      onClick={async () => {
+                        if (await confirm(t("telegram.subLinkRevokeConfirm"), { danger: true })) {
+                          revoke.mutate(inv.token);
+                        }
+                      }}
+                    >
+                      {t("telegram.subLinkRevoke")}
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
       </div>
 
-      {/* Link vừa tạo hiện to ngay đây: việc kế tiếp là COPY đi gửi, không phải đi mò
-          trong bảng bên dưới. */}
-      {freshLink && (
-        <div className="notice success" style={{ marginBottom: 16 }}>
-          <div className="notice-body">
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>
-              {t("telegram.subInviteCreated")}
-              {freshLink.label ? ` — ${freshLink.label}` : ""}
-            </div>
-            <div style={{ fontSize: 12, color: "var(--ink-2)", marginBottom: 8 }}>
-              {scopeText(freshLink.scope, freshLink.member_ids.length)}
-            </div>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 12, wordBreak: "break-all" }}>
-              {freshLink.deep_link}
-            </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-              <button
-                className="btn btn-sm btn-primary"
-                onClick={() => {
-                  navigator.clipboard?.writeText(freshLink.deep_link);
-                  toast.success(t("telegram.subLinkCopied"));
-                }}
-              >
-                {t("telegram.subCopyLink")}
-              </button>
-              <a
-                className="btn btn-sm"
-                href={freshLink.deep_link}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                {t("telegram.openTelegram")}
-              </a>
-              <button className="btn btn-sm btn-ghost" onClick={() => setFreshLink(null)}>
-                {t("common.close")}
-              </button>
-            </div>
-            <div style={{ marginTop: 8, fontSize: 12, color: "var(--ink-3)" }}>
-              {t("telegram.subInviteReady")}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <h4 style={{ fontSize: 13.5, fontWeight: 600, margin: "0 0 8px" }}>
-        {t("telegram.subLinksTitle")}
-      </h4>
-      {invites.length === 0 ? (
-        <div className="cell-muted" style={{ fontSize: 13, marginBottom: 24 }}>
-          {t("telegram.subLinksEmpty")}
-        </div>
-      ) : (
-        <div style={{ overflowX: "auto", marginBottom: 24 }}>
-          <table className="data-table data-table-compact">
-            <thead>
-              <tr>
-                <th>{t("telegram.subColLabel")}</th>
-                <th>{t("telegram.subColScope")}</th>
-                <th>{t("telegram.subColRecipientsCount")}</th>
-                <th>{t("telegram.subColExpires")}</th>
-                <th style={{ width: 190 }} />
-              </tr>
-            </thead>
-            <tbody>
-              {invites.map((inv) => (
-                <tr key={inv.token}>
-                  <td style={{ fontWeight: 500, color: "var(--ink)" }}>
-                    {inv.label || (
-                      <span className="cell-muted">{t("telegram.subNoLabel")}</span>
-                    )}
-                  </td>
-                  <td>{scopeText(inv.scope, inv.member_ids.length)}</td>
-                  <td>{inv.recipients}</td>
-                  <td style={{ fontSize: 12 }}>{formatDateTime(inv.expires_at)}</td>
-                  <td>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      <button
-                        className="btn btn-sm"
-                        onClick={() => {
-                          navigator.clipboard?.writeText(inv.deep_link);
-                          toast.success(t("telegram.subLinkCopied"));
-                        }}
-                      >
-                        {t("telegram.subCopyLink")}
-                      </button>
-                      <button
-                        className="btn btn-sm btn-danger"
-                        disabled={revoke.isPending}
-                        onClick={async () => {
-                          if (
-                            await confirm(t("telegram.subLinkRevokeConfirm"), { danger: true })
-                          ) {
-                            revoke.mutate(inv.token);
-                          }
-                        }}
-                      >
-                        {t("telegram.subLinkRevoke")}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <h4 style={{ fontSize: 13.5, fontWeight: 600, margin: "0 0 8px" }}>
-        {t("telegram.subPeopleTitle")}
-      </h4>
-      {subs.length === 0 ? (
-        <div className="cell-muted" style={{ fontSize: 13 }}>
-          {t("telegram.subEmpty")}
-        </div>
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table className="data-table data-table-compact">
-            <thead>
-              <tr>
-                <th>{t("telegram.subColRecipient")}</th>
-                <th>{t("telegram.subColScope")}</th>
-                <th style={{ width: 210 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {subs.map((s) => (
-                <tr key={s.id}>
-                  <td>
-                    <div style={{ fontWeight: 500, color: "var(--ink)" }}>
+      {/* Ai đã bấm link — cùng kiểu thẻ với "Link đang phát" để mắt đọc một lần là
+          quen: chấm trạng thái + tên + chip, dòng dưới là phạm vi. */}
+      <section className="tg-card tg-pad">
+        <h4 className="tg-h-sm">{t("telegram.subPeopleTitle")}</h4>
+        <div className={subs.length > 4 ? "tg-list tg-list-scroll" : "tg-list"}>
+          {subs.length === 0 ? (
+            <div className="tg-empty">{t("telegram.subEmpty")}</div>
+          ) : (
+            subs.map((s) => (
+              <div className="tg-item" key={s.id}>
+                <div className="tg-item-main">
+                  <div className="tg-item-title">
+                    <span className={s.enabled ? "tg-dot" : "tg-dot off"} />
+                    <span className="tg-item-name">
                       {s.display_name || `ID ${s.chat_id}`}
-                    </div>
-                    <div className="cell-muted" style={{ fontSize: 12 }}>
+                    </span>
+                    <span className={s.enabled ? "tg-pill" : "tg-pill off"}>
                       {s.enabled ? t("telegram.notifyOn") : t("telegram.notifyOff")}
-                      {s.invite_label
-                        ? ` · ${t("telegram.subViaLink", { label: s.invite_label })}`
-                        : ""}
-                    </div>
-                  </td>
-                  <td>{scopeText(s.scope, s.member_ids.length)}</td>
-                  <td>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                      <button className="btn btn-sm" onClick={() => setEditing(s)}>
-                        {t("telegram.subEditScope")}
-                      </button>
-                      <button
-                        className="btn btn-sm"
-                        onClick={() => toggle.mutate({ id: s.id, enabled: !s.enabled })}
-                      >
-                        {s.enabled ? t("telegram.subPause") : t("telegram.subResume")}
-                      </button>
-                      <button
-                        className="btn btn-sm btn-danger"
-                        onClick={async () => {
-                          if (await confirm(t("telegram.subRemoveConfirm"), { danger: true })) {
-                            remove.mutate(s.id);
-                          }
-                        }}
-                      >
-                        {t("common.delete")}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    </span>
+                  </div>
+                  <div className="tg-item-sub">
+                    {scopeText(s.scope, s.member_ids.length)}
+                    {s.invite_label
+                      ? ` · ${t("telegram.subViaLink", { label: s.invite_label })}`
+                      : ""}
+                  </div>
+                </div>
+                <div className="tg-item-acts">
+                  <button className="btn btn-sm btn-ghost" onClick={() => setEditing(s)}>
+                    {t("telegram.subEditScope")}
+                  </button>
+                  <button
+                    className="btn btn-sm btn-ghost"
+                    onClick={() => toggle.mutate({ id: s.id, enabled: !s.enabled })}
+                  >
+                    {s.enabled ? t("telegram.subPause") : t("telegram.subResume")}
+                  </button>
+                  <button
+                    className="btn btn-sm btn-danger"
+                    onClick={async () => {
+                      if (await confirm(t("telegram.subRemoveConfirm"), { danger: true })) {
+                        remove.mutate(s.id);
+                      }
+                    }}
+                  >
+                    {t("common.delete")}
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
         </div>
-      )}
+      </section>
 
       {creating && (
         <InviteModal
           onClose={() => setCreating(false)}
-          onCreated={(inv) => {
+          onCreated={async (inv) => {
             setFreshLink(inv);
             setCreating(false);
+            // Bấm OK = "tạo xong đưa link đây": chép luôn rồi đóng, việc kế tiếp
+            // của người dùng là dán đi gửi chứ không phải đọc thêm hướng dẫn.
+            if (!(await copyLink(inv.deep_link, t("telegram.subLinkCopied")))) {
+              setCopyFailed(inv);
+            }
           }}
         />
       )}
@@ -535,7 +581,7 @@ function SubscriptionsPanel({ botConfigured }: { botConfigured: boolean }) {
       {editing && (
         <ScopeModal subscription={editing} onClose={() => setEditing(null)} />
       )}
-    </div>
+    </>
   );
 }
 
@@ -551,70 +597,81 @@ function MemberPicker({
   onChange: (next: string[]) => void;
 }) {
   const t = useT();
+  const { user } = useAuth();
   const [q, setQ] = useState("");
 
   // Danh sách email của chính tôi — cùng queryKey với trang "Email đã add" nên
   // thường đã có sẵn trong cache, không phải tải lại.
-  const { data: members = [] } = useQuery({
+  const { data: all = [] } = useQuery({
     queryKey: ["added-members", "self"],
     queryFn: () => api<AddedMember[]>("/api/v1/added-members"),
   });
+
+  // CHỈ email do CHÍNH TÔI add mới gắn được vào link: server chặn email của tài
+  // khoản khác (`_owned_member_ids`), và mẻ nhắc cũng chỉ soi danh sách phát của
+  // ĐÚNG chủ email. Super-admin xem được mọi email nên endpoint trả về cả email
+  // của người khác — bày ra đây thì tick xong chỉ nhận về lỗi "chọn ít nhất 1
+  // email của bạn". Lọc ngay tại nguồn để cái gì hiện ra là cái đó dùng được.
+  const members = user
+    ? all.filter((m) => m.invited_by_username === user.username)
+    : all;
 
   const needle = q.trim().toLowerCase();
   const filtered = needle
     ? members.filter((m) => m.email.toLowerCase().includes(needle))
     : members;
+  const picked = members.filter((m) => ids.includes(m.id));
 
   return (
-    <>
-      <input
-        className="form-input"
-        placeholder={t("members.searchPlaceholder")}
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-      />
-      <div
-        style={{
-          overflowY: "auto",
-          border: "1px solid var(--border)",
-          borderRadius: 10,
-          padding: 8,
-          maxHeight: 280,
-        }}
-      >
+    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+      <div className="tg-search">
+        <span className="tg-search-icon" aria-hidden="true" />
+        <input
+          placeholder={t("members.searchPlaceholder")}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+      </div>
+      <div className="tg-picker">
         {filtered.length === 0 ? (
-          <div className="cell-muted" style={{ fontSize: 13, padding: 8 }}>
+          <div style={{ padding: "12px 13px", fontSize: 13, color: "var(--ink-3)" }}>
             {t("telegram.subNoEmails")}
           </div>
         ) : (
-          filtered.map((m) => (
-            <label
-              key={m.id}
-              style={{
-                display: "flex",
-                gap: 8,
-                alignItems: "center",
-                padding: "4px 2px",
-                fontSize: 13,
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={ids.includes(m.id)}
-                onChange={(e) =>
-                  onChange(
-                    e.target.checked
-                      ? [...ids, m.id]
-                      : ids.filter((x) => x !== m.id),
-                  )
+          filtered.map((m) => {
+            const on = ids.includes(m.id);
+            return (
+              // Cả dòng là vùng bấm — ô tick 16px giữa danh sách vài trăm email thì
+              // bấm trượt liên tục.
+              <button
+                type="button"
+                key={m.id}
+                className={on ? "tg-pick on" : "tg-pick"}
+                aria-pressed={on}
+                onClick={() =>
+                  onChange(on ? ids.filter((x) => x !== m.id) : [...ids, m.id])
                 }
-              />
-              <span style={{ fontFamily: "var(--font-mono)" }}>{m.email}</span>
-            </label>
-          ))
+              >
+                <span className="tg-pick-box" aria-hidden="true">
+                  {on ? "✓" : ""}
+                </span>
+                <span className="tg-pick-email">{m.email}</span>
+              </button>
+            );
+          })
         )}
       </div>
-    </>
+      {/* Tick xong thì nói thẳng ra người đó sẽ nhận thông báo của những email nào —
+          không bắt người dùng cuộn ngược lên đếm lại dấu tick trước khi bấm OK. */}
+      {picked.length > 0 && (
+        <div className="tg-modal-hint" style={{ lineHeight: 1.5 }}>
+          {t("telegram.subPickerSummary", { n: picked.length })}{" "}
+          <span style={{ fontFamily: "var(--font-mono)", wordBreak: "break-all" }}>
+            {picked.map((m) => m.email).join(", ")}
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -662,59 +719,34 @@ function InviteModal({
   });
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      style={{ padding: 24 }}
-      onClick={onClose}
-    >
-      <div
-        style={{
-          width: "min(560px, 100%)",
-          maxHeight: "82vh",
-          background: "var(--surface)",
-          border: "1px solid var(--border)",
-          borderRadius: 16,
-          padding: 20,
-          display: "flex",
-          flexDirection: "column",
-          gap: 12,
-          overflowY: "auto",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 className="display-h3" style={{ margin: 0 }}>
-          {t("telegram.subInviteTitle")}
-        </h3>
-        <p style={{ fontSize: 13, color: "var(--ink-3)", margin: 0 }}>
-          {t("telegram.subInviteScopeHint")}
-        </p>
+    <div className="tg-modal-backdrop" onClick={onClose}>
+      <div className="tg-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="tg-modal-head">
+          <h3 className="tg-h">{t("telegram.subInviteTitle")}</h3>
+          <p className="tg-sub">{t("telegram.subInviteScopeHint")}</p>
+        </div>
 
-        <label className="form-label">{t("telegram.subInviteLabel")}</label>
-        <input
-          className="form-input"
-          maxLength={64}
-          placeholder={t("telegram.subInviteLabelPh")}
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-        />
+        <div className="tg-modal-body">
+          <label className="tg-field">
+            <span className="tg-field-label">{t("telegram.subInviteLabel")}</span>
+            <div className="tg-search">
+              <input
+                maxLength={64}
+                placeholder={t("telegram.subInviteLabelPh")}
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+              />
+            </div>
+          </label>
 
-        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 14 }}>
-          <input type="radio" checked={scope === "all"} onChange={() => setScope("all")} />
-          {t("telegram.subScopeAllLabel")}
-        </label>
-        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 14 }}>
-          <input
-            type="radio"
-            checked={scope === "selected"}
-            onChange={() => setScope("selected")}
-          />
-          {t("telegram.subScopeSelectedLabel")}
-        </label>
+          <ScopeOptions scope={scope} onScope={setScope} picked={ids.length} />
 
-        {scope === "selected" && <MemberPicker ids={ids} onChange={setIds} />}
+          {scope === "selected" && <MemberPicker ids={ids} onChange={setIds} />}
+        </div>
 
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-          <button className="btn btn-ghost" onClick={onClose}>
+        <div className="tg-modal-foot">
+          <span className="tg-modal-hint">{scopeHint(t, scope, ids.length)}</span>
+          <button className="btn btn-ghost" style={{ marginLeft: "auto" }} onClick={onClose}>
             {t("common.cancel")}
           </button>
           <button
@@ -728,6 +760,66 @@ function InviteModal({
       </div>
     </div>
   );
+}
+
+/**
+ * Hai lựa chọn phạm vi, dạng thẻ bấm cả mảng — dùng chung cho "tạo link" và "sửa
+ * phạm vi" để hai chỗ không lệch nhau.
+ */
+function ScopeOptions({
+  scope,
+  onScope,
+  picked,
+}: {
+  scope: "all" | "selected";
+  onScope: (next: "all" | "selected") => void;
+  picked: number;
+}) {
+  const t = useT();
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <button
+        type="button"
+        className={scope === "all" ? "tg-opt on" : "tg-opt"}
+        aria-pressed={scope === "all"}
+        onClick={() => onScope("all")}
+      >
+        <span className="tg-radio" aria-hidden="true" />
+        <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <span className="tg-opt-title">{t("telegram.subScopeAllLabel")}</span>
+          <span className="tg-opt-sub">{t("telegram.subScopeAllSub")}</span>
+        </span>
+      </button>
+      <button
+        type="button"
+        className={scope === "selected" ? "tg-opt on" : "tg-opt"}
+        aria-pressed={scope === "selected"}
+        onClick={() => onScope("selected")}
+      >
+        <span className="tg-radio" aria-hidden="true" />
+        <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <span className="tg-opt-title">{t("telegram.subScopeSelectedLabel")}</span>
+          <span className="tg-opt-sub">
+            {picked > 0
+              ? t("telegram.subScopePicked", { n: picked })
+              : t("telegram.subScopeSelectedSub")}
+          </span>
+        </span>
+      </button>
+    </div>
+  );
+}
+
+/** Câu tóm tắt ở chân modal: bấm nút bây giờ thì kết quả ra sao. */
+function scopeHint(
+  t: (key: string, vars?: Record<string, string | number>) => string,
+  scope: "all" | "selected",
+  picked: number,
+): string {
+  if (scope === "all") return t("telegram.subModalHintAll");
+  return picked > 0
+    ? t("telegram.subModalHintPicked", { n: picked })
+    : t("telegram.subModalHintEmpty");
 }
 
 /** Chọn người nhận này nhận TOÀN BỘ email của tôi hay chỉ vài email cụ thể. */
@@ -759,51 +851,21 @@ function ScopeModal({
   });
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      style={{ padding: 24 }}
-      onClick={onClose}
-    >
-      <div
-        style={{
-          width: "min(560px, 100%)",
-          maxHeight: "82vh",
-          background: "var(--surface)",
-          border: "1px solid var(--border)",
-          borderRadius: 16,
-          padding: 20,
-          display: "flex",
-          flexDirection: "column",
-          gap: 12,
-          overflowY: "auto",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h3 className="display-h3" style={{ margin: 0 }}>
-          {t("telegram.subEditScope")} — {subscription.display_name || subscription.chat_id}
-        </h3>
+    <div className="tg-modal-backdrop" onClick={onClose}>
+      <div className="tg-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="tg-modal-head">
+          <h3 className="tg-h">{t("telegram.subEditScope")}</h3>
+          <p className="tg-sub">{subscription.display_name || `ID ${subscription.chat_id}`}</p>
+        </div>
 
-        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 14 }}>
-          <input
-            type="radio"
-            checked={scope === "all"}
-            onChange={() => setScope("all")}
-          />
-          {t("telegram.subScopeAllLabel")}
-        </label>
-        <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 14 }}>
-          <input
-            type="radio"
-            checked={scope === "selected"}
-            onChange={() => setScope("selected")}
-          />
-          {t("telegram.subScopeSelectedLabel")}
-        </label>
+        <div className="tg-modal-body">
+          <ScopeOptions scope={scope} onScope={setScope} picked={ids.length} />
+          {scope === "selected" && <MemberPicker ids={ids} onChange={setIds} />}
+        </div>
 
-        {scope === "selected" && <MemberPicker ids={ids} onChange={setIds} />}
-
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-          <button className="btn btn-ghost" onClick={onClose}>
+        <div className="tg-modal-foot">
+          <span className="tg-modal-hint">{scopeHint(t, scope, ids.length)}</span>
+          <button className="btn btn-ghost" style={{ marginLeft: "auto" }} onClick={onClose}>
             {t("common.cancel")}
           </button>
           <button
@@ -921,8 +983,10 @@ function TelegramAdminPanel() {
   });
 
   return (
-    <div style={{ marginTop: 32, paddingTop: 24, borderTop: "1px solid var(--line)" }}>
-      <h3 className="display-h3">{t("telegram.adminTitle")}</h3>
+    <div className="tg-card" style={{ padding: "20px 22px 22px" }}>
+      <h3 className="tg-h" style={{ marginBottom: 4 }}>
+        {t("telegram.adminTitle")}
+      </h3>
 
       {/* Cấu hình bot: nhập token ngay đây thay vì SSH sửa .env rồi restart. */}
       <div style={{ marginTop: 16, marginBottom: 24 }}>
