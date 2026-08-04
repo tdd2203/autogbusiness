@@ -48,7 +48,17 @@ type TemplateOut = {
   sample: TemplateSample;
   overrides: Override[];
   recipients: Recipient[];
+  audience: string;
 };
+
+/**
+ * Ai nhận tin nào — bảng này phải khớp `renewal_reminder._recipients_for`.
+ *
+ * Luật dễ hiểu nhầm nhất: email ĐÃ chỉ định người nhận thì đại lý KHÔNG nhận tin của
+ * email đó nữa (nhánh `elif` bên server), nên phải nói thẳng ra chứ không để người
+ * dùng tự đoán qua bản xem trước.
+ */
+const AUDIENCES = ["assignee", "owner", "subscriber", "admin"] as const;
 
 export function NotificationTemplateModal({ onClose }: { onClose: () => void }) {
   const t = useT();
@@ -124,6 +134,9 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
       toast.error(e instanceof ApiError ? String(e.detail) : t("telegram.tplError")),
   });
 
+  // Chỉ đánh dấu "đang sửa tin của ai" khi phạm vi trỏ tới MỘT đích cụ thể. Mẫu chung
+  // áp cho cả ba loại người nhận nên chỉ tay vào một loại là nói sai.
+  const audience = ready && scope !== "all" ? data?.audience : undefined;
   const overrides = data?.overrides ?? [];
   const hasOverride = (s: Scope, id: number | string | null) =>
     overrides.some((o) =>
@@ -168,9 +181,28 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
           <h3 className="display-h3" style={{ margin: 0 }}>
             {t("telegram.tplTitle")}
           </h3>
-          <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginTop: 4 }}>
-            {t("telegram.tplDesc")}
-          </div>
+        </div>
+
+        <div
+          style={{
+            background: "var(--surface-2)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: "10px 12px",
+            fontSize: 12.5,
+            lineHeight: 1.45,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>{t("telegram.tplWho")}</div>
+          {AUDIENCES.map((a) => (
+            <div key={a} style={{ marginTop: 4, color: "var(--ink-2)" }}>
+              <b style={{ color: audience === a ? "var(--ink)" : "var(--ink-2)" }}>
+                {t(`telegram.tplWho_${a}`)}
+                {audience === a && ` ← ${t("telegram.tplWhoEditing")}`}
+              </b>{" "}
+              — {t(`telegram.tplWhoDesc_${a}`)}
+            </div>
+          ))}
         </div>
 
         <label className="form-label" style={{ marginBottom: -4 }}>
@@ -210,8 +242,7 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
             <option value="">{t("telegram.tplPickRecipient")}</option>
             {(data?.recipients ?? []).map((r) => (
               <option key={r.chat_id} value={r.chat_id}>
-                {r.label}
-                {r.kind === "owner" ? ` — ${t("telegram.tplRecipientSelf")}` : ""}
+                {r.label} — {t(`telegram.tplWho_${r.kind}`)}
                 {hasOverride("chat", r.chat_id) ? " ✎" : ""}
               </option>
             ))}
@@ -277,9 +308,6 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
             {preview && (
               <>
                 <label className="form-label">{t("telegram.tplPreview")}</label>
-                <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: -4 }}>
-                  {t("telegram.tplPreviewHint")}
-                </div>
                 <TelegramPreview html={preview} invalidNote={t("telegram.tplPreviewInvalid")} />
               </>
             )}

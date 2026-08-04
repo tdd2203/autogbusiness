@@ -1636,6 +1636,40 @@ def test_custom_template_applied_to_messages(
     assert tpl["body"] is None and "Nhắc gia hạn" in tpl["default_body"]
 
 
+def test_template_starts_from_the_default_of_the_real_audience(
+    client: TestClient, auth_header: dict, bot_on
+) -> None:
+    """Mẫu gốc đem ra sửa phải là mẫu của ĐÚNG loại người nhận phạm vi đó gửi tới.
+
+    Email đã chỉ định khách nhận thì tin đi tới khách ('Liên hệ nơi bạn đã mua'), không
+    phải tới đại lý ('Gia hạn tại: link'). Mở ra thấy mẫu của đại lý thì người soạn sửa
+    nhầm nội dung ngay từ dòng đầu mà không biết.
+    """
+    ws = _make_ws(client, auth_header)
+    mine = _add_member(client, ws, "chua-giao@example.com", days_left=30)
+    assigned = _add_member(
+        client, ws, "khach@example.com", days_left=30, **_assigned_to(ASSIGNEE_CHAT)
+    )
+
+    out = client.get(
+        f"/api/v1/telegram/template?scope=member&member_id={assigned}", headers=auth_header
+    ).json()
+    assert out["audience"] == "assignee"
+    assert "Vui lòng liên hệ nơi bạn đã mua" in out["default_body"]
+    assert "Vui lòng liên hệ nơi bạn đã mua" in out["preview"]
+
+    # Chưa chỉ định ai → chính đại lý nhận tin của email đó.
+    out = client.get(
+        f"/api/v1/telegram/template?scope=member&member_id={mine}", headers=auth_header
+    ).json()
+    assert out["audience"] == "owner"
+    assert "Gia hạn tại:" in out["default_body"]
+
+    # Mẫu chung vẫn tính theo đại lý — nó áp cho mọi tin của tài khoản này.
+    out = client.get("/api/v1/telegram/template", headers=auth_header).json()
+    assert out["audience"] == "owner"
+
+
 def test_template_rejects_unknown_placeholder(
     client: TestClient, auth_header: dict, bot_on
 ) -> None:
