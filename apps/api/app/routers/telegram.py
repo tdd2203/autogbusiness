@@ -712,8 +712,8 @@ def _handle_invite_subscription(
             else "Hiện chưa có email nào trong danh sách. Có email mới bạn sẽ được nhắc tự động."
         )
         + "\n\nChủ tài khoản có thể chỉnh bạn nhận toàn bộ hay chỉ một số email.\n"
-        "Gõ /danhsach để xem toàn bộ email bạn sở hữu, "
-        "/handung để xem email còn dưới 7 ngày.",
+        "<b>Gõ /danhsach để xem toàn bộ email bạn sở hữu, "
+        "/handung để xem email còn dưới 7 ngày.\n" + _HELP_HINT + "</b>",
     )
 
 
