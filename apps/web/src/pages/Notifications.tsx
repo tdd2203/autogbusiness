@@ -88,7 +88,7 @@ export default function Notifications() {
         {/* MỘT nút duy nhất cho cả ba phạm vi mẫu (chung / theo người nhận / theo
             email) — chọn phạm vi ngay trong modal. Rải mỗi phạm vi một nút thì không
             ai biết mẫu nào đang thắng mẫu nào. */}
-        <button className="btn btn-sm" onClick={() => setEditTemplate(true)}>
+        <button className="btn btn-ghost" onClick={() => setEditTemplate(true)}>
           {t("telegram.tplOpen")}
         </button>
       </div>
@@ -98,46 +98,49 @@ export default function Notifications() {
           dùng: kênh của mình, người nhận, và thông báo theo từng email. */}
       <TelegramSettings showSystemConfig={false} />
 
-      <div style={{ marginTop: 32 }}>
-        <h3 className="display-h3">{t("notifications.perEmailTitle")}</h3>
-        <p
-          style={{
-            fontSize: 13,
-            color: "var(--ink-3)",
-            marginTop: 4,
-            marginBottom: 16,
-          }}
-        >
-          {t("notifications.perEmailDesc")}
-        </p>
-
+      {/* Thẻ cuối: tra cứu theo TỪNG EMAIL. Cùng ngôn ngữ thẻ với khối Telegram bên
+          trên (viền, bo góc, chân thẻ) nên cả trang đọc như một mạch. */}
+      <section className="table-card" style={{ marginTop: 20 }}>
         <div
           style={{
+            padding: "20px 24px 16px",
             display: "flex",
-            gap: 12,
-            alignItems: "center",
-            flexWrap: "wrap",
-            marginBottom: 12,
+            flexDirection: "column",
+            gap: 14,
+            borderBottom: "1px solid var(--border)",
           }}
         >
-          <input
-            className="form-input"
-            style={{ maxWidth: 280 }}
-            placeholder={t("members.searchPlaceholder")}
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-          <span className="cell-muted" style={{ fontSize: 13 }}>
-            {t("notifications.boundCount", { bound, total: rows.length })}
-          </span>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 24, flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 280, display: "flex", flexDirection: "column", gap: 4 }}>
+              <h3 className="tg-h">{t("notifications.perEmailTitle")}</h3>
+              <p className="tg-sub">{t("notifications.perEmailDesc")}</p>
+            </div>
+            <div className="tg-count">
+              <b>{rows.length}</b>
+              <span>{t("notifications.trackedCount")}</span>
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div className="tg-search" style={{ minWidth: 260, flex: "0 1 340px" }}>
+              <span className="tg-search-icon" aria-hidden="true" />
+              <input
+                placeholder={t("members.searchPlaceholder")}
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
+            </div>
+            <span className="tg-modal-hint">
+              {t("notifications.boundCount", { bound, total: rows.length })}
+            </span>
+          </div>
         </div>
 
         {isLoading ? (
-          <div className="cell-muted" style={{ fontSize: 13 }}>
+          <div style={{ padding: "18px 24px", fontSize: 13, color: "var(--ink-3)" }}>
             {t("common.loading")}
           </div>
         ) : rows.length === 0 ? (
-          <div className="cell-muted" style={{ fontSize: 13 }}>
+          <div style={{ padding: "18px 24px", fontSize: 13, color: "var(--ink-3)" }}>
             {t("addedEmails.empty")}
           </div>
         ) : (
@@ -153,7 +156,19 @@ export default function Notifications() {
               <tbody>
                 {rows.map((m) => (
                   <tr key={m.id}>
-                    <td className="cell-email">{m.email}</td>
+                    <td className="cell-email">
+                      <span
+                        style={{ display: "inline-flex", alignItems: "center", gap: 10 }}
+                      >
+                        {/* Chấm = đã gắn người nhận riêng hay chưa — đọc được cả cột
+                            chỉ bằng cách liếc, không phải dò từng dòng chữ. */}
+                        <span
+                          className={m.notify_telegram_chat_id ? "tg-dot" : "tg-dot muted"}
+                          aria-hidden="true"
+                        />
+                        {m.email}
+                      </span>
+                    </td>
                     <td style={{ fontSize: 13 }}>
                       {m.notify_telegram_chat_id ? (
                         <span style={{ color: "var(--success)" }}>
@@ -174,7 +189,7 @@ export default function Notifications() {
                         xem .row-reveal trong index.css. */}
                     <td style={{ textAlign: "right" }}>
                       <button
-                        className="btn btn-sm row-reveal"
+                        className="btn btn-sm btn-ghost row-reveal"
                         onClick={() => setNotifyMember(m)}
                         title={t("notifications.getLinkHint")}
                       >
@@ -187,7 +202,7 @@ export default function Notifications() {
             </table>
           </div>
         )}
-      </div>
+      </section>
 
       {notifyMember && (
         <NotifyLinkModal

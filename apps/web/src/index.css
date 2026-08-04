@@ -1573,6 +1573,510 @@ body {
     }
   }
 
+  /* ---------- Trang Thông báo / Telegram (mockup "thong-bao" 2026-08-04) ----------
+     Khối Telegram bỏ kiểu "Cài đặt" (info-row + bảng) sang kiểu THẺ: mỗi việc một
+     thẻ, đọc từ trái sang phải đúng thứ tự làm — kênh của tôi → tạo link → link
+     đang phát → ai đang nhận. Toàn bộ dùng token chung (--success, --border…) nên
+     đổi theme là đổi cả cụm này, KHÔNG chôn mã màu của mockup vào đây. */
+  .tg-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .tg-grid {
+    display: grid;
+    /* min() để cột không giữ khư khư 430px trên màn hẹp hơn 430px rồi đẩy tràn
+       ngang cả trang — auto-fit một mình KHÔNG lo việc đó. */
+    grid-template-columns: repeat(auto-fit, minmax(min(430px, 100%), 1fr));
+    gap: 20px;
+    align-items: start;
+  }
+  .tg-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+    overflow: hidden;
+    min-width: 0;
+  }
+  .tg-pad {
+    padding: 20px 22px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .tg-head {
+    padding: 18px 20px 15px;
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tg-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 11px;
+    background: var(--success-bg);
+    color: var(--success);
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    font-size: 17px;
+  }
+  .tg-h {
+    margin: 0;
+    font-size: 16.5px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+  }
+  .tg-h-sm {
+    margin: 0;
+    font-size: 15.5px;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    color: var(--ink);
+  }
+  .tg-sub {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--ink-2);
+  }
+  .tg-meta {
+    padding: 12px 20px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 2px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tg-meta-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 7px 0;
+    min-width: 0;
+  }
+  .tg-meta-key {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .tg-meta-val {
+    font-family: var(--font-mono);
+    font-size: 13.5px;
+    color: var(--ink);
+    word-break: break-word;
+  }
+  .tg-chip {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px 7px;
+    white-space: nowrap;
+  }
+  .tg-line {
+    padding: 13px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  .tg-foot {
+    padding: 13px 20px 16px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex-wrap: wrap;
+  }
+  /* Công tắc bật/tắt nhắc — to và rõ trạng thái, thay ô checkbox lọt thỏm cũ. */
+  .tg-switch {
+    position: relative;
+    width: 46px;
+    height: 27px;
+    border-radius: 99px;
+    border: none;
+    cursor: pointer;
+    flex-shrink: 0;
+    background: var(--border-strong);
+    transition: background 0.18s ease;
+  }
+  .tg-switch[aria-pressed="true"] {
+    background: var(--success);
+  }
+  .tg-switch:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .tg-switch > span {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 21px;
+    height: 21px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    transition: left 0.18s ease;
+  }
+  .tg-switch[aria-pressed="true"] > span {
+    left: 22px;
+  }
+  .tg-steps {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .tg-steps li {
+    display: flex;
+    gap: 11px;
+    align-items: flex-start;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--ink-2);
+  }
+  .tg-steps strong {
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .tg-step-n {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--bg);
+    color: var(--ink-2);
+    font-size: 11.5px;
+    font-weight: 600;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .tg-list {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+  .tg-list-scroll {
+    max-height: 460px;
+    overflow-y: auto;
+    margin: -4px;
+    padding: 4px;
+  }
+  .tg-item {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 11px 13px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--surface-2);
+    flex-wrap: wrap;
+  }
+  /* Cơ sở 220px: màn hẹp thì cụm nút rơi xuống dòng dưới thay vì bóp tên link còn
+     "Khá…" — tên là thứ để nhận ra link, không được nhường chỗ cho nút. */
+  .tg-item-main {
+    flex: 1 1 220px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .tg-item-title {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .tg-item-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tg-item-sub {
+    font-size: 11.5px;
+    color: var(--ink-3);
+    padding: 3px 0 0 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tg-item-acts {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+  }
+  .tg-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--success);
+  }
+  .tg-dot.off {
+    background: var(--warning-accent);
+  }
+  .tg-dot.muted {
+    background: var(--ink-4);
+  }
+  .tg-pill {
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 99px;
+    padding: 2px 8px;
+    white-space: nowrap;
+    background: var(--success-bg);
+    color: var(--success);
+  }
+  .tg-pill.off {
+    background: var(--warning-bg);
+    color: var(--warning);
+  }
+  .tg-empty {
+    border: 1px dashed var(--border-strong);
+    border-radius: 12px;
+    padding: 14px 16px;
+    font-size: 12.5px;
+    color: var(--ink-3);
+    background: var(--surface-2);
+  }
+  .tg-count {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 6px 12px;
+    font-size: 12.5px;
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .tg-count b {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink);
+  }
+
+  /* ---------- Modal chọn phạm vi (tạo link / sửa phạm vi) ---------- */
+  .tg-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: rgba(20, 23, 21, 0.42);
+    display: grid;
+    place-items: center;
+    padding: 32px;
+  }
+  .tg-modal {
+    width: 100%;
+    max-width: 520px;
+    max-height: 86vh;
+    background: var(--surface);
+    border-radius: 18px;
+    box-shadow: 0 24px 64px rgba(20, 23, 21, 0.22);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .tg-modal-head {
+    padding: 22px 24px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tg-modal-body {
+    padding: 18px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+  }
+  .tg-modal-foot {
+    padding: 14px 24px;
+    border-top: 1px solid var(--border);
+    background: var(--surface-2);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .tg-modal-hint {
+    font-size: 12.5px;
+    color: var(--ink-3);
+  }
+  .tg-field {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  .tg-field-label {
+    font-size: 11px;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  /* Hai lựa chọn phạm vi là THẺ BẤM ĐƯỢC CẢ MẢNG, không phải radio 16px lọt thỏm:
+     đây là quyết định quan trọng nhất trong modal. */
+  .tg-opt {
+    display: flex;
+    align-items: flex-start;
+    gap: 11px;
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    font-family: inherit;
+    cursor: pointer;
+    color: var(--ink);
+    text-align: left;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .tg-opt:hover {
+    border-color: var(--border-strong);
+  }
+  .tg-opt.on {
+    border-color: var(--success);
+    background: var(--success-bg);
+  }
+  .tg-radio {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 2px;
+    border: 1.5px solid var(--ink-4);
+    background: var(--surface);
+  }
+  .tg-opt.on .tg-radio {
+    border: 5px solid var(--success);
+  }
+  .tg-opt-title {
+    font-size: 13.5px;
+    font-weight: 500;
+  }
+  .tg-opt-sub {
+    font-size: 12px;
+    color: var(--ink-3);
+  }
+  .tg-search {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    padding: 0 12px;
+    background: var(--surface);
+    transition: border-color 0.15s;
+  }
+  .tg-search:focus-within {
+    border-color: var(--success);
+  }
+  .tg-search input {
+    border: none;
+    outline: none;
+    background: transparent;
+    font-family: inherit;
+    font-size: 13.5px;
+    padding: 9px 0;
+    width: 100%;
+    color: var(--ink);
+  }
+  .tg-search input::placeholder {
+    color: var(--ink-3);
+  }
+  .tg-search-icon {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1.6px solid var(--ink-4);
+    flex-shrink: 0;
+  }
+  .tg-picker {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    max-height: 220px;
+    overflow-y: auto;
+    background: var(--surface-2);
+  }
+  .tg-pick {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    width: 100%;
+    padding: 9px 13px;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    background: transparent;
+    font-family: inherit;
+    cursor: pointer;
+    color: var(--ink);
+    text-align: left;
+  }
+  .tg-pick:last-child {
+    border-bottom: none;
+  }
+  .tg-pick:hover {
+    background: var(--bg);
+  }
+  .tg-pick.on {
+    background: var(--success-bg);
+  }
+  .tg-pick-box {
+    width: 16px;
+    height: 16px;
+    border-radius: 5px;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    font-size: 10px;
+    line-height: 1;
+    color: #fff;
+    border: 1.5px solid var(--ink-4);
+    background: var(--surface);
+  }
+  .tg-pick.on .tg-pick-box {
+    border-color: var(--success);
+    background: var(--success);
+  }
+  .tg-pick-email {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  @media (max-width: 640px) {
+    .tg-modal-backdrop {
+      padding: 12px;
+    }
+    .tg-pad {
+      padding: 18px 16px 18px;
+    }
+    .tg-head,
+    .tg-meta,
+    .tg-line,
+    .tg-foot {
+      padding-left: 16px;
+      padding-right: 16px;
+    }
+  }
+
   /* ---------- Empty state ---------- */
   .empty-state {
     padding: 64px 20px;
