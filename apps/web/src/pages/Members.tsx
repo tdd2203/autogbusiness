@@ -8,6 +8,7 @@ import { useAuth } from "../hooks/useAuth";
 import { useFormatDate, useFormatDateTime, useT } from "../i18n";
 import type { Member, QueueItem, WorkspaceMemberStats } from "../types";
 import { useRemoveMembers } from "../hooks/useRemoveMembers";
+import { useMemberDataActions } from "../hooks/useMemberDataActions";
 import { useMemberMutations } from "../hooks/useMemberMutations";
 import { useReinvite } from "../hooks/useReinvite";
 import OrderQrModal from "../components/OrderQrModal";
@@ -385,6 +386,9 @@ export default function Members() {
     { onBulkRemoveCleared: () => setSelectedIds(new Set()) },
   );
 
+  // Xuất dữ liệu / Xoá dữ liệu 1 member (2 mục menu "..." mới của ChatGPT).
+  const { exportData, deleteData } = useMemberDataActions(workspaceId);
+
   // Mời lại (re-invite) member CHỜ THAM GIA khi lời mời lỗi. Hết hạn + ví thiếu →
   // 402 QR (mở OrderQrModal); còn hạn → miễn phí.
   const [reinviteQr, setReinviteQr] = useState<OrderQr | null>(null);
@@ -393,6 +397,10 @@ export default function Members() {
   });
 
   const canRemove = hasPermission("MEMBER_REMOVE");
+  // Xuất/Xoá dữ liệu (2 mục ChatGPT mới): quyền RIÊNG, mặc định TẮT với mọi tài
+  // khoản phụ ⇒ chỉ super-admin có. Nút vẫn hiện trong menu "⋯" nhưng bị làm mờ.
+  const canExportData = hasPermission("MEMBER_EXPORT_DATA");
+  const canDeleteData = hasPermission("MEMBER_DELETE_DATA");
   // Mời / mời lại cần quyền mời.
   const canInvite = hasPermission("MEMBER_INVITE");
   // Đổi email sinh ra cả thao tác xoá lẫn mời → cần cả 2 quyền (khớp backend).
@@ -1243,8 +1251,7 @@ export default function Members() {
                           ]}
                         />
                       )}
-                      {m.status === "active" &&
-                        (canRemove || canChangeEmail || canChangeSubscription) && (
+                      {m.status === "active" && (
                           <RowActionsMenu
                             ariaLabel={t("common.actions")}
                             items={[
@@ -1266,6 +1273,32 @@ export default function Members() {
                                     },
                                   ]
                                 : []),
+                              // 2 mục ChatGPT mới thêm cho member ĐÃ THAM GIA.
+                              // LUÔN hiện (để admin biết chức năng tồn tại) nhưng
+                              // LÀM MỜ khi tài khoản chưa được cấp quyền — mặc định
+                              // mọi tài khoản phụ đều chưa có (xem lib/permissions.ts).
+                              {
+                                key: "export-data",
+                                label: t("memberData.exportAction"),
+                                disabled:
+                                  !canExportData || exportData.isPending,
+                                title: canExportData
+                                  ? undefined
+                                  : t("memberData.needPermission"),
+                                onClick: async () => {
+                                  const ok = await confirm(
+                                    t("memberData.confirmExport", {
+                                      email: m.email,
+                                    }),
+                                    {
+                                      title: t("memberData.exportAction"),
+                                      okText: t("memberData.exportAction"),
+                                      cancelText: t("common.cancel"),
+                                    },
+                                  );
+                                  if (ok) exportData.mutate(m.id);
+                                },
+                              },
                               ...(canRemove
                                 ? [
                                     {
@@ -1289,6 +1322,32 @@ export default function Members() {
                                     },
                                   ]
                                 : []),
+                              // Xoá dữ liệu: thao tác KHÔNG HOÀN TÁC, nặng hơn cả
+                              // "Loại bỏ thành viên" → đặt CUỐI, đánh dấu danger.
+                              {
+                                key: "delete-data",
+                                label: t("memberData.deleteAction"),
+                                danger: true,
+                                disabled:
+                                  !canDeleteData || deleteData.isPending,
+                                title: canDeleteData
+                                  ? undefined
+                                  : t("memberData.needPermission"),
+                                onClick: async () => {
+                                  const ok = await confirm(
+                                    t("memberData.confirmDelete", {
+                                      email: m.email,
+                                    }),
+                                    {
+                                      title: t("memberData.confirmDeleteTitle"),
+                                      okText: t("memberData.deleteAction"),
+                                      cancelText: t("common.cancel"),
+                                      danger: true,
+                                    },
+                                  );
+                                  if (ok) deleteData.mutate(m.id);
+                                },
+                              },
                             ]}
                           />
                         )}

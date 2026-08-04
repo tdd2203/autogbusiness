@@ -103,6 +103,9 @@ const IMP_OP_GROUP: Record<string, ImpGroup> = {
   MEMBER_INVITE_VERIFIED: "invite",
   MEMBER_INVITE_FAILED: "invite",
   MEMBER_INVITE_VERIFY_RECONCILE: "invite",
+  // Đã hoàn phí nhưng email vẫn ở trong team → NỢ cần truy thu. Thuộc nhóm mời để
+  // nằm tab "Chính" (admin phải thấy, xem members/payments.md).
+  MEMBER_REFUND_WHILE_IN_TEAM: "invite",
   // Đồng bộ phát hiện thành viên đã chấp nhận lời mời (pending → active): thuộc
   // vòng đời mời để nằm chung tab "Chính" với các bước mời/xác minh.
   MEMBER_SYNC_PROMOTED_ACTIVE: "invite",
@@ -119,7 +122,7 @@ const IMP_OP_GROUP: Record<string, ImpGroup> = {
 };
 
 /** Nhóm nghiệp vụ quan trọng của 1 action (null = không quan trọng). */
-function importantGroup(action: string): ImpGroup | null {
+export function importantGroup(action: string): ImpGroup | null {
   const [op, sub] = action.split(":");
   if (op in IMP_OP_GROUP) return IMP_OP_GROUP[op];
   // Gỡ/mời đi qua hàng đợi (QUEUE_PICKED:REMOVE_MEMBER…) thuộc cùng nhóm.
@@ -211,6 +214,7 @@ const ACT_TITLE: Record<string, string> = {
   MEMBER_SYNC_PROMOTED_ACTIVE: "Thành viên đã tham gia",
   MEMBER_INVITE_VERIFIED: "Mời thành viên thành công",
   MEMBER_INVITE_FAILED: "Mời thành viên thất bại",
+  MEMBER_REFUND_WHILE_IN_TEAM: "Đã hoàn phí nhưng email vẫn trong team",
   MEMBER_INVITE_VERIFY_RECONCILE: "Đối soát mời thành viên",
   MEMBER_RECONCILE_SKIPPED: "Bỏ qua đối soát",
   MEMBER_SYNC_MISMATCH: "Lệch số lượng sau đồng bộ",
@@ -529,22 +533,78 @@ function isExpiredRemoveGroup(evs: Decorated[]): boolean {
   );
 }
 
-function buildMemberQueueMap(events: Decorated[]): Map<string, string> {
-  const m = new Map<string, string>();
+/* Gộp "mồ côi" — sự kiện MEMBER KHÔNG kèm `queue_item_id` nhưng là KẾT QUẢ của một
+   task extension — vào đúng lệnh hàng đợi của member.
+
+   BUG user 2026-08-04 (lingtruong1301@gmail.com): trước đây MỌI sự kiện MEMBER
+   thiếu queue_item_id đều bị dán vào một lệnh hàng đợi BẤT KỲ của member đó (bản đồ
+   member → qid ghi đè, không xét thời gian lẫn loại lệnh). Email hết hạn 3/8 → gỡ
+   xong 3/8 11:03 → admin mời lại + gia hạn 2 tháng 3/8 15:39 → 4/8 15:43 đồng bộ ghi
+   `MEMBER_SYNC_PROMOTED_ACTIVE` (đã tham gia). Sự kiện 4/8 đó bị dán vào lệnh "Xoá do
+   hết hạn" HÔM TRƯỚC, kéo theo cả `MEMBER_FEE_SET` → nhóm 6 sự kiện, và vì nhóm lấy
+   `latestTs` = sự kiện mới nhất nên ca xoá hết hạn hiện giờ của lần đồng bộ hôm sau:
+   trông như hệ thống vừa xoá-do-hết-hạn một email vừa được mời lại + gia hạn.
+
+   Ba chốt chặn: (1) whitelist action — thao tác admin (đổi phí/hạn/thanh toán…)
+   KHÔNG bao giờ bị nuốt vào một lệnh hàng đợi; (2) cửa sổ thời gian — chỉ gộp khi
+   sát giờ, chọn lệnh GẦN NHẤT; (3) đúng LOẠI lệnh — "đã tham gia" chỉ thuộc về lệnh
+   MỜI, không thể thuộc về lệnh gỡ. */
+const QUEUE_ORPHAN_GLUE_OPS = new Set([
+  "MEMBER_ROLE_SYNCED",
+  "MEMBER_LICENSE_TYPE_SYNCED",
+  "MEMBER_USAGE_LIMIT_SYNCED",
+  "MEMBER_SYNC_PROMOTED_ACTIVE",
+]);
+/** Lệch giờ tối đa giữa sự kiện mồ côi và lệnh hàng đợi của nó (10 phút). */
+const QUEUE_ORPHAN_GLUE_MS = 10 * 60 * 1000;
+
+type QueueRef = { qid: string; ts: number; impGroup: ImpGroup | null };
+
+function buildMemberQueueMap(events: Decorated[]): Map<string, QueueRef[]> {
+  const m = new Map<string, QueueRef[]>();
   for (const e of events) {
     const qid = e.data?.queue_item_id;
-    if (typeof qid === "string" && e.target_type === "MEMBER" && e.target_id)
-      m.set(e.target_id, qid);
+    if (typeof qid !== "string" || e.target_type !== "MEMBER" || !e.target_id)
+      continue;
+    const ts = new Date(e.timestamp).getTime();
+    if (Number.isNaN(ts)) continue;
+    const ref: QueueRef = { qid, ts, impGroup: e.impGroup };
+    const list = m.get(e.target_id);
+    if (list) list.push(ref);
+    else m.set(e.target_id, [ref]);
   }
   return m;
 }
 
-function groupKeyFor(e: Decorated, memberMap: Map<string, string>): string {
+/** Lệnh hàng đợi GẦN NHẤT về thời gian của member, trong cửa sổ + đúng loại lệnh. */
+function nearestQueueRef(
+  refs: QueueRef[],
+  ts: number,
+  onlyImpGroup: ImpGroup | null,
+): string | null {
+  let best: QueueRef | null = null;
+  for (const r of refs) {
+    if (onlyImpGroup && r.impGroup !== onlyImpGroup) continue;
+    if (Math.abs(r.ts - ts) > QUEUE_ORPHAN_GLUE_MS) continue;
+    if (!best || Math.abs(r.ts - ts) < Math.abs(best.ts - ts)) best = r;
+  }
+  return best?.qid ?? null;
+}
+
+function groupKeyFor(e: Decorated, memberMap: Map<string, QueueRef[]>): string {
   if (e.target_type === "QUEUE_ITEM" && e.target_id) return "q:" + e.target_id;
   const qid = e.data?.queue_item_id;
   if (typeof qid === "string") return "q:" + qid;
-  if (e.target_type === "MEMBER" && e.target_id && memberMap.has(e.target_id))
-    return "q:" + memberMap.get(e.target_id);
+  const op = opOf(e.action);
+  if (e.target_type === "MEMBER" && e.target_id && QUEUE_ORPHAN_GLUE_OPS.has(op)) {
+    const refs = memberMap.get(e.target_id);
+    const ts = new Date(e.timestamp).getTime();
+    // "Đã tham gia (qua đồng bộ)" chỉ nối vào lệnh MỜI của chính member đó.
+    const onlyImpGroup = op === "MEMBER_SYNC_PROMOTED_ACTIVE" ? "invite" : null;
+    const near =
+      refs && !Number.isNaN(ts) ? nearestQueueRef(refs, ts, onlyImpGroup) : null;
+    if (near) return "q:" + near;
+  }
   return "s:" + e.id;
 }
 
@@ -629,7 +689,8 @@ function makeGroup(key: string, evs: Decorated[]): Group {
   };
 }
 
-function buildGroups(events: Decorated[]): Group[] {
+// Export cho unit test gom nhóm (AuditLogs.grouping.test.ts) — UI vẫn dùng nội bộ.
+export function buildGroups(events: Decorated[]): Group[] {
   const memberMap = buildMemberQueueMap(events);
   const map = new Map<string, Decorated[]>();
   const order: string[] = [];

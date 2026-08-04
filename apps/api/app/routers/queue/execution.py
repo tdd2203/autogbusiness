@@ -62,6 +62,9 @@ def pick_next(
         "CHANGE_LICENSE_TYPE": timedelta(minutes=3),
         "SET_USAGE_LIMIT": timedelta(minutes=3),
         "REVOKE_INVITES": timedelta(minutes=3),
+        # Xuất/Xoá dữ liệu: cùng lớp UI-op với remove (lọc email → menu → dialog).
+        "EXPORT_MEMBER_DATA": timedelta(minutes=3),
+        "DELETE_MEMBER_DATA": timedelta(minutes=3),
         # SYNC_MEMBER: tìm 1 email ở tab Lời mời rồi fallback lật trang tab Người
         # dùng (như remove) → cho 4 phút (giữa UI-op 3' và SYNC_DATA full 6').
         "SYNC_MEMBER": timedelta(minutes=4),

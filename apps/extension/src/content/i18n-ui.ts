@@ -509,6 +509,38 @@ export const REVOKE_CONFIRM_TEXTS = [
   "取消",
 ];
 
+/**
+ * Chữ trong TOAST xác nhận "đã gửi lời mời" của ChatGPT — lowercase, dùng
+ * `includes()`. Đây là BẰNG CHỨNG MẠNH NHẤT rằng lời mời ĐÃ đi (yêu cầu user
+ * 2026-08-04): chính ChatGPT nói nó gửi rồi, không cần suy đoán qua việc email đã
+ * kịp xuất hiện ở tab "Lời mời đang chờ xử lý" hay chưa (tab đó index trễ vài giây
+ * là chuyện thường → từng làm extension báo hỏng oan, backend hoàn phí + xoá bản
+ * ghi trong khi người được mời VẪN nhận được lời mời).
+ *
+ * Chỉ khớp CHỮ, không khớp `[role="status"]` trống: vùng live-region của ChatGPT
+ * còn dùng cho thứ khác, thấy element rỗng mà kết luận "đã gửi" là bịa bằng chứng.
+ */
+export const INVITE_SUCCESS_TOAST_PATTERNS = [
+  // vi
+  "đã gửi lời mời",
+  "lời mời đã được gửi",
+  "đã mời",
+  "gửi lời mời thành công",
+  // en
+  "invitation sent",
+  "invitations sent",
+  "invite sent",
+  "invites sent",
+  "invitation has been sent",
+  "successfully invited",
+  "sent invitation",
+  // zh
+  "邀请已发送",
+  "已发送邀请",
+  "邀请发送成功",
+  "已邀请",
+];
+
 export const INVITE_ERROR_HINTS = [
   "đã tồn tại",
   "already exists",

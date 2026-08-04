@@ -10,7 +10,11 @@ import {
   sleep,
   waitFor,
 } from "../../human";
-import { INVITE_ERROR_HINTS, findControlByKey } from "../../i18n-ui";
+import {
+  INVITE_ERROR_HINTS,
+  INVITE_SUCCESS_TOAST_PATTERNS,
+  findControlByKey,
+} from "../../i18n-ui";
 import { reportProgress } from "../../progress";
 import { SELECTORS, TEXT_FALLBACKS } from "../../selectors";
 import { querySelectorFirst } from "../../human";
@@ -376,12 +380,27 @@ export async function executeInviteInner(
     true,
   );
 
-  // 7. Verify success — chờ toast hoặc dialog đóng
+  // 7. Verify success — chờ toast hoặc dialog đóng.
+  // Phân biệt HAI mức bằng chứng (user 2026-08-04) thay vì gộp làm một:
+  //   - "toast": ChatGPT NÓI RÕ đã gửi lời mời (khớp INVITE_SUCCESS_TOAST_PATTERNS)
+  //     → bằng chứng MẠNH, background dựa vào đây để KHÔNG kết luận hỏng chỉ vì tab
+  //     "Lời mời đang chờ xử lý" chưa kịp index (xem runner.ts::decideInviteOutcome).
+  //   - "dialog_closed": dialog đóng nhưng không đọc được chữ xác nhận → bằng chứng
+  //     YẾU (dialog cũng có thể đóng vì lý do khác).
+  let submitEvidence: "toast" | "dialog_closed" = "dialog_closed";
   try {
     await waitFor(() => {
       const toast = querySelectorFirst(SELECTORS.inviteSuccessToast);
+      const toastText = (toast?.textContent ?? "").toLowerCase();
+      if (
+        toastText &&
+        INVITE_SUCCESS_TOAST_PATTERNS.some((p) => toastText.includes(p))
+      ) {
+        submitEvidence = "toast";
+        return toast;
+      }
       const dialogClosed = !document.querySelector('[role="dialog"]');
-      return toast ?? (dialogClosed ? document.body : null);
+      return dialogClosed ? document.body : null;
     }, 15_000);
   } catch {
     // Check xem có error message trong dialog không (vd email đã tồn tại)
@@ -425,6 +444,8 @@ export async function executeInviteInner(
       count: emails.length,
       role,
       awaiting_reload_verify: true,
+      // "toast" = ChatGPT xác nhận đã gửi → tab Lời mời chưa hiện KHÔNG có nghĩa là hỏng.
+      submit_evidence: submitEvidence,
     },
   };
 }

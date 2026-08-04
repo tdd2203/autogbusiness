@@ -31,6 +31,8 @@ export type RowActionItem = {
   onClick?: () => void;
   danger?: boolean;
   disabled?: boolean;
+  /** Tooltip (title) — dùng để giải thích vì sao item bị làm mờ (vd thiếu quyền). */
+  title?: string;
   /** Ghi đè icon mặc định (suy theo `key`). null = không hiện icon. */
   icon?: ReactNode;
   /** Dòng nhãn nhóm (không bấm được) — vd "Chuyển chủ nhanh". */
@@ -217,7 +219,10 @@ export function RowActionsMenu({
               !items[i - 1].heading &&
               items.slice(0, i).some((p) => !p.danger && !p.heading);
             return (
-              <div key={it.key}>
+              // `title` đặt ở DIV bọc, không ở <button>: Chrome không hiện tooltip
+              // trên phần tử disabled (bỏ qua sự kiện chuột) — mà đây đúng là ca ta
+              // cần giải thích ("thiếu quyền nên bị làm mờ").
+              <div key={it.key} title={it.title}>
                 {showSep && <div className="row-menu-sep" aria-hidden="true" />}
                 <button
                   type="button"

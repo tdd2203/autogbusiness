@@ -1,5 +1,7 @@
 import { useT } from "../i18n";
 import { useTelegramConnect } from "../hooks/useTelegramConnect";
+import { useIsMobile } from "../hooks/useIsMobile";
+import { TelegramLogo } from "./TelegramLogo";
 import { toast } from "./Toast";
 
 /**
@@ -15,6 +17,10 @@ export function TelegramConnectGate() {
   const t = useT();
   const { status, deepLink, awaiting, link, refresh } = useTelegramConnect();
   const botConfigured = status?.bot_configured === true;
+  // Tiêu đề phải nằm GỌN 1 DÒNG (user 2026-08-04) — nhưng chỉ khi còn đủ bề ngang.
+  // Ép nowrap ở màn hình hẹp thì chữ tràn ngang, cả trang phải cuộn ngang: đổi một
+  // cái xấu lấy một cái tệ hơn. Dưới 640px cho xuống dòng như thường.
+  const narrow = useIsMobile(639);
 
   return (
     <div
@@ -27,28 +33,20 @@ export function TelegramConnectGate() {
         paddingBottom: 48,
       }}
     >
-      <div className="settings-section" style={{ width: "100%", maxWidth: 520 }}>
+      <div className="settings-section" style={{ width: "100%", maxWidth: 660 }}>
         <div style={{ textAlign: "center" }}>
-          <div
-            aria-hidden
-            style={{
-              width: 56,
-              height: 56,
-              margin: "0 auto 16px",
-              borderRadius: "50%",
-              background: "var(--surface-2)",
-              border: "1px solid var(--border)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: 26,
-              lineHeight: 1,
-            }}
-          >
-            ✈️
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: 18 }}>
+            <TelegramLogo size={76} />
           </div>
           <div className="breadcrumb">{t("nav.notifications")}</div>
-          <h1 style={{ fontSize: 22, lineHeight: 1.35, margin: 0 }}>
+          <h1
+            style={{
+              fontSize: narrow ? 22 : 25,
+              lineHeight: 1.35,
+              margin: 0,
+              whiteSpace: narrow ? "normal" : "nowrap",
+            }}
+          >
             {t("telegram.gateTitle")}
           </h1>
         </div>
@@ -76,27 +74,27 @@ export function TelegramConnectGate() {
           ].map((step, i) => (
             <li
               key={i}
-              style={{ display: "flex", gap: 12, alignItems: "flex-start", fontSize: 14 }}
+              style={{ display: "flex", gap: 12, alignItems: "flex-start", fontSize: 15 }}
             >
               <span
                 style={{
                   flex: "0 0 auto",
-                  width: 24,
-                  height: 24,
+                  width: 26,
+                  height: 26,
                   borderRadius: "50%",
                   background: "var(--surface-2)",
                   border: "1px solid var(--border)",
                   display: "inline-flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  fontSize: 12,
+                  fontSize: 12.5,
                   fontWeight: 600,
                   color: "var(--ink-2)",
                 }}
               >
                 {i + 1}
               </span>
-              <span style={{ color: "var(--ink-2)", lineHeight: 1.5 }}>{step}</span>
+              <span style={{ color: "var(--ink-2)", lineHeight: 1.55 }}>{step}</span>
             </li>
           ))}
         </ol>

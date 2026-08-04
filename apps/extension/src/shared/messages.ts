@@ -35,6 +35,15 @@ export type ExecuteActionRequest =
     }
   | { kind: "REMOVE_MEMBER"; taskId: string; email: string }
   | {
+      /** 2 mục MỚI trong menu "..." của member ĐÃ THAM GIA (ChatGPT 2026-08):
+       * "Xuất dữ liệu" và "Xoá dữ liệu". Cùng luồng (lọc email → menu → dialog),
+       * chỉ khác mục được chọn + nhãn nút xác nhận. "Xoá dữ liệu" là thao tác
+       * KHÔNG HOÀN TÁC — xem actions/member-data/README.md. */
+      kind: "EXPORT_MEMBER_DATA" | "DELETE_MEMBER_DATA";
+      taskId: string;
+      email: string;
+    }
+  | {
       /** Đặt giới hạn tín dụng/tháng cho 1 member trên trang
        * /admin/billing/manage_member_usage_limit ("Ghi đè mỗi người dùng"). Lọc
        * theo tên → mở dialog "Đặt giới hạn sử dụng tùy chỉnh" → nhập số → Lưu. */

@@ -127,6 +127,20 @@ body {
   }
 }
 
+/* Chấm trong bong bóng "đang có lệnh chạy" (RunningTaskBubble) — nhịp thở nhẹ để
+   biết là còn sống, không chớp gắt gây khó chịu khi lệnh chạy vài phút. */
+@keyframes taskBubblePulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.82);
+  }
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

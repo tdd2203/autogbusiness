@@ -1,10 +1,15 @@
 /**
  * Modal "Chi tiết thành viên" — mở khi click vào email ở bảng Danh sách thành viên.
  *
- * Hiển thị 2 phần:
+ * Hiển thị 3 phần:
  *   1. Thông tin hiện tại của member (vai trò, trạng thái, hạn dùng, giấy phép,
  *      giới hạn tín dụng, thanh toán, mốc thời gian).
- *   2. Timeline LỊCH SỬ HOẠT ĐỘNG — mọi sự kiện audit liên quan email đó, lấy từ
+ *   2. KỲ THANH TOÁN + DÒNG TIỀN — kỳ hạn đã mua và tiền THỰC SỰ đã thu của email
+ *      đó, lấy từ GET .../members/{memberId}/payments (xem members/payments.md).
+ *      Hai khối đặt cạnh nhau CÓ CHỦ ĐÍCH: "còn hạn dùng" và "đã thu tiền" là hai
+ *      chuyện khác nhau, ca stockbox.m (thu 2 lần → hoàn 2 lần → vẫn còn 1 tháng)
+ *      chỉ lộ ra khi nhìn đồng thời.
+ *   3. Timeline LỊCH SỬ HOẠT ĐỘNG — mọi sự kiện audit liên quan email đó, lấy từ
  *      GET /workspaces/{id}/members/{memberId}/logs (xem members/activity.md).
  *
  * Chủ yếu query. Ngoại lệ ghi: (1) sửa "Ngày gia hạn" 1 lần (super-admin);
@@ -17,7 +22,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { toast } from "./Toast";
 import { LICENSE_FEATURE_ENABLED } from "../lib/featureFlags";
-import { useFormatDate, useFormatDateTime, useT } from "../i18n";
+import { useFormatDate, useFormatDateTime, useT, useTranslateEnum } from "../i18n";
 import { useAuth } from "../hooks/useAuth";
 import { useCorrectAddDate } from "../hooks/useSubscriptionApprovals";
 import { useSetMemberFee, useWalletAdminUsers, usePaymentSettings } from "../hooks/useWallet";
@@ -103,6 +108,9 @@ const KNOWN_ACTIONS = new Set([
   "MEMBER_REMOVED_SYNCED",
   "MEMBER_REMOVE_STUCK",
   "MEMBER_REMOVE_UNVERIFIED",
+  "MEMBER_REFUND_WHILE_IN_TEAM",
+  "MEMBER_EXPORT_DATA_QUEUED",
+  "MEMBER_DELETE_DATA_QUEUED",
   "MEMBER_CHANGE_ROLE_QUEUED",
   "MEMBER_ROLE_SYNCED",
   "MEMBER_CHANGE_LICENSE_TYPE_QUEUED",
@@ -151,6 +159,8 @@ const MODAL_TIMELINE_ACTIONS = new Set([
   "MEMBER_REMOVED_SYNCED",
   "MEMBER_REMOVE_STUCK",
   "MEMBER_INVITE_REVOKED",
+  // tiền: đã hoàn phí nhưng email vẫn ở trong team (nợ cần truy thu)
+  "MEMBER_REFUND_WHILE_IN_TEAM",
   // gia hạn
   "MEMBER_SUBSCRIPTION_RENEWED",
   // đổi chủ
@@ -393,6 +403,341 @@ function CyclePaymentBadge({
   );
 }
 
+/* ── DÒNG TIỀN của 1 email (GET .../members/{id}/payments) ───────────────────
+   `entries` = SỔ CÁI VÍ, tiền thật: amount < 0 trừ ví (phí mời/gia hạn), > 0 cộng
+   lại (hoàn phí). `orders` = hoá đơn QR khi ví không đủ — CHỈ để truy vết, KHÔNG
+   cộng vào tổng (tiền QR vào ví rồi mới trừ phí, cộng nữa là đếm hai lần).
+   Xem app/routers/members/payments.md. */
+type MemberPaymentEntry = {
+  id: string;
+  kind: string;
+  amount: number;
+  balance_after: number;
+  ref_type: string | null;
+  ref_id: string | null;
+  meta: Record<string, unknown> | null;
+  created_at: string;
+};
+
+type MemberPaymentOrder = {
+  id: string;
+  ref_code: string;
+  kind: string;
+  amount_vnd: number;
+  status: string;
+  paid_amount_vnd: number | null;
+  created_at: string;
+  paid_at: string | null;
+  fulfillment_error: string | null;
+};
+
+type MemberPayments = {
+  email: string;
+  entries: MemberPaymentEntry[];
+  orders: MemberPaymentOrder[];
+  charged_total: number;
+  refunded_total: number;
+  net_total: number;
+};
+
+const ORDER_STATUS_BADGE: Record<string, string> = {
+  paid: "badge badge-success badge-plain",
+  pending: "badge badge-warning badge-plain",
+  expired: "badge badge-neutral badge-plain",
+  cancelled: "badge badge-neutral badge-plain",
+};
+
+/** Một ô số tổng (đã thu / đã hoàn / thực thu). */
+function CashStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "ink" | "danger" | "success";
+}) {
+  const color =
+    tone === "danger"
+      ? "var(--danger)"
+      : tone === "success"
+        ? "var(--success)"
+        : "var(--ink)";
+  return (
+    <div
+      style={{
+        flex: 1,
+        minWidth: 0,
+        padding: "8px 10px",
+        background: "var(--bg)",
+        border: "1px solid var(--border)",
+        borderRadius: 10,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 10.5,
+          color: "var(--ink-3)",
+          textTransform: "uppercase",
+          letterSpacing: "0.04em",
+          marginBottom: 3,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {label}
+      </div>
+      <div
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 12.5,
+          fontWeight: 600,
+          color,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {formatVnd(value)}
+      </div>
+    </div>
+  );
+}
+
+// Export để dựng preview/test riêng khối này (không cần đăng nhập cả dashboard).
+export function MemberCashflow({
+  data,
+  t,
+  txnKind,
+  orderStatus,
+  formatDateTime,
+}: {
+  data: MemberPayments;
+  t: TFn;
+  txnKind: (value: string) => string;
+  orderStatus: (value: string) => string;
+  formatDateTime: (d: string) => string;
+}) {
+  // Đã thu phí mà thực thu = 0 ⇒ mọi khoản đều đã hoàn: email đang dùng MIỄN PHÍ.
+  // Đây chính là ca stockbox.m — cảnh báo ngay trên đầu khối, đừng bắt admin tự trừ.
+  const allRefunded = data.charged_total > 0 && data.net_total === 0;
+  return (
+    <div>
+      <div
+        style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}
+      >
+        <span
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            letterSpacing: "0.02em",
+            textTransform: "uppercase",
+            color: "var(--ink)",
+          }}
+        >
+          {t("memberDetail.cashflowTitle")}
+        </span>
+        {data.entries.length > 0 && (
+          <span
+            style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+              color: "var(--ink-2)",
+              background: "var(--surface-2)",
+              padding: "2px 9px",
+              borderRadius: 999,
+            }}
+          >
+            {data.entries.length}
+          </span>
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <CashStat
+          label={t("memberDetail.cashCharged")}
+          value={data.charged_total}
+          tone="ink"
+        />
+        <CashStat
+          label={t("memberDetail.cashRefunded")}
+          value={data.refunded_total}
+          tone={data.refunded_total > 0 ? "success" : "ink"}
+        />
+        <CashStat
+          label={t("memberDetail.cashNet")}
+          value={data.net_total}
+          tone={allRefunded ? "danger" : "ink"}
+        />
+      </div>
+
+      {allRefunded && (
+        <div
+          style={{
+            fontSize: 11.5,
+            lineHeight: 1.5,
+            color: "var(--danger)",
+            background: "var(--danger-bg)",
+            border: "1px solid var(--danger-border)",
+            borderRadius: 10,
+            padding: "8px 11px",
+            marginBottom: 10,
+          }}
+        >
+          {t("memberDetail.cashAllRefunded")}
+        </div>
+      )}
+
+      {data.entries.length === 0 ? (
+        <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
+          {t("memberDetail.cashEmpty")}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 6 }}>
+          {data.entries.map((e) => {
+            const positive = e.amount > 0;
+            return (
+              <div
+                key={e.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  padding: "8px 11px",
+                  background: "var(--bg)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 10,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink)" }}>
+                    {txnKind(e.kind)}
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 10.5,
+                      color: "var(--ink-3)",
+                      marginTop: 2,
+                    }}
+                  >
+                    {formatDateTime(e.created_at)}
+                  </div>
+                </div>
+                <div style={{ textAlign: "right", flexShrink: 0 }}>
+                  <div
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      color: positive ? "var(--success)" : "var(--ink)",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {positive ? "+" : ""}
+                    {formatVnd(e.amount)}
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 10.5,
+                      color: "var(--ink-3)",
+                      marginTop: 2,
+                      whiteSpace: "nowrap",
+                    }}
+                    title={t("memberDetail.cashBalanceAfter")}
+                  >
+                    {formatVnd(e.balance_after)}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {data.orders.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.04em",
+              color: "var(--ink-3)",
+              marginBottom: 7,
+            }}
+          >
+            {t("memberDetail.cashOrdersTitle")}
+          </div>
+          <div style={{ display: "grid", gap: 6 }}>
+            {data.orders.map((o) => (
+              <div
+                key={o.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 10,
+                  padding: "7px 11px",
+                  background: "var(--bg)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 10,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 11.5,
+                      color: "var(--ink)",
+                    }}
+                  >
+                    {o.ref_code}
+                  </div>
+                  <div
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 10.5,
+                      color: "var(--ink-3)",
+                      marginTop: 2,
+                    }}
+                  >
+                    {formatDateTime(o.paid_at ?? o.created_at)}
+                  </div>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    flexShrink: 0,
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 11.5,
+                      color: "var(--ink-2)",
+                    }}
+                  >
+                    {formatVnd(o.paid_amount_vnd ?? o.amount_vnd)}
+                  </span>
+                  <span
+                    className={
+                      ORDER_STATUS_BADGE[o.status] ?? "badge badge-neutral badge-plain"
+                    }
+                  >
+                    {orderStatus(o.status)}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 type StepState = "done" | "current" | "todo" | "failed";
 
 /** Stepper ngang vòng đời LỜI MỜI: Đã thanh toán → Đã mời → Chờ tham gia → Đã
@@ -526,6 +871,8 @@ export function MemberDetailModal({
   const t = useT();
   const formatDate = useFormatDate();
   const formatDateTime = useFormatDateTime();
+  const txnKindLabel = useTranslateEnum("memberDetail.txnKind");
+  const orderStatusLabel = useTranslateEnum("memberDetail.orderStatus");
   const { user } = useAuth();
   const correctAddDate = useCorrectAddDate(workspaceId);
   // Modal là HUB quản lý thanh toán theo KỲ: sub-admin gửi yêu cầu, super-admin xác
@@ -811,6 +1158,15 @@ export function MemberDetailModal({
     queryFn: () =>
       api<MemberLog[]>(
         `/api/v1/workspaces/${workspaceId}/members/${member.id}/logs?limit=200`,
+      ),
+  });
+
+  // Dòng tiền của email (sổ cái ví + hoá đơn QR) — xem members/payments.md.
+  const { data: payments } = useQuery({
+    queryKey: ["member-payments", workspaceId, member.id],
+    queryFn: () =>
+      api<MemberPayments>(
+        `/api/v1/workspaces/${workspaceId}/members/${member.id}/payments`,
       ),
   });
 
@@ -1103,7 +1459,10 @@ export function MemberDetailModal({
     >
       <div
         style={{
-          width: "min(780px, 100%)",
+          // Nới từ 780 → 1060 (user 2026-08-04): thêm khối DÒNG TIỀN cạnh KỲ THANH
+          // TOÁN, hai khối phải đứng cạnh nhau mới đối chiếu được "còn hạn" vs "đã
+          // thu tiền". Hẹp hơn 900px thì grid auto-fit tự xuống 1 cột.
+          width: "min(1060px, 100%)",
           maxHeight: "90vh",
           background: "var(--surface)",
           border: "1px solid var(--border)",
@@ -1362,13 +1721,25 @@ export function MemberDetailModal({
               overflowY: "auto",
             }}
           >
+            {/* ── KỲ THANH TOÁN + DÒNG TIỀN (2 cột, auto xuống 1 cột khi hẹp) ──
+                Cố ý đặt CẠNH NHAU: kỳ hạn nói "email được dùng tới bao giờ", dòng
+                tiền nói "đã thu thật bao nhiêu". Lệch nhau = có chuyện (ca
+                stockbox.m: kỳ vẫn 'đã thanh toán' nhưng thực thu = 0). */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+                gap: 20,
+                marginBottom: cycles.length > 0 || payments ? 26 : 0,
+              }}
+            >
             {/* ── KỲ THANH TOÁN ─────────────────────────────────────────────
                 Danh sách TỪNG chu kỳ gia hạn + hành động riêng lẻ (chuyển từ bảng
                 "Email đã add" sang để bảng gọn khi nhiều kỳ — user 2026-07-11).
                 sub-admin: gửi yêu cầu kỳ chưa gửi. super-admin: xác nhận kỳ chờ /
                 huỷ kỳ đã trả. Chỉ hiện khi member đã có chu kỳ (từ AddedMember). */}
             {cycles.length > 0 && (
-              <div style={{ marginBottom: 26 }}>
+              <div>
                 <div
                   style={{
                     display: "flex",
@@ -1475,6 +1846,17 @@ export function MemberDetailModal({
                 </div>
               </div>
             )}
+
+            {payments && (
+              <MemberCashflow
+                data={payments}
+                t={t}
+                txnKind={txnKindLabel}
+                orderStatus={orderStatusLabel}
+                formatDateTime={(d) => formatDateTime(d, undefined, WITH_SECONDS)}
+              />
+            )}
+            </div>
 
             <div
               style={{

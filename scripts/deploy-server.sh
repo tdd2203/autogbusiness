@@ -3,7 +3,7 @@
 #
 # Khác với scripts/deploy-all.sh (chạy Docker TRÊN MÁY NÀY): script này rsync
 # source từ máy local lên VPS rồi build + khởi động container TRÊN VPS.
-# Truy cập production: https://gpt.lovevn.org (Cloudflare tunnel, profile "remote").
+# Truy cập production qua $PUBLIC_URL (Cloudflare tunnel, profile "remote").
 #
 # Quy trình: KHÔNG qua git — rsync thẳng working tree hiện tại lên VPS
 # (kể cả thay đổi chưa commit). Git chỉ dùng để quản lý lịch sử code như thường.
@@ -22,22 +22,26 @@
 #   ./scripts/deploy-server.sh              # rsync + build + up + health check
 #   ./scripts/deploy-server.sh --sync-only  # chỉ rsync, không build/restart
 #
-# Server đang chạy bản nào?  ssh root@103.74.100.4 'cat /opt/autogbusiness/VERSION'
+# Đích deploy (DEPLOY_SERVER/DEPLOY_REMOTE_DIR/PUBLIC_URL) đọc từ `.env` ở gốc dự
+# án — KHÔNG hardcode vì repo này public trên GitHub (xem scripts/_target.sh).
+#
+# Server đang chạy bản nào?  ssh "$DEPLOY_SERVER" 'cat <thư-mục>/VERSION'
 # (mỗi lần deploy ghi lại commit + branch + có sửa chưa commit hay không + giờ).
 #
 # Permission denied? chmod +x scripts/deploy-server.sh
 
 set -euo pipefail
 
-SERVER="root@103.74.100.4"
-REMOTE_DIR="/opt/autogbusiness"
-PUBLIC_URL="https://gpt.lovevn.org"
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/_target.sh"
+require_deploy_server
+REMOTE_DIR="$(target_get DEPLOY_REMOTE_DIR /opt/autogbusiness)"
+PUBLIC_URL="$(target_get PUBLIC_URL)"
 
 SYNC_ONLY=0
 for arg in "$@"; do
   case "$arg" in
     --sync-only) SYNC_ONLY=1 ;;
-    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "Unknown flag: $arg" >&2; exit 1 ;;
   esac
 done
@@ -100,7 +104,7 @@ rsync -az --delete \
 # ----- 2b. Dấu phiên bản trên server (VERSION) -----
 # Deploy đi thẳng từ working tree nên KHÔNG tự suy ra được "server đang chạy commit
 # nào". Ghi hẳn 1 file dấu vết lên VPS. Xem bất cứ lúc nào:
-#   ssh root@103.74.100.4 'cat /opt/autogbusiness/VERSION'
+#   ssh "$DEPLOY_SERVER" 'cat <DEPLOY_REMOTE_DIR>/VERSION'
 # Sinh SAU rsync vì `--delete` sẽ xoá file lạ ở đầu mỗi lần deploy rồi ghi lại đây.
 # `dirty=yes` = bản đang chạy có thay đổi CHƯA commit ⇒ commit ghi kèm KHÔNG dựng
 # lại được nguyên trạng bằng git, chỉ để định vị mốc gần nhất.
@@ -150,7 +154,11 @@ fi
 echo "API (VPS nội bộ): ok"
 
 # Public qua tunnel (check từ máy local — xác nhận cả cloudflared).
-if curl -fsS --max-time 15 "$PUBLIC_URL/health" >/dev/null 2>&1; then
+# PUBLIC_URL trống (chưa đặt trong .env) → bỏ qua bước này thay vì báo lỗi: deploy
+# đã thành công ở phía VPS rồi, không có lý do gì fail vì thiếu một biến để kiểm tra.
+if [ -z "$PUBLIC_URL" ]; then
+  warn "PUBLIC_URL chưa đặt trong .env — bỏ qua kiểm tra qua tunnel."
+elif curl -fsS --max-time 15 "$PUBLIC_URL/health" >/dev/null 2>&1; then
   echo "Public $PUBLIC_URL/health: ok"
 else
   warn "API nội bộ ok nhưng $PUBLIC_URL chưa trả lời — kiểm tra cloudflared:"
@@ -161,4 +169,4 @@ fi
 DIRTY_NOTE=""
 if [ "$DIRTY" = "yes" ]; then DIRTY_NOTE=" + sửa chưa commit"; fi
 printf "\n%s=== DONE — production: %s (commit %s%s) ===%s\n" \
-  "$C_GREEN" "$PUBLIC_URL" "$COMMIT" "$DIRTY_NOTE" "$C_RESET"
+  "$C_GREEN" "${PUBLIC_URL:-$SERVER:$REMOTE_DIR}" "$COMMIT" "$DIRTY_NOTE" "$C_RESET"

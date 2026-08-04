@@ -18,6 +18,7 @@ import { getConfig } from "../shared/storage";
 import type { ExtensionConfig, QueueItem } from "../shared/types";
 import { runPaymentChain, scrapeInvoiceDetailInTab } from "./payment-chain";
 import { markAdminActivity, setRunnerBusy } from "./idle-close";
+import { decideInviteOutcome, type SubmitEvidence } from "./invite-outcome";
 
 const RATE_LIMIT = {
   /** Min delay giữa 2 task bất kỳ (anti-detection). 5000→2000→1200→840 (-30%). */
@@ -94,7 +95,14 @@ const VERIFY_ROUNDTRIP_TIMEOUT_MS = 60_000;
  * verify nhiều vòng trong NGÂN SÁCH này. Dừng sớm khi đủ email / scrape fail /
  * hết budget. ~10s đủ cho 2 vòng F5 (mỗi vòng reload+render ~3-5s).
  */
-const VERIFY_BUDGET_MS = 10_000;
+/**
+ * Ngân sách cho vòng F5+verify. 10s → 30s (user 2026-08-04): 10s là quá sát khi
+ * ChatGPT index chậm — hết budget mà chưa thấy email thì trước đây bị kết luận hỏng.
+ * CỐ Ý không chèn nhịp nghỉ cố định trước/sau F5: mời trót lọt là ca gần như luôn
+ * xảy ra, bắt nó chờ thêm vài giây mỗi lần để phòng một rủi ro hiếm là đắt. Nới trần
+ * thì chỉ ca CHẬM mới dùng tới, ca nhanh không mất gì.
+ */
+const VERIFY_BUDGET_MS = 30_000;
 /** Số vòng F5+verify tối đa (backstop chống loop khi ChatGPT index chậm bất thường). */
 const MAX_VERIFY_RELOADS = 3;
 
@@ -127,6 +135,8 @@ const CONTENT_TIMEOUTS: Record<string, number> = {
   CHANGE_LICENSE_TYPE: 150_000,
   SET_USAGE_LIMIT: 150_000,
   REVOKE_INVITES: 150_000,
+  EXPORT_MEMBER_DATA: 150_000,
+  DELETE_MEMBER_DATA: 150_000,
   // Backend 240s (4') → 210s.
   SYNC_MEMBER: 210_000,
   SYNC_BILLING: 210_000,
@@ -783,6 +793,13 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
         taskId: task.id,
         email: String(p.email ?? ""),
       };
+    case "EXPORT_MEMBER_DATA":
+    case "DELETE_MEMBER_DATA":
+      return {
+        kind: task.type,
+        taskId: task.id,
+        email: String(p.email ?? ""),
+      };
     case "SYNC_MEMBER":
       return {
         kind: "SYNC_MEMBER",
@@ -1389,6 +1406,7 @@ async function reportToBackend(
             verified_emails?: string[];
             unverified_emails?: string[];
             verify_scrape_failed?: boolean;
+            submit_evidence?: SubmitEvidence;
           }
         | undefined;
       const pending = (data?.pending_members ?? []) as Array<{
@@ -1434,13 +1452,23 @@ async function reportToBackend(
       // → báo backend mark Member pending tương ứng 'removed'. Chỉ chạy khi scrape
       // KHÔNG fail (nếu fail thì giữ nguyên, SYNC_DATA sau sẽ reconcile chuẩn).
       // Đây là fix bug "đã add nhưng không có trong pending vẫn hiện trên web".
+      // MỘT chỗ quyết định duy nhất cho cả "có dọn phantom không" lẫn "task hỏng hay
+      // không" — xem invite-outcome.ts (có test). Bằng chứng toast của ChatGPT được
+      // tin hơn việc email đã kịp xuất hiện trong danh sách hay chưa.
+      const outcome = decideInviteOutcome({
+        submitEvidence: data?.submit_evidence ?? "unknown",
+        verifiedEmails,
+        unverifiedEmails,
+        verifyScrapeFailed,
+      });
       let reconciledRemoved = 0;
       if (unverifiedEmails.length > 0) {
         console.warn(
-          `[autogpt-invite] ${unverifiedEmails.length} email UNVERIFIED (KHÔNG tìm thấy trong tab Lời mời):`,
+          `[autogpt-invite] ${unverifiedEmails.length} email UNVERIFIED (KHÔNG tìm thấy trong tab Lời mời) — ` +
+            `quyết định: ${outcome.status}/${outcome.reason}:`,
           unverifiedEmails,
         );
-        if (!verifyScrapeFailed) {
+        if (outcome.shouldReconcile) {
           try {
             const r = await reconcileAfterInvite(config, task.workspace_id, {
               verifiedEmails,
@@ -1460,13 +1488,14 @@ async function reportToBackend(
         }
       }
 
-      // Quyết định status task: nếu scrape OK nhưng 0 email vào pending → FAILED
-      // (để user thấy rõ invite không thành công), đã dọn phantom ở trên. Nếu
-      // scrape fail → COMPLETED (benefit-of-doubt, giữ records). Có ≥1 verified
-      // → COMPLETED.
-      const totalMissScrapeOk =
-        !verifyScrapeFailed && verifiedEmails.length === 0 && emails.length > 0;
+      // Status task lấy thẳng từ `outcome` (invite-outcome.ts — có test): chỉ báo
+      // FAILED khi quét sạch, trắng tay VÀ ChatGPT cũng không hề xác nhận đã gửi.
+      // Có toast xác nhận mà danh sách chưa hiện → COMPLETED + để email ở diện chưa
+      // xác minh, backend hoãn 10' rồi resolver 20' phân xử bằng bằng chứng.
+      const totalMissScrapeOk = outcome.status === "FAILED" && emails.length > 0;
       const resultPayload = {
+        outcome_reason: outcome.reason,
+        submit_evidence: data?.submit_evidence ?? "unknown",
         data: response.data ?? null,
         mapped_pending: mappedCount,
         verified_count: verifiedEmails.length,
@@ -1803,6 +1832,10 @@ const DRY_RUN_BLOCKED_TYPES = new Set<string>([
   "SET_USAGE_LIMIT",
   "REVOKE_INVITES",
   "PURCHASE_SEAT",
+  // Cả 2 đều tạo thay đổi THẬT trên ChatGPT (xoá dữ liệu KHÔNG hoàn tác; xuất dữ
+  // liệu gửi bản sao dữ liệu ra ngoài) → dry-run phải bỏ qua.
+  "EXPORT_MEMBER_DATA",
+  "DELETE_MEMBER_DATA",
 ]);
 
 export async function runOnce(): Promise<{ status: string; detail?: string }> {
@@ -1922,8 +1955,11 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
     "REMOVE_MEMBER",
     "CHANGE_ROLE",
     "CHANGE_LICENSE_TYPE",
+    // 2 mục menu dữ liệu cũng chỉ có ở sub-tab "Người dùng" (member đã tham gia).
+    "EXPORT_MEMBER_DATA",
+    "DELETE_MEMBER_DATA",
   ]);
-  // 3 action này thao tác trên sub-tab "Người dùng". Phải ép về /admin/members SẠCH
+  // Các action này thao tác trên sub-tab "Người dùng". Phải ép về /admin/members SẠCH
   // (không query) khi tab SAI ở 1 trong 2 dạng:
   //   (a) KHÔNG ở /admin/members  — drift sang /admin/billing, /admin/identity…
   //   (b) Ở /admin/members NHƯNG còn ?tab=invites / ?tab=requests do action TRƯỚC

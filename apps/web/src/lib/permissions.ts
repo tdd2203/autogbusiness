@@ -9,6 +9,12 @@ const PERMISSIONS = {
   MEMBER_INVITE: "MEMBER_INVITE",
   MEMBER_REMOVE: "MEMBER_REMOVE",
   MEMBER_SET_USAGE_LIMIT: "MEMBER_SET_USAGE_LIMIT",
+  // 2 mục ChatGPT thêm vào menu "..." của member đã tham gia (2026-08). Cả 2 KHÔNG
+  // nằm trong DEFAULT_SUB_ADMIN_PERMS và KHÔNG backfill cho tài khoản cũ ⇒ mặc định
+  // chỉ super-admin dùng được; nút trên UI vẫn hiện nhưng LÀM MỜ khi chưa được cấp.
+  MEMBER_EXPORT_DATA: "MEMBER_EXPORT_DATA",
+  // XOÁ SẠCH dữ liệu member trên ChatGPT — KHÔNG HOÀN TÁC (nặng hơn MEMBER_REMOVE).
+  MEMBER_DELETE_DATA: "MEMBER_DELETE_DATA",
   // Sync lẻ 1 member / batch pending (tab "Chờ tham gia") + sync billing.
   WORKSPACE_SYNC_TRIGGER: "WORKSPACE_SYNC_TRIGGER",
   // Nút TO "Đồng bộ từ ChatGPT" (full-sync toàn workspace). Khoá ĐỘC LẬP với
@@ -27,6 +33,9 @@ export const GRANTABLE: PermissionKey[] = [
   // MEMBER_SET_USAGE_LIMIT: yêu cầu đặt giới hạn tín dụng (vẫn cần admin DUYỆT +
   // chỉ trong NGÂN SÁCH cấp riêng từng workspace).
   "MEMBER_SET_USAGE_LIMIT",
+  // Cấp được nhưng KHÔNG default-on (xem DEFAULT_SUB_ADMIN_PERMS) ⇒ khoá sẵn.
+  "MEMBER_EXPORT_DATA",
+  "MEMBER_DELETE_DATA",
   "WORKSPACE_SYNC_TRIGGER",
   // Full-sync (nút TO "Đồng bộ từ ChatGPT") — grantable nhưng KHÔNG default-on
   // (không có trong DEFAULT_SUB_ADMIN_PERMS) ⇒ khoá sẵn, super-admin tick mới mở.
@@ -60,6 +69,8 @@ export const SENSITIVE_PERMS: ReadonlySet<PermissionKey> = new Set<PermissionKey
   [
     "MEMBER_REMOVE",
     "MEMBER_SET_USAGE_LIMIT",
+    "MEMBER_EXPORT_DATA",
+    "MEMBER_DELETE_DATA",
     "WORKSPACE_FULL_SYNC",
     "AUDIT_LOG_VIEW",
     "BILLING_VIEW",
@@ -82,6 +93,8 @@ export const PERM_GROUPS: PermGroup[] = (() => {
         "MEMBER_INVITE",
         "MEMBER_REMOVE",
         "MEMBER_SET_USAGE_LIMIT",
+        "MEMBER_EXPORT_DATA",
+        "MEMBER_DELETE_DATA",
       ],
     },
     { id: "view", codes: ["QUEUE_VIEW", "AUDIT_LOG_VIEW", "BILLING_VIEW"] },

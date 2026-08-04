@@ -12,9 +12,11 @@ import type { AddedMember } from "../types";
  * Cùng một đại lý cần nói khác nhau tuỳ nơi, nên mẫu có phạm vi:
  *   - `all`    — mẫu chung, áp khi không có mẫu nào cụ thể hơn.
  *   - `chat`   — áp cho mọi tin gửi tới MỘT người nhận Telegram (nhân viên trực…).
- *   - `member` — áp cho tin về ĐÚNG một email (khách lẻ của email đó).
+ *   - `member` — áp cho tin về ĐÚNG một email, gửi tới đúng người mà email đó nhắm:
+ *                khách được chỉ định, hoặc chính đại lý khi email chưa chỉ định ai.
  * Cụ thể hơn thì thắng: email > người nhận > tất cả — giống hệt lúc gửi thật
- * (`renewal_reminder.TemplateStore.pick`).
+ * (`renewal_reminder.TemplateStore.pick`). Digest của nhóm admin hệ thống nằm ngoài
+ * mọi mẫu tự soạn.
  *
  * Chỉ một nút mở ra màn hình này (trang Thông báo): tách thành nhiều nút rải rác thì
  * người dùng không bao giờ biết mẫu nào đang thắng mẫu nào.
@@ -49,6 +51,7 @@ type TemplateOut = {
   overrides: Override[];
   recipients: Recipient[];
   audience: string;
+  sample_real: TemplateSample | null;
 };
 
 /**
@@ -111,6 +114,17 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
       body.trim() || data.base_body,
       line.trim() || data.base_item_line,
       data.sample,
+    );
+  }, [body, line, data]);
+
+  // Bản thứ hai bằng EMAIL THẬT: dữ liệu giả cho biết mẫu trông thế nào, dữ liệu thật
+  // cho biết mẫu ấy áp lên đúng những gì mình đang có.
+  const previewReal = useMemo(() => {
+    if (!data?.sample_real) return "";
+    return buildPreview(
+      body.trim() || data.base_body,
+      line.trim() || data.base_item_line,
+      data.sample_real,
     );
   }, [body, line, data]);
 
@@ -304,6 +318,23 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
               {t("telegram.tplVars")}:{" "}
               {(data?.item_placeholders ?? []).map((p) => `{${p}}`).join("  ")}
             </div>
+
+            <label className="form-label">{t("telegram.tplPreviewReal")}</label>
+            {previewReal ? (
+              <>
+                <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: -4 }}>
+                  {t("telegram.tplPreviewRealHint", { n: data?.sample_real?.count ?? 0 })}
+                </div>
+                <TelegramPreview
+                  html={previewReal}
+                  invalidNote={t("telegram.tplPreviewInvalid")}
+                />
+              </>
+            ) : (
+              <div className="cell-muted" style={{ fontSize: 12.5 }}>
+                {t("telegram.tplPreviewRealEmpty")}
+              </div>
+            )}
 
             {preview && (
               <>

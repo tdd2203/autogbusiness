@@ -126,16 +126,70 @@ def reconcile_failed_invite(
         )
 
     # 3. Hoàn toàn bộ phí invite_fee của task.
-    wallet_service.refund_invite(db, item.id, emails=None)
+    refunded = wallet_service.refund_invite(db, item.id, emails=None)
 
     # 4. Hoàn phí ⇒ void kỳ đã trả cho MỌI member còn sống của task (phantom nào
     #    joined_at != NULL không bị xoá ở bước 2 vẫn phải mất "hạn ma" → không cho
     #    mời lại miễn phí oan). Xem void_refunded_invite_periods / bug thuylinhtctbg.
-    from app.routers.members._shared import void_refunded_invite_periods
+    from app.routers.members._shared import (
+        flag_refunded_invite_debt,
+        void_refunded_invite_periods,
+    )
 
     void_refunded_invite_periods(
         db, workspace_id=workspace_id, emails=sorted(task_emails), now=now_terminal
     )
+    # 5. Member đã `active` thì bước 4 KHÔNG đụng tới (void = xoá hạn = tặng vô thời
+    #    hạn, xem docstring flag_refunded_invite_debt) → đánh dấu CHƯA THANH TOÁN +
+    #    báo động, kẻo email vẫn ở trong team mà màn hình hiện "đã thanh toán".
+    if refunded:
+        _flag_refund_debt(
+            db,
+            flag_refunded_invite_debt,
+            workspace_id=workspace_id,
+            workspace_name=workspace_name,
+            emails=sorted(task_emails),
+            item_id=item.id,
+            now=now_terminal,
+        )
+
+
+def _flag_refund_debt(
+    db: Session,
+    flagger,
+    *,
+    workspace_id: UUID,
+    workspace_name: str,
+    emails: list[str],
+    item_id: UUID,
+    now: datetime,
+) -> None:
+    """Đánh dấu nợ + ghi audit cho email ĐÃ HOÀN PHÍ nhưng vẫn ở trong team.
+
+    `MEMBER_REFUND_WHILE_IN_TEAM` (result ERROR) nổi lên trang Nhật ký để admin truy
+    thu — hạn dùng GIỮ NGUYÊN (khách đang dùng thật, không cắt giữa chừng) và ví
+    KHÔNG bị trừ lại tự động (rút tiền đại lý khi họ không bấm gì là việc không được
+    làm ngầm). Xem kiểm chứng 2026-08-04 trong `members/payments.md`."""
+    for member in flagger(db, workspace_id=workspace_id, emails=emails, now=now):
+        log_event(
+            db,
+            actor_type="EXTENSION",
+            actor_label=f"workspace:{workspace_name}",
+            action="MEMBER_REFUND_WHILE_IN_TEAM",
+            result="ERROR",
+            target_type="MEMBER",
+            target_id=str(member.id),
+            data={
+                "email": member.email,
+                "workspace_id": str(workspace_id),
+                "queue_item_id": str(item_id),
+                "note": (
+                    "Đã hoàn phí mời nhưng email VẪN ở trong team ChatGPT → đánh dấu "
+                    "CHƯA THANH TOÁN để truy thu. Hạn dùng giữ nguyên, ví không bị trừ lại."
+                ),
+            },
+            commit=False,
+        )
 
 
 @router.patch("/{item_id}", response_model=QueueOut)
@@ -799,10 +853,15 @@ def update_task(
         # (unverified). verify_scrape_failed → không xoá/không hoàn. Idempotent qua
         # cột `reversed`. No-op nếu task không có giao dịch invite_fee (non-beta).
         if emails_to_delete:
-            wallet_service.refund_invite(db, item.id, emails=emails_to_delete)
+            refunded = wallet_service.refund_invite(
+                db, item.id, emails=emails_to_delete
+            )
             # Hoàn phí ⇒ void kỳ đã trả (phantom joined_at != NULL sống sót bộ lọc
             # xoá bên trên vẫn phải mất "hạn ma"). Xem void_refunded_invite_periods.
-            from app.routers.members._shared import void_refunded_invite_periods
+            from app.routers.members._shared import (
+                flag_refunded_invite_debt,
+                void_refunded_invite_periods,
+            )
 
             void_refunded_invite_periods(
                 db,
@@ -810,6 +869,17 @@ def update_task(
                 emails=emails_to_delete,
                 now=now_terminal,
             )
+            # Member `active` không bị void đụng tới → đánh dấu nợ + báo động.
+            if refunded:
+                _flag_refund_debt(
+                    db,
+                    flag_refunded_invite_debt,
+                    workspace_id=workspace.id,
+                    workspace_name=workspace.name,
+                    emails=emails_to_delete,
+                    item_id=item.id,
+                    now=now_terminal,
+                )
 
     # SYNC_BILLING chỉ chạy khi user chủ động trigger từ dashboard (WorkspaceLayout
     # "Cập nhật giá & ngày renew" / Workspaces list "Sync billing"). Extension
