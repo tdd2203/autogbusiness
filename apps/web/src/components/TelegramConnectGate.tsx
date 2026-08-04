@@ -17,23 +17,51 @@ export function TelegramConnectGate() {
   const botConfigured = status?.bot_configured === true;
 
   return (
-    <div className="page-fade">
-      <div style={{ marginBottom: 32 }}>
-        <div className="breadcrumb">{t("nav.notifications")}</div>
-        <h1 className="display-h1">{t("telegram.gateTitle")}</h1>
-        <p className="page-sub">{t("telegram.gateLead")}</p>
-      </div>
+    <div
+      className="page-fade"
+      style={{
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "flex-start",
+        paddingTop: "6vh",
+        paddingBottom: 48,
+      }}
+    >
+      <div className="settings-section" style={{ width: "100%", maxWidth: 520 }}>
+        <div style={{ textAlign: "center" }}>
+          <div
+            aria-hidden
+            style={{
+              width: 56,
+              height: 56,
+              margin: "0 auto 16px",
+              borderRadius: "50%",
+              background: "var(--surface-2)",
+              border: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 26,
+              lineHeight: 1,
+            }}
+          >
+            ✈️
+          </div>
+          <div className="breadcrumb">{t("nav.notifications")}</div>
+          <h1 style={{ fontSize: 22, lineHeight: 1.35, margin: 0 }}>
+            {t("telegram.gateTitle")}
+          </h1>
+        </div>
 
-      <div className="settings-section" style={{ maxWidth: 720 }}>
         {!botConfigured && status && (
-          <div className="notice warn" style={{ marginBottom: 20 }}>
+          <div className="notice warn" style={{ marginTop: 20 }}>
             <div className="notice-body">{t("telegram.notConfigured")}</div>
           </div>
         )}
 
         <ol
           style={{
-            margin: 0,
+            margin: "24px 0 0",
             padding: 0,
             listStyle: "none",
             display: "flex",
@@ -73,7 +101,15 @@ export function TelegramConnectGate() {
           ))}
         </ol>
 
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 24 }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            flexWrap: "wrap",
+            justifyContent: "center",
+            marginTop: 28,
+          }}
+        >
           <button
             className="btn btn-primary"
             disabled={!botConfigured || link.isPending}
@@ -130,20 +166,6 @@ export function TelegramConnectGate() {
             </div>
           </div>
         )}
-
-        <p
-          style={{
-            fontSize: 12.5,
-            color: "var(--ink-3)",
-            marginTop: 20,
-            marginBottom: 0,
-            lineHeight: 1.6,
-          }}
-        >
-          {t("telegram.gateWhy")}
-          <br />
-          {t("telegram.gateAfter")}
-        </p>
       </div>
     </div>
   );
