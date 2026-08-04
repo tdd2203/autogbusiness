@@ -23,6 +23,7 @@ import { api, ApiError } from "../lib/api";
 import { toast } from "./Toast";
 import { LICENSE_FEATURE_ENABLED } from "../lib/featureFlags";
 import { useFormatDate, useFormatDateTime, useT, useTranslateEnum } from "../i18n";
+import { useIsMobile } from "../hooks/useIsMobile";
 import { useAuth } from "../hooks/useAuth";
 import { useCorrectAddDate } from "../hooks/useSubscriptionApprovals";
 import { useSetMemberFee, useWalletAdminUsers, usePaymentSettings } from "../hooks/useWallet";
@@ -668,69 +669,107 @@ export function MemberCashflow({
           >
             {t("memberDetail.cashOrdersTitle")}
           </div>
+          {/* Chống hiểu nhầm (user 2026-08-04): nhìn "330.000 ₫ · Đã thanh toán" mà
+              không biết là tiền cộng hay trừ. Tiền QR là khách CHUYỂN VÀO ví; khoản
+              trừ phí nằm ở sổ cái phía trên. Nói thẳng ra đây + mỗi dòng có dấu +. */}
+          <div
+            style={{
+              fontSize: 10.5,
+              lineHeight: 1.45,
+              color: "var(--ink-3)",
+              marginBottom: 7,
+            }}
+          >
+            {t("memberDetail.cashOrdersHint")}
+          </div>
           <div style={{ display: "grid", gap: 6 }}>
-            {data.orders.map((o) => (
-              <div
-                key={o.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 10,
-                  padding: "7px 11px",
-                  background: "var(--bg)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 10,
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 11.5,
-                      color: "var(--ink)",
-                    }}
-                  >
-                    {o.ref_code}
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 10.5,
-                      color: "var(--ink-3)",
-                      marginTop: 2,
-                    }}
-                  >
-                    {formatDateTime(o.paid_at ?? o.created_at)}
-                  </div>
-                </div>
+            {data.orders.map((o) => {
+              const paidIn = o.status === "paid";
+              return (
                 <div
+                  key={o.id}
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    flexShrink: 0,
+                    padding: "8px 11px",
+                    background: "var(--bg)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    display: "grid",
+                    gap: 4,
                   }}
                 >
-                  <span
+                  {/* Cột dòng tiền chỉ rộng 320px → xếp 2 dòng thay vì nhồi mã +
+                      giờ + số tiền + trạng thái trên một hàng rồi để chữ tự gãy. */}
+                  <div
                     style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 11.5,
-                      color: "var(--ink-2)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 8,
                     }}
                   >
-                    {formatVnd(o.paid_amount_vnd ?? o.amount_vnd)}
-                  </span>
-                  <span
-                    className={
-                      ORDER_STATUS_BADGE[o.status] ?? "badge badge-neutral badge-plain"
-                    }
+                    <span
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 11.5,
+                        color: "var(--ink)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={o.ref_code}
+                    >
+                      {o.ref_code}
+                    </span>
+                    <span
+                      className={
+                        ORDER_STATUS_BADGE[o.status] ?? "badge badge-neutral badge-plain"
+                      }
+                      style={{ flexShrink: 0, whiteSpace: "nowrap" }}
+                    >
+                      {orderStatus(o.status)}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 8,
+                    }}
                   >
-                    {orderStatus(o.status)}
-                  </span>
+                    <span
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 10.5,
+                        color: "var(--ink-3)",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {formatDateTime(o.paid_at ?? o.created_at)}
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 11.5,
+                        fontWeight: paidIn ? 600 : 400,
+                        color: paidIn ? "var(--success)" : "var(--ink-3)",
+                        whiteSpace: "nowrap",
+                      }}
+                      title={
+                        paidIn
+                          ? t("memberDetail.cashOrderPaidIn")
+                          : t("memberDetail.cashOrderNotIn")
+                      }
+                    >
+                      {paidIn ? "+" : ""}
+                      {formatVnd(o.paid_amount_vnd ?? o.amount_vnd)}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -872,6 +911,9 @@ export function MemberDetailModal({
   const formatDate = useFormatDate();
   const formatDateTime = useFormatDateTime();
   const txnKindLabel = useTranslateEnum("memberDetail.txnKind");
+  // Dưới 1180px không đủ chỗ cho 3 cột (thẻ thông tin | kỳ hạn + lịch sử | dòng
+  // tiền) → dòng tiền xếp vào luồng dọc thay vì đứng thành cột riêng.
+  const narrowModal = useIsMobile(1179);
   const orderStatusLabel = useTranslateEnum("memberDetail.orderStatus");
   const { user } = useAuth();
   const correctAddDate = useCorrectAddDate(workspaceId);
@@ -1459,10 +1501,10 @@ export function MemberDetailModal({
     >
       <div
         style={{
-          // Nới từ 780 → 1060 (user 2026-08-04): thêm khối DÒNG TIỀN cạnh KỲ THANH
-          // TOÁN, hai khối phải đứng cạnh nhau mới đối chiếu được "còn hạn" vs "đã
-          // thu tiền". Hẹp hơn 900px thì grid auto-fit tự xuống 1 cột.
-          width: "min(1060px, 100%)",
+          // Nới từ 780 → 1180 (user 2026-08-04): thêm CỘT PHẢI "dòng tiền" chạy dọc
+          // theo cả kỳ thanh toán lẫn lịch sử hoạt động. Dưới 1180px cột đó xếp
+          // xuống luồng dọc (xem narrowModal) nên modal vẫn dùng được ở màn hẹp.
+          width: "min(1180px, 100%)",
           maxHeight: "90vh",
           background: "var(--surface)",
           border: "1px solid var(--border)",
@@ -1711,7 +1753,7 @@ export function MemberDetailModal({
             </div>
           </div>
 
-          {/* ── Cột phải: timeline lịch sử hoạt động ──────────────────────── */}
+          {/* ── Cột giữa: kỳ thanh toán + timeline lịch sử hoạt động ───────── */}
           <div
             style={{
               flex: 1,
@@ -1721,25 +1763,13 @@ export function MemberDetailModal({
               overflowY: "auto",
             }}
           >
-            {/* ── KỲ THANH TOÁN + DÒNG TIỀN (2 cột, auto xuống 1 cột khi hẹp) ──
-                Cố ý đặt CẠNH NHAU: kỳ hạn nói "email được dùng tới bao giờ", dòng
-                tiền nói "đã thu thật bao nhiêu". Lệch nhau = có chuyện (ca
-                stockbox.m: kỳ vẫn 'đã thanh toán' nhưng thực thu = 0). */}
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
-                gap: 20,
-                marginBottom: cycles.length > 0 || payments ? 26 : 0,
-              }}
-            >
             {/* ── KỲ THANH TOÁN ─────────────────────────────────────────────
                 Danh sách TỪNG chu kỳ gia hạn + hành động riêng lẻ (chuyển từ bảng
                 "Email đã add" sang để bảng gọn khi nhiều kỳ — user 2026-07-11).
                 sub-admin: gửi yêu cầu kỳ chưa gửi. super-admin: xác nhận kỳ chờ /
                 huỷ kỳ đã trả. Chỉ hiện khi member đã có chu kỳ (từ AddedMember). */}
             {cycles.length > 0 && (
-              <div>
+              <div style={{ marginBottom: 26 }}>
                 <div
                   style={{
                     display: "flex",
@@ -1847,16 +1877,19 @@ export function MemberDetailModal({
               </div>
             )}
 
-            {payments && (
-              <MemberCashflow
-                data={payments}
-                t={t}
-                txnKind={txnKindLabel}
-                orderStatus={orderStatusLabel}
-                formatDateTime={(d) => formatDateTime(d, undefined, WITH_SECONDS)}
-              />
+            {/* Màn hẹp: không đủ chỗ làm cột riêng → xếp vào luồng dọc, ngay trên
+                timeline. */}
+            {narrowModal && payments && (
+              <div style={{ marginBottom: 26 }}>
+                <MemberCashflow
+                  data={payments}
+                  t={t}
+                  txnKind={txnKindLabel}
+                  orderStatus={orderStatusLabel}
+                  formatDateTime={(d) => formatDateTime(d, undefined, WITH_SECONDS)}
+                />
+              </div>
             )}
-            </div>
 
             <div
               style={{
@@ -2173,6 +2206,33 @@ export function MemberDetailModal({
                 </div>
               ))}
           </div>
+
+          {/* ── Cột phải: DÒNG TIỀN ────────────────────────────────────────
+              Chạy dọc theo CẢ kỳ thanh toán lẫn lịch sử hoạt động (user
+              2026-08-04). Nhờ vậy "email được dùng tới bao giờ" và "đã thu thật bao
+              nhiêu" luôn nằm trong cùng tầm mắt — lệch nhau là thấy ngay. Cột có
+              thanh cuộn riêng để lịch sử dài không đẩy phần tiền khỏi màn hình. */}
+          {!narrowModal && payments && (
+            <div
+              style={{
+                width: 320,
+                flexShrink: 0,
+                minHeight: 0,
+                padding: "24px 20px",
+                borderLeft: "1px solid var(--border)",
+                background: "var(--bg)",
+                overflowY: "auto",
+              }}
+            >
+              <MemberCashflow
+                data={payments}
+                t={t}
+                txnKind={txnKindLabel}
+                orderStatus={orderStatusLabel}
+                formatDateTime={(d) => formatDateTime(d, undefined, WITH_SECONDS)}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>
