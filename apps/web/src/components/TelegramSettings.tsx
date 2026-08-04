@@ -529,12 +529,14 @@ function SubscriptionsPanel({ botConfigured }: { botConfigured: boolean }) {
                       {s.enabled ? t("telegram.notifyOn") : t("telegram.notifyOff")}
                     </span>
                   </div>
-                  <div className="tg-item-sub">
-                    {scopeText(s.scope, s.member_ids.length)}
-                    {s.invite_label
-                      ? ` · ${t("telegram.subViaLink", { label: s.invite_label })}`
-                      : ""}
-                  </div>
+                  {/* Chỉ tiêu đề link — thứ chủ tài khoản tự đặt để nhận ra người này.
+                      Link đã gỡ/hết hạn thì mất tiêu đề: bỏ luôn dòng phụ, không độn
+                      phạm vi vào cho có chữ. */}
+                  {s.invite_label && (
+                    <div className="tg-item-sub">
+                      {t("telegram.subViaLink", { label: s.invite_label })}
+                    </div>
+                  )}
                 </div>
                 <div className="tg-item-acts">
                   <button className="btn btn-sm btn-ghost" onClick={() => setEditing(s)}>
