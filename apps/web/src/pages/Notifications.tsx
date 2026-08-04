@@ -4,8 +4,10 @@ import { api } from "../lib/api";
 import { useT } from "../i18n";
 import type { AddedMember } from "../types";
 import { TelegramSettings } from "../components/TelegramSettings";
+import { TelegramConnectGate } from "../components/TelegramConnectGate";
 import { NotifyLinkModal } from "../components/NotifyLinkModal";
 import { NotificationTemplateModal } from "../components/NotificationTemplateModal";
+import { useTelegramConnect } from "../hooks/useTelegramConnect";
 
 /**
  * Trang "Thông báo" (mục riêng ở sidebar, mở cho MỌI người dùng).
@@ -16,12 +18,17 @@ import { NotificationTemplateModal } from "../components/NotificationTemplateMod
  *   2. Bảng TỪNG EMAIL: ai đang nhận thông báo của email đó, và nút lấy link gửi khách.
  *      Đây là phần trả lời câu "email này ai đang nhận nhắc?" mà trước phải mở từng
  *      dòng ở trang Email đã add mới biết.
+ *
+ * CHƯA KẾT NỐI TELEGRAM thì cả trang này chưa dùng được (mời người nhận, gắn người
+ * nhận cho email, soạn nội dung — đều cần kênh Telegram), nên thay bằng màn kết nối
+ * bắt buộc `TelegramConnectGate` cho tới khi tài khoản bấm Start bot.
  */
 export default function Notifications() {
   const t = useT();
   const [q, setQ] = useState("");
   const [notifyMember, setNotifyMember] = useState<AddedMember | null>(null);
   const [editTemplate, setEditTemplate] = useState(false);
+  const { status: tg } = useTelegramConnect();
 
   const { data: members = [], isLoading } = useQuery({
     queryKey: ["added-members", "self"],
@@ -46,6 +53,20 @@ export default function Notifications() {
   }, [members, q]);
 
   const bound = rows.filter((m) => m.notify_telegram_chat_id).length;
+
+  // Chưa biết trạng thái thì đứng yên — nháy màn "chưa kết nối" rồi đổi sang trang đủ
+  // còn khó chịu hơn là chờ thêm một nhịp.
+  if (!tg) {
+    return (
+      <div className="page-fade">
+        <div className="cell-muted" style={{ fontSize: 13 }}>
+          {t("common.loading")}
+        </div>
+      </div>
+    );
+  }
+
+  if (!tg.linked) return <TelegramConnectGate />;
 
   return (
     <div className="page-fade">

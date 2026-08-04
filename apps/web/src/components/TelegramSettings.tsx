@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useFormatDateTime, useT } from "../i18n";
 import { useAuth } from "../hooks/useAuth";
+import { useTelegramConnect } from "../hooks/useTelegramConnect";
+import type { TelegramStatus } from "../hooks/useTelegramConnect";
 import { confirm, toast } from "./Toast";
 import type { AddedMember } from "../types";
 
@@ -16,18 +18,6 @@ import type { AddedMember } from "../types";
  *  2. TRẠNG THÁI HỆ THỐNG (chỉ super-admin): webhook đã đăng ký chưa, nhóm nào nhận
  *     bản tổng hợp, số tin đã gửi/lỗi 7 ngày, nút chạy job ngay để kiểm tra cấu hình.
  */
-
-type TelegramStatus = {
-  bot_configured: boolean;
-  bot_username: string | null;
-  linked: boolean;
-  telegram_username: string | null;
-  telegram_chat_id: number | null;
-  linked_at: string | null;
-  notify_enabled: boolean;
-  reminder_days: number[];
-  reminder_hour: number;
-};
 
 type AdminStatus = {
   bot_configured: boolean;
@@ -44,8 +34,6 @@ type AdminStatus = {
   sent_last_7d: number;
   failed_last_7d: number;
 };
-
-type LinkOut = { deep_link: string; token: string; expires_at: string };
 
 /** 1 tài khoản Telegram đang nhận thông báo CỦA TÔI (mời qua link chia sẻ). */
 type Subscription = {
@@ -89,45 +77,10 @@ export function TelegramSettings({
   const formatDateTime = useFormatDateTime();
   const { user } = useAuth();
   const isSuper = user?.is_super_admin === true;
-  const [deepLink, setDeepLink] = useState<string | null>(null);
-  // Đã bấm "Kết nối" và đang đợi user bấm Start bên Telegram.
-  const [awaiting, setAwaiting] = useState(false);
-
-  const { data: status } = useQuery({
-    queryKey: ["telegram-status"],
-    queryFn: () => api<TelegramStatus>("/api/v1/telegram/status"),
-    // Start được bấm ở APP KHÁC (Telegram desktop/điện thoại) nên tab này có thể
-    // không mất focus ⇒ refetchOnWindowFocus không đủ. Hỏi lại đều để trạng thái
-    // "Đã kết nối" tự hiện, người dùng khỏi phải bấm "Làm mới" mà không biết.
-    refetchInterval: awaiting ? 3000 : false,
-  });
-
-  // Kết nối xong: báo rõ thành công và dọn hộp link (link dùng-một-lần, đã xong việc).
-  useEffect(() => {
-    if (!awaiting || !status?.linked) return;
-    setAwaiting(false);
-    setDeepLink(null);
-    toast.success(t("telegram.connectedToast"));
-  }, [awaiting, status?.linked, t]);
-
-  // Bỏ cuộc sau khi mã hết hạn (15 phút) — không hỏi server mãi khi user bỏ dở.
-  useEffect(() => {
-    if (!awaiting) return;
-    const id = setTimeout(() => setAwaiting(false), 15 * 60 * 1000);
-    return () => clearTimeout(id);
-  }, [awaiting]);
-
-  const link = useMutation({
-    mutationFn: () => api<LinkOut>("/api/v1/telegram/link", { method: "POST" }),
-    onSuccess: (res) => {
-      setDeepLink(res.deep_link);
-      setAwaiting(true);
-      // Mở luôn Telegram: user chỉ còn 1 thao tác là bấm Start.
-      window.open(res.deep_link, "_blank", "noopener");
-    },
-    onError: (e) =>
-      toast.error(e instanceof ApiError ? String(e.detail) : t("telegram.linkError")),
-  });
+  // Trạng thái + luồng bấm Start dùng chung với màn bắt buộc kết nối
+  // (`TelegramConnectGate`) — xem hooks/useTelegramConnect.ts.
+  const { status, deepLink, setDeepLink, awaiting, setAwaiting, link, refresh } =
+    useTelegramConnect();
 
   const unlink = useMutation({
     mutationFn: () => api<void>("/api/v1/telegram/link", { method: "DELETE" }),
@@ -270,10 +223,7 @@ export function TelegramSettings({
             </button>
           </>
         )}
-        <button
-          className="btn"
-          onClick={() => qc.invalidateQueries({ queryKey: ["telegram-status"] })}
-        >
+        <button className="btn" onClick={refresh}>
           {t("telegram.refresh")}
         </button>
       </div>
