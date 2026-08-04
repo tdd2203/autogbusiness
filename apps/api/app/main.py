@@ -17,7 +17,6 @@ from app.models import (
     EmailOtp,
     Invite,
     Member,
-    PaymentOrder,
     QueueItem,
     TopupOrder,
 )
