@@ -1612,17 +1612,6 @@ body {
     gap: 14px;
     border-bottom: 1px solid var(--border);
   }
-  .tg-icon {
-    width: 40px;
-    height: 40px;
-    border-radius: 11px;
-    background: var(--success-bg);
-    color: var(--success);
-    display: grid;
-    place-items: center;
-    flex-shrink: 0;
-    font-size: 17px;
-  }
   .tg-h {
     margin: 0;
     font-size: 16.5px;
