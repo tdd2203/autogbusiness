@@ -127,9 +127,6 @@ export function TelegramSettings({
           gửi cho ai, gửi lúc nào" mà không phải đọc hết mấy dòng chữ. */}
       <section className="tg-card">
         <div className="tg-head">
-          <div className="tg-icon" aria-hidden="true">
-            ✈
-          </div>
           <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 5 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <h3 className="tg-h">{t("telegram.title")}</h3>
