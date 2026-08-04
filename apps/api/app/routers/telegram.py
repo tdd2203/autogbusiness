@@ -182,6 +182,9 @@ class TelegramTemplateOut(BaseModel):
     # dữ liệu vẽ ô chọn phạm vi, khỏi gọi thêm 2 endpoint nữa.
     overrides: list[TelegramTemplateScopeOut] = Field(default_factory=list)
     recipients: list[TelegramRecipientOut] = Field(default_factory=list)
+    # Loại người nhận mà phạm vi này gửi tới ('owner' | 'assignee' | 'subscriber') —
+    # web hiện tên loại đó lên để người soạn biết mình đang viết cho ai.
+    audience: str = "owner"
 
 
 class TelegramTemplateIn(BaseModel):
@@ -1568,6 +1571,27 @@ def _template_overrides(db: Session, user: User) -> list[TelegramTemplateScopeOu
     ]
 
 
+def _template_audience(
+    db: Session, user: User, scope: str, chat_id: int | None, member_id: UUID | None
+) -> str:
+    """Loại người nhận mà mẫu của phạm vi này sẽ tới — quyết định MẪU GỐC đem ra sửa.
+
+    Mỗi loại người nhận có mẫu gốc riêng (`renewal_reminder.default_body`): đại lý thấy
+    link gia hạn, khách lẻ được bảo liên hệ nơi đã mua. Lấy mẫu của đại lý làm khởi
+    điểm cho mẫu gửi khách thì người soạn sửa nhầm nội dung ngay từ dòng đầu.
+    """
+    if scope == "chat" and chat_id is not None:
+        for recipient in _recipient_options(db, user):
+            if recipient.chat_id == chat_id:
+                return recipient.kind
+    if scope == "member" and member_id is not None:
+        member = db.get(Member, member_id)
+        if member is not None and member.notify_telegram_chat_id:
+            return "assignee"
+    # Chưa chỉ định ai → chính đại lý nhận tin của email đó (xem `_recipients_for`).
+    return "owner"
+
+
 def _template_out(
     db: Session,
     user: User,
@@ -1577,9 +1601,12 @@ def _template_out(
     body: str | None,
     item_line: str | None,
 ) -> TelegramTemplateOut:
-    default_body = renewal_reminder.default_body("owner")
-    default_item_line = renewal_reminder.default_item_line("owner")
+    audience = _template_audience(db, user, scope, chat_id, member_id)
+    default_body = renewal_reminder.default_body(audience)
+    default_item_line = renewal_reminder.default_item_line(audience)
     shared = _template_row(db, user, "all", None, None) if scope != "all" else None
+    base_body = (shared.body if shared else None) or default_body
+    base_item_line = (shared.item_line if shared else None) or default_item_line
     return TelegramTemplateOut(
         scope=scope,
         chat_id=chat_id,
@@ -1588,14 +1615,17 @@ def _template_out(
         item_line=item_line,
         default_body=default_body,
         default_item_line=default_item_line,
-        base_body=(shared.body if shared else None) or default_body,
-        base_item_line=(shared.item_line if shared else None) or default_item_line,
+        base_body=base_body,
+        base_item_line=base_item_line,
         body_placeholders=list(renewal_reminder.TEMPLATE_PLACEHOLDERS["body"]),
         item_placeholders=list(renewal_reminder.TEMPLATE_PLACEHOLDERS["item_line"]),
-        preview=_preview_template(body, item_line, user.username),
+        # Chưa có mẫu riêng thì xem trước phải là mẫu SẼ dùng thay nó (mẫu chung, không
+        # thì mẫu gốc của đúng loại người nhận), chứ không phải mẫu gốc của đại lý.
+        preview=_preview_template(body or base_body, item_line or base_item_line, user.username),
         sample=_preview_sample(user.username),
         overrides=_template_overrides(db, user),
         recipients=_recipient_options(db, user),
+        audience=audience,
     )
 
 

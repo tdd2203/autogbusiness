@@ -366,8 +366,7 @@ def default_body(kind: str = "owner") -> str:
     return (
         "⏰ <b>Nhắc gia hạn</b> — {count} email còn ≤{bucket} ngày\n\n"
         "{items}\n\n"
-        "Gia hạn tại: {link}\n"
-        "<i>Hết hạn là hệ thống tự gỡ email khỏi workspace (không có ân hạn).</i>"
+        "Gia hạn tại: {link}"
     )
 
 
