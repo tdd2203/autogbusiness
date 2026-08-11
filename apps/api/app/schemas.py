@@ -1343,7 +1343,11 @@ class FinancialReportCycle(BaseModel):
     cost: int          # TRỌN tiền hoá đơn (gồm VAT + phí ngân hàng)
     revenue: int
     profit: int
-    seat_months: float
+    # CÔNG SUẤT đã trả tiền = seats × days ÷ 30. So với seat_months (đã bán được) ra
+    # tỷ lệ lấp đầy. Ghế trống giữa chu kỳ không bù người vào được là mất luôn, vì
+    # hoá đơn đã trả trọn kỳ — đây là số để nhìn ra điều đó.
+    capacity_seat_months: float | None
+    seat_months: float  # đã BÁN được (Σ seat-ngày có thu ÷ 30)
 
 
 class FinancialReportCyclesOut(BaseModel):

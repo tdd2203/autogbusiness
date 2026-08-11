@@ -559,6 +559,9 @@ def financial_report_cycles(
                     cost=c,
                     revenue=r,
                     profit=r - c,
+                    capacity_seat_months=(
+                        round(qty * total_days / _DAYS_PER_MONTH, 2) if qty else None
+                    ),
                     seat_months=round(sdays.get((wid, i), 0) / _DAYS_PER_MONTH, 2),
                 )
             )

@@ -212,6 +212,9 @@ export type FinancialCycle = {
   cost: number;
   revenue: number;
   profit: number;
+  /** Công suất đã trả tiền = ghế × ngày ÷ 30. So với seat_months ra tỷ lệ lấp đầy. */
+  capacity_seat_months: number | null;
+  /** Đã BÁN được (Σ seat-ngày có thu ÷ 30). */
   seat_months: number;
 };
 
