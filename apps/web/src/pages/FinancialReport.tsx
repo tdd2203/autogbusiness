@@ -815,6 +815,9 @@ function PnlStatement({ data, rangeLabel }: { data: FinancialReport; rangeLabel:
   // Trung bình mỗi seat/tháng: giá vốn từ backend (cost ÷ seat-tháng), doanh thu &
   // lãi suy tại chỗ. Chỉ hiện khi có ít nhất 1 seat-tháng phát sinh THU trong kỳ.
   const pricePerSeat = data.avg_price_per_seat;
+  const seatCost = data.avg_seat_cost;
+  const marginPerSeat =
+    pricePerSeat !== null && seatCost !== null ? pricePerSeat - seatCost : null;
   return (
     <div style={{ ...card, overflow: "hidden", display: "flex", flexDirection: "column" }}>
       <div style={{ padding: "18px 24px", borderBottom: "1px solid var(--border)" }}>
@@ -854,16 +857,50 @@ function PnlStatement({ data, rangeLabel }: { data: FinancialReport; rangeLabel:
         </div>
       </div>
 
-      {pricePerSeat !== null && (
+      {(pricePerSeat !== null || seatCost !== null) && (
         <div style={{ padding: "4px 24px 18px" }}>
-          <SectionLabel>ĐÃ BÁN TRONG KỲ</SectionLabel>
+          <SectionLabel>MỖI GHẾ · THÁNG</SectionLabel>
           <PnlRow label="Số seat·tháng bán ra" value={`${data.seat_months.toFixed(0)} seat·tháng`} />
-          <PnlRow label="Giá bán TB / seat·tháng" value={`${vnNum(pricePerSeat).num} đ`} />
+          <PnlRow
+            label="Giá bán TB"
+            value={pricePerSeat !== null ? `${vnNum(pricePerSeat).num} đ` : "—"}
+          />
+          <PnlRow
+            label="Phí seat thực tế (ChatGPT)"
+            value={seatCost !== null ? `−${vnNum(seatCost).num} đ` : "—"}
+          />
+          {marginPerSeat !== null && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                justifyContent: "space-between",
+                gap: 16,
+                padding: "9px 0 2px",
+                marginTop: 2,
+                borderTop: "1px solid var(--border)",
+              }}
+            >
+              <span style={{ fontSize: 13.5, fontWeight: 700, color: "var(--ink)" }}>Lãi mỗi ghế</span>
+              <span
+                style={{
+                  fontSize: 14,
+                  fontWeight: 700,
+                  fontFamily: "var(--font-mono)",
+                  color: marginPerSeat < 0 ? "var(--danger)" : "var(--success-strong)",
+                }}
+              >
+                {marginPerSeat < 0 ? "−" : "+"}
+                {vnNum(marginPerSeat).num} đ
+              </span>
+            </div>
+          )}
           <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8, lineHeight: 1.5 }}>
-            Đây là gốc TIỀN MẶT: thu = tiền nhận trong kỳ, chi = hoá đơn ChatGPT trả trong kỳ. Hai vế đi
-            theo nhịp thu/chi nên tháng nào dồn sổ sẽ phình, tháng nào ít gia hạn sẽ hụt. Muốn biết lãi/lỗ
-            thật trên mỗi ghế thì xem bảng <strong style={{ color: "var(--ink-2)" }}>theo chu kỳ thanh
-            toán</strong> bên dưới.
+            Phí seat thực tế = tiền hoá đơn ChatGPT ÷ {data.billed_seat_months.toFixed(1)} ghế·tháng ChatGPT
+            thu tiền, đã quy về tháng 30 ngày để so thẳng với giá bán. <strong style={{ color: "var(--ink-2)" }}>
+            Lãi mỗi ghế dương mà lợi nhuận ròng vẫn âm là bình thường</strong>: đây là gốc tiền mặt, tiền
+            khách vào và hoá đơn ChatGPT không rơi cùng tháng, và ghế chưa bán được vẫn phải trả tiền. Xem
+            bảng theo chu kỳ thanh toán bên dưới để biết tỷ lệ lấp đầy.
           </div>
         </div>
       )}
