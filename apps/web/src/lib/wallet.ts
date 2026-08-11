@@ -192,6 +192,8 @@ export type FinancialReport = {
   by_agent: FinancialReportAgent[];
   /** Số workspace chưa đồng bộ hoá đơn → giá vốn (CHI) có thể thiếu. */
   cost_missing_workspaces: number;
+  /** Số hoá đơn trong kỳ chưa có chi tiết (period_*) nên chưa vào CHI. */
+  cost_skipped_invoices: number;
   /** Seat-tháng ĐÃ BÁN trong kỳ = Σ months của các chu kỳ thu được tiền. */
   seat_months: number;
   /** Giá BÁN TB mỗi seat/tháng = revenue ÷ seat_months. null khi chưa bán được kỳ nào. */

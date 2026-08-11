@@ -1315,6 +1315,9 @@ class FinancialReportOut(BaseModel):
     by_agent: list[FinancialReportAgent]
     # Số workspace chưa đồng bộ hoá đơn 'paid' → giá vốn thiếu (CHI có thể thấp hơn thực).
     cost_missing_workspaces: int
+    # Số hoá đơn 'paid' trong kỳ CHƯA có chi tiết (period_*) nên chưa được tính vào
+    # CHI. Dán chi tiết hoá đơn vào là nó vào sổ ngay.
+    cost_skipped_invoices: int = 0
     # Seat-tháng ĐÃ BÁN trong kỳ = Σ months của các chu kỳ thu được tiền.
     seat_months: float = 0
     # Giá BÁN TB mỗi seat/tháng = revenue ÷ seat_months (None khi seat_months = 0).
