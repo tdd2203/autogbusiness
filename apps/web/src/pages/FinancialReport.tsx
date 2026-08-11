@@ -275,7 +275,7 @@ function ReportBody({ data, range }: { data: FinancialReport; range: { from: str
   const rangeLabel = `${range.from} → ${range.to}`;
   return (
     <>
-      {data.cost_missing_workspaces > 0 && (
+      {(data.cost_missing_workspaces > 0 || data.cost_skipped_invoices > 0) && (
         <div
           style={{
             display: "flex",
@@ -292,8 +292,18 @@ function ReportBody({ data, range }: { data: FinancialReport; range: { from: str
         >
           <span aria-hidden>⚠</span>
           <span>
-            {data.cost_missing_workspaces} workspace chưa đồng bộ hoá đơn — chi phí (giá vốn ChatGPT) có
-            thể thấp hơn thực tế, khiến lợi nhuận cao hơn thực. Đồng bộ billing để chính xác.
+            {data.cost_missing_workspaces > 0 && (
+              <>
+                {data.cost_missing_workspaces} workspace chưa đồng bộ hoá đơn — chi phí (giá vốn ChatGPT)
+                có thể thấp hơn thực tế, khiến lợi nhuận cao hơn thực. Đồng bộ billing để chính xác.{" "}
+              </>
+            )}
+            {data.cost_skipped_invoices > 0 && (
+              <>
+                {data.cost_skipped_invoices} hoá đơn trong kỳ chưa có chi tiết nên chưa vào chi phí — chi
+                phí đang thấp hơn thực tế. Dán chi tiết hoá đơn ở trang workspace là nó vào sổ ngay.
+              </>
+            )}
           </span>
         </div>
       )}

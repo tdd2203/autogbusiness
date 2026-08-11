@@ -199,10 +199,7 @@ def test_financial_report_rebaseline(client: TestClient, auth_header: dict):
 
 def test_financial_report_finance_start_excludes_old(client: TestClient, auth_header: dict):
     """finance_start_at NULL → fallback created_at: hoá đơn trước created_at vẫn bị bỏ,
-    nhưng hoá đơn sau created_at được tính (workspace mới tính từ khi onboard).
-
-    Hoá đơn ở đây KHÔNG có period_* — gốc tiền mặt không cần chu kỳ, vẫn tính đủ.
-    """
+    nhưng hoá đơn sau created_at được tính (workspace mới tính từ khi onboard)."""
     db = SessionLocal()
     try:
         s = db.get(PaymentSettings, 1)
@@ -213,7 +210,13 @@ def test_financial_report_finance_start_excludes_old(client: TestClient, auth_he
             extension_api_key="k-new",
             finance_start_at=None,  # chưa set
             billing_invoices=[
-                {"date": DATE_CUR.date().isoformat(), "total_vnd": 3_000_000, "status": "paid"},
+                {
+                    "date": DATE_CUR.date().isoformat(),
+                    "total_vnd": 3_000_000,
+                    "status": "paid",
+                    "period_start": DATE_CUR.date().isoformat(),
+                    "period_end": (DATE_CUR + timedelta(days=30)).date().isoformat(),
+                },
             ],
         )
         ws.created_at = _now - timedelta(days=50)
@@ -251,7 +254,13 @@ def test_financial_report_cash_basis_window(client: TestClient, auth_header: dic
             extension_api_key="k-cash",
             finance_start_at=paid_on - timedelta(days=1),
             billing_invoices=[
-                {"date": paid_on.date().isoformat(), "total_vnd": 4_000_000, "status": "paid"}
+                {
+                    "date": paid_on.date().isoformat(),
+                    "total_vnd": 4_000_000,
+                    "status": "paid",
+                    "period_start": paid_on.date().isoformat(),
+                    "period_end": (paid_on + timedelta(days=31)).date().isoformat(),
+                }
             ],
         )
         db.add(ws)
@@ -430,3 +439,51 @@ def test_financial_report_seat_cost(client: TestClient, auth_header: dict):
     assert d["avg_seat_cost"] == 300_000
     # Không quy 30 ngày thì sẽ ra 310.000 — sai lệch ~3% so với giá bán tính tháng 30.
     assert d["avg_seat_cost"] != round(3_100_000 / 10)
+
+
+def test_financial_report_requires_invoice_detail(client: TestClient, auth_header: dict):
+    """Hoá đơn CHƯA dán chi tiết (thiếu period_*) không vào CHI, và được ĐẾM để cảnh
+    báo — chốt user 2026-08-12: "tháng nào dán chi tiết hoá đơn vào thì mới cho xem".
+
+    Chỉ đếm hoá đơn nằm TRONG kỳ đang xem, để cảnh báo không sáng vô cớ khi xem kỳ
+    khác.
+    """
+    d_in = _now - timedelta(days=20)
+    db = SessionLocal()
+    try:
+        s = db.get(PaymentSettings, 1)
+        if s is None:
+            db.add(PaymentSettings(id=1, invite_fee_vnd=DEFAULT_FEE, payment_codes=[]))
+        db.add(
+            Workspace(
+                name="WS_DETAIL",
+                extension_api_key="k-detail",
+                finance_start_at=d_in - timedelta(days=1),
+                billing_invoices=[
+                    # Đã dán chi tiết → tính.
+                    {"date": d_in.date().isoformat(), "total_vnd": 2_000_000, "status": "paid",
+                     "quantity": 5, "period_start": d_in.date().isoformat(),
+                     "period_end": (d_in + timedelta(days=30)).date().isoformat()},
+                    # Chỉ có tổng tiền, chưa dán chi tiết → BỎ + đếm.
+                    {"date": d_in.date().isoformat(), "total_vnd": 7_000_000, "status": "paid"},
+                ],
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    d = client.get(
+        f"/api/v1/wallet/admin/report?from={FROM_Q}&to={TO_Q}", headers=auth_header
+    ).json()
+    assert d["cost"] == 2_000_000
+    assert d["cost_skipped_invoices"] == 1
+
+    # Kỳ KHÔNG chứa hoá đơn đó → không cảnh báo.
+    far = client.get(
+        f"/api/v1/wallet/admin/report"
+        f"?from={(_now + timedelta(days=40)).date().isoformat()}"
+        f"&to={(_now + timedelta(days=60)).date().isoformat()}",
+        headers=auth_header,
+    ).json()
+    assert far["cost_skipped_invoices"] == 0

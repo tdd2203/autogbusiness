@@ -343,6 +343,8 @@ def financial_report(
     ).execution_options(yield_per=_SCAN_CHUNK)
     cost = 0
     cost_missing = 0
+    # Hoá đơn trong kỳ nhưng CHƯA có chi tiết (period_*) → không tính, đếm để cảnh báo.
+    cost_skipped = 0
     # Phí seat thực tế = seat_cost_basis ÷ billed_seat_months. Chỉ cộng hoá đơn CÓ ghi
     # số ghế, để tử/mẫu cùng một tập hoá đơn.
     billed_seat_months = 0.0
@@ -365,9 +367,17 @@ def financial_report(
                 continue  # hoá đơn trước mốc = hệ thống cũ / thanh toán ngoài → bỏ
             if d < from_date or d > to_date:
                 continue
-            # TIỀN MẶT: TRỌN tiền hoá đơn vào tháng PHÁT HÀNH, không chia theo ngày
-            # phục vụ (chốt user 2026-08-12). Không cần period_* nên hoá đơn scrape
-            # cũ thiếu chu kỳ vẫn được tính đủ.
+            # CHỈ hoá đơn ĐÃ CÓ CHI TIẾT (period_start/period_end — tức đã dán hoặc
+            # scrape được trang chi tiết) mới được tính. Chốt user 2026-08-12: "tháng
+            # nào dán chi tiết hoá đơn vào thì mới cho xem". Hoá đơn chỉ có mỗi tổng
+            # tiền thì chưa đủ tin để đưa vào sổ — đếm lại và cảnh báo trên giao diện
+            # thay vì lặng lẽ cộng vào hoặc lặng lẽ bỏ đi.
+            ps = _parse_inv_date(inv, "period_start")
+            pe = _parse_inv_date(inv, "period_end")
+            if ps is None or pe is None or pe <= ps:
+                cost_skipped += 1
+                continue
+            # TIỀN MẶT: TRỌN tiền hoá đơn vào tháng PHÁT HÀNH, không chia theo ngày.
             amt = _invoice_cost(inv)
             cost += amt
             mk = _month_key(d)
@@ -440,6 +450,7 @@ def financial_report(
         monthly=monthly,
         by_agent=by_agent,
         cost_missing_workspaces=cost_missing,
+        cost_skipped_invoices=cost_skipped,
         seat_months=seat_months,
         avg_price_per_seat=avg_price_per_seat,
         billed_seat_months=round(billed_seat_months, 2),
