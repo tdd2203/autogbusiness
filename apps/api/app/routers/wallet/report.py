@@ -500,9 +500,11 @@ def financial_report_cycles(
             ps = _parse_inv_date(inv, "period_start")
             pe = _parse_inv_date(inv, "period_end")
             if ps is None or pe is None or pe <= ps:
-                continue  # thiếu chu kỳ → không xếp vào đâu được (xem cost_skipped)
-            qty = int(inv.get("quantity") or 0) or None
-            rows.append((ps, pe, _invoice_cost(inv), qty))
+                # Thiếu chu kỳ → BỎ, không suy đoán (chốt user 2026-08-12: "chỉ áp
+                # dụng cho những kỳ gần đây khi paste chi tiết hoá đơn vào thôi").
+                # Hoá đơn cũ chưa dán chi tiết thì không lên bảng này; dán vào là có.
+                continue
+            rows.append((ps, pe, _invoice_cost(inv), int(inv.get("quantity") or 0) or None))
         rows.sort(key=lambda r: r[0], reverse=True)
         if rows:
             cycles[wid] = rows[:limit]
