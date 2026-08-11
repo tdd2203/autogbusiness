@@ -5,22 +5,26 @@ Tổng hợp THU / CHI / LỢI NHUẬN cho 1 khoảng thời gian, KHÔNG ghi g�
 GỐC KẾ TOÁN: **TIỀN MẶT** (chốt user 2026-08-12) — "chỉ lấy tiền nhận trong tháng đó
 và chi phí trong tháng đó". Không phân bổ theo ngày:
 
-  - THU = Σ phí của các CHU KỲ ĐÃ ĐÁNH DẤU TRẢ (payment_status='paid') có ngày nhận
-    tiền (paid_at, thiếu thì start_at) nằm trong [from, to]. Phí = đơn giá/tháng hiệu
-    lực × số tháng của kỳ. Mời lần đầu (chu kỳ 1) và gia hạn (chu kỳ 2, 3…) cùng loại
-    phí (chốt user 2026-07-14). Đơn giá phân giải LIVE: COALESCE(member.fee_vnd, chủ
-    sở hữu user.invite_fee_vnd, global default). Member thuộc user is_test và member
-    chủ workspace (role owner) bị loại. Kỳ CHƯA trả không vào THU — đó là công nợ.
+  - THU = Σ phí của các CHU KỲ ĐÃ ĐÁNH DẤU TRẢ (payment_status='paid') có NGÀY BẮT
+    ĐẦU KỲ (start_at, thiếu thì paid_at) nằm trong [from, to]. Phí = đơn giá/tháng
+    hiệu lực × số tháng của kỳ. Mời lần đầu (chu kỳ 1) và gia hạn (chu kỳ 2, 3…) cùng
+    loại phí (chốt user 2026-07-14). Đơn giá phân giải LIVE: COALESCE(member.fee_vnd,
+    chủ sở hữu user.invite_fee_vnd, global default). Member thuộc user is_test và
+    member chủ workspace (role owner) bị loại. Kỳ CHƯA trả không vào THU — công nợ.
+
+    KHÔNG dùng paid_at làm mốc (chốt user 2026-08-12): đó là lúc bấm đánh dấu chứ
+    không phải lúc tiền về. Ngày 13/07/2026 — SePay go-live — có 172 kỳ được chốt
+    cùng lúc, trong đó 44,7tr thuộc về tháng 5 và 6; lấy paid_at thì tháng 7 phình
+    lên 122tr còn tháng 5, 6 rỗng. start_at là dữ liệu thật, không đổi theo thao tác.
   - CHI = Σ TRỌN tiền hoá đơn Stripe 'paid' (total_vnd gồm VAT + phí ngân hàng nhập
     tay) có NGÀY HOÁ ĐƠN nằm trong [from, to] VÀ >= workspace.finance_start_at (mốc
     bắt đầu tính CHI — hoá đơn hệ thống cũ / thanh toán ngoài trước mốc bị loại).
   - LỢI NHUẬN = THU − CHI.
 
-ĐÁNH ĐỔI ĐÃ BIẾT: gốc tiền mặt nhảy theo nhịp thu/chi chứ không theo nhịp phục vụ.
-Tháng nào dồn sổ sẽ phình (13/07/2026 chốt "đã trả" cho 313 kỳ cũ → tháng 7 vọt lên
-122tr), tháng nào chỉ có 1 hoá đơn ChatGPT mà ít khách gia hạn sẽ hụt. Muốn biết THỰC
-SỰ lãi/lỗ trên mỗi ghế thì xem `financial_report_cycles` bên dưới — nó cắt đúng chu kỳ
-hoá đơn và có tỷ lệ lấp đầy.
+ĐÁNH ĐỔI ĐÃ BIẾT: hai vế neo vào hai mốc khác nhau (kỳ member vs ngày hoá đơn ChatGPT)
+nên tháng nào chỉ có 1 hoá đơn mà ít khách mở kỳ mới sẽ hụt, và ngược lại. Muốn biết
+THỰC SỰ lãi/lỗ trên mỗi ghế thì xem `financial_report_cycles` bên dưới — nó cắt đúng
+chu kỳ hoá đơn và có tỷ lệ lấp đầy.
 """
 
 from __future__ import annotations
@@ -302,17 +306,20 @@ def financial_report(
             if per_month <= 0:
                 continue
             owner_key = m.invited_by_user_id  # có thể None → nhóm "chưa có chủ"
-            # TIỀN MẶT: chỉ chu kỳ ĐÃ ĐÁNH DẤU TRẢ, tính vào tháng NHẬN TIỀN
-            # (paid_at; thiếu thì lấy start_at). Chu kỳ chưa trả không vào THU dù
-            # member đang dùng — đó là công nợ, không phải doanh thu tiền mặt.
+            # Chỉ chu kỳ ĐÃ ĐÁNH DẤU TRẢ (chưa trả = công nợ, không phải doanh thu),
+            # tính vào tháng BẮT ĐẦU KỲ — KHÔNG dùng paid_at (chốt user 2026-08-12).
+            # Lý do: paid_at là lúc bấm đánh dấu, không phải lúc tiền về. Ngày
+            # 13/07/2026 (SePay go-live) có 172 kỳ được chốt cùng lúc, trong đó
+            # 44,7tr là tiền của tháng 5 và 6 — dồn hết vào tháng 7 làm sai cả ba
+            # tháng. start_at là dữ liệu thật, không phụ thuộc thao tác chốt sổ.
             for c in m.subscription_cycles:
                 if c.payment_status != "paid":
                     continue
-                when = c.paid_at or c.start_at
+                when = c.start_at or c.paid_at
                 if when is None:
                     continue
-                paid_d = when.astimezone(timezone.utc).date()
-                if paid_d < from_date or paid_d > to_date:
+                book_d = when.astimezone(timezone.utc).date()
+                if book_d < from_date or book_d > to_date:
                     continue
                 n_months = int(c.months) if c.months else 1
                 amt = per_month * n_months
@@ -324,7 +331,7 @@ def financial_report(
                 else:
                     revenue_renew += amt
                     agent_renews[owner_key] = agent_renews.get(owner_key, 0) + 1
-                mk = _month_key(paid_d)
+                mk = _month_key(book_d)
                 if mk in rev_by_month:
                     rev_by_month[mk] += amt
         for m in chunk:

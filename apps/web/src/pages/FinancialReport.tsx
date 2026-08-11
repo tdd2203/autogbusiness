@@ -170,8 +170,8 @@ export default function FinancialReport() {
           </h1>
           <p style={{ fontSize: 14, color: "var(--ink-2)", margin: 0, maxWidth: 640 }}>
             Doanh thu (phí mời + gia hạn) trừ chi phí trả ChatGPT ={" "}
-            <strong style={{ color: "var(--ink)" }}>lợi nhuận</strong>. Tính theo tiền mặt: thu là tiền
-            nhận trong kỳ, chi là hoá đơn ChatGPT trả trong kỳ. Số liệu {range.from} → {range.to}.
+            <strong style={{ color: "var(--ink)" }}>lợi nhuận</strong>. Thu ghi theo ngày bắt đầu kỳ của
+            khách, chi ghi theo ngày hoá đơn ChatGPT. Số liệu {range.from} → {range.to}.
           </p>
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12, flexShrink: 0 }}>
@@ -908,9 +908,9 @@ function PnlStatement({ data, rangeLabel }: { data: FinancialReport; rangeLabel:
           <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8, lineHeight: 1.5 }}>
             Phí seat thực tế = tiền hoá đơn ChatGPT ÷ {data.billed_seat_months.toFixed(1)} ghế·tháng ChatGPT
             thu tiền, đã quy về tháng 30 ngày để so thẳng với giá bán. <strong style={{ color: "var(--ink-2)" }}>
-            Lãi mỗi ghế dương mà lợi nhuận ròng vẫn âm là bình thường</strong>: đây là gốc tiền mặt, tiền
-            khách vào và hoá đơn ChatGPT không rơi cùng tháng, và ghế chưa bán được vẫn phải trả tiền. Xem
-            bảng theo chu kỳ thanh toán bên dưới để biết tỷ lệ lấp đầy.
+            Lãi mỗi ghế dương mà lợi nhuận ròng vẫn âm là bình thường</strong>: kỳ của khách và hoá đơn
+            ChatGPT neo vào hai mốc khác nhau nên không rơi cùng tháng, và ghế chưa bán được vẫn phải trả
+            tiền. Xem bảng theo chu kỳ thanh toán bên dưới để biết tỷ lệ lấp đầy.
           </div>
         </div>
       )}

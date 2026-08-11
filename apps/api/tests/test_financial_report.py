@@ -1,9 +1,10 @@
-"""Báo cáo tài chính — gốc TIỀN MẶT (chốt user 2026-08-12):
+"""Báo cáo tài chính — ghi sổ theo SỰ KIỆN, không phân bổ (chốt user 2026-08-12):
 
-  - THU = Σ phí của các chu kỳ ĐÃ ĐÁNH DẤU TRẢ, tính vào kỳ chứa NGÀY NHẬN TIỀN
-    (paid_at, thiếu thì start_at). Phí = đơn giá/tháng × số tháng của kỳ; đơn giá =
-    COALESCE(member.fee_vnd, chủ.invite_fee_vnd, global). Kỳ chưa trả = công nợ, KHÔNG
-    vào THU. Member không có chu kỳ nào cũng KHÔNG sinh THU (không có tiền nào nhận).
+  - THU = Σ phí của các chu kỳ ĐÃ ĐÁNH DẤU TRẢ, tính vào kỳ chứa NGÀY BẮT ĐẦU KỲ
+    (start_at, thiếu thì paid_at) — KHÔNG dùng paid_at vì đó là lúc bấm chốt sổ, ngày
+    13/07/2026 có 172 kỳ chốt cùng lúc. Phí = đơn giá/tháng × số tháng của kỳ; đơn giá
+    = COALESCE(member.fee_vnd, chủ.invite_fee_vnd, global). Kỳ chưa trả = công nợ,
+    KHÔNG vào THU. Member không có chu kỳ nào cũng KHÔNG sinh THU.
   - CHI = TRỌN tiền hoá đơn Stripe 'paid' có NGÀY HOÁ ĐƠN trong kỳ và >=
     workspace.finance_start_at (loại hoá đơn hệ thống cũ / trả ngoài).
   - Member thuộc user is_test bị loại; member chủ workspace (role owner) bị loại;
@@ -34,13 +35,9 @@ _now = datetime.now(timezone.utc)
 FIN_START = _now - timedelta(days=45)
 DATE_OLD = _now - timedelta(days=55)   # trước finance_start → CHI bỏ
 DATE_CUR = _now - timedelta(days=40)   # >= finance_start → CHI tính
-# Kỳ doanh thu phải rơi SAU mốc SePay (_SEPAY_LIVE_DATE = 10/7/2026) mới được tính THU.
-# Dùng mốc gần `now` (now luôn >= hôm nay > 10/7/2026) để test bền qua thời gian.
 CYCLE_START = _now - timedelta(days=2)
 RENEW_START = _now - timedelta(days=1)
 FROM_Q = (_now - timedelta(days=60)).date().isoformat()
-# Phủ TRỌN mọi kỳ 1 tháng bắt đầu quanh `now` (dồn tích: chỉ phủ hết kỳ thì tổng THU
-# mới bằng đúng phí cả kỳ).
 TO_Q = (_now + timedelta(days=90)).date().isoformat()
 
 
@@ -155,7 +152,7 @@ def _seed_scenario():
         # M7: agent nhưng có fee_vnd override 500k → override thắng
         m7 = _mk_member(db, ws, owner=agent, fee=500_000, end=CYCLE_START + timedelta(days=30))
         _add_cycle(db, m7, number=1, months=1, start=CYCLE_START)
-        # M8: agent, CÓ hạn nhưng KHÔNG cycle → suy 1 kỳ mời 1 tháng = 330k
+        # M8: agent, CÓ hạn nhưng KHÔNG cycle → không có kỳ nào để ghi sổ → 0đ
         _mk_member(db, ws, owner=agent, joined=CYCLE_START, end=CYCLE_START + timedelta(days=30))
 
         db.commit()
@@ -173,8 +170,8 @@ def test_financial_report_rebaseline(client: TestClient, auth_header: dict):
     data = r.json()
 
     # THU: M1 330k + M2 (660k+330k) + M3 380k + M5 380k + M7 500k.
-    # M8 KHÔNG có chu kỳ nào → không có tiền nào nhận → không vào THU (khác gốc dồn
-    # tích trước đây: hồi đó suy ra 1 kỳ mời 330k từ hạn dùng).
+    # M8 KHÔNG có chu kỳ nào → không có gì để ghi sổ (khác gốc dồn tích trước đây:
+    # hồi đó suy ra 1 kỳ mời 330k từ hạn dùng).
     assert data["revenue_invite"] == 330_000 + 660_000 + 380_000 + 380_000 + 500_000
     assert data["revenue_renew"] == 330_000
     assert data["revenue"] == 2_580_000
@@ -233,14 +230,14 @@ def test_financial_report_finance_start_excludes_old(client: TestClient, auth_he
     assert r.json()["cost"] == 3_000_000
 
 
-def test_financial_report_cash_basis_window(client: TestClient, auth_header: dict):
-    """Gốc tiền mặt cắt theo NGÀY NHẬN TIỀN và NGÀY HOÁ ĐƠN, không phân bổ.
+def test_financial_report_books_by_cycle_start(client: TestClient, auth_header: dict):
+    """Ghi sổ theo NGÀY BẮT ĐẦU KỲ và NGÀY HOÁ ĐƠN, không phân bổ theo ngày.
 
-    Kỳ trả tiền NGOÀI khoảng xem → 0 đồng THU dù member vẫn đang dùng dịch vụ trong
+    Kỳ bắt đầu NGOÀI khoảng xem → 0 đồng THU dù member vẫn đang dùng dịch vụ trong
     khoảng đó; hoá đơn phát hành ngoài khoảng → 0 đồng CHI dù nó phủ những ngày đó.
-    Đây chính là điều đánh đổi khi chọn tiền mặt thay cho dồn tích.
+    Đây là đánh đổi đã biết khi bỏ phân bổ theo ngày.
     """
-    paid_on = _now - timedelta(days=20)  # ngày trả tiền & ngày hoá đơn
+    paid_on = _now - timedelta(days=20)  # ngày bắt đầu kỳ & ngày hoá đơn
     db = SessionLocal()
     try:
         s = db.get(PaymentSettings, 1)
@@ -272,7 +269,7 @@ def test_financial_report_cash_basis_window(client: TestClient, auth_header: dic
     finally:
         db.close()
 
-    # Khoảng CHỨA ngày trả tiền → tính TRỌN 2 tháng phí + trọn hoá đơn.
+    # Khoảng CHỨA ngày bắt đầu kỳ → tính TRỌN 2 tháng phí + trọn hoá đơn.
     inside = client.get(
         f"/api/v1/wallet/admin/report"
         f"?from={(paid_on - timedelta(days=2)).date().isoformat()}"
