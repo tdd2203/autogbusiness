@@ -1,15 +1,16 @@
-"""Báo cáo tài chính re-baseline (user 2026-07-14):
+"""Báo cáo tài chính — gốc TIỀN MẶT (chốt user 2026-08-12):
 
-  - THU = Σ theo từng kỳ của member: đơn giá/tháng hiệu lực × số tháng (mời + gia hạn
-    cùng loại phí). Đơn giá = COALESCE(member.fee_vnd, chủ.invite_fee_vnd, global).
-  - CHI = hoá đơn Stripe 'paid' có ngày >= workspace.finance_start_at (loại hoá đơn cũ).
+  - THU = Σ phí của các chu kỳ ĐÃ ĐÁNH DẤU TRẢ, tính vào kỳ chứa NGÀY NHẬN TIỀN
+    (paid_at, thiếu thì start_at). Phí = đơn giá/tháng × số tháng của kỳ; đơn giá =
+    COALESCE(member.fee_vnd, chủ.invite_fee_vnd, global). Kỳ chưa trả = công nợ, KHÔNG
+    vào THU. Member không có chu kỳ nào cũng KHÔNG sinh THU (không có tiền nào nhận).
+  - CHI = TRỌN tiền hoá đơn Stripe 'paid' có NGÀY HOÁ ĐƠN trong kỳ và >=
+    workspace.finance_start_at (loại hoá đơn hệ thống cũ / trả ngoài).
   - Member thuộc user is_test bị loại; member chủ workspace (role owner) bị loại;
     member chưa có chủ gộp nhóm "Chưa có chủ" ở đơn giá mặc định.
 
-Bổ sung 2026-08-11: cả THU lẫn CHI ghi nhận DỒN TÍCH THEO NGÀY (phí kỳ rải trên
-[start_at, end_at); hoá đơn rải trên [period_start, period_end)). Các test "re-baseline"
-dưới đây dùng khoảng truy vấn PHỦ TRỌN mọi kỳ nên tổng vẫn bằng đúng phí cả kỳ; phần
-phân bổ lẻ ngày được kiểm riêng ở `test_financial_report_accrual_prorates`.
+Báo cáo THEO CHU KỲ (`/report/cycles`) vẫn tính kỹ theo ngày + tỷ lệ lấp đầy — xem
+`test_financial_report_cycles`.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -171,21 +172,23 @@ def test_financial_report_rebaseline(client: TestClient, auth_header: dict):
     assert r.status_code == 200, r.text
     data = r.json()
 
-    # THU: M1 330k + M2 (660k+330k) + M3 380k + M5 380k + M7 500k + M8 330k
-    assert data["revenue_invite"] == 330_000 + 660_000 + 380_000 + 380_000 + 500_000 + 330_000
+    # THU: M1 330k + M2 (660k+330k) + M3 380k + M5 380k + M7 500k.
+    # M8 KHÔNG có chu kỳ nào → không có tiền nào nhận → không vào THU (khác gốc dồn
+    # tích trước đây: hồi đó suy ra 1 kỳ mời 330k từ hạn dùng).
+    assert data["revenue_invite"] == 330_000 + 660_000 + 380_000 + 380_000 + 500_000
     assert data["revenue_renew"] == 330_000
-    assert data["revenue"] == 2_910_000
+    assert data["revenue"] == 2_580_000
 
     # CHI: chỉ hoá đơn chu kỳ hiện tại (total 10tr + phí 500k); bỏ 5tr cũ + 9tr void.
     assert data["cost"] == 10_500_000
-    assert data["profit"] == 2_910_000 - 10_500_000
+    assert data["profit"] == 2_580_000 - 10_500_000
 
     by = {a["username"]: a for a in data["by_agent"]}
     # Test account KHÔNG xuất hiện.
     assert "testerX" not in by
-    # Agent: M1+M2+M7+M8 = 330+990+500+330 = 2150k; 4 mời, 1 gia hạn.
-    assert by["agentA"]["revenue"] == 2_150_000
-    assert by["agentA"]["invite_count"] == 4
+    # Agent: M1+M2+M7 = 330+990+500 = 1820k; 3 mời, 1 gia hạn (M8 không có chu kỳ).
+    assert by["agentA"]["revenue"] == 1_820_000
+    assert by["agentA"]["invite_count"] == 3
     assert by["agentA"]["renew_count"] == 1
     # Admin add: default fee.
     assert by["adminX"]["revenue"] == 380_000
@@ -196,7 +199,10 @@ def test_financial_report_rebaseline(client: TestClient, auth_header: dict):
 
 def test_financial_report_finance_start_excludes_old(client: TestClient, auth_header: dict):
     """finance_start_at NULL → fallback created_at: hoá đơn trước created_at vẫn bị bỏ,
-    nhưng hoá đơn sau created_at được tính (workspace mới tính từ khi onboard)."""
+    nhưng hoá đơn sau created_at được tính (workspace mới tính từ khi onboard).
+
+    Hoá đơn ở đây KHÔNG có period_* — gốc tiền mặt không cần chu kỳ, vẫn tính đủ.
+    """
     db = SessionLocal()
     try:
         s = db.get(PaymentSettings, 1)
@@ -207,13 +213,7 @@ def test_financial_report_finance_start_excludes_old(client: TestClient, auth_he
             extension_api_key="k-new",
             finance_start_at=None,  # chưa set
             billing_invoices=[
-                {
-                    "date": DATE_CUR.date().isoformat(),
-                    "total_vnd": 3_000_000,
-                    "status": "paid",
-                    "period_start": DATE_CUR.date().isoformat(),
-                    "period_end": (DATE_CUR + timedelta(days=30)).date().isoformat(),
-                },
+                {"date": DATE_CUR.date().isoformat(), "total_vnd": 3_000_000, "status": "paid"},
             ],
         )
         ws.created_at = _now - timedelta(days=50)
@@ -226,24 +226,18 @@ def test_financial_report_finance_start_excludes_old(client: TestClient, auth_he
         f"/api/v1/wallet/admin/report?from={FROM_Q}&to={TO_Q}", headers=auth_header
     )
     assert r.status_code == 200, r.text
-    # created_at (now-50d) <= hoá đơn (now-40d) → tính.
+    # created_at (now-50d) <= hoá đơn (now-40d) → tính TRỌN, không chia ngày.
     assert r.json()["cost"] == 3_000_000
 
 
-def test_financial_report_accrual_prorates(client: TestClient, auth_header: dict):
-    """Đây là ca đã làm sai con số thật (11/08/2026): khoảng xem KHÔNG chứa ngày mời
-    lẫn ngày hoá đơn Stripe, nhưng cả hai vẫn phủ những ngày đó.
+def test_financial_report_cash_basis_window(client: TestClient, auth_header: dict):
+    """Gốc tiền mặt cắt theo NGÀY NHẬN TIỀN và NGÀY HOÁ ĐƠN, không phân bổ.
 
-    Cũ: THU = 0 (kỳ bắt đầu ngoài khoảng) và CHI = 0 (hoá đơn phát hành ngoài khoảng)
-    → biên lợi nhuận vô nghĩa. Mới: mỗi vế góp đúng số ngày phủ trong khoảng.
+    Kỳ trả tiền NGOÀI khoảng xem → 0 đồng THU dù member vẫn đang dùng dịch vụ trong
+    khoảng đó; hoá đơn phát hành ngoài khoảng → 0 đồng CHI dù nó phủ những ngày đó.
+    Đây chính là điều đánh đổi khi chọn tiền mặt thay cho dồn tích.
     """
-    # Kỳ member: 10 ngày trước → +30 ngày. Hoá đơn ChatGPT: phát hành 10 ngày trước,
-    # phủ 30 ngày. Khoảng xem = 5 ngày GẦN ĐÂY (không chứa ngày mời/ngày hoá đơn).
-    start = _now - timedelta(days=10)
-    win_from = (_now - timedelta(days=4)).date()
-    win_to = _now.date()
-    win_days = (win_to - win_from).days + 1  # 5 ngày (bao gồm 2 đầu)
-
+    paid_on = _now - timedelta(days=20)  # ngày trả tiền & ngày hoá đơn
     db = SessionLocal()
     try:
         s = db.get(PaymentSettings, 1)
@@ -253,56 +247,84 @@ def test_financial_report_accrual_prorates(client: TestClient, auth_header: dict
             s.invite_fee_vnd = DEFAULT_FEE
         db.flush()
         ws = Workspace(
-            name="WS_ACCRUAL",
-            extension_api_key="k-accrual",
-            finance_start_at=start,
+            name="WS_CASH",
+            extension_api_key="k-cash",
+            finance_start_at=paid_on - timedelta(days=1),
             billing_invoices=[
-                {
-                    "date": start.date().isoformat(),
-                    "total_vnd": 3_000_000,
-                    "status": "paid",
-                    "period_start": start.date().isoformat(),
-                    "period_end": (start + timedelta(days=30)).date().isoformat(),
-                }
+                {"date": paid_on.date().isoformat(), "total_vnd": 4_000_000, "status": "paid"}
             ],
         )
         db.add(ws)
         db.flush()
-        agent = _mk_user(db, "agentAccrual", fee=AGENT_FEE)
-        m = _mk_member(db, ws, owner=agent, joined=start, end=start + timedelta(days=30))
-        _add_cycle(db, m, number=1, months=1, start=start)
+        agent = _mk_user(db, "agentCash", fee=AGENT_FEE)
+        m = _mk_member(db, ws, owner=agent, joined=paid_on, end=paid_on + timedelta(days=60))
+        _add_cycle(db, m, number=1, months=2, start=paid_on)
+        db.commit()
+    finally:
+        db.close()
+
+    # Khoảng CHỨA ngày trả tiền → tính TRỌN 2 tháng phí + trọn hoá đơn.
+    inside = client.get(
+        f"/api/v1/wallet/admin/report"
+        f"?from={(paid_on - timedelta(days=2)).date().isoformat()}"
+        f"&to={(paid_on + timedelta(days=2)).date().isoformat()}",
+        headers=auth_header,
+    ).json()
+    assert inside["revenue"] == AGENT_FEE * 2
+    assert inside["cost"] == 4_000_000
+    assert inside["seat_months"] == 2
+    assert inside["avg_price_per_seat"] == AGENT_FEE
+
+    # Khoảng SAU đó (member vẫn còn hạn, hoá đơn vẫn đang phủ) → cả hai vế = 0.
+    after = client.get(
+        f"/api/v1/wallet/admin/report"
+        f"?from={(paid_on + timedelta(days=5)).date().isoformat()}"
+        f"&to={(paid_on + timedelta(days=15)).date().isoformat()}",
+        headers=auth_header,
+    ).json()
+    assert after["revenue"] == 0
+    assert after["cost"] == 0
+
+
+def test_financial_report_unpaid_cycle_excluded(client: TestClient, auth_header: dict):
+    """Kỳ CHƯA đánh dấu trả = công nợ, không phải tiền mặt → không vào THU."""
+    db = SessionLocal()
+    try:
+        s = db.get(PaymentSettings, 1)
+        if s is None:
+            db.add(PaymentSettings(id=1, invite_fee_vnd=DEFAULT_FEE, payment_codes=[]))
+        db.flush()
+        ws = Workspace(name="WS_DEBT", extension_api_key="k-debt", billing_invoices=[])
+        db.add(ws)
+        db.flush()
+        agent = _mk_user(db, "agentDebt", fee=AGENT_FEE)
+        m = _mk_member(db, ws, owner=agent, end=CYCLE_START + timedelta(days=30))
+        db.add(
+            MemberSubscriptionCycle(
+                member_id=m.id,
+                cycle_number=1,
+                months=1,
+                start_at=CYCLE_START,
+                end_at=CYCLE_START + timedelta(days=30),
+                payment_status="unpaid",
+            )
+        )
         db.commit()
     finally:
         db.close()
 
     r = client.get(
-        f"/api/v1/wallet/admin/report?from={win_from.isoformat()}&to={win_to.isoformat()}",
-        headers=auth_header,
+        f"/api/v1/wallet/admin/report?from={FROM_Q}&to={TO_Q}", headers=auth_header
     )
     assert r.status_code == 200, r.text
-    data = r.json()
-
-    # Cả hai vế = phần 5/30 ngày, KHÔNG phải 0 (lỗi cũ) và cũng không phải cả kỳ.
-    # Sai số ±1đ: khoảng có thể vắt qua 2 tháng lịch → làm tròn 2 mảnh thay vì 1.
-    assert abs(data["revenue"] - round(AGENT_FEE * win_days / 30)) <= 1
-    assert abs(data["cost"] - round(3_000_000 * win_days / 30)) <= 1
-    assert data["profit"] == data["revenue"] - data["cost"]
-    # 1 seat × 5 ngày → 5/30 seat-tháng; giá vốn TB/seat quy về nguyên đơn giá tháng.
-    assert data["seat_months"] == round(win_days / 30, 2)
-    assert data["avg_cost_per_seat"] == round(data["cost"] / data["seat_months"])
-    # Kỳ bắt đầu NGOÀI khoảng → không đếm là "đơn mời" mới, nhưng vẫn có doanh thu.
-    by = {a["username"]: a for a in data["by_agent"]}
-    assert by["agentAccrual"]["invite_count"] == 0
-    assert by["agentAccrual"]["revenue"] == data["revenue"]
-    # Tổng các cột tháng khớp đúng tổng (làm tròn 1 lần mỗi mảnh tháng).
-    assert sum(b["revenue"] for b in data["monthly"]) == data["revenue"]
-    assert sum(b["cost"] for b in data["monthly"]) == data["cost"]
+    by = {a["username"]: a for a in r.json()["by_agent"]}
+    assert "agentDebt" not in by
 
 
 def test_financial_report_cycles(client: TestClient, auth_header: dict):
-    """Báo cáo theo ĐÚNG chu kỳ thanh toán: CHI = TRỌN tiền hoá đơn (không chia ngày),
-    THU = doanh thu member CỦA WORKSPACE ĐÓ rơi vào đúng những ngày của chu kỳ."""
-    # Chu kỳ đã ĐÓNG: bắt đầu 40 ngày trước, dài 30 ngày → kết thúc 10 ngày trước.
+    """Báo cáo theo ĐÚNG chu kỳ thanh toán: CHI = TRỌN tiền hoá đơn, THU = doanh thu
+    member CỦA WORKSPACE ĐÓ rơi vào đúng những ngày của chu kỳ (vẫn tính theo ngày),
+    kèm công suất để suy tỷ lệ lấp đầy."""
     cyc_start = _now - timedelta(days=40)
     cyc_end = cyc_start + timedelta(days=30)
     db = SessionLocal()
@@ -329,7 +351,6 @@ def test_financial_report_cycles(client: TestClient, auth_header: dict):
             ],
         )
         db.add(ws)
-        # Workspace KHÁC: member của nó không được lẫn vào doanh thu chu kỳ trên.
         other = Workspace(name="WS_OTHER", extension_api_key="k-other", billing_invoices=[])
         db.add(other)
         db.flush()
@@ -347,124 +368,18 @@ def test_financial_report_cycles(client: TestClient, auth_header: dict):
     rows = [c for c in r.json()["cycles"] if c["workspace"] == "WS_CYCLE"]
     assert len(rows) == 1
     c = rows[0]
-    assert c["cost"] == 1_000_000  # TRỌN hoá đơn, không chia ngày
+    assert c["cost"] == 1_000_000  # TRỌN hoá đơn
     assert c["seats"] == 3
     assert c["days"] == 30
-    assert c["in_progress"] is False  # chu kỳ đã kết thúc
-    # Công suất đã trả tiền = 3 ghế × 30 ngày ÷ 30 = 3 seat·tháng; mới bán 1 ghế nên
-    # lấp đầy 1/3 — hai ghế trống kia là tiền mất luôn vì hoá đơn trả trọn kỳ.
+    assert c["in_progress"] is False
+    # Công suất = 3 ghế × 30 ngày ÷ 30 = 3 seat·tháng; mới bán 1 ghế nên chưa lấp đầy.
     assert c["capacity_seat_months"] == 3.0
     assert c["seat_months"] < c["capacity_seat_months"]
-    # Chỉ member CỦA WS_CYCLE được tính — member của workspace khác cùng chủ KHÔNG
-    # được cộng vào. Doanh thu vẫn bị cắt mốc SePay như báo cáo tháng, nên kỳ vọng
-    # tính theo số ngày SAU mốc (test chạy lúc nào cũng đúng, ±1đ do làm tròn mảnh
-    # tháng trong _accrue).
+    # Doanh thu kỳ vẫn CẮT MỐC SePay (khác bảng tháng) — tính theo số ngày sau mốc.
     from app.routers.wallet.report import _SEPAY_LIVE_DATE
 
     paid_days = (cyc_end.date() - max(cyc_start.date(), _SEPAY_LIVE_DATE)).days
-    expected = round(AGENT_FEE * paid_days / 30)
-    assert abs(c["revenue"] - expected) <= 1
+    assert abs(c["revenue"] - round(AGENT_FEE * paid_days / 30)) <= 1
     assert c["profit"] == c["revenue"] - 1_000_000
-    # WS_OTHER không có hoá đơn có chu kỳ → không xuất hiện.
+    # Member của workspace khác cùng chủ KHÔNG lẫn vào; WS_OTHER không có hoá đơn.
     assert not [x for x in r.json()["cycles"] if x["workspace"] == "WS_OTHER"]
-
-
-def test_financial_report_skips_invoice_without_cycle(client: TestClient, auth_header: dict):
-    """Hoá đơn 'paid' sau mốc nhưng THIẾU period_start/period_end bị bỏ khỏi CHI và
-    ĐẾM vào cost_skipped_invoices (chốt user 2026-08-12).
-
-    Trước đây hoá đơn thiếu chu kỳ bị dồn cả cục vào ngày hoá đơn → méo tháng đó.
-    Bỏ thì phải nói ra, không được im lặng nuốt tiền.
-    """
-    db = SessionLocal()
-    try:
-        s = db.get(PaymentSettings, 1)
-        if s is None:
-            db.add(PaymentSettings(id=1, invite_fee_vnd=DEFAULT_FEE, payment_codes=[]))
-        db.add(
-            Workspace(
-                name="WS_NOCYCLE",
-                extension_api_key="k-nocycle",
-                finance_start_at=FIN_START,
-                billing_invoices=[
-                    # Có chu kỳ → tính.
-                    {
-                        "date": DATE_CUR.date().isoformat(),
-                        "total_vnd": 2_000_000,
-                        "status": "paid",
-                        "period_start": DATE_CUR.date().isoformat(),
-                        "period_end": (DATE_CUR + timedelta(days=30)).date().isoformat(),
-                    },
-                    # Thiếu chu kỳ → bỏ + đếm.
-                    {
-                        "date": DATE_CUR.date().isoformat(),
-                        "total_vnd": 7_000_000,
-                        "status": "paid",
-                    },
-                ],
-            )
-        )
-        db.commit()
-    finally:
-        db.close()
-
-    r = client.get(
-        f"/api/v1/wallet/admin/report?from={FROM_Q}&to={TO_Q}", headers=auth_header
-    )
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert data["cost"] == 2_000_000  # 7tr thiếu chu kỳ KHÔNG vào CHI
-    assert data["cost_skipped_invoices"] == 1
-
-
-def test_financial_report_clips_pre_sepay_revenue(client: TestClient, auth_header: dict):
-    """Kỳ bắt đầu TRƯỚC _SEPAY_LIVE_DATE (10/7/2026) chỉ bị cắt phần ngày trước mốc,
-    KHÔNG bị loại cả kỳ (chốt user 2026-08-12).
-
-    Trước đây loại cả kỳ khiến khách trả trước nhiều tháng nằm ngoài sổ trong khi CHI
-    vẫn gánh ghế của họ. Nay ngày phục vụ trước mốc = 0 đồng, từ mốc trở đi thì tính.
-    """
-    from app.routers.wallet.report import _SEPAY_LIVE_DATE
-
-    before = datetime.combine(
-        _SEPAY_LIVE_DATE - timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc
-    )
-    on_or_after = datetime.combine(
-        _SEPAY_LIVE_DATE, datetime.min.time(), tzinfo=timezone.utc
-    ) + timedelta(days=1)
-
-    db = SessionLocal()
-    try:
-        s = db.get(PaymentSettings, 1)
-        if s is None:
-            db.add(PaymentSettings(id=1, invite_fee_vnd=DEFAULT_FEE, payment_codes=[]))
-        else:
-            s.invite_fee_vnd = DEFAULT_FEE
-        db.flush()
-        ws = Workspace(name="WS_SEPAY", extension_api_key="k-sepay", billing_invoices=[])
-        db.add(ws)
-        db.flush()
-        agent = _mk_user(db, "agentSepay", fee=AGENT_FEE)
-        # Kỳ bắt đầu TRƯỚC mốc 1 ngày → mất đúng 1/30 ngày đầu, giữ 29 ngày còn lại.
-        m_old = _mk_member(db, ws, owner=agent, end=before + timedelta(days=30))
-        _add_cycle(db, m_old, number=1, months=1, start=before)
-        # Kỳ TỪ mốc trở đi → được tính.
-        m_new = _mk_member(db, ws, owner=agent, end=on_or_after + timedelta(days=30))
-        _add_cycle(db, m_new, number=1, months=1, start=on_or_after)
-        db.commit()
-    finally:
-        db.close()
-
-    # Khoảng truy vấn phủ TRỌN cả hai kỳ để chứng minh phần bị cắt là do mốc SePay,
-    # không phải do range cắt.
-    from_q = (before - timedelta(days=5)).date().isoformat()
-    to_q = (on_or_after + timedelta(days=40)).date().isoformat()
-    r = client.get(
-        f"/api/v1/wallet/admin/report?from={from_q}&to={to_q}", headers=auth_header
-    )
-    assert r.status_code == 200, r.text
-    by = {a["username"]: a for a in r.json()["by_agent"]}
-    # m_new phủ trọn = 330k; m_old mất 1 ngày trước mốc → 29/30 × 330k.
-    assert by["agentSepay"]["revenue"] == AGENT_FEE + round(AGENT_FEE * 29 / 30)
-    # Nhưng m_old KHÔNG được đếm là "đơn mời phát sinh qua ví" — chỉ m_new.
-    assert by["agentSepay"]["invite_count"] == 1
