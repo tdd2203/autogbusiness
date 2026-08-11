@@ -328,7 +328,7 @@ function shortDate(iso: string): string {
 }
 
 function CycleTable() {
-  const { data, isLoading } = useFinancialCycles(3);
+  const { data, isLoading } = useFinancialCycles(12);
   const cycles = data?.cycles ?? [];
   return (
     <div style={{ ...card, marginTop: 20, overflow: "hidden" }}>
