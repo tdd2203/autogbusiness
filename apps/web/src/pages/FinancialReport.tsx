@@ -40,13 +40,23 @@ function fmtDate(d: Date): string {
 
 type Preset = { key: string; label: string; range: () => { from: string; to: string } };
 
+/** Ngày CUỐI tháng hiện tại (day 0 của tháng sau = ngày cuối tháng này). */
+function endOfThisMonth(): string {
+  const now = new Date();
+  return fmtDate(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+}
+
+// Mọi preset đều kết thúc ở NGÀY CUỐI THÁNG HIỆN TẠI, không dừng ở hôm nay (chốt user
+// 2026-08-12: "lấy theo tháng" thì phải trọn tháng). Hệ quả cần biết: tháng đang chạy
+// luôn hiện lỗ, vì chi phí ChatGPT đã trả đủ cả tháng còn doanh thu thì chưa bán tới
+// những ngày cuối tháng — xem bảng "theo chu kỳ thanh toán" để biết tỷ lệ đã bán.
 const PRESETS: Preset[] = [
   {
     key: "month",
     label: "Tháng này",
     range: () => {
       const now = new Date();
-      return { from: fmtDate(new Date(now.getFullYear(), now.getMonth(), 1)), to: fmtDate(now) };
+      return { from: fmtDate(new Date(now.getFullYear(), now.getMonth(), 1)), to: endOfThisMonth() };
     },
   },
   {
@@ -54,7 +64,10 @@ const PRESETS: Preset[] = [
     label: "3 tháng",
     range: () => {
       const now = new Date();
-      return { from: fmtDate(new Date(now.getFullYear(), now.getMonth() - 2, 1)), to: fmtDate(now) };
+      return {
+        from: fmtDate(new Date(now.getFullYear(), now.getMonth() - 2, 1)),
+        to: endOfThisMonth(),
+      };
     },
   },
   {
@@ -62,7 +75,10 @@ const PRESETS: Preset[] = [
     label: "6 tháng",
     range: () => {
       const now = new Date();
-      return { from: fmtDate(new Date(now.getFullYear(), now.getMonth() - 5, 1)), to: fmtDate(now) };
+      return {
+        from: fmtDate(new Date(now.getFullYear(), now.getMonth() - 5, 1)),
+        to: endOfThisMonth(),
+      };
     },
   },
   {
@@ -70,7 +86,7 @@ const PRESETS: Preset[] = [
     label: "Năm nay",
     range: () => {
       const now = new Date();
-      return { from: fmtDate(new Date(now.getFullYear(), 0, 1)), to: fmtDate(now) };
+      return { from: fmtDate(new Date(now.getFullYear(), 0, 1)), to: endOfThisMonth() };
     },
   },
 ];
@@ -346,14 +362,14 @@ function CycleTable() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "1.1fr 1fr 70px 1fr 1fr 1.1fr",
+              gridTemplateColumns: "1fr 0.95fr 60px 1.05fr 1fr 1fr 1.05fr",
               gap: 14,
               padding: "11px 24px",
               borderBottom: "1px solid var(--border)",
               background: "var(--bg)",
             }}
           >
-            {["WORKSPACE", "CHU KỲ", "GHẾ", "CHI PHÍ", "DOANH THU", "LÃI/LỖ"].map((h, i) => (
+            {["WORKSPACE", "CHU KỲ", "GHẾ", "LẤP ĐẦY", "CHI PHÍ", "DOANH THU", "LÃI/LỖ"].map((h, i) => (
               <div
                 key={h}
                 style={{
@@ -370,12 +386,18 @@ function CycleTable() {
           </div>
           {cycles.map((c) => {
             const gain = c.profit >= 0;
+            // Lấp đầy = seat·tháng đã bán ÷ seat·tháng đã trả tiền. Phần trống mà
+            // không bù được người vào là mất luôn — hoá đơn đã trả trọn kỳ.
+            const cap = c.capacity_seat_months;
+            const fill = cap && cap > 0 ? (c.seat_months / cap) * 100 : null;
+            const fillColor =
+              fill === null ? "var(--ink-3)" : fill >= 95 ? GAIN : fill >= 70 ? COST_TEXT : "var(--danger)";
             return (
               <div
                 key={`${c.workspace}-${c.period_start}`}
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1.1fr 1fr 70px 1fr 1fr 1.1fr",
+                  gridTemplateColumns: "1fr 0.95fr 60px 1.05fr 1fr 1fr 1.05fr",
                   gap: 14,
                   alignItems: "center",
                   padding: "14px 24px",
@@ -389,11 +411,21 @@ function CycleTable() {
                     {shortDate(c.period_start)} → {shortDate(c.period_end)}
                   </div>
                   <div style={{ fontSize: 11, color: c.in_progress ? COST_TEXT : "var(--ink-3)", marginTop: 2 }}>
-                    {c.in_progress ? `đang chạy ${c.days_elapsed}/${c.days} ngày` : "đã đóng"}
+                    {c.in_progress ? `đang chạy · còn ${c.days - c.days_elapsed} ngày` : "đã đóng"}
                   </div>
                 </div>
                 <div style={{ fontSize: 13, fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--ink-2)" }}>
                   {c.seats ?? "—"}
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, fontFamily: "var(--font-mono)", color: fillColor }}>
+                    {fill === null ? "—" : `${Math.round(fill)}%`}
+                  </div>
+                  {cap !== null && (
+                    <div style={{ fontSize: 10.5, fontFamily: "var(--font-mono)", color: "var(--ink-3)", marginTop: 2 }}>
+                      {c.seat_months.toFixed(1)}/{cap.toFixed(1)}
+                    </div>
+                  )}
                 </div>
                 <div style={{ fontSize: 13, fontFamily: "var(--font-mono)", textAlign: "right", color: COST_TEXT }}>
                   −{vnNum(c.cost).num}
@@ -417,8 +449,11 @@ function CycleTable() {
             );
           })}
           <div style={{ padding: "12px 24px", fontSize: 11, color: "var(--ink-3)", lineHeight: 1.5 }}>
-            Chu kỳ <strong style={{ color: COST_TEXT }}>đang chạy</strong> đã trả trọn tiền hoá đơn nhưng
-            doanh thu còn thiếu phần khách chưa tới hạn gia hạn — chỉ kết luận lãi/lỗ khi kỳ đã đóng.
+            <strong style={{ color: "var(--ink-2)" }}>Lấp đầy</strong> = seat·tháng đã bán ÷ seat·tháng đã
+            trả tiền cho ChatGPT (ghế × ngày ÷ 30). Hoá đơn trả trọn kỳ nên khách nghỉ giữa chừng mà không
+            bù được người vào là mất luôn số ngày đó — lãi/lỗ của kỳ đi theo cột này chứ không theo số ngày
+            đã trôi qua. Kỳ <strong style={{ color: COST_TEXT }}>đang chạy</strong> còn bán tiếp được, chỉ
+            chốt lãi/lỗ khi đã đóng.
           </div>
         </>
       )}

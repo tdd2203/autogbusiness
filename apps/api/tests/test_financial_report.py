@@ -351,6 +351,10 @@ def test_financial_report_cycles(client: TestClient, auth_header: dict):
     assert c["seats"] == 3
     assert c["days"] == 30
     assert c["in_progress"] is False  # chu kỳ đã kết thúc
+    # Công suất đã trả tiền = 3 ghế × 30 ngày ÷ 30 = 3 seat·tháng; mới bán 1 ghế nên
+    # lấp đầy 1/3 — hai ghế trống kia là tiền mất luôn vì hoá đơn trả trọn kỳ.
+    assert c["capacity_seat_months"] == 3.0
+    assert c["seat_months"] < c["capacity_seat_months"]
     # Chỉ member CỦA WS_CYCLE được tính — member của workspace khác cùng chủ KHÔNG
     # được cộng vào. Doanh thu vẫn bị cắt mốc SePay như báo cáo tháng, nên kỳ vọng
     # tính theo số ngày SAU mốc (test chạy lúc nào cũng đúng, ±1đ do làm tròn mảnh
