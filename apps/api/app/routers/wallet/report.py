@@ -1,27 +1,37 @@
 """Ví — Báo cáo tài chính (super-admin only).
 
-Tổng hợp THU / CHI / LỢI NHUẬN cho 1 khoảng thời gian, KHÔNG ghi gì (chỉ đọc):
+Tổng hợp THU / CHI / LỢI NHUẬN cho 1 khoảng thời gian, KHÔNG ghi gì (chỉ đọc).
+
+GỐC KẾ TOÁN: **DỒN TÍCH THEO NGÀY** cho CẢ HAI vế (chốt user 2026-08-11). Trước đây
+THU ghi nhận MỘT CỤC tại ngày mời/gia hạn còn CHI ghi nhận theo NGÀY HOÁ ĐƠN Stripe —
+hai gốc khác nhau nên mọi khoảng ngắn hơn 1 chu kỳ đều sai: xem "tháng này" (01→11/08)
+ra CHI = 0 vì hai hoá đơn ChatGPT đang hiệu lực đều phát hành trong tháng 7, trong khi
+11 ngày đó vẫn tiêu tốn chi phí của chúng → biên lợi nhuận 100% ảo. Nay mỗi khoản được
+rải đều trên số ngày nó THỰC SỰ phủ, chỉ phần rơi vào [from, to] mới được tính:
 
   - THU (doanh thu) = Σ theo TỪNG KỲ của mọi member (không phải test, không phải chủ
-    workspace) của: PHÍ MỜI hiệu lực (đơn giá/tháng) × số tháng của kỳ. Mời lần đầu
-    (chu kỳ 1) và mỗi lần gia hạn (chu kỳ 2, 3…) đều tính CÙNG một loại phí (chốt user
-    2026-07-14). Đơn giá phân giải LIVE: COALESCE(member.fee_vnd, chủ sở hữu
-    user.invite_fee_vnd, global default) — admin sửa phí thì doanh thu đổi theo. Member
-    thuộc user is_test bị loại. CHỈ tính kỳ có mốc >= _SEPAY_LIVE_DATE (10/7/2026) —
-    dữ liệu cũ chưa đi qua SePay không tính THU.
+    workspace) của: PHÍ MỜI hiệu lực (đơn giá/tháng) × số tháng của kỳ, RẢI ĐỀU trên
+    [start_at, end_at) của kỳ. Mời lần đầu (chu kỳ 1) và mỗi lần gia hạn (chu kỳ 2, 3…)
+    đều tính CÙNG một loại phí (chốt user 2026-07-14). Đơn giá phân giải LIVE:
+    COALESCE(member.fee_vnd, chủ sở hữu user.invite_fee_vnd, global default) — admin
+    sửa phí thì doanh thu đổi theo. Member thuộc user is_test bị loại. CHỈ tính kỳ có
+    mốc BẮT ĐẦU >= _SEPAY_LIVE_DATE (10/7/2026) — dữ liệu cũ chưa đi qua SePay không
+    tính THU.
   - CHI (chi phí) = Σ tiền thực trả ChatGPT = total_vnd (gồm VAT) + phí ngân hàng của
-    các hoá đơn Stripe 'paid' có ngày trong kỳ VÀ >= workspace.finance_start_at (mốc
-    bắt đầu tính CHI — hoá đơn hệ thống cũ / thanh toán ngoài trước mốc bị loại).
+    các hoá đơn Stripe 'paid' có NGÀY HOÁ ĐƠN >= workspace.finance_start_at (mốc bắt
+    đầu tính CHI — hoá đơn hệ thống cũ / thanh toán ngoài trước mốc bị loại), RẢI ĐỀU
+    trên [period_start, period_end) của hoá đơn. Hoá đơn không có chu kỳ (scrape cũ,
+    chưa có period_*) → coi như phát sinh gọn trong 1 ngày = ngày hoá đơn.
   - LỢI NHUẬN = THU − CHI.
 
-Lưu ý dòng thời gian: 1 kỳ được tính vào tháng của `start_at` (mốc bắt đầu kỳ = ngày
-tham gia cho kỳ 1, hạn cũ cho kỳ gia hạn); còn Stripe tính CHI theo ngày hoá đơn — nên
-lợi nhuận THÁNG có thể lệch pha, tổng theo kỳ dài thì hội tụ.
+Hệ quả: THU và CHI cùng nhịp ngày nên lãi/lỗ THÁNG (và mọi khoảng lẻ) so sánh được
+trực tiếp; `seat_months` = Σ seat-ngày có thu ÷ 30 nên cũng là số dồn tích (thập phân),
+khiến "giá thu TB / seat" và "giá vốn TB / seat" đo cùng một mẫu số.
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import NamedTuple
 from uuid import UUID
 
@@ -85,6 +95,47 @@ def _month_range(start: date, end: date) -> list[str]:
     return out
 
 
+def _first_of_next_month(d: date) -> date:
+    return date(d.year + 1, 1, 1) if d.month == 12 else date(d.year, d.month + 1, 1)
+
+
+def _accrue(
+    amount: int,
+    start: date,
+    end_excl: date,
+    from_date: date,
+    to_date: date,
+    bucket: dict[str, int],
+) -> tuple[int, int]:
+    """Rải `amount` ĐỀU THEO NGÀY trên [start, end_excl), cộng phần rơi trong
+    [from_date, to_date] (bao gồm 2 đầu) vào `bucket` theo tháng (khoá YYYY-MM).
+
+    Trả về (số tiền ghi nhận trong kỳ, số ngày phủ trong kỳ). Tiền được làm tròn
+    MỘT LẦN cho mỗi mảnh-tháng rồi cộng dồn, nên tổng trả về LUÔN khớp đúng tổng
+    các cột trong biểu đồ (không lệch do làm tròn 2 nơi).
+
+    Khoảng rỗng/ngược (end_excl <= start) → coi như phát sinh gọn trong 1 ngày.
+    """
+    if end_excl <= start:
+        end_excl = start + timedelta(days=1)
+    total_days = (end_excl - start).days
+    lo = max(start, from_date)
+    hi = min(end_excl, to_date + timedelta(days=1))
+    if hi <= lo:
+        return 0, 0
+    taken = 0
+    cur = lo
+    while cur < hi:
+        nxt = min(_first_of_next_month(cur), hi)
+        part = round(amount * (nxt - cur).days / total_days)
+        mk = _month_key(cur)
+        if mk in bucket:
+            bucket[mk] += part
+        taken += part
+        cur = nxt
+    return taken, (hi - lo).days
+
+
 def _default_from(today: date) -> date:
     """Đầu kỳ mặc định = ngày 1 của tháng cách đây 5 tháng (tổng ~6 tháng gần đây)."""
     y, m = today.year, today.month
@@ -95,8 +146,9 @@ def _default_from(today: date) -> date:
     return date(y, m, 1)
 
 
-def _parse_invoice_date(inv: dict) -> date | None:
-    raw = inv.get("date")
+def _parse_inv_date(inv: dict, key: str) -> date | None:
+    """Đọc 1 field ngày ISO của hoá đơn ('date' / 'period_start' / 'period_end')."""
+    raw = inv.get(key)
     if not raw:
         return None
     try:
@@ -135,25 +187,32 @@ def _member_per_month_fee(
     return default_fee
 
 
-def _member_revenue_events(member: Member, now: datetime) -> list[tuple[bool, int, datetime]]:
-    """Danh sách kỳ tính tiền của member → (is_invite, months, when).
+def _member_revenue_events(
+    member: Member, now: datetime
+) -> list[tuple[bool, int, datetime, datetime]]:
+    """Danh sách kỳ tính tiền của member → (is_invite, months, start, end).
 
     - `is_invite`: chu kỳ 1 (mời lần đầu) vs gia hạn (chu kỳ > 1).
     - `months`: số tháng của kỳ (đơn giá × months = phí kỳ đó).
-    - `when`: mốc gán tháng cho biểu đồ = start_at của kỳ (kỳ 1 = ngày tham gia).
+    - `start`: mốc bắt đầu kỳ (kỳ 1 = ngày tham gia; gia hạn = hạn cũ).
+    - `end`: mốc hết kỳ — phí được RẢI ĐỀU trên [start, end). Thiếu end_at (dữ liệu
+      cũ) → suy start + months × 30 ngày để vẫn có độ dài phân bổ.
 
     Ưu tiên các chu kỳ đã vật chất hoá; member có hạn nhưng CHƯA có kỳ nào (mời trước
     bảng cycles) → suy 1 kỳ mời phủ [ngày tham gia → hạn]. Vô thời hạn (không hạn,
     không kỳ) → không có phí (owner/free)."""
     cycles = list(member.subscription_cycles)
     if cycles:
-        out: list[tuple[bool, int, datetime]] = []
+        out: list[tuple[bool, int, datetime, datetime]] = []
         for c in cycles:
-            when = c.start_at or c.paid_at or member.created_at
-            if when is None:
+            start = c.start_at or c.paid_at or member.created_at
+            if start is None:
                 continue
             months = int(c.months) if c.months else 1
-            out.append((c.cycle_number == 1, months, when))
+            end = c.end_at
+            if end is None or end <= start:
+                end = start + timedelta(days=_DAYS_PER_MONTH * months)
+            out.append((c.cycle_number == 1, months, start, end))
         return out
     if member.subscription_end_at is None:
         return []  # vô thời hạn / chưa có hạn → không tính phí
@@ -168,7 +227,7 @@ def _member_revenue_events(member: Member, now: datetime) -> list[tuple[bool, in
     if anchor > now:
         anchor = now
     months = _months_between(anchor, member.subscription_end_at)
-    return [(True, months, anchor)]
+    return [(True, months, anchor, member.subscription_end_at)]
 
 
 @router.get("/admin/report", response_model=FinancialReportOut)
@@ -212,9 +271,9 @@ def financial_report(
     # ── THU: phí mời/gia hạn theo từng kỳ của mọi member (loại test + chủ workspace) ──
     revenue_invite = 0
     revenue_renew = 0
-    # Tổng "seat-tháng" có phát sinh THU (Σ số tháng của mọi kỳ được tính) — mẫu số để
-    # suy giá vốn TB mỗi seat/tháng = TỔNG CHI ÷ seat-tháng.
-    seat_months = 0
+    # Tổng "seat-NGÀY" có phát sinh THU trong kỳ (Σ số ngày mỗi kỳ phủ trong [from, to]).
+    # ÷ 30 → seat-tháng dồn tích = mẫu số để suy giá vốn TB mỗi seat/tháng.
+    seat_days = 0
     # Gom theo chủ sở hữu (invited_by_user_id); None = "chưa có chủ" (gộp riêng).
     agent_rev: dict[UUID | None, int] = {}
     agent_invites: dict[UUID | None, int] = {}
@@ -242,24 +301,30 @@ def financial_report(
             if per_month <= 0:
                 continue
             owner_key = m.invited_by_user_id  # có thể None → nhóm "chưa có chủ"
-            for is_invite, n_months, when in _member_revenue_events(m, now):
-                bucket = when.astimezone(timezone.utc).date()
-                if bucket < from_date or bucket > to_date:
-                    continue
-                if bucket < _SEPAY_LIVE_DATE:
+            for is_invite, n_months, start_dt, end_dt in _member_revenue_events(m, now):
+                start_d = start_dt.astimezone(timezone.utc).date()
+                if start_d < _SEPAY_LIVE_DATE:
                     continue  # kỳ trước mốc SePay = dữ liệu cũ chưa qua ví → không tính THU
-                amt = per_month * n_months
-                seat_months += n_months
-                if is_invite:
-                    revenue_invite += amt
-                    agent_invites[owner_key] = agent_invites.get(owner_key, 0) + 1
-                else:
-                    revenue_renew += amt
-                    agent_renews[owner_key] = agent_renews.get(owner_key, 0) + 1
-                agent_rev[owner_key] = agent_rev.get(owner_key, 0) + amt
-                mk = _month_key(bucket)
-                if mk in rev_by_month:
-                    rev_by_month[mk] += amt
+                end_d = end_dt.astimezone(timezone.utc).date()
+                # Phí cả kỳ rải đều theo ngày; chỉ phần phủ [from, to] vào báo cáo —
+                # nên kỳ bắt đầu từ tháng trước vẫn đóng góp THU cho tháng này.
+                amt, days = _accrue(
+                    per_month * n_months, start_d, end_d, from_date, to_date, rev_by_month
+                )
+                seat_days += days
+                if days > 0:
+                    agent_rev[owner_key] = agent_rev.get(owner_key, 0) + amt
+                    if is_invite:
+                        revenue_invite += amt
+                    else:
+                        revenue_renew += amt
+                # Số ĐƠN (mời/gia hạn) vẫn đếm theo SỰ KIỆN: kỳ bắt đầu trong khoảng.
+                if from_date <= start_d <= to_date:
+                    agent_rev.setdefault(owner_key, 0)
+                    if is_invite:
+                        agent_invites[owner_key] = agent_invites.get(owner_key, 0) + 1
+                    else:
+                        agent_renews[owner_key] = agent_renews.get(owner_key, 0) + 1
         for m in chunk:
             db.expunge(m)
 
@@ -287,22 +352,30 @@ def financial_report(
         anchor = ws_finance_start_at or ws_created_at
         fstart = anchor.astimezone(timezone.utc).date() if anchor is not None else None
         for inv in paid:
-            d = _parse_invoice_date(inv)
-            if d is None or d < from_date or d > to_date:
+            d = _parse_inv_date(inv, "date")
+            if d is None:
                 continue
             if fstart is not None and d < fstart:
                 continue  # hoá đơn trước mốc = hệ thống cũ / thanh toán ngoài → bỏ
-            c = _invoice_cost(inv)
-            cost += c
-            mk = _month_key(d)
-            if mk in cost_by_month:
-                cost_by_month[mk] += c
+            # Chu kỳ hoá đơn phủ = [period_start, period_end). Hoá đơn cũ chưa scrape
+            # period_* → coi như phát sinh gọn trong 1 ngày (= ngày hoá đơn), giữ
+            # nguyên cách tính trước đây cho phần dữ liệu đó.
+            ps = _parse_inv_date(inv, "period_start") or d
+            pe = _parse_inv_date(inv, "period_end") or (ps + timedelta(days=1))
+            got, _days = _accrue(
+                _invoice_cost(inv), ps, pe, from_date, to_date, cost_by_month
+            )
+            cost += got
 
     profit = revenue - cost
 
+    # Seat-tháng DỒN TÍCH trong kỳ = Σ seat-ngày ÷ 30 (thập phân — khoảng 11 ngày của
+    # 190 seat ≈ 69.7 seat-tháng, không phải 190).
+    seat_months = round(seat_days / _DAYS_PER_MONTH, 2)
+
     # Giá vốn trung bình mỗi seat/tháng = TỔNG CHI (gồm VAT) ÷ tổng seat-tháng có THU.
-    # Đây là giá vốn TB — đã "san phẳng" phần prorate lẻ ngày của ChatGPT và chi phí seat
-    # owner/free — nên so trực tiếp được với đơn giá/tháng (vd 330k). 0 seat-tháng → None.
+    # Cả tử lẫn mẫu giờ cùng gốc dồn tích theo ngày nên so trực tiếp được với đơn
+    # giá/tháng (vd 330k). 0 seat-tháng → None.
     avg_cost_per_seat = round(cost / seat_months) if seat_months > 0 else None
 
     monthly = [

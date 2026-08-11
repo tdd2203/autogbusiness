@@ -192,7 +192,7 @@ export type FinancialReport = {
   by_agent: FinancialReportAgent[];
   /** Số workspace chưa đồng bộ hoá đơn → giá vốn (CHI) có thể thiếu. */
   cost_missing_workspaces: number;
-  /** Tổng seat-tháng có phát sinh THU trong kỳ (mẫu số của giá vốn TB/seat). */
+  /** Seat-tháng DỒN TÍCH có thu trong kỳ = Σ seat-ngày ÷ 30 (thập phân; mẫu số của giá vốn TB/seat). */
   seat_months: number;
   /** Giá vốn TB mỗi seat/tháng = cost ÷ seat_months. null khi chưa có seat-tháng nào. */
   avg_cost_per_seat: number | null;
