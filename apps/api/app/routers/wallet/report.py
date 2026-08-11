@@ -343,6 +343,10 @@ def financial_report(
     ).execution_options(yield_per=_SCAN_CHUNK)
     cost = 0
     cost_missing = 0
+    # Phí seat thực tế = seat_cost_basis ÷ billed_seat_months. Chỉ cộng hoá đơn CÓ ghi
+    # số ghế, để tử/mẫu cùng một tập hoá đơn.
+    billed_seat_months = 0.0
+    seat_cost_basis = 0
     for ws_invoices, ws_finance_start_at, ws_created_at in db.execute(ws_stmt):
         invoices = ws_invoices or []
         paid = [inv for inv in invoices if inv.get("status") == "paid"]
@@ -369,6 +373,16 @@ def financial_report(
             mk = _month_key(d)
             if mk in cost_by_month:
                 cost_by_month[mk] += amt
+            # Mẫu số cho PHÍ SEAT THỰC TẾ: số ghế × độ dài chu kỳ quy về tháng 30 ngày
+            # (hoá đơn ChatGPT thường 31 ngày, giá bán lại tính tháng 30 ngày — không
+            # quy đổi thì hai con số lệch ~3% và không so trực tiếp được).
+            qty = int(inv.get("quantity") or 0)
+            if qty > 0:
+                ps = _parse_inv_date(inv, "period_start")
+                pe = _parse_inv_date(inv, "period_end")
+                span = (pe - ps).days if ps and pe and pe > ps else _DAYS_PER_MONTH
+                billed_seat_months += qty * span / _DAYS_PER_MONTH
+                seat_cost_basis += amt
 
     profit = revenue - cost
 
@@ -380,6 +394,14 @@ def financial_report(
     # cho công suất cả chu kỳ, chia cho số seat-tháng BÁN ĐƯỢC sẽ ra số vô nghĩa.
     # Giá vốn/ghế đọc ở bảng "theo chu kỳ thanh toán" (cột lấp đầy).
     avg_price_per_seat = round(revenue / seat_months) if seat_months > 0 else None
+
+    # PHÍ SEAT THỰC TẾ = tiền hoá đơn ÷ số ghế·tháng ChatGPT thu tiền (quy 30 ngày).
+    # Đây là giá ChatGPT lấy trên MỖI GHẾ, so trực tiếp được với avg_price_per_seat.
+    # KHÁC "lợi nhuận ròng" của kỳ: kỳ có thể lỗ dù mỗi ghế vẫn lãi, khi tiền vào và
+    # hoá đơn không rơi cùng tháng, hoặc khi còn ghế chưa bán được.
+    avg_seat_cost = (
+        round(seat_cost_basis / billed_seat_months) if billed_seat_months > 0 else None
+    )
 
     monthly = [
         FinancialReportBucket(
@@ -420,6 +442,8 @@ def financial_report(
         cost_missing_workspaces=cost_missing,
         seat_months=seat_months,
         avg_price_per_seat=avg_price_per_seat,
+        billed_seat_months=round(billed_seat_months, 2),
+        avg_seat_cost=avg_seat_cost,
     )
 
 

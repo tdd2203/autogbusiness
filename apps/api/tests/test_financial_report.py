@@ -274,6 +274,8 @@ def test_financial_report_cash_basis_window(client: TestClient, auth_header: dic
     assert inside["cost"] == 4_000_000
     assert inside["seat_months"] == 2
     assert inside["avg_price_per_seat"] == AGENT_FEE
+    # Hoá đơn không ghi số ghế → không suy được phí seat thực tế.
+    assert inside["avg_seat_cost"] is None
 
     # Khoảng SAU đó (member vẫn còn hạn, hoá đơn vẫn đang phủ) → cả hai vế = 0.
     after = client.get(
@@ -383,3 +385,48 @@ def test_financial_report_cycles(client: TestClient, auth_header: dict):
     assert c["profit"] == c["revenue"] - 1_000_000
     # Member của workspace khác cùng chủ KHÔNG lẫn vào; WS_OTHER không có hoá đơn.
     assert not [x for x in r.json()["cycles"] if x["workspace"] == "WS_OTHER"]
+
+
+def test_financial_report_seat_cost(client: TestClient, auth_header: dict):
+    """Phí seat thực tế = tiền hoá đơn ÷ ghế·tháng ChatGPT thu tiền, QUY VỀ 30 NGÀY.
+
+    Hoá đơn ChatGPT thường dài 31 ngày còn gói bán cho khách tính tháng 30 ngày —
+    không quy đổi thì hai con số lệch ~3% và không so thẳng được với giá bán.
+    """
+    inv_date = _now - timedelta(days=20)
+    db = SessionLocal()
+    try:
+        s = db.get(PaymentSettings, 1)
+        if s is None:
+            db.add(PaymentSettings(id=1, invite_fee_vnd=DEFAULT_FEE, payment_codes=[]))
+        db.add(
+            Workspace(
+                name="WS_SEATCOST",
+                extension_api_key="k-seatcost",
+                finance_start_at=inv_date - timedelta(days=1),
+                billing_invoices=[
+                    {
+                        "date": inv_date.date().isoformat(),
+                        "total_vnd": 3_100_000,
+                        "status": "paid",
+                        "quantity": 10,
+                        "period_start": inv_date.date().isoformat(),
+                        "period_end": (inv_date + timedelta(days=31)).date().isoformat(),
+                    }
+                ],
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    d = client.get(
+        f"/api/v1/wallet/admin/report?from={FROM_Q}&to={TO_Q}", headers=auth_header
+    ).json()
+    # 10 ghế × 31 ngày ÷ 30 = 10.3333… ghế·tháng (làm tròn 2 số khi trả ra = 10.33).
+    # Phí seat = 3.100.000 × 30 ÷ (10 × 31) = 300.000 đ/ghế·tháng chẵn — chia bằng mẫu
+    # số CHƯA làm tròn, nên không lệch như khi lấy 10.33.
+    assert d["billed_seat_months"] == 10.33
+    assert d["avg_seat_cost"] == 300_000
+    # Không quy 30 ngày thì sẽ ra 310.000 — sai lệch ~3% so với giá bán tính tháng 30.
+    assert d["avg_seat_cost"] != round(3_100_000 / 10)

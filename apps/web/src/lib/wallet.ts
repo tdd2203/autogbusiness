@@ -196,6 +196,10 @@ export type FinancialReport = {
   seat_months: number;
   /** Giá BÁN TB mỗi seat/tháng = revenue ÷ seat_months. null khi chưa bán được kỳ nào. */
   avg_price_per_seat: number | null;
+  /** Ghế·tháng ChatGPT thu tiền = Σ (ghế trên hoá đơn × độ dài chu kỳ ÷ 30). */
+  billed_seat_months: number;
+  /** Phí seat thực tế mỗi ghế/tháng = tiền hoá đơn ÷ billed_seat_months (đã quy 30 ngày). */
+  avg_seat_cost: number | null;
 };
 
 /** 1 chu kỳ thanh toán ChatGPT (= 1 hoá đơn). CHI là TRỌN tiền hoá đơn, không chia ngày. */
