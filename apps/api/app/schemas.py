@@ -1315,7 +1315,8 @@ class FinancialReportOut(BaseModel):
     by_agent: list[FinancialReportAgent]
     # Số workspace chưa đồng bộ hoá đơn 'paid' → giá vốn thiếu (CHI có thể thấp hơn thực).
     cost_missing_workspaces: int
-    # Tổng "seat-tháng" có phát sinh THU trong kỳ (Σ số tháng của mọi kỳ được tính).
-    seat_months: int = 0
+    # Seat-tháng DỒN TÍCH có phát sinh THU trong kỳ = Σ seat-ngày phủ [from, to] ÷ 30.
+    # Thập phân (khoảng lẻ ngày → không tròn tháng).
+    seat_months: float = 0
     # Giá vốn TB mỗi seat/tháng = cost ÷ seat_months (None khi seat_months = 0).
     avg_cost_per_seat: int | None = None

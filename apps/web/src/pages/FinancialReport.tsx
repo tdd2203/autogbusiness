@@ -4,6 +4,11 @@
  *   - CHI (chi phí) = tiền thực trả ChatGPT (hoá đơn Stripe 'paid' của workspace).
  *   - LỢI NHUẬN = THU − CHI (gộp mời + gia hạn — "cách A").
  *   - Có bảng doanh thu theo đại lý. KHÔNG hiện công nợ, KHÔNG hiện rút tiền.
+ * Chốt bổ sung 2026-08-11: CẢ HAI vế ghi nhận DỒN TÍCH THEO NGÀY (backend rải phí
+ * kỳ member trên [start, end) và hoá đơn ChatGPT trên [period_start, period_end)),
+ * nên mọi khoảng — kể cả nửa tháng — đều so sánh được. Trước đó THU tính một cục
+ * lúc mời/gia hạn còn CHI tính theo ngày hoá đơn → tháng nào không có hoá đơn Stripe
+ * phát hành là CHI = 0, biên lợi nhuận 100% ảo.
  *
  * Giao diện mới (mockup "Báo cáo tài chính.dc.html", 2026-07-14): KPI kèm
  * sparkline, biểu đồ cột Thu&Chi theo tháng (HTML/flex), bảng lãi/lỗ (P&L),
@@ -149,7 +154,8 @@ export default function FinancialReport() {
           </h1>
           <p style={{ fontSize: 14, color: "var(--ink-2)", margin: 0, maxWidth: 640 }}>
             Doanh thu (phí mời + gia hạn) trừ chi phí trả ChatGPT ={" "}
-            <strong style={{ color: "var(--ink)" }}>lợi nhuận</strong>. Số liệu {range.from} → {range.to}.
+            <strong style={{ color: "var(--ink)" }}>lợi nhuận</strong>. Cả hai vế phân bổ theo ngày sử
+            dụng thực tế, nên xem khoảng lẻ vẫn đúng. Số liệu {range.from} → {range.to}.
           </p>
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12, flexShrink: 0 }}>
@@ -326,7 +332,7 @@ function KpiRow({ data }: { data: FinancialReport }) {
         label="Chi phí ChatGPT"
         value={data.cost}
         series={costSeries}
-        sub="Hoá đơn Stripe đã thanh toán (gồm VAT)"
+        sub="Hoá đơn Stripe đã thanh toán (gồm VAT), tính theo ngày dùng"
       />
       <Kpi
         dot={gain ? GAIN : "var(--danger)"}
@@ -692,7 +698,7 @@ function PnlStatement({ data, rangeLabel }: { data: FinancialReport; rangeLabel:
       <div style={{ padding: "4px 24px 18px" }}>
         <SectionLabel>CHI PHÍ</SectionLabel>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, padding: "7px 0" }}>
-          <span style={{ fontSize: 13.5, color: COST_TEXT }}>ChatGPT (Stripe, gồm VAT)</span>
+          <span style={{ fontSize: 13.5, color: COST_TEXT }}>ChatGPT (Stripe, gồm VAT) — phân bổ theo ngày</span>
           <span style={{ fontSize: 14, fontWeight: 600, fontFamily: "var(--font-mono)", color: COST_TEXT }}>
             −{vnNum(data.cost).num} đ
           </span>
@@ -734,8 +740,9 @@ function PnlStatement({ data, rangeLabel }: { data: FinancialReport; rangeLabel:
             </div>
           )}
           <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8, lineHeight: 1.5 }}>
-            Giá vốn TB = tổng chi phí ChatGPT (gồm VAT) ÷ {data.seat_months} seat·tháng có thu trong kỳ —
-            đã san phẳng phần lẻ ngày &amp; seat owner/free.
+            Giá vốn TB = tổng chi phí ChatGPT (gồm VAT) ÷ {data.seat_months.toFixed(1)} seat·tháng có thu
+            trong kỳ — seat·tháng đếm theo số ngày seat còn hạn nằm trong kỳ (÷30), nên khoảng lẻ ngày vẫn
+            so được với đơn giá/tháng.
           </div>
         </div>
       )}
