@@ -11,6 +11,8 @@ và chi phí trong tháng đó". Không phân bổ theo ngày:
     loại phí (chốt user 2026-07-14). Đơn giá phân giải LIVE: COALESCE(member.fee_vnd,
     chủ sở hữu user.invite_fee_vnd, global default). Member thuộc user is_test và
     member chủ workspace (role owner) bị loại. Kỳ CHƯA trả không vào THU — công nợ.
+    KHÔNG chặn theo workspace.finance_start_at (đã thử và bỏ — xem chú thích trong
+    vòng lặp): chặn thì mất doanh thu của khách mà chi phí ghế của họ vẫn đang tính.
 
     KHÔNG dùng paid_at làm mốc (chốt user 2026-08-12): đó là lúc bấm đánh dấu chứ
     không phải lúc tiền về. Ngày 13/07/2026 — SePay go-live — có 172 kỳ được chốt
@@ -273,7 +275,7 @@ def financial_report(
         )
     }
 
-    # ── THU: TIỀN NHẬN trong kỳ (loại test + chủ workspace) ─────────────────────
+    # ── THU: kỳ mở trong khoảng (loại test + chủ workspace) ─────────────────────
     revenue_invite = 0
     revenue_renew = 0
     # Tổng seat-tháng ĐÃ BÁN trong kỳ (Σ months của các chu kỳ được thu tiền) — mẫu
@@ -321,6 +323,11 @@ def financial_report(
                 book_d = when.astimezone(timezone.utc).date()
                 if book_d < from_date or book_d > to_date:
                     continue
+                # KHÔNG chặn THU theo finance_start_at (đã thử và bỏ, 2026-08-12):
+                # hoá đơn GPT1 ngày 11/07 trả cho 183 ghế mà phần lớn mở kỳ TRƯỚC
+                # 11/07 — chặn thì mất 12tr doanh thu tháng 7 trong khi chi phí của
+                # chính họ vẫn tính. Đổi một cái lệch lấy một cái lệch to hơn. Thay
+                # vào đó: cảnh báo tháng nào có thu mà chưa có chi (xem months_no_cost).
                 n_months = int(c.months) if c.months else 1
                 amt = per_month * n_months
                 seat_months_sold += n_months
@@ -430,6 +437,12 @@ def financial_report(
         for mk in months
     ]
 
+    # Tháng CÓ THU mà CHI = 0 → lãi tháng đó là ảo. Xảy ra với các tháng trước
+    # workspace.finance_start_at: hoá đơn ChatGPT của chúng bị loại (hệ thống cũ /
+    # trả ngoài) trong khi kỳ của khách vẫn được ghi nhận. Nói ra thay vì để người
+    # đọc tưởng tháng đó lãi to.
+    months_no_cost = sum(1 for b in monthly if b.revenue > 0 and b.cost == 0)
+
     # ── Doanh thu theo đại lý (giảm dần) ────────────────────────────────────
     by_agent = []
     for owner_key, rev in agent_rev.items():
@@ -458,6 +471,7 @@ def financial_report(
         by_agent=by_agent,
         cost_missing_workspaces=cost_missing,
         cost_skipped_invoices=cost_skipped,
+        months_no_cost=months_no_cost,
         seat_months=seat_months,
         avg_price_per_seat=avg_price_per_seat,
         billed_seat_months=round(billed_seat_months, 2),
