@@ -16,7 +16,7 @@
  * Số liệu lấy qua useFinancialReport; đổi kỳ → query key đổi → tự refetch.
  */
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { useFinancialReport } from "../hooks/useWallet";
+import { useFinancialCycles, useFinancialReport } from "../hooks/useWallet";
 import { type FinancialReport } from "../lib/wallet";
 
 // ── Bảng màu biểu đồ (dữ liệu, không phải chrome) — khớp mockup ──────────────
@@ -259,7 +259,7 @@ function ReportBody({ data, range }: { data: FinancialReport; range: { from: str
   const rangeLabel = `${range.from} → ${range.to}`;
   return (
     <>
-      {data.cost_missing_workspaces > 0 && (
+      {(data.cost_missing_workspaces > 0 || data.cost_skipped_invoices > 0) && (
         <div
           style={{
             display: "flex",
@@ -276,8 +276,18 @@ function ReportBody({ data, range }: { data: FinancialReport; range: { from: str
         >
           <span aria-hidden>⚠</span>
           <span>
-            {data.cost_missing_workspaces} workspace chưa đồng bộ hoá đơn — chi phí (giá vốn ChatGPT) có thể
-            thấp hơn thực tế, khiến lợi nhuận cao hơn thực. Đồng bộ billing để chính xác.
+            {data.cost_missing_workspaces > 0 && (
+              <>
+                {data.cost_missing_workspaces} workspace chưa đồng bộ hoá đơn — chi phí (giá vốn ChatGPT) có
+                thể thấp hơn thực tế, khiến lợi nhuận cao hơn thực. Đồng bộ billing để chính xác.{" "}
+              </>
+            )}
+            {data.cost_skipped_invoices > 0 && (
+              <>
+                {data.cost_skipped_invoices} hoá đơn đã thanh toán bị bỏ khỏi chi phí vì chưa có chu kỳ
+                (period) — không biết rải vào ngày nào. Dán lại chi tiết hoá đơn để đưa vào báo cáo.
+              </>
+            )}
           </span>
         </div>
       )}
@@ -295,7 +305,124 @@ function ReportBody({ data, range }: { data: FinancialReport; range: { from: str
         <PnlStatement data={data} rangeLabel={rangeLabel} />
         <Composition data={data} />
       </div>
+      <CycleTable />
     </>
+  );
+}
+
+// ── Lãi/lỗ theo ĐÚNG chu kỳ thanh toán ChatGPT ──────────────────────────────
+// Bảng trên cắt theo tháng lịch (01→31) nên phải chia tiền hoá đơn theo ngày. Bảng
+// này cắt đúng bằng chu kỳ hoá đơn (vd 11/08→11/09) nên CHI là TRỌN số tiền đã trả,
+// không chia chác — khớp cách "thanh toán theo tháng". Không phụ thuộc preset đang chọn.
+
+/** "2026-08-11" → "11/08". */
+function shortDate(iso: string): string {
+  const [, m, d] = iso.split("-");
+  return `${d}/${m}`;
+}
+
+function CycleTable() {
+  const { data, isLoading } = useFinancialCycles(3);
+  const cycles = data?.cycles ?? [];
+  return (
+    <div style={{ ...card, marginTop: 20, overflow: "hidden" }}>
+      <div style={{ padding: "18px 24px", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "var(--ink)" }}>
+          Lãi/lỗ theo chu kỳ thanh toán ChatGPT
+        </div>
+        <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginTop: 2 }}>
+          Cắt đúng chu kỳ hoá đơn — chi phí lấy trọn số đã trả, không chia theo ngày. Không đổi theo
+          khoảng thời gian đang chọn ở trên.
+        </div>
+      </div>
+      {isLoading ? (
+        <div style={{ padding: "24px", fontSize: 13, color: "var(--ink-3)" }}>Đang tải…</div>
+      ) : cycles.length === 0 ? (
+        <div style={{ padding: "24px", fontSize: 13, color: "var(--ink-3)" }}>
+          Chưa có hoá đơn nào ghi đủ chu kỳ.
+        </div>
+      ) : (
+        <>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1.1fr 1fr 70px 1fr 1fr 1.1fr",
+              gap: 14,
+              padding: "11px 24px",
+              borderBottom: "1px solid var(--border)",
+              background: "var(--bg)",
+            }}
+          >
+            {["WORKSPACE", "CHU KỲ", "GHẾ", "CHI PHÍ", "DOANH THU", "LÃI/LỖ"].map((h, i) => (
+              <div
+                key={h}
+                style={{
+                  fontSize: 10.5,
+                  letterSpacing: "0.1em",
+                  color: "var(--ink-3)",
+                  fontWeight: 600,
+                  textAlign: i >= 2 ? "right" : "left",
+                }}
+              >
+                {h}
+              </div>
+            ))}
+          </div>
+          {cycles.map((c) => {
+            const gain = c.profit >= 0;
+            return (
+              <div
+                key={`${c.workspace}-${c.period_start}`}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1.1fr 1fr 70px 1fr 1fr 1.1fr",
+                  gap: 14,
+                  alignItems: "center",
+                  padding: "14px 24px",
+                  borderBottom: "1px solid var(--border)",
+                  opacity: c.in_progress ? 0.75 : 1,
+                }}
+              >
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: "var(--ink)" }}>{c.workspace}</div>
+                <div>
+                  <div style={{ fontSize: 13, fontFamily: "var(--font-mono)", color: "var(--ink)" }}>
+                    {shortDate(c.period_start)} → {shortDate(c.period_end)}
+                  </div>
+                  <div style={{ fontSize: 11, color: c.in_progress ? COST_TEXT : "var(--ink-3)", marginTop: 2 }}>
+                    {c.in_progress ? `đang chạy ${c.days_elapsed}/${c.days} ngày` : "đã đóng"}
+                  </div>
+                </div>
+                <div style={{ fontSize: 13, fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--ink-2)" }}>
+                  {c.seats ?? "—"}
+                </div>
+                <div style={{ fontSize: 13, fontFamily: "var(--font-mono)", textAlign: "right", color: COST_TEXT }}>
+                  −{vnNum(c.cost).num}
+                </div>
+                <div style={{ fontSize: 13, fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--ink)" }}>
+                  {vnNum(c.revenue).num}
+                </div>
+                <div
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 700,
+                    fontFamily: "var(--font-mono)",
+                    textAlign: "right",
+                    color: gain ? "var(--success-strong)" : "var(--danger)",
+                  }}
+                >
+                  {gain ? "+" : "−"}
+                  {vnNum(c.profit).num} <span style={{ fontSize: 11, opacity: 0.7 }}>đ</span>
+                </div>
+              </div>
+            );
+          })}
+          <div style={{ padding: "12px 24px", fontSize: 11, color: "var(--ink-3)", lineHeight: 1.5 }}>
+            Chu kỳ <strong style={{ color: COST_TEXT }}>đang chạy</strong> đã trả trọn tiền hoá đơn nhưng
+            doanh thu còn thiếu phần khách chưa tới hạn gia hạn — chỉ kết luận lãi/lỗ khi kỳ đã đóng.
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -741,8 +868,7 @@ function PnlStatement({ data, rangeLabel }: { data: FinancialReport; rangeLabel:
           )}
           <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8, lineHeight: 1.5 }}>
             Giá vốn TB = tổng chi phí ChatGPT (gồm VAT) ÷ {data.seat_months.toFixed(1)} seat·tháng có thu
-            trong kỳ — seat·tháng đếm theo số ngày seat còn hạn nằm trong kỳ (÷30), nên khoảng lẻ ngày vẫn
-            so được với đơn giá/tháng.
+            trong kỳ — đã gánh cả phần ghế không bán được, nên đây là mốc để định giá bán.
           </div>
         </div>
       )}

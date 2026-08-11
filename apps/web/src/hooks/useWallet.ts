@@ -9,6 +9,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useAuth } from "./useAuth";
 import type {
+  FinancialCycles,
   FinancialReport,
   PaymentOrder,
   PaymentSettings,
@@ -223,6 +224,17 @@ export function useFinancialReport(from: string, to: string) {
         `/api/v1/wallet/admin/report?from=${from}&to=${to}`,
       ),
     enabled: !!user?.is_super_admin && !!from && !!to,
+  });
+}
+
+/** Lãi/lỗ cắt theo ĐÚNG chu kỳ thanh toán ChatGPT (không phụ thuộc khoảng đang chọn). */
+export function useFinancialCycles(limit = 3) {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ["wallet", "admin", "report", "cycles", limit],
+    queryFn: () =>
+      api<FinancialCycles>(`/api/v1/wallet/admin/report/cycles?limit=${limit}`),
+    enabled: !!user?.is_super_admin,
   });
 }
 

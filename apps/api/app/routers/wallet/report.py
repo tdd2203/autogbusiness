@@ -44,6 +44,8 @@ from app.models import Member, User, Workspace
 from app.schemas import (
     FinancialReportAgent,
     FinancialReportBucket,
+    FinancialReportCycle,
+    FinancialReportCyclesOut,
     FinancialReportOut,
 )
 
@@ -350,6 +352,8 @@ def financial_report(
     ).execution_options(yield_per=_SCAN_CHUNK)
     cost = 0
     cost_missing = 0
+    # Hoá đơn 'paid' sau mốc nhưng thiếu chu kỳ → không tính được, đếm để cảnh báo.
+    cost_skipped = 0
     for ws_invoices, ws_finance_start_at, ws_created_at in db.execute(ws_stmt):
         invoices = ws_invoices or []
         paid = [inv for inv in invoices if inv.get("status") == "paid"]
@@ -366,11 +370,18 @@ def financial_report(
                 continue
             if fstart is not None and d < fstart:
                 continue  # hoá đơn trước mốc = hệ thống cũ / thanh toán ngoài → bỏ
-            # Chu kỳ hoá đơn phủ = [period_start, period_end). Hoá đơn cũ chưa scrape
-            # period_* → coi như phát sinh gọn trong 1 ngày (= ngày hoá đơn), giữ
-            # nguyên cách tính trước đây cho phần dữ liệu đó.
-            ps = _parse_inv_date(inv, "period_start") or d
-            pe = _parse_inv_date(inv, "period_end") or (ps + timedelta(days=1))
+            # Chu kỳ hoá đơn phủ = [period_start, period_end). Hoá đơn THIẾU chu kỳ
+            # (scrape cũ chưa lấy trang chi tiết) bị BỎ QUA — chốt user 2026-08-12:
+            # không có chu kỳ thì không biết rải vào ngày nào, dồn cả cục vào ngày
+            # hoá đơn làm méo tháng đó. Đếm lại để cảnh báo, không im lặng nuốt tiền.
+            ps = _parse_inv_date(inv, "period_start")
+            pe = _parse_inv_date(inv, "period_end")
+            if ps is None or pe is None or pe <= ps:
+                # Chỉ cảnh báo khi hoá đơn hỏng nằm TRONG kỳ đang xem — hoá đơn cũ
+                # ngoài kỳ mà cứ kêu thì banner luôn sáng và mất tác dụng.
+                if from_date <= d <= to_date:
+                    cost_skipped += 1
+                continue
             got, _days = _accrue(
                 _invoice_cost(inv), ps, pe, from_date, to_date, cost_by_month
             )
@@ -424,6 +435,132 @@ def financial_report(
         monthly=monthly,
         by_agent=by_agent,
         cost_missing_workspaces=cost_missing,
+        cost_skipped_invoices=cost_skipped,
         seat_months=seat_months,
         avg_cost_per_seat=avg_cost_per_seat,
     )
+
+
+@router.get("/admin/report/cycles", response_model=FinancialReportCyclesOut)
+def financial_report_cycles(
+    db: Session = Depends(get_session),
+    _: User = Depends(require_super_admin),
+    limit: int = Query(default=3, ge=1, le=24),
+) -> FinancialReportCyclesOut:
+    """Lãi/lỗ cắt theo ĐÚNG CHU KỲ THANH TOÁN ChatGPT, mỗi workspace một dòng/kỳ.
+
+    Chốt user 2026-08-12: báo cáo tháng lịch giữ nguyên để nhìn tổng, nhưng "tháng"
+    của ChatGPT là 11/08→11/09 chứ không phải 01→31/08, nên cần xem thêm theo đúng
+    chu kỳ. Ở đây CHI = TRỌN tiền hoá đơn (không chia ngày — đúng ý "thanh toán theo
+    tháng"), THU = doanh thu của member THUỘC workspace đó rơi vào đúng những ngày
+    của chu kỳ. `limit` = số chu kỳ gần nhất lấy cho MỖI workspace.
+
+    Chỉ đọc. Chu kỳ đang chạy được đánh dấu `in_progress` — THU của nó còn thiếu phần
+    khách chưa gia hạn, nên đừng kết luận lỗ khi kỳ chưa đóng.
+    """
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    default_fee = int(get_payment_settings(db).invite_fee_vnd or 0)
+    users: dict[UUID, _OwnerInfo] = {
+        row.id: _OwnerInfo(row.id, row.username, row.email, row.is_test, row.invite_fee_vnd)
+        for row in db.execute(
+            select(User.id, User.username, User.email, User.is_test, User.invite_fee_vnd)
+        )
+    }
+
+    # ── Dựng danh sách chu kỳ từ hoá đơn (mới nhất trước, tối đa `limit` mỗi ws) ──
+    # cycles: workspace_id → list[(period_start, period_end, cost, seats)]
+    cycles: dict[UUID, list[tuple[date, date, int, int | None]]] = {}
+    ws_names: dict[UUID, str] = {}
+    for wid, name, invs, fs, created in db.execute(
+        select(
+            Workspace.id,
+            Workspace.name,
+            Workspace.billing_invoices,
+            Workspace.finance_start_at,
+            Workspace.created_at,
+        )
+    ):
+        ws_names[wid] = name
+        anchor = fs or created
+        fstart = anchor.astimezone(timezone.utc).date() if anchor is not None else None
+        rows: list[tuple[date, date, int, int | None]] = []
+        for inv in invs or []:
+            if inv.get("status") != "paid":
+                continue
+            d = _parse_inv_date(inv, "date")
+            if d is None or (fstart is not None and d < fstart):
+                continue
+            ps = _parse_inv_date(inv, "period_start")
+            pe = _parse_inv_date(inv, "period_end")
+            if ps is None or pe is None or pe <= ps:
+                continue  # thiếu chu kỳ → không xếp vào đâu được (xem cost_skipped)
+            qty = int(inv.get("quantity") or 0) or None
+            rows.append((ps, pe, _invoice_cost(inv), qty))
+        rows.sort(key=lambda r: r[0], reverse=True)
+        if rows:
+            cycles[wid] = rows[:limit]
+
+    # ── THU cho từng chu kỳ: quét member theo lô, cộng vào các chu kỳ của ĐÚNG
+    # workspace của member. Cùng công thức với báo cáo tháng (rải theo ngày + cắt
+    # mốc SePay) nên hai màn hình không bao giờ lệch nhau.
+    rev: dict[tuple[UUID, int], int] = {}
+    sdays: dict[tuple[UUID, int], int] = {}
+    member_stmt = (
+        select(Member)
+        .options(selectinload(Member.subscription_cycles))
+        .execution_options(yield_per=_SCAN_CHUNK)
+    )
+    for chunk in db.execute(member_stmt).scalars().partitions():
+        for m in chunk:
+            ws_cycles = cycles.get(m.workspace_id)
+            if not ws_cycles or m.chatgpt_role == "owner":
+                continue
+            owner = users.get(m.invited_by_user_id) if m.invited_by_user_id else None
+            if owner is not None and owner.is_test:
+                continue
+            per_month = _member_per_month_fee(m, owner, default_fee)
+            if per_month <= 0:
+                continue
+            for _iv, n_months, start_dt, end_dt in _member_revenue_events(m, now):
+                start_d = start_dt.astimezone(timezone.utc).date()
+                end_d = end_dt.astimezone(timezone.utc).date()
+                for i, (ps, pe, _c, _q) in enumerate(ws_cycles):
+                    amt, days = _accrue(
+                        per_month * n_months,
+                        start_d,
+                        end_d,
+                        max(ps, _SEPAY_LIVE_DATE),
+                        pe - timedelta(days=1),  # _accrue nhận `to` BAO GỒM
+                        {},
+                    )
+                    key = (m.workspace_id, i)
+                    if days:
+                        rev[key] = rev.get(key, 0) + amt
+                        sdays[key] = sdays.get(key, 0) + days
+        for m in chunk:
+            db.expunge(m)
+
+    out: list[FinancialReportCycle] = []
+    for wid, rows in cycles.items():
+        for i, (ps, pe, c, qty) in enumerate(rows):
+            r = rev.get((wid, i), 0)
+            total_days = (pe - ps).days
+            elapsed = min(total_days, max(0, (today - ps).days))
+            out.append(
+                FinancialReportCycle(
+                    workspace=ws_names[wid],
+                    period_start=ps.isoformat(),
+                    period_end=pe.isoformat(),
+                    days=total_days,
+                    days_elapsed=elapsed,
+                    in_progress=elapsed < total_days,
+                    seats=qty,
+                    cost=c,
+                    revenue=r,
+                    profit=r - c,
+                    seat_months=round(sdays.get((wid, i), 0) / _DAYS_PER_MONTH, 2),
+                )
+            )
+    out.sort(key=lambda x: (x.period_start, x.workspace), reverse=True)
+    return FinancialReportCyclesOut(cycles=out)

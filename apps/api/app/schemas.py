@@ -1315,8 +1315,36 @@ class FinancialReportOut(BaseModel):
     by_agent: list[FinancialReportAgent]
     # Số workspace chưa đồng bộ hoá đơn 'paid' → giá vốn thiếu (CHI có thể thấp hơn thực).
     cost_missing_workspaces: int
+    # Số hoá đơn 'paid' bị bỏ vì thiếu chu kỳ (period_start/period_end) → CHI thiếu
+    # đúng bằng các hoá đơn đó. Dán lại chi tiết hoá đơn để đưa vào báo cáo.
+    cost_skipped_invoices: int = 0
     # Seat-tháng DỒN TÍCH có phát sinh THU trong kỳ = Σ seat-ngày phủ [from, to] ÷ 30.
     # Thập phân (khoảng lẻ ngày → không tròn tháng).
     seat_months: float = 0
     # Giá vốn TB mỗi seat/tháng = cost ÷ seat_months (None khi seat_months = 0).
     avg_cost_per_seat: int | None = None
+
+
+class FinancialReportCycle(BaseModel):
+    """1 CHU KỲ THANH TOÁN ChatGPT của 1 workspace (= 1 hoá đơn có period).
+
+    Khác báo cáo theo tháng lịch: ở đây kỳ được cắt đúng bằng chu kỳ hoá đơn nên CHI
+    là TRỌN số tiền hoá đơn (không chia ngày), còn THU là phần doanh thu của member
+    thuộc workspace đó rơi vào đúng những ngày ấy.
+    """
+
+    workspace: str
+    period_start: str  # ISO date
+    period_end: str    # ISO date (không bao gồm — đây là ngày gia hạn kế tiếp)
+    days: int
+    days_elapsed: int  # số ngày đã trôi qua tính tới hôm nay (= days khi đã xong)
+    in_progress: bool
+    seats: int | None  # số ghế trên hoá đơn (None nếu hoá đơn không ghi)
+    cost: int          # TRỌN tiền hoá đơn (gồm VAT + phí ngân hàng)
+    revenue: int
+    profit: int
+    seat_months: float
+
+
+class FinancialReportCyclesOut(BaseModel):
+    cycles: list[FinancialReportCycle]

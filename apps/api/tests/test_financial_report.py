@@ -119,6 +119,7 @@ def _seed_scenario():
                     "service_fee_vnd": 500_000,
                     "status": "paid",
                     "period_start": DATE_CUR.date().isoformat(),
+                    "period_end": (DATE_CUR + timedelta(days=30)).date().isoformat(),
                 },
                 # Không 'paid' → bỏ.
                 {"date": DATE_CUR.date().isoformat(), "amount_vnd": 9_000_000, "status": "void"},
@@ -206,7 +207,13 @@ def test_financial_report_finance_start_excludes_old(client: TestClient, auth_he
             extension_api_key="k-new",
             finance_start_at=None,  # chưa set
             billing_invoices=[
-                {"date": DATE_CUR.date().isoformat(), "total_vnd": 3_000_000, "status": "paid"},
+                {
+                    "date": DATE_CUR.date().isoformat(),
+                    "total_vnd": 3_000_000,
+                    "status": "paid",
+                    "period_start": DATE_CUR.date().isoformat(),
+                    "period_end": (DATE_CUR + timedelta(days=30)).date().isoformat(),
+                },
             ],
         )
         ws.created_at = _now - timedelta(days=50)
@@ -290,6 +297,120 @@ def test_financial_report_accrual_prorates(client: TestClient, auth_header: dict
     # Tổng các cột tháng khớp đúng tổng (làm tròn 1 lần mỗi mảnh tháng).
     assert sum(b["revenue"] for b in data["monthly"]) == data["revenue"]
     assert sum(b["cost"] for b in data["monthly"]) == data["cost"]
+
+
+def test_financial_report_cycles(client: TestClient, auth_header: dict):
+    """Báo cáo theo ĐÚNG chu kỳ thanh toán: CHI = TRỌN tiền hoá đơn (không chia ngày),
+    THU = doanh thu member CỦA WORKSPACE ĐÓ rơi vào đúng những ngày của chu kỳ."""
+    # Chu kỳ đã ĐÓNG: bắt đầu 40 ngày trước, dài 30 ngày → kết thúc 10 ngày trước.
+    cyc_start = _now - timedelta(days=40)
+    cyc_end = cyc_start + timedelta(days=30)
+    db = SessionLocal()
+    try:
+        s = db.get(PaymentSettings, 1)
+        if s is None:
+            db.add(PaymentSettings(id=1, invite_fee_vnd=DEFAULT_FEE, payment_codes=[]))
+        else:
+            s.invite_fee_vnd = DEFAULT_FEE
+        db.flush()
+        ws = Workspace(
+            name="WS_CYCLE",
+            extension_api_key="k-cycle",
+            finance_start_at=cyc_start,
+            billing_invoices=[
+                {
+                    "date": cyc_start.date().isoformat(),
+                    "total_vnd": 1_000_000,
+                    "status": "paid",
+                    "quantity": 3,
+                    "period_start": cyc_start.date().isoformat(),
+                    "period_end": cyc_end.date().isoformat(),
+                }
+            ],
+        )
+        db.add(ws)
+        # Workspace KHÁC: member của nó không được lẫn vào doanh thu chu kỳ trên.
+        other = Workspace(name="WS_OTHER", extension_api_key="k-other", billing_invoices=[])
+        db.add(other)
+        db.flush()
+        agent = _mk_user(db, "agentCycle", fee=AGENT_FEE)
+        m = _mk_member(db, ws, owner=agent, joined=cyc_start, end=cyc_end)
+        _add_cycle(db, m, number=1, months=1, start=cyc_start)
+        m_other = _mk_member(db, other, owner=agent, joined=cyc_start, end=cyc_end)
+        _add_cycle(db, m_other, number=1, months=1, start=cyc_start)
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.get("/api/v1/wallet/admin/report/cycles", headers=auth_header)
+    assert r.status_code == 200, r.text
+    rows = [c for c in r.json()["cycles"] if c["workspace"] == "WS_CYCLE"]
+    assert len(rows) == 1
+    c = rows[0]
+    assert c["cost"] == 1_000_000  # TRỌN hoá đơn, không chia ngày
+    assert c["seats"] == 3
+    assert c["days"] == 30
+    assert c["in_progress"] is False  # chu kỳ đã kết thúc
+    # Chỉ member CỦA WS_CYCLE được tính — member của workspace khác cùng chủ KHÔNG
+    # được cộng vào. Doanh thu vẫn bị cắt mốc SePay như báo cáo tháng, nên kỳ vọng
+    # tính theo số ngày SAU mốc (test chạy lúc nào cũng đúng, ±1đ do làm tròn mảnh
+    # tháng trong _accrue).
+    from app.routers.wallet.report import _SEPAY_LIVE_DATE
+
+    paid_days = (cyc_end.date() - max(cyc_start.date(), _SEPAY_LIVE_DATE)).days
+    expected = round(AGENT_FEE * paid_days / 30)
+    assert abs(c["revenue"] - expected) <= 1
+    assert c["profit"] == c["revenue"] - 1_000_000
+    # WS_OTHER không có hoá đơn có chu kỳ → không xuất hiện.
+    assert not [x for x in r.json()["cycles"] if x["workspace"] == "WS_OTHER"]
+
+
+def test_financial_report_skips_invoice_without_cycle(client: TestClient, auth_header: dict):
+    """Hoá đơn 'paid' sau mốc nhưng THIẾU period_start/period_end bị bỏ khỏi CHI và
+    ĐẾM vào cost_skipped_invoices (chốt user 2026-08-12).
+
+    Trước đây hoá đơn thiếu chu kỳ bị dồn cả cục vào ngày hoá đơn → méo tháng đó.
+    Bỏ thì phải nói ra, không được im lặng nuốt tiền.
+    """
+    db = SessionLocal()
+    try:
+        s = db.get(PaymentSettings, 1)
+        if s is None:
+            db.add(PaymentSettings(id=1, invite_fee_vnd=DEFAULT_FEE, payment_codes=[]))
+        db.add(
+            Workspace(
+                name="WS_NOCYCLE",
+                extension_api_key="k-nocycle",
+                finance_start_at=FIN_START,
+                billing_invoices=[
+                    # Có chu kỳ → tính.
+                    {
+                        "date": DATE_CUR.date().isoformat(),
+                        "total_vnd": 2_000_000,
+                        "status": "paid",
+                        "period_start": DATE_CUR.date().isoformat(),
+                        "period_end": (DATE_CUR + timedelta(days=30)).date().isoformat(),
+                    },
+                    # Thiếu chu kỳ → bỏ + đếm.
+                    {
+                        "date": DATE_CUR.date().isoformat(),
+                        "total_vnd": 7_000_000,
+                        "status": "paid",
+                    },
+                ],
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.get(
+        f"/api/v1/wallet/admin/report?from={FROM_Q}&to={TO_Q}", headers=auth_header
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["cost"] == 2_000_000  # 7tr thiếu chu kỳ KHÔNG vào CHI
+    assert data["cost_skipped_invoices"] == 1
 
 
 def test_financial_report_clips_pre_sepay_revenue(client: TestClient, auth_header: dict):
