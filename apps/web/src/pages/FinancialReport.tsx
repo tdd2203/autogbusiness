@@ -170,8 +170,8 @@ export default function FinancialReport() {
           </h1>
           <p style={{ fontSize: 14, color: "var(--ink-2)", margin: 0, maxWidth: 640 }}>
             Doanh thu (phí mời + gia hạn) trừ chi phí trả ChatGPT ={" "}
-            <strong style={{ color: "var(--ink)" }}>lợi nhuận</strong>. Cả hai vế phân bổ theo ngày sử
-            dụng thực tế, nên xem khoảng lẻ vẫn đúng. Số liệu {range.from} → {range.to}.
+            <strong style={{ color: "var(--ink)" }}>lợi nhuận</strong>. Tính theo tiền mặt: thu là tiền
+            nhận trong kỳ, chi là hoá đơn ChatGPT trả trong kỳ. Số liệu {range.from} → {range.to}.
           </p>
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 12, flexShrink: 0 }}>
@@ -275,7 +275,7 @@ function ReportBody({ data, range }: { data: FinancialReport; range: { from: str
   const rangeLabel = `${range.from} → ${range.to}`;
   return (
     <>
-      {(data.cost_missing_workspaces > 0 || data.cost_skipped_invoices > 0) && (
+      {data.cost_missing_workspaces > 0 && (
         <div
           style={{
             display: "flex",
@@ -292,18 +292,8 @@ function ReportBody({ data, range }: { data: FinancialReport; range: { from: str
         >
           <span aria-hidden>⚠</span>
           <span>
-            {data.cost_missing_workspaces > 0 && (
-              <>
-                {data.cost_missing_workspaces} workspace chưa đồng bộ hoá đơn — chi phí (giá vốn ChatGPT) có
-                thể thấp hơn thực tế, khiến lợi nhuận cao hơn thực. Đồng bộ billing để chính xác.{" "}
-              </>
-            )}
-            {data.cost_skipped_invoices > 0 && (
-              <>
-                {data.cost_skipped_invoices} hoá đơn đã thanh toán bị bỏ khỏi chi phí vì chưa có chu kỳ
-                (period) — không biết rải vào ngày nào. Dán lại chi tiết hoá đơn để đưa vào báo cáo.
-              </>
-            )}
+            {data.cost_missing_workspaces} workspace chưa đồng bộ hoá đơn — chi phí (giá vốn ChatGPT) có
+            thể thấp hơn thực tế, khiến lợi nhuận cao hơn thực. Đồng bộ billing để chính xác.
           </span>
         </div>
       )}
@@ -494,7 +484,7 @@ function KpiRow({ data }: { data: FinancialReport }) {
         label="Chi phí ChatGPT"
         value={data.cost}
         series={costSeries}
-        sub="Hoá đơn Stripe đã thanh toán (gồm VAT), tính theo ngày dùng"
+        sub="Hoá đơn Stripe trả trong kỳ (gồm VAT + phí ngân hàng)"
       />
       <Kpi
         dot={gain ? GAIN : "var(--danger)"}
@@ -824,10 +814,7 @@ function PnlStatement({ data, rangeLabel }: { data: FinancialReport; rangeLabel:
   const p = vnNum(data.profit);
   // Trung bình mỗi seat/tháng: giá vốn từ backend (cost ÷ seat-tháng), doanh thu &
   // lãi suy tại chỗ. Chỉ hiện khi có ít nhất 1 seat-tháng phát sinh THU trong kỳ.
-  const costPerSeat = data.avg_cost_per_seat;
-  const revPerSeat = data.seat_months > 0 ? Math.round(data.revenue / data.seat_months) : null;
-  const profitPerSeat =
-    revPerSeat !== null && costPerSeat !== null ? revPerSeat - costPerSeat : null;
+  const pricePerSeat = data.avg_price_per_seat;
   return (
     <div style={{ ...card, overflow: "hidden", display: "flex", flexDirection: "column" }}>
       <div style={{ padding: "18px 24px", borderBottom: "1px solid var(--border)" }}>
@@ -860,50 +847,23 @@ function PnlStatement({ data, rangeLabel }: { data: FinancialReport; rangeLabel:
       <div style={{ padding: "4px 24px 18px" }}>
         <SectionLabel>CHI PHÍ</SectionLabel>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 16, padding: "7px 0" }}>
-          <span style={{ fontSize: 13.5, color: COST_TEXT }}>ChatGPT (Stripe, gồm VAT) — phân bổ theo ngày</span>
+          <span style={{ fontSize: 13.5, color: COST_TEXT }}>ChatGPT (Stripe, gồm VAT) — trả trong kỳ</span>
           <span style={{ fontSize: 14, fontWeight: 600, fontFamily: "var(--font-mono)", color: COST_TEXT }}>
             −{vnNum(data.cost).num} đ
           </span>
         </div>
       </div>
 
-      {revPerSeat !== null && (
+      {pricePerSeat !== null && (
         <div style={{ padding: "4px 24px 18px" }}>
-          <SectionLabel>TRUNG BÌNH / SEAT · THÁNG</SectionLabel>
-          <PnlRow label="Giá thu TB / seat" value={`${vnNum(revPerSeat).num} đ`} />
-          <PnlRow
-            label="Giá vốn TB / seat"
-            value={costPerSeat !== null ? `−${vnNum(costPerSeat).num} đ` : "—"}
-          />
-          {profitPerSeat !== null && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                justifyContent: "space-between",
-                gap: 16,
-                padding: "9px 0 2px",
-                marginTop: 2,
-                borderTop: "1px solid var(--border)",
-              }}
-            >
-              <span style={{ fontSize: 13.5, fontWeight: 700, color: "var(--ink)" }}>Lãi TB / seat</span>
-              <span
-                style={{
-                  fontSize: 14,
-                  fontWeight: 700,
-                  fontFamily: "var(--font-mono)",
-                  color: profitPerSeat < 0 ? "var(--danger)" : "var(--success-strong)",
-                }}
-              >
-                {profitPerSeat < 0 ? "−" : "+"}
-                {vnNum(profitPerSeat).num} đ
-              </span>
-            </div>
-          )}
+          <SectionLabel>ĐÃ BÁN TRONG KỲ</SectionLabel>
+          <PnlRow label="Số seat·tháng bán ra" value={`${data.seat_months.toFixed(0)} seat·tháng`} />
+          <PnlRow label="Giá bán TB / seat·tháng" value={`${vnNum(pricePerSeat).num} đ`} />
           <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8, lineHeight: 1.5 }}>
-            Giá vốn TB = tổng chi phí ChatGPT (gồm VAT) ÷ {data.seat_months.toFixed(1)} seat·tháng có thu
-            trong kỳ — đã gánh cả phần ghế không bán được, nên đây là mốc để định giá bán.
+            Đây là gốc TIỀN MẶT: thu = tiền nhận trong kỳ, chi = hoá đơn ChatGPT trả trong kỳ. Hai vế đi
+            theo nhịp thu/chi nên tháng nào dồn sổ sẽ phình, tháng nào ít gia hạn sẽ hụt. Muốn biết lãi/lỗ
+            thật trên mỗi ghế thì xem bảng <strong style={{ color: "var(--ink-2)" }}>theo chu kỳ thanh
+            toán</strong> bên dưới.
           </div>
         </div>
       )}
