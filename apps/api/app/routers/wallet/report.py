@@ -14,9 +14,9 @@ rải đều trên số ngày nó THỰC SỰ phủ, chỉ phần rơi vào [fro
     [start_at, end_at) của kỳ. Mời lần đầu (chu kỳ 1) và mỗi lần gia hạn (chu kỳ 2, 3…)
     đều tính CÙNG một loại phí (chốt user 2026-07-14). Đơn giá phân giải LIVE:
     COALESCE(member.fee_vnd, chủ sở hữu user.invite_fee_vnd, global default) — admin
-    sửa phí thì doanh thu đổi theo. Member thuộc user is_test bị loại. CHỈ tính kỳ có
-    mốc BẮT ĐẦU >= _SEPAY_LIVE_DATE (10/7/2026) — dữ liệu cũ chưa đi qua SePay không
-    tính THU.
+    sửa phí thì doanh thu đổi theo. Member thuộc user is_test bị loại. Ngày phục vụ
+    TRƯỚC _SEPAY_LIVE_DATE (10/7/2026) KHÔNG tính THU (dữ liệu cũ chưa đi qua ví) —
+    xem `rev_from`.
   - CHI (chi phí) = Σ tiền thực trả ChatGPT = total_vnd (gồm VAT) + phí ngân hàng của
     các hoá đơn Stripe 'paid' có NGÀY HOÁ ĐƠN >= workspace.finance_start_at (mốc bắt
     đầu tính CHI — hoá đơn hệ thống cũ / thanh toán ngoài trước mốc bị loại), RẢI ĐỀU
@@ -54,8 +54,13 @@ from ._shared import router, get_payment_settings
 _DAYS_PER_MONTH = 30
 
 # Mốc SePay go-live (chốt user 2026-07-14): doanh thu (phí mời/gia hạn = "tiền admin
-# add") CHỈ tính từ ngày này trở đi. Kỳ mời/gia hạn có mốc trước đây = dữ liệu cũ chưa
-# đi qua SePay → KHÔNG tính THU. Chỉ lọc trong báo cáo, không sửa/xoá dữ liệu gốc.
+# add") CHỈ tính từ ngày này trở đi. Chỉ lọc trong báo cáo, không sửa/xoá dữ liệu gốc.
+#
+# CẮT MỐC thay vì loại cả kỳ (chốt user 2026-08-12): trước đây kỳ nào BẮT ĐẦU trước
+# mốc là bị loại TOÀN BỘ, kể cả phần phục vụ sau mốc. Bất đối xứng với CHI — CHI tính
+# từ workspace.finance_start_at nên đã gánh chính những ghế đó — làm tháng 7 hiện lỗ
+# ảo 16,9tr và 4 ghế khách trả trước 2 tháng nằm ngoài sổ. Nay chỉ cắt phần ngày TRƯỚC
+# mốc: trước mốc vẫn 0 đồng đúng như quyết định cũ, từ mốc trở đi thì ghi nhận.
 _SEPAY_LIVE_DATE = date(2026, 7, 10)
 
 # Số hàng đọc mỗi lô khi quét member/workspace (xem `financial_report`). Chỉ ảnh
@@ -250,6 +255,11 @@ def financial_report(
     rev_by_month: dict[str, int] = {k: 0 for k in months}
     cost_by_month: dict[str, int] = {k: 0 for k in months}
 
+    # Đầu kỳ RIÊNG cho THU: không bao giờ ghi nhận ngày phục vụ trước mốc SePay.
+    # Kỳ bắt đầu từ mốc trở đi không bị ảnh hưởng (start >= _SEPAY_LIVE_DATE nên
+    # phần giao không đổi); kỳ cũ hơn chỉ mất phần đuôi trước mốc.
+    rev_from = max(from_date, _SEPAY_LIVE_DATE)
+
     default_fee = int(get_payment_settings(db).invite_fee_vnd or 0)
     # RAM: chỉ lấy 5 cột báo cáo thực sự đọc, thay vì nạp nguyên ORM User của mọi
     # tài khoản vào identity map. Nội dung dùng tới không đổi (xem _OwnerInfo).
@@ -303,13 +313,11 @@ def financial_report(
             owner_key = m.invited_by_user_id  # có thể None → nhóm "chưa có chủ"
             for is_invite, n_months, start_dt, end_dt in _member_revenue_events(m, now):
                 start_d = start_dt.astimezone(timezone.utc).date()
-                if start_d < _SEPAY_LIVE_DATE:
-                    continue  # kỳ trước mốc SePay = dữ liệu cũ chưa qua ví → không tính THU
                 end_d = end_dt.astimezone(timezone.utc).date()
-                # Phí cả kỳ rải đều theo ngày; chỉ phần phủ [from, to] vào báo cáo —
+                # Phí cả kỳ rải đều theo ngày; chỉ phần phủ [rev_from, to] vào báo cáo —
                 # nên kỳ bắt đầu từ tháng trước vẫn đóng góp THU cho tháng này.
                 amt, days = _accrue(
-                    per_month * n_months, start_d, end_d, from_date, to_date, rev_by_month
+                    per_month * n_months, start_d, end_d, rev_from, to_date, rev_by_month
                 )
                 seat_days += days
                 if days > 0:
@@ -318,8 +326,9 @@ def financial_report(
                         revenue_invite += amt
                     else:
                         revenue_renew += amt
-                # Số ĐƠN (mời/gia hạn) vẫn đếm theo SỰ KIỆN: kỳ bắt đầu trong khoảng.
-                if from_date <= start_d <= to_date:
+                # Số ĐƠN (mời/gia hạn) vẫn đếm theo SỰ KIỆN: kỳ bắt đầu trong khoảng
+                # VÀ từ mốc SePay trở đi (kỳ cũ hơn không phải "đơn phát sinh qua ví").
+                if from_date <= start_d <= to_date and start_d >= _SEPAY_LIVE_DATE:
                     agent_rev.setdefault(owner_key, 0)
                     if is_invite:
                         agent_invites[owner_key] = agent_invites.get(owner_key, 0) + 1

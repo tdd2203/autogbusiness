@@ -292,9 +292,13 @@ def test_financial_report_accrual_prorates(client: TestClient, auth_header: dict
     assert sum(b["cost"] for b in data["monthly"]) == data["cost"]
 
 
-def test_financial_report_excludes_pre_sepay_revenue(client: TestClient, auth_header: dict):
-    """Kỳ mời/gia hạn có mốc TRƯỚC _SEPAY_LIVE_DATE (10/7/2026) không tính THU, dù nằm
-    trong khoảng truy vấn — dữ liệu cũ chưa đi qua SePay."""
+def test_financial_report_clips_pre_sepay_revenue(client: TestClient, auth_header: dict):
+    """Kỳ bắt đầu TRƯỚC _SEPAY_LIVE_DATE (10/7/2026) chỉ bị cắt phần ngày trước mốc,
+    KHÔNG bị loại cả kỳ (chốt user 2026-08-12).
+
+    Trước đây loại cả kỳ khiến khách trả trước nhiều tháng nằm ngoài sổ trong khi CHI
+    vẫn gánh ghế của họ. Nay ngày phục vụ trước mốc = 0 đồng, từ mốc trở đi thì tính.
+    """
     from app.routers.wallet.report import _SEPAY_LIVE_DATE
 
     before = datetime.combine(
@@ -316,7 +320,7 @@ def test_financial_report_excludes_pre_sepay_revenue(client: TestClient, auth_he
         db.add(ws)
         db.flush()
         agent = _mk_user(db, "agentSepay", fee=AGENT_FEE)
-        # Kỳ TRƯỚC mốc → bị loại.
+        # Kỳ bắt đầu TRƯỚC mốc 1 ngày → mất đúng 1/30 ngày đầu, giữ 29 ngày còn lại.
         m_old = _mk_member(db, ws, owner=agent, end=before + timedelta(days=30))
         _add_cycle(db, m_old, number=1, months=1, start=before)
         # Kỳ TỪ mốc trở đi → được tính.
@@ -326,8 +330,8 @@ def test_financial_report_excludes_pre_sepay_revenue(client: TestClient, auth_he
     finally:
         db.close()
 
-    # Khoảng truy vấn phủ TRỌN cả hai kỳ để chứng minh việc loại là do mốc SePay, không
-    # phải do range cắt (dồn tích: range cắt sẽ chỉ ra phí lẻ ngày, không phải 0).
+    # Khoảng truy vấn phủ TRỌN cả hai kỳ để chứng minh phần bị cắt là do mốc SePay,
+    # không phải do range cắt.
     from_q = (before - timedelta(days=5)).date().isoformat()
     to_q = (on_or_after + timedelta(days=40)).date().isoformat()
     r = client.get(
@@ -335,6 +339,7 @@ def test_financial_report_excludes_pre_sepay_revenue(client: TestClient, auth_he
     )
     assert r.status_code == 200, r.text
     by = {a["username"]: a for a in r.json()["by_agent"]}
-    # Chỉ kỳ m_new (330k, 1 mời) được tính; m_old bị loại.
-    assert by["agentSepay"]["revenue"] == AGENT_FEE
+    # m_new phủ trọn = 330k; m_old mất 1 ngày trước mốc → 29/30 × 330k.
+    assert by["agentSepay"]["revenue"] == AGENT_FEE + round(AGENT_FEE * 29 / 30)
+    # Nhưng m_old KHÔNG được đếm là "đơn mời phát sinh qua ví" — chỉ m_new.
     assert by["agentSepay"]["invite_count"] == 1
