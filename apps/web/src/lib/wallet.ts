@@ -194,6 +194,8 @@ export type FinancialReport = {
   cost_missing_workspaces: number;
   /** Số hoá đơn trong kỳ chưa có chi tiết (period_*) nên chưa vào CHI. */
   cost_skipped_invoices: number;
+  /** Số tháng có thu mà chi = 0 → lãi tháng đó là ảo (hoá đơn trước mốc bị loại). */
+  months_no_cost: number;
   /** Seat-tháng ĐÃ BÁN trong kỳ = Σ months của các chu kỳ thu được tiền. */
   seat_months: number;
   /** Giá BÁN TB mỗi seat/tháng = revenue ÷ seat_months. null khi chưa bán được kỳ nào. */

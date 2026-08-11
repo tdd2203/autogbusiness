@@ -302,7 +302,8 @@ def test_financial_report_unpaid_cycle_excluded(client: TestClient, auth_header:
         if s is None:
             db.add(PaymentSettings(id=1, invite_fee_vnd=DEFAULT_FEE, payment_codes=[]))
         db.flush()
-        ws = Workspace(name="WS_DEBT", extension_api_key="k-debt", billing_invoices=[])
+        ws = Workspace(name="WS_DEBT", extension_api_key="k-debt", billing_invoices=[],
+                       finance_start_at=CYCLE_START - timedelta(days=1))
         db.add(ws)
         db.flush()
         agent = _mk_user(db, "agentDebt", fee=AGENT_FEE)
@@ -484,3 +485,42 @@ def test_financial_report_requires_invoice_detail(client: TestClient, auth_heade
         headers=auth_header,
     ).json()
     assert far["cost_skipped_invoices"] == 0
+
+
+def test_financial_report_flags_month_with_revenue_no_cost(client: TestClient, auth_header: dict):
+    """Tháng CÓ THU mà CHI = 0 phải được ĐẾM để cảnh báo — lãi tháng đó là ảo.
+
+    Xảy ra với tháng trước workspace.finance_start_at: hoá đơn ChatGPT bị loại (hệ
+    thống cũ / trả ngoài) trong khi kỳ của khách vẫn ghi nhận. KHÔNG chặn THU theo
+    mốc đó — đã thử và bỏ, vì hoá đơn hiện tại trả cho cả ghế mở kỳ trước mốc.
+    """
+    start = _now - timedelta(days=20)
+    db = SessionLocal()
+    try:
+        s = db.get(PaymentSettings, 1)
+        if s is None:
+            db.add(PaymentSettings(id=1, invite_fee_vnd=DEFAULT_FEE, payment_codes=[]))
+        else:
+            s.invite_fee_vnd = DEFAULT_FEE
+        db.flush()
+        # Workspace KHÔNG có hoá đơn nào được tính → mọi tháng đều CHI = 0.
+        ws = Workspace(name="WS_NOCOST", extension_api_key="k-nocost", billing_invoices=[])
+        db.add(ws)
+        db.flush()
+        agent = _mk_user(db, "agentNoCost", fee=AGENT_FEE)
+        m = _mk_member(db, ws, owner=agent, joined=start, end=start + timedelta(days=30))
+        _add_cycle(db, m, number=1, months=1, start=start)
+        db.commit()
+    finally:
+        db.close()
+
+    d = client.get(
+        f"/api/v1/wallet/admin/report"
+        f"?from={(start - timedelta(days=3)).date().isoformat()}"
+        f"&to={(start + timedelta(days=3)).date().isoformat()}",
+        headers=auth_header,
+    ).json()
+    # Doanh thu VẪN được ghi nhận (không chặn theo mốc), nhưng có cờ cảnh báo.
+    assert d["revenue"] == AGENT_FEE
+    assert d["cost"] == 0
+    assert d["months_no_cost"] >= 1

@@ -275,7 +275,9 @@ function ReportBody({ data, range }: { data: FinancialReport; range: { from: str
   const rangeLabel = `${range.from} → ${range.to}`;
   return (
     <>
-      {(data.cost_missing_workspaces > 0 || data.cost_skipped_invoices > 0) && (
+      {(data.cost_missing_workspaces > 0 ||
+        data.cost_skipped_invoices > 0 ||
+        data.months_no_cost > 0) && (
         <div
           style={{
             display: "flex",
@@ -301,7 +303,14 @@ function ReportBody({ data, range }: { data: FinancialReport; range: { from: str
             {data.cost_skipped_invoices > 0 && (
               <>
                 {data.cost_skipped_invoices} hoá đơn trong kỳ chưa có chi tiết nên chưa vào chi phí — chi
-                phí đang thấp hơn thực tế. Dán chi tiết hoá đơn ở trang workspace là nó vào sổ ngay.
+                phí đang thấp hơn thực tế. Dán chi tiết hoá đơn ở trang workspace là nó vào sổ ngay.{" "}
+              </>
+            )}
+            {data.months_no_cost > 0 && (
+              <>
+                {data.months_no_cost} tháng trong kỳ có doanh thu nhưng chi phí bằng 0 — hoá đơn ChatGPT
+                của những tháng đó nằm trước mốc tính sổ nên bị loại. Lãi của các tháng ấy là ảo, đừng
+                dùng để đánh giá.
               </>
             )}
           </span>

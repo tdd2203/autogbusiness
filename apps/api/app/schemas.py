@@ -1318,6 +1318,9 @@ class FinancialReportOut(BaseModel):
     # Số hoá đơn 'paid' trong kỳ CHƯA có chi tiết (period_*) nên chưa được tính vào
     # CHI. Dán chi tiết hoá đơn vào là nó vào sổ ngay.
     cost_skipped_invoices: int = 0
+    # Số tháng trong kỳ CÓ THU mà CHI = 0 → lãi tháng đó là ảo (hoá đơn ChatGPT của
+    # tháng đó nằm trước finance_start_at nên bị loại).
+    months_no_cost: int = 0
     # Seat-tháng ĐÃ BÁN trong kỳ = Σ months của các chu kỳ thu được tiền.
     seat_months: float = 0
     # Giá BÁN TB mỗi seat/tháng = revenue ÷ seat_months (None khi seat_months = 0).
