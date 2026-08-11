@@ -192,10 +192,31 @@ export type FinancialReport = {
   by_agent: FinancialReportAgent[];
   /** Số workspace chưa đồng bộ hoá đơn → giá vốn (CHI) có thể thiếu. */
   cost_missing_workspaces: number;
+  /** Số hoá đơn 'paid' bị bỏ vì thiếu chu kỳ (period_start/period_end) → CHI thiếu đúng phần đó. */
+  cost_skipped_invoices: number;
   /** Seat-tháng DỒN TÍCH có thu trong kỳ = Σ seat-ngày ÷ 30 (thập phân; mẫu số của giá vốn TB/seat). */
   seat_months: number;
   /** Giá vốn TB mỗi seat/tháng = cost ÷ seat_months. null khi chưa có seat-tháng nào. */
   avg_cost_per_seat: number | null;
+};
+
+/** 1 chu kỳ thanh toán ChatGPT (= 1 hoá đơn). CHI là TRỌN tiền hoá đơn, không chia ngày. */
+export type FinancialCycle = {
+  workspace: string;
+  period_start: string;
+  period_end: string;
+  days: number;
+  days_elapsed: number;
+  in_progress: boolean;
+  seats: number | null;
+  cost: number;
+  revenue: number;
+  profit: number;
+  seat_months: number;
+};
+
+export type FinancialCycles = {
+  cycles: FinancialCycle[];
 };
 
 /** Định dạng VND: 100000 → "100.000 ₫". */
