@@ -11,6 +11,7 @@ Endpoints:
   - POST /reconcile-after-invite → reconcile_after_invite (Phase 2 verify pending)
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -20,11 +21,110 @@ from sqlalchemy.orm import Session
 
 from app.audit import log_event
 from app.deps import get_session, require_extension_workspace
-from app.models import Invite, Member, QueueItem, Workspace
+from app.models import AuditLog, Invite, Member, QueueItem, Workspace
 from app.schemas import InviteVerifyReconcileIn, MemberBulkUpsert
 from app.sse import publish_task_event
 
 from ._shared import router, _end_from_purchase
+
+logger = logging.getLogger(__name__)
+
+
+# Dò XOÁ-GIẢ: chỉ soi các lần mark removed trong cửa sổ này. Đủ rộng để bắt ca
+# "xoá-giả rồi nhiều ngày sau mới có người bấm đồng bộ" (sự cố 03→12/8/2026: lần
+# full sync trước đó cách 11 ngày), nhưng không lôi lại lịch sử cổ: member bị gỡ
+# lâu rồi mà nay quay lại thường là ĐƯỢC MỜI LẠI, không phải xoá hỏng.
+FAKE_REMOVE_LOOKBACK = timedelta(days=30)
+
+
+def _flag_fake_removals(
+    db: Session,
+    workspace: Workspace,
+    resurrected: list[tuple[UUID, str, datetime | None]],
+    now: datetime,
+) -> list[str]:
+    """Bóc các ca XOÁ-GIẢ lộ ra nhờ lần sync này, ghi `MEMBER_REMOVE_FAKE_DETECTED`.
+
+    Bối cảnh (sự cố 03→12/8/2026): extension được phép kết luận "member đã rời
+    workspace" chỉ bằng ô lọc, KHÔNG click xoá (`removal_evidence='absent_confirmed'`
+    — xem `queue/completion.py`). Khi kết luận đó SAI, backend mark removed cho
+    member VẪN CÒN trên ChatGPT: email vẫn ăn ghế, còn dashboard giấu luôn khỏi
+    danh sách gia hạn (chỉ hiện active/pending) → im lặng tuyệt đối tới lần full
+    sync kế tiếp, có khi hàng tuần.
+
+    Bản thân việc "sống lại" đã được xử lý sẵn (upsert đưa về active + tick 60s
+    gỡ lại) — cái THIẾU là DẤU VẾT. Không có sự kiện nào cho biết lần xoá trước
+    là giả, nên bug chỉ lộ khi có người tình cờ soi bảng gia hạn. Hàm này biến nó
+    thành 1 dòng nhật ký ERROR đích danh.
+
+    Chỉ đếm ca `absent_confirmed`: member sống lại sau lần removed
+    `clicked_and_verified` (đã click + xác minh row biến mất) hay sau khi bị gỡ
+    tay là chuyện khác — mời lại, hoặc ChatGPT hồi row — không phải xoá-giả.
+
+    Idempotent tự nhiên: sau lần này member ở trạng thái active/pending nên các
+    sync sau không còn thấy `prev_status == 'removed'` → không log trùng.
+    """
+    if not resurrected:
+        return []
+    target_ids = [str(mid) for mid, _, _ in resurrected]
+    rows = db.execute(
+        select(AuditLog.target_id, AuditLog.data, AuditLog.timestamp)
+        .where(
+            AuditLog.action == "MEMBER_REMOVED_SYNCED",
+            AuditLog.target_id.in_(target_ids),
+            AuditLog.timestamp >= now - FAKE_REMOVE_LOOKBACK,
+        )
+        .order_by(AuditLog.timestamp.desc())
+    ).all()
+    # Đã sort giảm dần → lần gặp ĐẦU TIÊN của mỗi target là lần removed MỚI NHẤT.
+    latest: dict[str, tuple[dict, datetime]] = {}
+    for target_id, data, ts in rows:
+        if target_id not in latest:
+            latest[target_id] = (data or {}, ts)
+
+    flagged: list[str] = []
+    for member_id, email, removed_at in resurrected:
+        entry = latest.get(str(member_id))
+        if entry is None:
+            continue
+        data, ts = entry
+        if data.get("removal_evidence") != "absent_confirmed":
+            continue
+        blind_hours = round((now - ts).total_seconds() / 3600, 1)
+        log_event(
+            db,
+            actor_type="SYSTEM",
+            action="MEMBER_REMOVE_FAKE_DETECTED",
+            result="ERROR",
+            target_type="MEMBER",
+            target_id=str(member_id),
+            data={
+                "email": email,
+                "workspace_id": str(workspace.id),
+                "removal_evidence": "absent_confirmed",
+                "removed_at": (removed_at or ts).isoformat(),
+                "blind_hours": blind_hours,
+                "queue_item_id": data.get("queue_item_id"),
+                "note": (
+                    "Lần xoá tự động gần nhất kết luận 'không thấy trong tab Người "
+                    "dùng' và mark removed mà KHÔNG click xoá, nhưng đồng bộ này cho "
+                    "thấy email VẪN CÒN trên ChatGPT → lần xoá đó là GIẢ, email đã ăn "
+                    f"ghế suốt {blind_hours} giờ. Đã đưa lại về active; nếu quá hạn, "
+                    "tick 60s sẽ gỡ lại (lần này có click + xác minh)."
+                ),
+            },
+            commit=False,
+        )
+        flagged.append(email)
+    if flagged:
+        logger.warning(
+            "[fake-remove] workspace=%s phát hiện %d email bị XOÁ-GIẢ (absent_confirmed) "
+            "nay sống lại qua sync: %s",
+            workspace.id,
+            len(flagged),
+            ", ".join(flagged[:10]),
+        )
+    return flagged
 
 
 @router.post("/bulk-upsert", response_model=dict)
@@ -71,6 +171,9 @@ def bulk_upsert_members(
     # created = có trên ChatGPT nhưng CHƯA có trong hệ thống (auto-create);
     # removed = hệ thống có nhưng ChatGPT KHÔNG còn (mark removed).
     created_emails: list[str] = []
+    # Member đang 'removed' mà ChatGPT vẫn trả về → (id, email, removed_at cũ).
+    # Đối chiếu audit sau vòng lặp để bóc ca XOÁ-GIẢ — xem `_flag_fake_removals`.
+    resurrected: list[tuple[UUID, str, datetime | None]] = []
     # Default subscription cho member scrape-only (chưa từng invite qua dashboard):
     # 1 tháng = 30 ngày. Theo yêu cầu user 2026-05-19.
     # Mốc neo "Ngày gia hạn" LẦN ĐẦU = NGÀY THAM GIA thật: last_invited_at ?? joined_at
@@ -90,6 +193,12 @@ def bulk_upsert_members(
             )
         ).scalar_one_or_none()
         if existing:
+            # Chụp TRƯỚC khi upsert đè: cặp (status cũ, removed_at cũ) là căn cứ
+            # duy nhất để biết member này vừa "sống lại" từ 'removed' → nguyên
+            # liệu cho `_flag_fake_removals` (dò xoá-giả). Sau vài dòng nữa cả
+            # hai đều bị ghi đè.
+            prev_status = existing.status
+            prev_removed_at = existing.removed_at
             existing.name = m.name if m.name is not None else existing.name
             existing.chatgpt_role = (
                 m.chatgpt_role if m.chatgpt_role is not None else existing.chatgpt_role
@@ -115,6 +224,12 @@ def bulk_upsert_members(
             # active mà vẫn còn removed_at rác + để job hard-delete không dính.
             if existing.status != "removed" and existing.removed_at is not None:
                 existing.removed_at = None
+            # ⚠️ "Sống lại" KHÔNG vô hại: nếu lần removed gần nhất là do XOÁ TỰ
+            # ĐỘNG kết luận vắng-mặt-không-click (`absent_confirmed`) thì việc
+            # ChatGPT vẫn trả email này chính là BẰNG CHỨNG lần xoá đó là GIẢ.
+            # Gom lại, đối chiếu audit sau vòng lặp (1 query cho cả batch).
+            if prev_status == "removed" and existing.status in ("active", "pending"):
+                resurrected.append((existing.id, existing.email, prev_removed_at))
             # NGÀY THAM GIA = thời điểm MỜI (có giờ) nếu có. Scrape ChatGPT chỉ trả
             # NGÀY (00:00) → KHÔNG ghi đè joined_at đã có bằng giá trị kém chính xác
             # hơn. Chỉ đặt lần đầu (joined_at IS NULL), ưu tiên last_invited_at.
@@ -504,6 +619,9 @@ def bulk_upsert_members(
                 "unresolved_count": unresolved,
             }
 
+    # Dò XOÁ-GIẢ TRƯỚC khi commit: mọi audit của lần sync này vào cùng 1 transaction.
+    fake_removed_emails = _flag_fake_removals(db, workspace, resurrected, now)
+
     db.add(workspace)
     log_event(
         db,
@@ -517,6 +635,7 @@ def bulk_upsert_members(
             "created": created,
             "updated": updated,
             "removed_missing": removed_count,
+            "fake_removed": len(fake_removed_emails),
             "total": len(body.members),
             "is_full_sync": body.is_full_sync,
             "reconcile_skipped": reconcile_skipped,
@@ -572,6 +691,10 @@ def bulk_upsert_members(
         # dashboard liệt kê thay đổi sau sync.
         "created_emails": created_emails[:50],
         "removed_emails": removed_emails[:50],
+        # Email lộ ra là bị XOÁ-GIẢ nhờ lần sync này (hệ thống tưởng đã gỡ nhưng
+        # ChatGPT vẫn còn) → extension mang xuống QueueItem.result để dashboard
+        # cảnh báo, thay vì chỉ nằm im trong nhật ký.
+        "fake_removed_emails": fake_removed_emails[:50],
         "total": len(body.members),
         "rogue_pending_emails": rogue_pending_emails,
         "reconcile_skipped": reconcile_skipped,
