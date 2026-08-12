@@ -155,13 +155,15 @@ export async function executeRemove(
     { phase: "searching", message: `Tìm ${email} bằng ô lọc...` },
     true,
   );
-  // Ô LỌC server-side của ChatGPT là NGUỒN SỰ THẬT — gõ TOÀN BỘ email ĐÚNG MỘT LẦN
-  // rồi chờ list load xong (`filterOnceAndResolve`). KHÔNG scroll-scan: tab "Người
-  // dùng" là list VIRTUALIZED (150+ row, không có thanh phân trang) nên scroll chỉ
-  // thấy vài row gần đỉnh → bỏ sót member vẫn hiện diện → xoá oan (bug 2026-07-21).
-  // Cũng KHÔNG gõ lại 2-3 lần: gõ thêm không làm kết quả đáng tin hơn, chỉ tốn
-  // ngân sách 150s của task (user 2026-07-22). Cái quyết định là list có PHẢN HỒI
-  // query hay không — xem `filterOnceAndResolve`.
+  // Ô LỌC server-side của ChatGPT là NGUỒN SỰ THẬT — gõ TOÀN BỘ email rồi chờ list
+  // load xong (`filterOnceAndResolve`). KHÔNG scroll-scan: tab "Người dùng" là list
+  // VIRTUALIZED (150+ row, không có thanh phân trang) nên scroll chỉ thấy vài row
+  // gần đỉnh → bỏ sót member vẫn hiện diện → xoá oan (bug 2026-07-21). Cái quyết
+  // định là list có THỰC SỰ chạy query hay không — xem `filterOnceAndResolve`.
+  //
+  // Đây là lần tra NGUY HIỂM NHẤT: `absent` ở đây khiến backend mark removed mà
+  // KHÔNG click xoá lần nào. Nên để nguyên mặc định NGHIÊM NGẶT (chờ list đứng
+  // yên + 2 vòng lọc độc lập + positive control) — xem sự cố xoá-giả 03→12/8/2026.
   const found = await filterOnceAndResolve(email);
 
   if (found.outcome !== "found") {
@@ -378,18 +380,24 @@ export async function executeRemove(
     true,
   );
   let gone = false;
-  const verifyDeadlineMs = Date.now() + 45_000;
+  // 60s (trước 45s): mỗi lần tra giờ tốn hơn vì đòi 2 vòng lọc độc lập, phải chừa
+  // đủ chỗ cho ÍT NHẤT 2 lần tra trong ngân sách 150s của task.
+  const verifyDeadlineMs = Date.now() + 60_000;
   while (Date.now() < verifyDeadlineMs) {
-    // Mỗi vòng: clear + gõ lại email ĐÚNG MỘT LẦN → ép fetch lọc mới, rồi chờ list
-    // load xong. `absent` = ChatGPT không còn trả row nào khớp ⇒ xoá đã có hiệu lực.
+    // Mỗi lần tra: clear + gõ lại email → ép fetch lọc mới, chờ list load xong.
+    // `absent` = ChatGPT không còn trả row nào khớp ⇒ xoá đã có hiệu lực.
     // `inconclusive` (list không phản hồi) KHÔNG được coi là đã xoá — cứ để vòng
-    // sau thử lại, hết 45s thì REMOVE_VERIFY_FAILED (giữ member).
-    const check = await filterOnceAndResolve(email);
+    // sau thử lại, hết giờ thì REMOVE_VERIFY_FAILED (giữ member).
+    //
+    // `requireStableList: false`: list vừa bị CHÍNH cú click xoá làm đổi (row rơi
+    // ra, ChatGPT eventual-consistent) nên đòi nó "đứng yên" trước khi gõ chỉ đốt
+    // ngân sách. Vẫn giữ 2 vòng lọc độc lập — false-absent ở đây cũng là xoá-giả.
+    const check = await filterOnceAndResolve(email, { requireStableList: false });
     if (check.outcome === "absent") {
       gone = true;
       break;
     }
-    await sleep(3000);
+    await sleep(1500);
   }
 
   await clearMemberFilter();
@@ -400,7 +408,7 @@ export async function executeRemove(
       error_code: "REMOVE_VERIFY_FAILED",
       error_message:
         `Đã click xoá ${email} (dialog đóng) nhưng member VẪN còn trong tab ` +
-        `"Người dùng" sau 45s → xoá CHƯA có hiệu lực. Giữ nguyên (không mark ` +
+        `"Người dùng" sau 60s → xoá CHƯA có hiệu lực. Giữ nguyên (không mark ` +
         `removed), sẽ thử lại ở lần sau.`,
     };
   }
