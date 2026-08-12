@@ -126,11 +126,24 @@ def test_refund_idempotent_on_reterminal(client: TestClient, auth_header: dict) 
     assert len([t for t in txns if t["kind"] == "invite_refund"]) == 1
 
 
-def test_timeout_reconciles_like_failed(client: TestClient, auth_header: dict) -> None:
-    """REGRESSION: task INVITE_MEMBER treo quá ngưỡng → lazy-cleanup (GET /queue/next)
-    phải reconcile Y HỆT FAILED thật: hoàn phí ví + xoá member phantom + ghi timeline
-    MEMBER_INVITE_FAILED. Trước đây đường timeout chỉ set status=FAILED → tiền kẹt +
-    member kẹt 'pending' (hiện "Chờ tham gia") + timeline vẫn "Đã mời"."""
+def test_timeout_defers_then_resolver_refunds(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Task INVITE_MEMBER treo quá ngưỡng → lazy-cleanup (GET /queue/next) reconcile,
+    NHƯNG là HOÃN PHÁN XỬ chứ không chốt hỏng (đổi luật 12/8/2026).
+
+    Timeout = extension CHẾT IM LẶNG: không có report nào nên không ai biết nó đã bấm
+    "Gửi lời mời" hay chưa. Trước đây chốt hỏng ngay ở mốc 3′ (hoàn phí + xoá phantom)
+    — đoán sai một lần là một ghế dùng miễn phí vĩnh viễn, đúng lớp lỗi đã mất 670k
+    ngày 12/8/2026. Nay giữ member 'pending' + giữ tiền, để
+    `_resolve_stale_pending_invites_once` chốt ở mốc 20′ bằng bằng chứng: đồng bộ thấy
+    email → 'active', phí giữ nguyên; không ai thấy → hoàn phí + xoá phantom.
+
+    Test đi HẾT cả hai chặng: 3′ hoãn (tiền còn nguyên) → 20′ resolver hoàn phí.
+    Chặng sau mới là cái bảo đảm "hoãn ≠ giam tiền vĩnh viễn".
+
+    (REGRESSION cũ vẫn giữ: đường timeout KHÔNG được chỉ set status=FAILED rồi bỏ mặc
+    — "thất bại nửa vời": tiền kẹt + member kẹt 'pending' + timeline vẫn "Đã mời".)"""
     from datetime import datetime, timedelta, timezone
     from uuid import UUID
 
@@ -163,26 +176,73 @@ def test_timeout_reconciles_like_failed(client: TestClient, auth_header: dict) -
     # Pick lần nữa → lazy-cleanup auto-fail task treo + reconcile.
     client.get("/api/v1/queue/next", headers={"X-API-KEY": key})
 
+    # ── Chặng 1 (mốc 3′): HOÃN — task FAILED nhưng tiền và bản ghi còn nguyên ──
+    member_id: str
     db = SessionLocal()
     try:
         it = db.get(QueueItem, UUID(item_id))
         assert it.status == "FAILED" and it.error_code == "TIMEOUT"
-        # Member phantom bị xoá (không còn record nào cho email này).
         member = (
             db.query(Member)
             .filter(Member.workspace_id == UUID(ws["id"]), Member.email == "t1@example.com")
             .one_or_none()
         )
-        assert member is None, "timeout phải xoá member phantom pending"
-        # Timeline: có MEMBER_INVITE_FAILED gắn member (ghi TRƯỚC khi xoá).
-        failed_log = (
-            db.query(AuditLog)
-            .filter(AuditLog.action == "MEMBER_INVITE_FAILED")
-            .one_or_none()
+        assert member is not None, (
+            "timeout KHÔNG được xoá member: chưa biết extension đã bấm Gửi hay chưa"
         )
-        assert failed_log is not None, "timeout phải ghi timeline MEMBER_INVITE_FAILED"
+        assert member.status == "pending"
+        member_id = str(member.id)
+        actions = [
+            r.action
+            for r in db.query(AuditLog).filter(AuditLog.target_id == member_id).all()
+        ]
+        assert "MEMBER_INVITE_PENDING_VERIFY" in actions, (
+            "phải ghi mốc chờ-xác-minh — đây là mốc resolver 20′ canh để chốt"
+        )
+        assert "MEMBER_INVITE_FAILED" not in actions, (
+            "chưa có bằng chứng hỏng thì KHÔNG được chấm 'Thất bại' ở mốc 3′"
+        )
     finally:
         db.close()
+    assert wallet_of(client, sub["token"])["balance"] == 0, (
+        "hoãn phán xử ⇒ CHƯA hoàn phí (lời mời có thể đã bay tới người nhận)"
+    )
+
+    # ── Chặng 2 (mốc 20′): resolver chốt hỏng bằng bằng chứng → hoàn phí ──
+    from app.main import _resolve_stale_pending_invites_once
+
+    past = datetime.now(timezone.utc) - timedelta(minutes=30)
+    db = SessionLocal()
+    try:
+        for row in db.query(AuditLog).filter(AuditLog.target_id == member_id).all():
+            row.timestamp = past
+        mm = db.get(Member, UUID(member_id))
+        mm.last_invited_at = past
+        mm.created_at = past
+        db.commit()
+    finally:
+        db.close()
+
+    _resolve_stale_pending_invites_once()
+
+    db = SessionLocal()
+    try:
+        assert (
+            db.query(Member)
+            .filter(Member.workspace_id == UUID(ws["id"]), Member.email == "t1@example.com")
+            .one_or_none()
+            is None
+        ), "quá cửa sổ mà không ai thấy email → resolver phải xoá phantom"
+        actions = [
+            r.action
+            for r in db.query(AuditLog).filter(AuditLog.target_id == member_id).all()
+        ]
+        assert "MEMBER_INVITE_FAILED" in actions, "lúc này mới được chấm 'Thất bại'"
+    finally:
+        db.close()
+    assert wallet_of(client, sub["token"])["balance"] == 100_000, (
+        "hoãn KHÔNG phải giam tiền vĩnh viễn — resolver phải hoàn phí ở mốc 20′"
+    )
 
     # Ví được hoàn phí về 100k + có 1 giao dịch invite_refund.
     assert wallet_of(client, sub["token"])["balance"] == 100_000

@@ -28,7 +28,7 @@ from app.models import QueueItem, Workspace, WorkspaceSettings
 from app.schemas import QueueOut, QueueProgressUpdate
 
 from ._shared import router
-from .completion import reconcile_failed_invite
+from .completion import defer_unverified_invite, reconcile_failed_invite
 
 
 @router.get("/next", response_model=QueueOut | None)
@@ -121,19 +121,40 @@ def pick_next(
             data={"age_sec": age_sec, "workspace_id": str(workspace.id)},
             commit=False,
         )
-        # ⚠️ INVITE_MEMBER timeout PHẢI reconcile như FAILED thật (hoàn phí ví +
-        # xoá member/invite phantom + ghi timeline FAILED). Trước đây đường timeout
-        # chỉ set status=FAILED → lời mời "thất bại nửa vời": tiền kẹt + member kẹt
-        # 'pending' (hiện "Chờ tham gia") + timeline vẫn "Đã mời". Dùng chung logic
-        # với đường extension báo FAILED (completion.py).
+        # ⚠️ INVITE_MEMBER timeout PHẢI reconcile (trước đây chỉ set status=FAILED →
+        # "thất bại nửa vời": tiền kẹt + member kẹt 'pending' + timeline vẫn "Đã mời").
+        #
+        # NHƯNG reconcile ở đây là HOÃN PHÁN XỬ, không phải chốt hỏng (sửa 12/8/2026):
+        # timeout nghĩa là extension CHẾT IM LẶNG — không ai biết nó đã bấm "Gửi lời
+        # mời" hay chưa. Đúng cái ca không có report nào để mang cờ `submit_clicked`
+        # xuống, tức lỗ hổng còn lại của 2 ca mất tiền 12/8. Chốt hỏng ở đây là ĐOÁN:
+        # đoán sai một lần = một ghế dùng miễn phí vĩnh viễn.
+        #
+        # Vì sao hoãn LUÔN AN TOÀN về tiền (khác với chốt hỏng): hoãn KHÔNG bao giờ
+        # làm mất tiền, chỉ làm tiền về ví MUỘN hơn. Cả hai kịch bản đều kết đúng:
+        #   - Đã bấm Gửi rồi chết → đồng bộ/tham gia lộ ra trong 20′ ⇒ member 'active',
+        #     phí giữ nguyên (trước đây: hoàn phí + xoá bản ghi = mất trắng).
+        #   - Chưa bấm Gửi → không ai thấy email ⇒ `_resolve_stale_pending_invites_once`
+        #     (main.py) hoàn phí + xoá phantom ở mốc 20′ thay vì 3′.
+        # Giá phải trả: tiền của đại lý bị giam thêm ~17 phút cho lời mời hỏng thật.
+        # Đây là đánh đổi đã được chủ hệ thống chốt 12/8/2026.
         if stuck.type == "INVITE_MEMBER":
-            reconcile_failed_invite(
+            if not defer_unverified_invite(
                 db,
                 stuck,
                 workspace_id=workspace.id,
                 workspace_name=workspace.name,
                 error_code="TIMEOUT",
-            )
+            ):
+                # Không còn member nào sống để theo dõi → hoãn chỉ là giam tiền mà
+                # không ai đối chiếu → chốt hỏng + hoàn phí ngay như cũ.
+                reconcile_failed_invite(
+                    db,
+                    stuck,
+                    workspace_id=workspace.id,
+                    workspace_name=workspace.name,
+                    error_code="TIMEOUT",
+                )
     if stuck_tasks:
         db.commit()
 
