@@ -19,6 +19,7 @@ import type { ExtensionConfig, QueueItem } from "../shared/types";
 import { runPaymentChain, scrapeInvoiceDetailInTab } from "./payment-chain";
 import { markAdminActivity, setRunnerBusy } from "./idle-close";
 import { decideInviteOutcome, type SubmitEvidence } from "./invite-outcome";
+import { shouldSalvageInvite } from "./invite-salvage";
 
 const RATE_LIMIT = {
   /** Min delay giữa 2 task bất kỳ (anti-detection). 5000→2000→1200→840 (-30%). */
@@ -1565,10 +1566,27 @@ async function reportToBackend(
         }
       }
     }
+    // BẰNG CHỨNG "đã bấm Gửi lời mời" phải theo được xuống backend: task FAILED mà
+    // cú click ĐÃ xảy ra thì lời mời CÓ THỂ đang bay — backend KHÔNG được hoàn phí +
+    // xoá bản ghi ngay, phải đi đối chiếu trước (xem completion.py::
+    // defer_unverified_invite). Ở đây chỉ báo SỰ THẬT quan sát được, quyết định thuộc
+    // backend. Extension cũ không gửi cờ này ⇒ backend giữ nguyên hành vi hoàn phí
+    // ngay (không đổi hành vi cho bản cũ).
+    const failData = (response as { data?: Record<string, unknown> }).data;
+    const submitClicked =
+      task.type === "INVITE_MEMBER" && failData?.submit_clicked === true;
     await updateTask(config, task.id, {
       status: "FAILED",
       error_code: response.error_code,
       error_message: response.error_message,
+      ...(submitClicked
+        ? {
+            result: {
+              submit_clicked: true,
+              chatgpt_error_hint: failData?.chatgpt_error_hint ?? null,
+            },
+          }
+        : {}),
     });
   }
 }
@@ -2136,19 +2154,18 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
   //
   // SALVAGE (v0.10.1, bug user 2026-08-01): Phase 1 chết kiểu VÔ ĐỊNH — kênh
   // message đóng giữa chừng ("message channel closed" khi tab reload/navigate
-  // sau khi content ĐÃ click Send) hoặc CONTENT_TIMEOUT — thì invite CÓ THỂ đã
-  // đi rồi. Trước đây báo FAILED luôn → backend hoàn phí + xoá phantom, nhưng
-  // người được mời VẪN nhận lời mời → tham gia → sync auto-create member "chưa
-  // thanh toán" (mất phí oan). Nay: chạy CHÍNH vòng verify Phase 2 để phân xử —
-  // thấy email ở tab Lời mời/Người dùng → success thật; không thấy → giữ FAILED gốc.
+  // sau khi content ĐÃ click Send), CONTENT_TIMEOUT, hoặc VERIFY_FAILED sau khi
+  // đã bấm Gửi (v0.11.3, CA 1 ngày 12/8/2026) — thì invite CÓ THỂ đã đi rồi.
+  // Trước đây báo FAILED luôn → backend hoàn phí + xoá phantom, nhưng người được
+  // mời VẪN nhận lời mời → tham gia → sync auto-create member "chưa thanh toán"
+  // (mất phí oan). Nay: chạy CHÍNH vòng verify Phase 2 để phân xử — thấy email ở
+  // tab Lời mời/Người dùng → success thật; không thấy → giữ FAILED gốc.
+  // Ranh giới "vô định vs hỏng thật" nằm trong invite-salvage.ts (có test).
   const inviteSalvageMode =
     !response.ok &&
     task.type === "INVITE_MEMBER" &&
     request.kind === "INVITE_MEMBER" &&
-    (response.error_code === "CONTENT_TIMEOUT" ||
-      /message channel closed|message port closed|asynchronous response/i.test(
-        response.error_message ?? "",
-      ));
+    shouldSalvageInvite(response);
   const inviteSalvageOriginalFailure: ExecuteActionResponse | null =
     inviteSalvageMode ? response : null;
   if (
@@ -2175,9 +2192,13 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
     }
     // Snapshot data submit để merge vào mọi fallback (giữ emails/count/role).
     // Salvage mode: Phase 1 không có data → snapshot rỗng.
-    const submitData = response.ok
+    const submitData: Record<string, unknown> = response.ok
       ? (((response as { ok: true; data?: Record<string, unknown> }).data) ?? {})
       : {};
+    // Bằng chứng ChatGPT đã NÓI RÕ "đã gửi lời mời" (toast) — chỉ Phase 1 đọc được.
+    // PHẢI mang sang response của Phase 2 (xem chỗ gán `response = verifyResp`), nếu
+    // không thì `decideInviteOutcome` luôn nhận "unknown".
+    const submitEvidence = submitData.submit_evidence;
     // Fallback khi verify không chạy được: submit-OK → COMPLETED với
     // verify_scrape_failed (hành vi cũ); salvage → GIỮ NGUYÊN lỗi gốc (không có
     // bằng chứng invite đã đi thì không được báo thành công).
@@ -2248,6 +2269,20 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
           verifyResp?.ok
             ? ((verifyResp.data as Record<string, unknown> | undefined) ?? {})
             : {};
+        // ⚠️ BƠM LẠI BẰNG CHỨNG SUBMIT (fix v0.11.3, CA 2 ngày 12/8/2026).
+        // `response = verifyResp` GHI ĐÈ data của Phase 1, mà data của Phase 2
+        // (execute-verify-pending.ts) KHÔNG có `submit_evidence` → tới
+        // `decideInviteOutcome` luôn là "unknown" ⇒ nhánh "trusted-toast" của
+        // invite-outcome.ts thành CODE CHẾT: ChatGPT đã báo "đã gửi lời mời" mà tab
+        // Lời mời index trễ vẫn bị chốt total-miss → FAILED + hoàn phí + mark member
+        // 'removed' dù lời mời đã đi thật. Chính cái nhánh v0.11.1 viết ra để chặn
+        // mất tiền chưa từng chạy được lần nào.
+        if (verifyResp?.ok && submitEvidence !== undefined) {
+          if (vdata.submit_evidence === undefined) {
+            vdata.submit_evidence = submitEvidence;
+          }
+          verifyResp.data = vdata;
+        }
         // Scrape fail → reload nữa cũng không scrape được, giữ kết quả + thoát.
         if (vdata.verify_scrape_failed === true) break;
         // Đủ email (hoặc Phase 2 không yêu cầu reload) → xong.

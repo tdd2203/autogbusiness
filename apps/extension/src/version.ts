@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.11.1";
+export const VERSION = "0.11.3";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,41 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.11.3",
+    date: "2026-08-12",
+    kind: "fix",
+    summary:
+      "Mời THÀNH CÔNG mà báo lỗi + hoàn tiền: bịt 2 lỗ hổng khiến 'không xác minh được' bị hiểu là 'mời hỏng'. Email vẫn vào được team nhưng ví được hoàn phí và kỳ đã trả bị xoá → ghế dùng miễn phí.",
+    details: [
+      "Bug (production 12/8/2026, 2 ca do user báo): CA 1 (19:30:51 → FAILED 19:31:20, hoàn 330.000đ) và CA 2 (20:13:29 → FAILED 20:15:11, hoàn 340.000đ). Cả hai mang mã VERIFY_FAILED. 10 ngày trước đó 33 lệnh mời đều COMPLETED ⇒ không phải UI ChatGPT đổi, mà là 2 lỗ hổng nằm sẵn trong chính cơ chế 'không thấy ≠ không gửi' của v0.11.1.",
+      "LỖ HỔNG 1 (runner.ts, CA 1): SALVAGE 'đừng kết luận hỏng vội, F5 soi tab Lời mời/Người dùng' của v0.10.1 CHỈ nhận 2 kiểu lỗi hạ tầng — CONTENT_TIMEOUT và 'message channel closed' — nên bỏ sót đúng loại hay xảy ra nhất: đã bấm 'Gửi lời mời' rồi chờ 15s không đọc được toast lẫn dialog-đóng ⇒ VERIFY_FAILED. Task này báo FAILED khi vòng F5 CHƯA HỀ CHẠY (result NULL trong DB), tức chưa đi tìm bằng chứng nào đã kết luận hỏng.",
+      "LỖ HỔNG 2 (runner.ts, CA 2): `response = verifyResp` (Phase 2) GHI ĐÈ data của Phase 1, mà data Phase 2 không có `submit_evidence` → decideInviteOutcome luôn đọc 'unknown' ⇒ nhánh 'trusted-toast' — thứ v0.11.1 viết ra CHÍNH ĐỂ chặn mất tiền — chưa từng chạy được lần nào. Bằng chứng: result của task ghi submit_evidence='unknown', outcome_reason='total-miss'.",
+      "HẬU QUẢ (giống nhau cả 2 ca): backend hiểu FAILED = mời hỏng → hoàn phí + `void_refunded_invite_periods` xoá sạch kỳ đã trả. CA 1 còn kẹt trạng thái 'chờ tham gia' với hạn NULL (bộ lọc xoá phantom cần joined_at IS NULL, mà invite.py đã đặt joined_at = lúc mời) nên dashboard hiện 'Vô hạn' — ghế dùng MIỄN PHÍ vô thời hạn; CA 2 bị mark 'removed' nên biến mất khỏi danh sách gia hạn.",
+      "FIX 1 — background/invite-salvage.ts (MỚI, 6 test): ranh giới 'VÔ ĐỊNH' ≠ 'HỎNG'. Đã bấm Gửi rồi mất dấu (VERIFY_FAILED + submit_clicked, CONTENT_TIMEOUT, channel closed) ⇒ F5 phân xử, chỉ báo COMPLETED khi THẤY email ở tab Lời mời/Người dùng. CHƯA bấm Gửi (EXTERNAL_TOGGLE_FAILED, UI_ELEMENT_NOT_FOUND, FAILED_UI_CHANGED, PAGE_NOT_ADMIN, NOT_LOGGED_IN) ⇒ biết chắc mời không đi, hoàn phí vẫn ĐÚNG. Chính ChatGPT báo lỗi trong dialog (email trùng / không hợp lệ / hết ghế) ⇒ bằng chứng DƯƠNG là không đi, giữ FAILED.",
+      "FIX 2 — content/execute-invite-inner.ts gắn `data: { submit_clicked: true, chatgpt_error_hint }` vào chính response VERIFY_FAILED (shared/messages.ts cho phép response lỗi mang data cho ĐÚNG loại lỗi vô định này) để background biết cú click đã xảy ra thật, không phải suy từ text lỗi.",
+      "FIX 3 — runner.ts bơm lại submit_evidence của Phase 1 vào data Phase 2 trước khi quyết định ⇒ nhánh 'trusted-toast' sống lại: ChatGPT đã báo 'đã gửi lời mời' mà tab Lời mời index trễ thì task ra COMPLETED + email ở diện chưa xác minh, backend hoãn 10 phút rồi resolver 20 phút mới chốt bằng bằng chứng (thay vì hoàn phí sau 100 giây).",
+      "FIX 4 — BACKEND (hàng rào cuối, vì extension vẫn có thể bó tay khi ChatGPT index chậm hơn cả vòng F5): task FAILED mà extension báo kèm `result.submit_clicked` ⇒ `defer_unverified_invite` HOÃN phán xử — KHÔNG hoàn phí, KHÔNG xoá bản ghi, KHÔNG void kỳ — chỉ ghi 'Chờ xác minh' + enqueue mẻ đồng bộ ĐI XEM tab Người dùng ngay. Quá 20 phút vẫn không ai thấy email thì resolver mới chốt hỏng + hoàn phí. Nhờ vậy đường FAILED và đường COMPLETED-chưa-xác-minh nay đối xứng: tiền chỉ chuyển khi CÓ bằng chứng.",
+      "FIX 5 — BACKEND: hoàn phí thì void kỳ bằng cách đặt hạn dùng = HẾT HẠN NGAY, không phải NULL. NULL nghĩa là 'vô thời hạn' (EXPIRY_RULES §5) nên bản ghi sống sót vừa thoát lượt quét gỡ email hết hạn, vừa hiện 'Vô hạn' trên dashboard — đúng cách 1 trong 2 ca thành ghế miễn phí vĩnh viễn mà không có tín hiệu nào.",
+      "KHÔNG nới lỏng chỗ nào khác: quét được cả 2 tab mà trắng tay VÀ không có xác nhận nào từ ChatGPT thì vẫn FAILED + hoàn phí như cũ; lỗi TRƯỚC khi bấm Gửi (không bật được toggle mời-ngoài-miền, không tìm thấy nút…) vẫn hoàn phí NGAY — giam tiền đại lý khi biết chắc lời mời không đi cũng là sai. Đánh đổi: ca lỗi-sau-khi-click nay chậm thêm ~10-30s (vòng F5), và nếu thật sự hỏng thì tiền về ví sau ~20 phút thay vì ~1 phút.",
+    ],
+  },
+  {
+    version: "0.11.2",
+    date: "2026-08-12",
+    kind: "fix",
+    summary:
+      "Hết XOÁ-GIẢ: không còn kết luận 'email đã rời workspace' chỉ vì ô lọc chưa kịp trả kết quả. Email hết hạn bị báo đã xoá nhưng vẫn nằm trên ChatGPT (vẫn ăn ghế) — im lặng nhiều ngày tới lần đồng bộ sau.",
+    details: [
+      "Bug (production 03→12/8/2026): 4 email bị đánh dấu removed bằng bằng chứng 'absent_confirmed' (không click xoá lần nào), nhưng thực tế VẪN còn trên ChatGPT. Bằng chứng dứt điểm: một email bị báo 'absent' lúc 08:01 rồi chính extension tìm thấy và click xoá được lúc 08:07 cùng buổi. Dashboard giấu email 'removed' khỏi danh sách gia hạn → mù hoàn toàn tới khi có người bấm đồng bộ (lần trước đó cách 11 ngày).",
+      "ROOT CAUSE (member-filter.ts filterOnceAndResolve): đo 'ô lọc đã chạy query' bằng ĐÚNG MỘT dấu hiệu — số row khác lúc chưa lọc — rồi chờ 1.2s là chốt. Cả hai vế đều thủng: (a) mỗi lệnh mở TAB MỚI /admin/members nên lúc lấy mốc `rows_before` list còn đang đổ row → số row TỰ TĂNG, không liên quan gì tới query lọc; (b) lọc của ChatGPT là server-side, list nháy trống rồi mới đổ row khớp → 1.2s quá ngắn nên bắt trọn khoảng nháy đó.",
+      "FIX: chỉ trả 'absent' khi hội đủ — (1) list phải ĐỨNG YÊN (3 lần đếm liên tiếp bằng nhau) trước khi gõ, không đứng yên trong 8s ⇒ 'inconclusive'; (2) sau khi list phản hồi mà chưa thấy row thì soi tiếp 6s để bắt row về TRỄ; (3) POSITIVE CONTROL — clear ô lọc, list PHẢI đầy lại, không đầy lại ⇒ 'inconclusive' (ô lọc không điều khiển được list); (4) phải 2 VÒNG lọc độc lập cùng trống. Đây đúng là hợp đồng mà backend vẫn ghi trong completion.py nhưng bản cũ chưa hề thực thi.",
+      "Vòng xác minh SAU KHI CLICK: 45s → 60s (mỗi lần tra giờ tốn hơn vì 2 vòng), bỏ chờ 'list đứng yên' (list vừa bị chính cú click làm đổi) nhưng vẫn giữ 2 vòng — false-absent ở đây cũng là xoá-giả.",
+      "Đánh đổi: mỗi lệnh xoá tốn thêm ~10-20s và số ca 'inconclusive' (FAILED, giữ member, tick sau thử lại) sẽ tăng. Chấp nhận: thà chậm/thử lại còn hơn báo đã-xoá GIẢ.",
+      "6 test hồi quy (member-filter.test.ts) dựng lại đúng các kiểu 'list nói dối': row về trễ 4s, list còn đang stream, ô lọc bị nuốt event, ô lọc chết giữa chừng.",
+      "BACKEND kèm theo: đồng bộ thấy lại email vừa bị mark removed bằng 'absent_confirmed' ⇒ ghi MEMBER_REMOVE_FAKE_DETECTED (nhật ký + thẻ chi tiết member) kèm số giờ đã mù, thay vì trôi qua im lặng như trước.",
+    ],
+  },
   {
     version: "0.11.1",
     date: "2026-08-04",

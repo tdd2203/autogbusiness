@@ -145,7 +145,14 @@ def test_refund_after_reconcile_marked_removed_must_void_period(
     # ── Bất biến 2: hoàn phí ⇒ KHÔNG còn hạn dùng ────────────────────────
     after = _member_row(ws["id"], EMAIL)
     if after is not None:
-        assert after["end_at"] is None, (
+        # "Không còn hạn" = mốc hết hạn NẰM Ở QUÁ KHỨ/HIỆN TẠI, **không phải NULL**:
+        # theo EXPIRY_RULES §5 NULL nghĩa là VÔ THỜI HẠN → vừa cho mời lại miễn phí
+        # (hết hạn-ma) LẠI vừa thoát khỏi lượt quét gỡ email hết hạn ⇒ dùng free vĩnh
+        # viễn mà không có tín hiệu nào (ca thật 12/8/2026). Xem docstring
+        # `void_refunded_invite_periods`.
+        assert after["end_at"] is not None and after["end_at"] <= datetime.now(
+            timezone.utc
+        ), (
             f"THẤT THOÁT: đã hoàn phí nhưng email vẫn còn hạn tới {after['end_at']} "
             "→ lần mời kế tiếp sẽ MIỄN PHÍ (đúng ca stockbox.m)"
         )

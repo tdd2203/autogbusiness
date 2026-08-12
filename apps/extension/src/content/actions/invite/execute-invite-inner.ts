@@ -414,6 +414,19 @@ export async function executeInviteInner(
         ? `ChatGPT báo lỗi trong dialog: "${matchedHint}". Có thể email đã được mời/tồn tại.`
         : "Đã submit nhưng không thấy toast thành công và dialog không đóng sau 15s. " +
           `Dialog text: "${dialogText.slice(0, 200)}"`,
+      data: {
+        // ⚠️ Cú click "Gửi lời mời" ĐÃ XẢY RA (ở trên) trước khi vào vòng chờ xác
+        // nhận này → hết 15s không đọc được toast/dialog-đóng KHÔNG chứng minh lời
+        // mời chưa đi, chỉ chứng minh ta KHÔNG BIẾT. Background phải F5 + soi tab
+        // Lời mời/Người dùng để phân xử (invite-salvage.ts), tuyệt đối không để
+        // backend hiểu là "mời hỏng" → hoàn phí + void kỳ (CA 1 ngày 12/8/2026:
+        // mời tới ĐƯỢC nhưng vẫn bị hoàn 330k + xoá hạn → dùng miễn phí vô hạn).
+        submit_clicked: true,
+        // Trừ khi CHÍNH ChatGPT báo lỗi trong dialog (email trùng / không hợp lệ /
+        // hết ghế) — đó là bằng chứng DƯƠNG rằng lời mời không đi → giữ nguyên kết
+        // luận hỏng, KHÔNG phân xử lại.
+        chatgpt_error_hint: matchedHint ?? null,
+      },
     };
   }
 

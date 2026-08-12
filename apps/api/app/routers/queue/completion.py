@@ -154,6 +154,125 @@ def reconcile_failed_invite(
         )
 
 
+def defer_unverified_invite(
+    db: Session,
+    item: QueueItem,
+    *,
+    workspace_id: UUID,
+    workspace_name: str,
+    error_code: str | None = None,
+) -> bool:
+    """Task INVITE_MEMBER FAILED nhưng cú "Gửi lời mời" ĐÃ XẢY RA THẬT (extension gửi
+    `result.submit_clicked`) → KHÔNG hoàn phí, KHÔNG xoá bản ghi, KHÔNG void kỳ. Đánh
+    dấu chờ xác minh + đi TÌM bằng chứng, để đường tiền luôn có căn cứ.
+
+    ⚠️ BÀI HỌC (production 12/8/2026, 2 ca mời báo hỏng OAN): "extension không xác
+    minh được" bị đối xử như "lời mời hỏng" ⇒ hoàn phí + `void_refunded_invite_periods`
+    trong vòng 30-100 giây, trong khi lời mời đã tới hộp thư người nhận thật. Đường
+    COMPLETED-chưa-xác-minh vốn đã cẩn thận (hoãn 10′ rồi resolver 20′ mới chốt bằng
+    bằng chứng) — chỉ đường FAILED là chốt vội. Hàm này làm HAI đường đối xứng nhau.
+
+    Ranh giới: CHỈ hoãn khi có BẰNG CHỨNG DƯƠNG là lệnh đã submit. Lỗi trước lúc bấm
+    Gửi (không tìm thấy nút, toggle 'mời ngoài miền' không bật được, sai trang…) vẫn
+    đi `reconcile_failed_invite` — hoàn phí NGAY là đúng, tiền không được giam oan.
+    ChatGPT tự báo lỗi trong dialog (`chatgpt_error_hint`) cũng vậy: đó là bằng chứng
+    dương rằng lời mời KHÔNG đi (caller lọc trước khi gọi hàm này).
+
+    Hai việc:
+      1. Ghi `MEMBER_INVITE_PENDING_VERIFY` gắn từng member — timeline hiện "Chờ xác
+         minh" (đúng sự thật) thay vì "Thất bại", VÀ đây chính là mốc mà
+         `_resolve_stale_pending_invites_once` (main.py) canh: quá 20′ vẫn không ai
+         thấy email trong team thì lúc đó mới chốt hỏng + hoàn phí — quyết định CÓ
+         bằng chứng (thời gian + đồng bộ).
+      2. Enqueue `SYNC_MEMBERS_BATCH` cho đúng các email đó — chủ động ĐI XEM tab
+         "Người dùng" ngay trong vài phút, không ngồi chờ hết 20′. Đồng bộ thấy email
+         → promote 'active' + ghi VERIFIED ⇒ resolver bỏ qua, phí giữ nguyên (đúng).
+
+    Trả True nếu đã hoãn (caller BỎ QUA reconcile_failed_invite). Trả False khi không
+    còn member nào sống để theo dõi — hoãn lúc đó chỉ là giam tiền không ai đối chiếu,
+    nên caller phải hoàn phí như cũ. KHÔNG commit — caller commit."""
+    inv_payload = item.payload or {}
+    if isinstance(inv_payload.get("emails"), list):
+        task_emails = {
+            str(e).lower()
+            for e in inv_payload["emails"]
+            if isinstance(e, str) and "@" in e
+        }
+    elif isinstance(inv_payload.get("email"), str):
+        task_emails = {inv_payload["email"].lower()}
+    else:
+        task_emails = set()
+    if not task_emails:
+        return False
+
+    members = (
+        db.execute(
+            select(Member).where(
+                Member.workspace_id == workspace_id,
+                Member.email.in_(sorted(task_emails)),
+                Member.status.in_(("pending", "active")),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not members:
+        return False
+    # Member ĐÃ `active` = đồng bộ đã thấy email trong team ⇒ bằng chứng MẠNH NHẤT rằng
+    # lời mời đi được. Không hoãn, không theo dõi, và tuyệt đối không hoàn phí: trước
+    # đây nhánh này rơi vào `reconcile_failed_invite` → hoàn phí rồi
+    # `flag_refunded_invite_debt` lật member sang "chưa thanh toán" (ca stockbox.m) —
+    # tức tự tạo ra một khoản nợ cho dịch vụ ĐÃ giao đúng và ĐÃ thu đúng tiền.
+    pending_members = [m for m in members if m.status == "pending"]
+    if not pending_members:
+        return True
+
+    now = datetime.now(timezone.utc)
+    for member in pending_members:
+        log_event(
+            db,
+            actor_type="EXTENSION",
+            actor_label=f"workspace:{workspace_name}",
+            action="MEMBER_INVITE_PENDING_VERIFY",
+            result="PENDING",
+            target_type="MEMBER",
+            target_id=str(member.id),
+            data={
+                "email": member.email,
+                "workspace_id": str(workspace_id),
+                "queue_item_id": str(item.id),
+                "error_code": error_code,
+                "reason": "submitted_but_unverified_defer_to_sync",
+            },
+            commit=False,
+        )
+
+    # Dedup: đã có mẻ SYNC_MEMBERS_BATCH đang chờ/đang chạy → nó sẽ tự gom email
+    # pending, không cần chồng thêm task.
+    existing = db.execute(
+        select(QueueItem.id)
+        .where(
+            QueueItem.workspace_id == workspace_id,
+            QueueItem.type == "SYNC_MEMBERS_BATCH",
+            QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
+        )
+        .limit(1)
+    ).first()
+    if existing is None:
+        # created_by_id=None: task của HỆ THỐNG, không ăn suất cooldown sync của
+        # admin phụ (cùng lối `_enqueue_periodic_sync_once`).
+        db.add(
+            QueueItem(
+                type="SYNC_MEMBERS_BATCH",
+                status="PENDING",
+                workspace_id=workspace_id,
+                payload={"emails": sorted(m.email.lower() for m in pending_members)},
+                created_by_id=None,
+            )
+        )
+    return True
+
+
 def _flag_refund_debt(
     db: Session,
     flagger,
@@ -677,16 +796,32 @@ def update_task(
     # Chỉ xoá Member records `status='pending'` + `joined_at IS NULL` —
     # đảm bảo không xoá nhầm record đã được sync sang active.
     if item.type == "INVITE_MEMBER" and effective_status == "FAILED":
-        # Cả lệnh hỏng → hoàn phí + xoá phantom + ghi timeline FAILED. Logic gom
-        # vào reconcile_failed_invite() để đường timeout (execution.py) tái dùng
-        # y hệt (trước đây timeout bỏ qua → "thất bại nửa vời").
-        reconcile_failed_invite(
+        # ĐÃ BẤM GỬI mà không xác minh được ⇒ chưa biết hỏng: hoãn phán xử, đi đối
+        # chiếu (defer_unverified_invite). ChatGPT tự báo lỗi trong dialog thì đó là
+        # bằng chứng dương rằng lời mời KHÔNG đi → hoàn phí ngay như cũ.
+        fail_result = body.result if isinstance(body.result, dict) else {}
+        submitted_unverified = (
+            fail_result.get("submit_clicked") is True
+            and not fail_result.get("chatgpt_error_hint")
+        )
+        deferred = submitted_unverified and defer_unverified_invite(
             db,
             item,
             workspace_id=workspace.id,
             workspace_name=workspace.name,
             error_code=body.error_code,
         )
+        # Cả lệnh hỏng → hoàn phí + xoá phantom + ghi timeline FAILED. Logic gom
+        # vào reconcile_failed_invite() để đường timeout (execution.py) tái dùng
+        # y hệt (trước đây timeout bỏ qua → "thất bại nửa vời").
+        if not deferred:
+            reconcile_failed_invite(
+                db,
+                item,
+                workspace_id=workspace.id,
+                workspace_name=workspace.name,
+                error_code=body.error_code,
+            )
     elif item.type == "INVITE_MEMBER" and effective_status == "COMPLETED":
         result_dict = body.result or {}
         verify_failed = bool(result_dict.get("verify_scrape_failed"))

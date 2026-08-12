@@ -333,6 +333,17 @@ def void_refunded_invite_periods(
     nên không bao giờ bị hoàn qua đây. Member mời-mới/mời-lại-tính-phí có ĐÚNG 1 chu
     kỳ = lời mời này (`_apply_invite_paid_cycle` reset về 1) nên xoá sạch an toàn.
 
+    ⚠️ VOID = "HẾT HẠN NGAY" (`end_at = now`), KHÔNG PHẢI `None` (sửa 12/8/2026):
+    theo `EXPIRY_RULES.md` §5, `subscription_end_at IS NULL` nghĩa là **VÔ THỜI HẠN** —
+    đúng cái bẫy mà `flag_refunded_invite_debt` đã ghi cho member `active`, nhưng
+    member `pending` sống sót (bộ lọc xoá phantom cần `joined_at IS NULL`, mà
+    `invite.py` stamp `joined_at` = lúc mời khi mời lại) thì rơi thẳng vào: hoàn phí
+    xong hạn thành NULL ⇒ dashboard hiện "Vô hạn", `_enqueue_expired_removals_once`
+    KHÔNG BAO GIỜ quét tới ⇒ email dùng miễn phí VĨNH VIỄN mà không có tín hiệu nào.
+    Đặt `end_at = now` giữ nguyên mọi tính chất cần thiết (`_is_paid_period_active`
+    False ⇒ mời lại vẫn TÍNH PHÍ, không có "hạn ma") nhưng member hiện ĐÚNG là "đã hết
+    hạn" và bị quét gỡ như mọi email hết hạn khác — sai thì lộ ra, không im lặng.
+
     Trả list email đã void (để caller log). KHÔNG commit — caller commit."""
     if not emails:
         return []
@@ -353,7 +364,11 @@ def void_refunded_invite_periods(
         if m.subscription_end_at is None and not m.subscription_cycles:
             continue  # đã sạch (vô hạn / chưa có kỳ) → bỏ qua
         _reset_cycles(db, m)
-        m.subscription_end_at = None
+        # `now`, KHÔNG `None` — xem cảnh báo "VOID = HẾT HẠN NGAY" ở docstring.
+        # Member VỐN ĐÃ vô hạn (end_at None) thì giữ nguyên: 'vô hạn' đó do admin cố ý
+        # đặt, hoàn 1 phí mời không phải lý do để cắt dịch vụ họ đang được cho.
+        if m.subscription_end_at is not None:
+            m.subscription_end_at = now
         m.subscription_months = None
         m.subscription_purchased_at = None
         m.payment_status = "unpaid"

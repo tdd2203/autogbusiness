@@ -205,7 +205,14 @@ def test_refund_voids_paid_period_on_surviving_member(
             .one_or_none()
         )
         assert survivor is not None, "member joined_at != NULL sống sót (đúng thiết kế)"
-        assert survivor.subscription_end_at is None, (
+        # Void = HẾT HẠN NGAY, KHÔNG phải NULL. Chính bản ghi "sống sót" này là ca thật
+        # 12/8/2026: NULL nghĩa là VÔ THỜI HẠN (EXPIRY_RULES §5) nên vừa thoát lượt quét
+        # gỡ email hết hạn, vừa hiện "Vô hạn" trên dashboard ⇒ email dùng miễn phí vĩnh
+        # viễn, im lặng. `<= now` vẫn chặn hạn-ma (mời lại vẫn tính phí) mà còn lộ ra.
+        assert survivor.subscription_end_at is not None, (
+            "void đặt NULL = VÔ HẠN → email hết hạn không bao giờ bị quét gỡ"
+        )
+        assert survivor.subscription_end_at <= datetime.now(timezone.utc), (
             "hoàn phí PHẢI void kỳ — nếu còn hạn ma sẽ cho mời lại miễn phí oan"
         )
         assert not survivor.subscription_cycles, "kỳ đã trả phải bị xoá theo"
