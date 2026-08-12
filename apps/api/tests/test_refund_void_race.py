@@ -221,7 +221,11 @@ def test_refund_voids_window_when_member_survives(
     # … và kỳ bị VOID: member sống sót nhưng KHÔNG còn "hạn ma".
     row = _member_row(member_id)
     assert row is not None, "member có joined_at không được xoá phantom"
-    assert row["end_at"] is None and row["months"] is None
+    # "Không còn hạn ma" = mốc hết hạn ở QUÁ KHỨ/HIỆN TẠI, KHÔNG phải NULL: NULL nghĩa
+    # là VÔ THỜI HẠN (EXPIRY_RULES §5) nên bản ghi sống sót này sẽ không bao giờ bị quét
+    # gỡ và dashboard hiện "Vô hạn" ⇒ dùng miễn phí vĩnh viễn (ca thật 12/8/2026).
+    assert row["end_at"] is not None and row["end_at"] <= datetime.now(timezone.utc)
+    assert row["months"] is None
     assert row["cycles"] == []
 
     # Mời lại lần nữa PHẢI tính phí — đây chính là chỗ bug gốc mất tiền: kỳ chưa

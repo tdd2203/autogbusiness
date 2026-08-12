@@ -212,6 +212,15 @@ export type ExecuteActionResponse =
         | "EXTERNAL_TOGGLE_FAILED"
         | "UNKNOWN";
       error_message: string;
+      /**
+       * Dữ liệu kèm theo LỖI — chỉ dùng cho lỗi mà kết quả thật sự VÔ ĐỊNH, để
+       * background biết còn phải phân xử tiếp hay không (KHÔNG phải chỗ nhồi thêm
+       * thông tin gỡ lỗi; text mô tả thuộc `error_message`).
+       *
+       * Ca hiện có: INVITE_MEMBER `VERIFY_FAILED` sau khi ĐÃ bấm "Gửi lời mời" gắn
+       * `submit_clicked: true` + `chatgpt_error_hint` — xem `invite-salvage.ts`.
+       */
+      data?: Record<string, unknown>;
     };
 
 /**
