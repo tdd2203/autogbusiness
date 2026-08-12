@@ -19,6 +19,7 @@ from app.models import (
     Member,
     QueueItem,
     TopupOrder,
+    Workspace,
 )
 from app.routers.members._shared import (
     SUBSCRIPTION_GRACE_AFTER_EXPIRY,
@@ -60,6 +61,28 @@ _expire_lock = threading.Lock()
 # member hết hạn → enqueue gỡ sát mốc. Quét rẻ (idempotent qua `_has_open_remove_task`).
 EXPIRY_CHECK_INTERVAL_SEC = 60  # 1 phút — near-immediate
 _expiry_timer: threading.Timer | None = None
+
+# ĐỒNG BỘ ĐỊNH KỲ tự động (2026-08-12, sau sự cố XOÁ-GIẢ 03→12/8): trước đây
+# SYNC_DATA CHỈ chạy khi có người bấm nút — thực tế 01/8 rồi im tới 12/8 (11 ngày).
+# Trong khoảng mù đó, mọi sai lệch giữa DB và ChatGPT không có đường nào lộ ra:
+# 4 email bị mark removed OAN (extension kết luận vắng mặt mà không click xoá) vẫn
+# nằm trên ChatGPT ăn ghế, còn dashboard giấu luôn khỏi danh sách gia hạn vì chỉ
+# hiện active/pending. Đồng bộ là NGUỒN ĐỐI CHIẾU duy nhất — để nó phụ thuộc vào
+# việc admin có nhớ bấm hay không là bỏ ngỏ.
+#
+# Nên backend tự enqueue SYNC_DATA mỗi `AUTO_SYNC_INTERVAL` / workspace:
+#  - scope 'members' (chỉ tab "Người dùng", ~1/3 thời gian so với 'both'): đủ để
+#    đối chiếu member active — đúng nơi xoá-giả lộ ra. Tab Lời mời/Yêu cầu vẫn
+#    dành cho sync tay khi cần.
+#  - `created_by_id = NULL` ⇒ KHÔNG đụng cooldown 5 tiếng của admin phụ
+#    (`_last_full_sync_at` lọc theo người tạo — xem workspaces/triggers.py).
+#  - Guard "đã có SYNC_DATA đang mở thì thôi" ⇒ extension offline lâu ngày cũng
+#    chỉ đọng ĐÚNG 1 task, không đẻ hàng đống lệnh chờ.
+# Tick 10′ chỉ để rơi đúng mốc; chống trùng nằm ở 2 guard trên chứ không ở nhịp tick.
+AUTO_SYNC_INTERVAL = timedelta(hours=2)
+AUTO_SYNC_CHECK_INTERVAL_SEC = 600  # 10 phút
+_auto_sync_timer: threading.Timer | None = None
+_auto_sync_lock = threading.Lock()
 
 # LOOP-GUARD auto-remove (bug user 2026-07-21): nếu đã TỰ ĐỘNG enqueue gỡ 1 member
 # >= AUTO_REMOVE_MAX_ATTEMPTS lần trong cửa sổ mà member VẪN quay lại (xoá không có
@@ -547,6 +570,128 @@ def _resolve_stale_pending_invites_once() -> None:
         _stale_invite_lock.release()
 
 
+def _enqueue_periodic_sync_once() -> None:
+    """ĐỒNG BỘ ĐỊNH KỲ: mỗi workspace quá `AUTO_SYNC_INTERVAL` chưa sync → enqueue
+    SYNC_DATA scope 'members' + publish SSE cho extension pick.
+
+    Vì sao cần (xem khối hằng số trên): sync là nguồn đối chiếu DUY NHẤT giữa DB và
+    ChatGPT — nó chỉ chạy khi có người bấm thì mọi lưới an toàn dựa trên sync
+    (`_flag_fake_removals`, `MEMBER_SYNC_MISMATCH`, rogue pending) đều nằm chờ vô
+    thời hạn. Job này biến "khi nào admin nhớ" thành "tối đa 2 tiếng".
+
+    KHÔNG tự chữa gì cả — chỉ tạo lệnh đối chiếu; mọi quyết định (mark removed,
+    hồi sinh, cảnh báo lệch) vẫn nằm ở `bulk-upsert` với đủ guard sẵn có.
+
+    Best-effort: lỗi DB chỉ log warning, không block lifecycle. Lock riêng tránh
+    tick chồng (hot-reload spawn nhiều timer).
+    """
+    if not _auto_sync_lock.acquire(blocking=False):
+        return
+    try:
+        with SessionLocal() as db:
+            now = datetime.now(timezone.utc)
+            cutoff = now - AUTO_SYNC_INTERVAL
+            workspace_ids = db.execute(select(Workspace.id)).scalars().all()
+            queued: list[tuple[object, str]] = []
+            for workspace_id in workspace_ids:
+                # (a) Đang có lệnh sync chờ/đang chạy → khỏi chồng thêm. Đây cũng là
+                # cái chặn đọng lệnh khi extension offline dài ngày.
+                open_task = db.execute(
+                    select(QueueItem.id)
+                    .where(
+                        QueueItem.workspace_id == workspace_id,
+                        QueueItem.type == "SYNC_DATA",
+                        QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
+                    )
+                    .limit(1)
+                ).first()
+                if open_task is not None:
+                    continue
+                # (b) Vừa sync trong cửa sổ → thôi. Tính MỌI status (kể cả FAILED)
+                # và mọi nguồn (tay lẫn tự động): sync tay vừa chạy thì job này
+                # không cần chen vào.
+                last_at = db.execute(
+                    select(func.max(QueueItem.created_at)).where(
+                        QueueItem.workspace_id == workspace_id,
+                        QueueItem.type == "SYNC_DATA",
+                    )
+                ).scalar_one_or_none()
+                if last_at is not None:
+                    if last_at.tzinfo is None:
+                        last_at = last_at.replace(tzinfo=timezone.utc)
+                    if last_at > cutoff:
+                        continue
+                queue_item = QueueItem(
+                    type="SYNC_DATA",
+                    status="PENDING",
+                    workspace_id=workspace_id,
+                    # scope 'members': chỉ tab "Người dùng" — rẻ hơn 'both' ~3 lần,
+                    # đủ để đối chiếu member active. Giữ đúng khoá payload mà
+                    # extension đọc (xem workspaces/triggers.py::trigger_sync).
+                    payload={
+                        "sync_scope": "members",
+                        "include_pending": False,
+                        "source": "scheduler",
+                    },
+                    # NULL: job nền không có user → cooldown 5 tiếng của admin phụ
+                    # (lọc theo created_by_id) không bị job này ăn mất.
+                    created_by_id=None,
+                )
+                db.add(queue_item)
+                db.flush()
+                log_event(
+                    db,
+                    actor_type="SYSTEM",
+                    action="WORKSPACE_SYNC_QUEUED",
+                    result="PENDING",
+                    target_type="WORKSPACE",
+                    target_id=str(workspace_id),
+                    data={
+                        "queue_item_id": str(queue_item.id),
+                        "sync_scope": "members",
+                        "source": "scheduler",
+                        "last_sync_at": last_at.isoformat() if last_at else None,
+                        "interval_hours": AUTO_SYNC_INTERVAL.total_seconds() / 3600,
+                    },
+                    commit=False,
+                )
+                queued.append((workspace_id, str(queue_item.id)))
+            if queued:
+                db.commit()
+                for workspace_id, task_id in queued:
+                    publish_task_event(
+                        workspace_id,
+                        {
+                            "type": "task-available",
+                            "task_id": task_id,
+                            "task_type": "SYNC_DATA",
+                        },
+                    )
+                logger.info(
+                    "[auto-sync] enqueued %d lệnh đồng bộ định kỳ (mỗi %.0f giờ)",
+                    len(queued),
+                    AUTO_SYNC_INTERVAL.total_seconds() / 3600,
+                )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[auto-sync] tick failed: %s", e)
+    finally:
+        _auto_sync_lock.release()
+
+
+def _schedule_auto_sync_tick() -> None:
+    """Tick 10′ cho đồng bộ định kỳ. Nhịp tick chỉ quyết định độ SÁT mốc; chống
+    trùng nằm ở guard trong `_enqueue_periodic_sync_once`."""
+    global _auto_sync_timer
+    try:
+        _enqueue_periodic_sync_once()
+    finally:
+        _auto_sync_timer = threading.Timer(
+            AUTO_SYNC_CHECK_INTERVAL_SEC, _schedule_auto_sync_tick
+        )
+        _auto_sync_timer.daemon = True
+        _auto_sync_timer.start()
+
+
 def _schedule_expiry_tick() -> None:
     """Tick NHANH (mỗi `EXPIRY_CHECK_INTERVAL_SEC`) chỉ lo AUTO-REMOVE member hết hạn
     (user 2026-07-13: "khi 1 email hết hạn tự động thực hiện lệnh xoá, không confirm
@@ -704,14 +849,20 @@ async def lifespan(_: FastAPI):
     #  - _schedule_cleanup_tick  : retention/dọn dẹp nặng (mỗi giờ)
     #  - _schedule_order_cleanup_tick : dọn lệnh thanh toán quá hạn (mỗi 2′)
     #  - _schedule_reminder_tick : nhắc gia hạn qua Telegram (mỗi 5′, feature 004)
+    #  - _schedule_auto_sync_tick : đồng bộ định kỳ đối chiếu với ChatGPT (mỗi 2h/workspace)
     _schedule_expiry_tick()
     _schedule_cleanup_tick()
     _schedule_order_cleanup_tick()
     _schedule_reminder_tick()
+    _schedule_auto_sync_tick()
     try:
         yield
     finally:
         global _cleanup_timer, _order_cleanup_timer, _expiry_timer, _reminder_timer
+        global _auto_sync_timer
+        if _auto_sync_timer is not None:
+            _auto_sync_timer.cancel()
+            _auto_sync_timer = None
         if _expiry_timer is not None:
             _expiry_timer.cancel()
             _expiry_timer = None
