@@ -45,6 +45,13 @@ extension/build/
 extension/dist/
 backend/htmlcov/
 
+# Script vá dữ liệu CHẠY MỘT LẦN (đặt tên kèm ngày: *_20260812.py) — internal.
+# Loại này buộc phải mang DỮ LIỆU THẬT của khách để nhắm đúng bản ghi: email,
+# member_id/user_id, số tiền, tên tài khoản đại lý. Repo là PUBLIC nên chúng chỉ
+# sống ở máy local + VPS, KHÔNG lên GitHub. Muốn giữ lịch sử "đã vá gì" thì ghi
+# trong .md nội bộ, hoặc viết script nhận dữ liệu qua argv/env rồi mới track.
+scripts/*_20[0-9][0-9][0-1][0-9][0-3][0-9].py
+
 # Internal docs & planning (not pushed to GitHub)
 # Mọi .md (README, CHANGELOG, action docs, planning) là internal — không leak lên GitHub.
 # Người clone repo sẽ KHÔNG có README/CHANGELOG; AI/dev đọc từ filesystem local.
