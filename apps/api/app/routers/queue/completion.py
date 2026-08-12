@@ -262,7 +262,16 @@ def update_task(
     #   2. `data.absent === true` — lọc tab "Người dùng" không ra email VÀ đã chứng
     #      minh ô lọc còn sống (clear lọc thấy member khác → gõ lại vẫn trống). Đúng
     #      nghiệp vụ: không có trong business thì coi như đã gỡ xong (user
-    #      2026-07-22) — xem `confirmAbsenceViaFilter` bên extension.
+    #      2026-07-22) — xem `filterOnceAndResolve` bên extension.
+    #
+    # ⚠️ Đường (2) là đường DUY NHẤT mark removed mà KHÔNG có cú click nào, nên nó
+    # đứt gánh là xoá-giả: email vẫn ăn ghế trên ChatGPT còn dashboard giấu luôn
+    # khỏi danh sách gia hạn. Đúng chuyện đã xảy ra 03→12/8/2026 (4 email): extension
+    # v≤0.11.1 coi "số row đổi khác lúc chưa lọc" là bằng chứng ô lọc đã chạy, nhưng
+    # tab /admin/members mới mở còn đang đổ row nên số row tự đổi. v0.11.2 mới thực
+    # thi ĐÚNG hợp đồng ghi ở trên (list đứng yên + positive control + 2 vòng).
+    # Lưới an toàn phía backend: `_flag_fake_removals` (members/reconcile.py) — sync
+    # sau thấy lại email vừa removed bằng `absent_confirmed` ⇒ MEMBER_REMOVE_FAKE_DETECTED.
     #
     # ⚠️ KHÔNG suy "không tìm thấy = đã xoá" một cách TRẦN TRỤI (bug user 2026-07-21,
     # TÁI diễn 06:29 cùng ngày): `MEMBER_NOT_IN_WORKSPACE` trơ trọi từng được
