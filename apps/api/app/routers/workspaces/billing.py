@@ -27,6 +27,34 @@ from app.schemas import (
 from ._shared import _get_workspace_or_404, router
 
 
+# HOÁ ĐƠN = HÀNG NHẬP TAY (chốt user 2026-08-13). Trước đây extension scrape trang
+# /admin/billing rồi GHI ĐÈ nguyên list `billing_invoices` — hệ quả:
+#   1. Dòng scrape chỉ có ngày + số tiền + link Stripe (không seat, không giá/seat,
+#      không chu kỳ) nên bảng Thanh toán đầy dòng "—", và
+#   2. Mỗi hoá đơn super-admin dán tay (số ghế, giá/seat, chu kỳ) BỊ XOÁ ở lần sync
+#      kế tiếp — công nhập tay mất trắng, im lặng. Dán tay còn đẻ dòng TRÙNG vì khoá
+#      của bản dán có `invoice_number` còn bản scrape thì không.
+# Nên: `billing_invoices` giờ CHỈ chứa hoá đơn nhập tay. Sync vẫn cập nhật
+# plan/seat/renewal/billing_status như cũ, nhưng KHÔNG đụng vào danh sách hoá đơn —
+# chỉ đếm số hoá đơn scrape được rồi ghi vào audit để còn đối chiếu.
+# Muốn quay lại nhận hoá đơn scrape: đổi hằng số này về True (và đọc §5 billing.md).
+BILLING_SYNC_ACCEPTS_SCRAPED_INVOICES = False
+
+
+def _is_manual_invoice(row: dict) -> bool:
+    """Hoá đơn này do người dán tay (`billing-paste`) hay do extension scrape?
+
+    `source='manual'` là dấu CHÍNH THỨC, bản dán từ 2026-08-13 trở đi luôn có. Dữ
+    liệu cũ hơn không có cờ → suy theo hình dạng: bản dán tay có chi tiết đầy đủ
+    (`detail_scraped`) và KHÔNG có `detail_url` (link Stripe chỉ sinh ra ở đường
+    scrape). Đối chiếu trên production 13/8/2026: quy tắc này khớp CHÍNH XÁC 6/6
+    lần dán trong audit `WORKSPACE_BILLING_PASTED`.
+    """
+    if row.get("source") == "manual":
+        return True
+    return bool(row.get("detail_scraped")) and not row.get("detail_url")
+
+
 def _invoice_key(
     invoice_number: str | None, date_iso: str | None, amount_vnd: int | None
 ) -> tuple:
@@ -72,9 +100,19 @@ def push_billing_sync(
             }
             setattr(workspace, field, new_val)
 
+    # HOÁ ĐƠN NHẬP TAY LÀ NGUỒN CHÂN LÝ (chốt user 2026-08-13 — xem hằng số đầu file):
+    # sync KHÔNG được đụng vào `billing_invoices` nữa, chỉ đếm để ghi audit. Các field
+    # billing khác (plan/seat/renewal/status) ở trên vẫn cập nhật bình thường.
+    if body.invoices and not BILLING_SYNC_ACCEPTS_SCRAPED_INVOICES:
+        kept = sum(1 for r in (workspace.billing_invoices or []) if _is_manual_invoice(r))
+        changes["invoices_scraped_ignored"] = {
+            "before": None,
+            "after": len(body.invoices),
+        }
+        changes["invoices_manual_kept"] = {"before": None, "after": kept}
     # An toàn dữ liệu (Hiến pháp II): CHỈ ghi đè khi có list không rỗng. None/[]
     # (scrape lỗi/thiếu) KHÔNG được xoá lịch sử hoá đơn cũ.
-    if body.invoices:
+    elif body.invoices:
         # Bảo toàn phí NHẬP TAY: extension ghi đè TOÀN BỘ list nên phải map lại
         # service_fee_vnd của hoá đơn cũ (theo invoice_number, fallback date+amount)
         # vào hoá đơn mới cùng khoá — nếu không phí sẽ bị xoá mỗi lần sync.
@@ -202,6 +240,9 @@ def paste_billing_invoice(
         "amount_vnd": amount,
         "status": body.status or "paid",
         "detail_scraped": True,
+        # Dấu CHÍNH THỨC "hàng nhập tay" (2026-08-13) — trước đây chỉ suy được theo
+        # hình dạng row. Xem `_is_manual_invoice`.
+        "source": "manual",
         "quantity": body.quantity,
     }
     for field in ("unit_price_vnd", "subtotal_vnd", "vat_vnd", "total_vnd", "invoice_number"):
@@ -221,10 +262,22 @@ def paste_billing_invoice(
         old_key = _invoice_key(
             old.get("invoice_number"), old.get("date"), old.get("amount_vnd")
         )
-        if old_key == new_key:
-            if old.get("service_fee_vnd") is not None:
+        # Dòng SCRAPE trùng (cùng ngày + số tiền) phải bị bản dán tay THAY THẾ, không
+        # được nằm song song: khoá của bản dán có `invoice_number` còn bản scrape thì
+        # không nên `_invoice_key` không khớp → trước đây bảng Thanh toán hiện 2 dòng
+        # cho cùng 1 hoá đơn, một dòng đủ chi tiết một dòng toàn "—" (ca thật GPT1
+        # 11/6, 12/6, 22/6 — user 2026-08-13).
+        dup_scraped = (
+            old_key != new_key
+            and not _is_manual_invoice(old)
+            and old.get("date") == row["date"]
+            and old.get("amount_vnd") == amount
+        )
+        if old_key == new_key or dup_scraped:
+            if old.get("service_fee_vnd") is not None and "service_fee_vnd" not in row:
                 row["service_fee_vnd"] = old["service_fee_vnd"]
-            merged.append(row)
+            if not replaced:
+                merged.append(row)
             replaced = True
         else:
             merged.append(old)
