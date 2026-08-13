@@ -17,7 +17,7 @@
  * chuyển từ bảng "Email đã add" sang, thao tác sửa sai hiếm dùng.
  * Xem MemberDetailModal.md TRƯỚC KHI SỬA.
  */
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { toast } from "./Toast";
@@ -1091,6 +1091,20 @@ export function MemberDetailModal({
   );
 
   const qc = useQueryClient();
+
+  // MỞ MODAL = LÀM MỚI HÀNG member ĐANG XEM. Cột trái + KỲ THANH TOÁN đọc từ prop
+  // `member` (hàng của list đã nạp trước đó), trong khi LỊCH SỬ và DÒNG TIỀN gọi API
+  // ngay khi mở → trang mở từ lâu cho ra cảnh nửa tươi nửa cũ: lịch sử đã thấy lượt
+  // mời lại mà hạn dùng/kỳ vẫn là số của kỳ cũ, nhìn như dữ liệu mâu thuẫn (ca thật
+  // phanlebinh999@gmail.com 13/8/2026 — DB đúng, chỉ màn hình cũ). Invalidate list ở
+  // đây để hàng đó refetch; ba trang gọi modal đều đã lấy bản mới nhất theo id nên
+  // prop tự cập nhật. Prefix key → trúng mọi biến thể ("members"/workspaceId,
+  // "added-members"/userId). Chỉ chạy khi đổi email đang xem, không lặp.
+  useEffect(() => {
+    qc.invalidateQueries({ queryKey: ["members"] });
+    qc.invalidateQueries({ queryKey: ["added-members"] });
+  }, [qc, member.id]);
+
   // Người nhận NHẮC GIA HẠN chỉ định cho riêng email này (feature 004). Bỏ trống =
   // nhắc về đại lý đã add. Nhập @username thì phải chờ người đó bấm /start bot mới
   // gửi được (ràng buộc Telegram) — trạng thái đó hiện bằng chip "chờ kết nối".
