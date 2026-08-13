@@ -1,7 +1,8 @@
+import hashlib
 import logging
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -70,7 +71,7 @@ _expiry_timer: threading.Timer | None = None
 # hiện active/pending. Đồng bộ là NGUỒN ĐỐI CHIẾU duy nhất — để nó phụ thuộc vào
 # việc admin có nhớ bấm hay không là bỏ ngỏ.
 #
-# Nên backend tự enqueue SYNC_DATA mỗi `AUTO_SYNC_INTERVAL` / workspace:
+# Nên backend tự enqueue SYNC_DATA cho từng workspace:
 #  - scope 'members' (chỉ tab "Người dùng", ~1/3 thời gian so với 'both'): đủ để
 #    đối chiếu member active — đúng nơi xoá-giả lộ ra. Tab Lời mời/Yêu cầu vẫn
 #    dành cho sync tay khi cần.
@@ -78,8 +79,21 @@ _expiry_timer: threading.Timer | None = None
 #    (`_last_full_sync_at` lọc theo người tạo — xem workspaces/triggers.py).
 #  - Guard "đã có SYNC_DATA đang mở thì thôi" ⇒ extension offline lâu ngày cũng
 #    chỉ đọng ĐÚNG 1 task, không đẻ hàng đống lệnh chờ.
-# Tick 10′ chỉ để rơi đúng mốc; chống trùng nằm ở 2 guard trên chứ không ở nhịp tick.
-AUTO_SYNC_INTERVAL = timedelta(hours=2)
+#
+# NHỊP: **1 NGÀY 1 LẦN, GIỜ NGẪU NHIÊN** (chốt user 2026-08-13). Bản đầu (12/8) để
+# 2 tiếng/lần là do phiên trước tự chọn, KHÔNG phải user duyệt — user thấy nhật ký
+# dày đặc mới biết. Một ngày một lần là đủ cho việc đối chiếu, và giờ ngẫu nhiên để
+# lượt quét không đóng khung một khung giờ cố định.
+#  - Mốc rơi trong khung `AUTO_SYNC_WINDOW_*` GIỜ VN (mặc định 8h–22h): extension
+#    chạy trong Chrome của người dùng, rơi lúc 3h sáng thì lệnh nằm chờ tới sáng và
+#    guard "đang có lệnh mở" chặn luôn mốc hôm sau ⇒ mất ngày. Muốn rải cả 24h thì
+#    đổi hai hằng số dưới thành 0 và 24.
+#  - "Ngày" tính theo GIỜ VN (`AUTO_SYNC_TZ`) cho khớp cách người dùng nhìn nhật ký.
+#  - Mốc NGẪU NHIÊN nhưng TẤT ĐỊNH theo (workspace, ngày) — xem `_auto_sync_slot_at`.
+# Tick 10′ chỉ để rơi đúng mốc; chống trùng nằm ở các guard chứ không ở nhịp tick.
+AUTO_SYNC_TZ = timezone(timedelta(hours=7))  # VN không có DST → offset cứng là đủ
+AUTO_SYNC_WINDOW_START_HOUR = 8
+AUTO_SYNC_WINDOW_END_HOUR = 22
 AUTO_SYNC_CHECK_INTERVAL_SEC = 600  # 10 phút
 _auto_sync_timer: threading.Timer | None = None
 _auto_sync_lock = threading.Lock()
@@ -570,14 +584,39 @@ def _resolve_stale_pending_invites_once() -> None:
         _stale_invite_lock.release()
 
 
+def _auto_sync_slot_at(workspace_id: object, day: date) -> datetime:
+    """Mốc chạy NGẪU NHIÊN của 1 workspace trong `day` (ngày theo giờ VN) → trả UTC.
+
+    Ngẫu nhiên nhưng **tất định** theo (workspace, ngày): băm sha256 rồi lấy dư số
+    phút trong khung giờ. Vì sao không `random`/`hash()`: mốc phải SỐNG SÓT qua khởi
+    động lại API (deploy, restart container) — `random` cho mốc mới mỗi lần chạy, còn
+    `hash()` của Python có salt riêng mỗi tiến trình. Tất định ⇒ tick 10′ nào trong
+    ngày cũng nhìn thấy CÙNG một mốc, và test kiểm được.
+
+    Hai workspace khác nhau (hoặc cùng workspace ngày khác nhau) rơi mốc khác nhau —
+    lượt quét rải ra, không dồn một khung giờ.
+    """
+    span_minutes = (AUTO_SYNC_WINDOW_END_HOUR - AUTO_SYNC_WINDOW_START_HOUR) * 60
+    digest = hashlib.sha256(f"{workspace_id}:{day.isoformat()}".encode()).digest()
+    offset = int.from_bytes(digest[:8], "big") % span_minutes
+    local = datetime(
+        day.year,
+        day.month,
+        day.day,
+        AUTO_SYNC_WINDOW_START_HOUR,
+        tzinfo=AUTO_SYNC_TZ,
+    ) + timedelta(minutes=offset)
+    return local.astimezone(timezone.utc)
+
+
 def _enqueue_periodic_sync_once() -> None:
-    """ĐỒNG BỘ ĐỊNH KỲ: mỗi workspace quá `AUTO_SYNC_INTERVAL` chưa sync → enqueue
-    SYNC_DATA scope 'members' + publish SSE cho extension pick.
+    """ĐỒNG BỘ ĐỊNH KỲ: mỗi workspace 1 LẦN/NGÀY, vào mốc ngẫu nhiên của ngày đó →
+    enqueue SYNC_DATA scope 'members' + publish SSE cho extension pick.
 
     Vì sao cần (xem khối hằng số trên): sync là nguồn đối chiếu DUY NHẤT giữa DB và
     ChatGPT — nó chỉ chạy khi có người bấm thì mọi lưới an toàn dựa trên sync
     (`_flag_fake_removals`, `MEMBER_SYNC_MISMATCH`, rogue pending) đều nằm chờ vô
-    thời hạn. Job này biến "khi nào admin nhớ" thành "tối đa 2 tiếng".
+    thời hạn. Job này biến "khi nào admin nhớ" thành "chậm nhất là ngày mai".
 
     KHÔNG tự chữa gì cả — chỉ tạo lệnh đối chiếu; mọi quyết định (mark removed,
     hồi sinh, cảnh báo lệch) vẫn nằm ở `bulk-upsert` với đủ guard sẵn có.
@@ -590,7 +629,11 @@ def _enqueue_periodic_sync_once() -> None:
     try:
         with SessionLocal() as db:
             now = datetime.now(timezone.utc)
-            cutoff = now - AUTO_SYNC_INTERVAL
+            today = now.astimezone(AUTO_SYNC_TZ).date()
+            # Đầu ngày HÔM NAY theo giờ VN — mốc so "đã sync trong ngày chưa".
+            day_start = datetime(
+                today.year, today.month, today.day, tzinfo=AUTO_SYNC_TZ
+            ).astimezone(timezone.utc)
             workspace_ids = db.execute(select(Workspace.id)).scalars().all()
             queued: list[tuple[object, str]] = []
             for workspace_id in workspace_ids:
@@ -607,9 +650,13 @@ def _enqueue_periodic_sync_once() -> None:
                 ).first()
                 if open_task is not None:
                     continue
-                # (b) Vừa sync trong cửa sổ → thôi. Tính MỌI status (kể cả FAILED)
-                # và mọi nguồn (tay lẫn tự động): sync tay vừa chạy thì job này
-                # không cần chen vào.
+                # (b) Chưa tới mốc ngẫu nhiên của workspace này hôm nay → chờ tick sau.
+                slot_at = _auto_sync_slot_at(workspace_id, today)
+                if now < slot_at:
+                    continue
+                # (c) Hôm nay (giờ VN) đã có lệnh sync rồi → thôi, đúng 1 lần/ngày.
+                # Tính MỌI status (kể cả FAILED) và mọi nguồn (tay lẫn tự động): admin
+                # vừa bấm sync tay thì job nền không cần chen vào nữa.
                 last_at = db.execute(
                     select(func.max(QueueItem.created_at)).where(
                         QueueItem.workspace_id == workspace_id,
@@ -619,7 +666,7 @@ def _enqueue_periodic_sync_once() -> None:
                 if last_at is not None:
                     if last_at.tzinfo is None:
                         last_at = last_at.replace(tzinfo=timezone.utc)
-                    if last_at > cutoff:
+                    if last_at >= day_start:
                         continue
                 queue_item = QueueItem(
                     type="SYNC_DATA",
@@ -651,7 +698,10 @@ def _enqueue_periodic_sync_once() -> None:
                         "sync_scope": "members",
                         "source": "scheduler",
                         "last_sync_at": last_at.isoformat() if last_at else None,
-                        "interval_hours": AUTO_SYNC_INTERVAL.total_seconds() / 3600,
+                        # Mốc ngẫu nhiên đã chọn cho ngày hôm nay — có trong nhật ký
+                        # thì lần sau khỏi phải hỏi "sao nó chạy giờ này".
+                        "slot_at": slot_at.isoformat(),
+                        "cadence": "daily-random",
                     },
                     commit=False,
                 )
@@ -668,9 +718,11 @@ def _enqueue_periodic_sync_once() -> None:
                         },
                     )
                 logger.info(
-                    "[auto-sync] enqueued %d lệnh đồng bộ định kỳ (mỗi %.0f giờ)",
+                    "[auto-sync] enqueued %d lệnh đồng bộ định kỳ (1 lần/ngày, "
+                    "mốc ngẫu nhiên %d–%dh giờ VN)",
                     len(queued),
-                    AUTO_SYNC_INTERVAL.total_seconds() / 3600,
+                    AUTO_SYNC_WINDOW_START_HOUR,
+                    AUTO_SYNC_WINDOW_END_HOUR,
                 )
     except Exception as e:  # noqa: BLE001
         logger.warning("[auto-sync] tick failed: %s", e)
@@ -849,7 +901,8 @@ async def lifespan(_: FastAPI):
     #  - _schedule_cleanup_tick  : retention/dọn dẹp nặng (mỗi giờ)
     #  - _schedule_order_cleanup_tick : dọn lệnh thanh toán quá hạn (mỗi 2′)
     #  - _schedule_reminder_tick : nhắc gia hạn qua Telegram (mỗi 5′, feature 004)
-    #  - _schedule_auto_sync_tick : đồng bộ định kỳ đối chiếu với ChatGPT (mỗi 2h/workspace)
+    #  - _schedule_auto_sync_tick : đồng bộ đối chiếu với ChatGPT (1 lần/ngày/workspace,
+    #                               mốc ngẫu nhiên trong khung giờ VN — user 2026-08-13)
     _schedule_expiry_tick()
     _schedule_cleanup_tick()
     _schedule_order_cleanup_tick()
