@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.11.4";
+export const VERSION = "0.11.5";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,21 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.11.5",
+    date: "2026-08-13",
+    kind: "fix",
+    summary:
+      "Xoá thành viên: bấm 'Xóa' xong phải chờ dialog TẮT HẲN mới đi tra ô lọc — hết cảnh vừa bấm vừa gõ tìm kiếm liên tục khi ChatGPT còn đang quay spinner.",
+    details: [
+      "Yêu cầu user 2026-08-13 (kèm ảnh dialog 'Remove member' với nút 'Delete' đang quay): ChatGPT đã đổi hành vi — bấm xác nhận xong dialog KHÔNG đóng ngay mà giữ spinner tới khi server trả lời. Phải chờ dialog tắt hẳn rồi mới tìm kiếm, không được tìm liên tục.",
+      "TRƯỚC: tín hiệu 'ChatGPT đã nhận lệnh' là `toast ?? (dialog đóng ? body : null)` chờ tối đa 15s. Toast đứng TRƯỚC trong biểu thức nên chỉ cần toast hiện là đi tiếp — dù dialog CÒN mở và lớp phủ modal vẫn phủ kín trang. Ngay sau đó vòng xác minh gõ email vào ô lọc mỗi 1,5s: event `input` rơi vào lớp phủ, query lọc không chạy → toàn `inconclusive` → gõ lại → gõ lại, đốt sạch 60s ngân sách rồi trả REMOVE_VERIFY_FAILED dù xoá đã thành công.",
+      "SAU (content/actions/remove/execute-remove.ts): bỏ hẳn nhánh toast. `waitForConfirmDialogClosed(30s)` poll 300ms và đòi 4 nhịp LIÊN TIẾP không thấy `[role=dialog]`/`[role=alertdialog]` mới coi là tắt hẳn (chống 'chớp tắt' giữa 2 lần render). Hạn 15s → 30s cho vừa nhịp spinner mới.",
+      "Sau khi dialog rời DOM còn `waitForModalLockGone(5s)`: Radix để lại lớp phủ + `pointer-events:none`/`data-scroll-locked` trên body thêm một nhịp. Lớp phủ lì quá 5s thì vẫn đi tiếp (best-effort) — thà tra sớm một nhịp còn hơn bỏ luôn phần xác minh.",
+      "Vòng xác minh giãn ra: nghỉ 2s cho ChatGPT refetch list, rồi tra TỐI ĐA 3 lần, cách nhau 3s (trước: lặp liên tục cách 1,5s tới khi hết 60s). Mỗi lần `filterOnceAndResolve` vốn đã tự gõ 2 vòng lọc độc lập + positive control (~15-25s) nên gõ dồn chỉ khiến Chrome nuốt event chứ không sớm ra kết quả. Trần 60s giữ nguyên để không phá ngân sách 150s của task.",
+      "KHÔNG nới chỗ nào của hàng rào chống xoá-giả: vẫn phải 2 vòng lọc độc lập cùng trống + ô lọc chứng minh còn sống mới kết luận 'đã rời workspace'; dialog quá 30s không tắt vẫn là VERIFY_FAILED (nay ghi rõ 'nút xác nhận vẫn đang quay' hay 'dialog đứng im' để soi OTP/2FA); tra hết 3 lần mà member vẫn còn thì vẫn REMOVE_VERIFY_FAILED, giữ member active để tick sau thử lại.",
+    ],
+  },
   {
     version: "0.11.4",
     date: "2026-08-13",
