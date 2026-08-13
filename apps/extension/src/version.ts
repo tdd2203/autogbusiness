@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.11.3";
+export const VERSION = "0.11.4";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,22 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.11.4",
+    date: "2026-08-13",
+    kind: "fix",
+    summary:
+      "Mời xong xác minh NGAY tại tab 'Lời mời đang chờ xử lý' — thấy đủ email thì bỏ hẳn vòng F5 (~10s). Chỉ khi danh sách có từ 2 trang trở lên mới gõ email vào ô tìm kiếm.",
+    details: [
+      "Yêu cầu user 2026-08-13: dialog mời của ChatGPT phản hồi chậm, NHƯNG vừa chuyển sang tab 'Lời mời đang chờ xử lý' là thấy người vừa mời ngay. Vậy nên: gửi lời mời xong → sang tab Lời mời → QUÉT thành viên; không thấy mới F5 rồi quét lại. Danh sách lời mời không bao giờ quá 1 trang nên KHÔNG gõ email vào ô tìm kiếm, chỉ khi thật sự ≥ 2 trang mới gõ.",
+      "TRƯỚC: Phase 1 chuyển tab xong chỉ đợi DOM 'đứng yên' (waitForPendingListStable) rồi trả về cho background F5 — vòng verify LUÔN chạy dù email đã hiện sẵn trước mắt: 1-3 lần reload tab + ngân sách ~10s cho mọi lệnh mời. Phase 2 lại mở đầu bằng cách gõ từng email vào ô tìm kiếm (~1s/email) kể cả khi danh sách chỉ 1 trang.",
+      "SAU (content/actions/invite/scan-pending-page.ts — MỚI): `scanPendingForEmails(emails, timeout)` vào tab Lời mời, poll DOM 400ms/nhịp, trả về NGAY khi thấy đủ email; danh sách đã render và đứng yên 4 nhịp (sau tối thiểu 3s) mà vẫn thiếu thì dừng sớm, nhường việc cho F5. Ô tìm kiếm chỉ dùng khi `findPaginationState()` báo ≥ 2 trang, và chỉ cho các email còn thiếu.",
+      "Phase 1 (execute-invite.ts) quét tối đa 8s: THẤY ĐỦ ⇒ bỏ `awaiting_reload_verify` và trả thẳng verified_emails + pending_members ⇒ runner đi luôn tới reportToBackend, không F5 lần nào. CÒN THIẾU ⇒ giữ nguyên đường cũ (runner F5 + Phase 2 quét lại tối đa 5s/vòng).",
+      "CHỐNG XÁC MINH GIẢ: toast 'Đã gửi lời mời tới a@b.com' và dialog mời đều CHỨA chính email vừa mời. Bộ quét loại trừ subtree [role=dialog]/[role=status]/[role=alert]/toast trước khi kết luận 'email đã có trong danh sách' — nếu không sẽ bỏ qua F5 dựa trên đúng cái toast, đúng kiểu nhầm dẫn tới mời hỏng mà báo thành công.",
+      "verify-pending-via-filter.ts đổi tên thành search-pending-by-email.ts, thu lại còn đúng phần gõ ô tìm kiếm (`searchPendingForEmails`, giả định đã ở tab Lời mời) và nay là nhánh phụ ≥2 trang thay vì đường chính. wait-for-pending-list-stable.ts bị xoá — vòng poll của bộ quét đã bao trọn vai trò 'đợi list render xong'.",
+      "KHÔNG đụng tới phần phán xử tiền bạc: verified/unverified/verify_scrape_failed + submit_evidence vẫn nguyên nghĩa, decideInviteOutcome và cơ chế salvage (Phase 1 chết vô định → F5 phân xử) giữ y như v0.11.3. Thay đổi ở đây chỉ là 'tìm bằng chứng sớm hơn và rẻ hơn'.",
+    ],
+  },
   {
     version: "0.11.3",
     date: "2026-08-12",
