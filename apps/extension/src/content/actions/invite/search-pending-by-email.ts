@@ -1,7 +1,6 @@
 import type { ScrapedMember } from "../../../shared/messages";
 import { humanType, querySelectorFirst, sleep, waitFor } from "../../human";
-import { SELECTORS, TEXT_FALLBACKS } from "../../selectors";
-import { clickTabAndWait } from "../sync/click-tab-and-wait";
+import { SELECTORS } from "../../selectors";
 import { scrapeAllRows } from "../sync/scrape-all-rows";
 
 /**
@@ -36,56 +35,33 @@ function clearFilter(input: HTMLInputElement): void {
 }
 
 /**
- * VERIFY pending invite bằng Ô LỌC thay vì scrape TOÀN BỘ list.
+ * Gõ từng email vào ô tìm kiếm của tab "Lời mời đang chờ xử lý" → list rút còn
+ * 0-1 row → đọc ngay. Caller PHẢI đã ở tab Lời mời.
  *
- * Lý do (user 2026-06-18): sau khi mời thành công + F5, trang "Lời mời đang chờ
- * xử lý" có thể có rất nhiều email + nhiều trang. Scrape full (scroll hết list +
- * lật hết trang qua `scrapeCurrentTab`, cap 60s) là thừa khi ta CHỈ cần xác nhận
- * vài email vừa mời. Trang này có sẵn ô "Lọc theo tên" → gõ thẳng từng email →
- * list rút còn 0-1 row → đọc ngay. KHÔNG đọc email khác, KHÔNG chuyển trang.
- * Nhanh hơn nhiều lần (giống fast-path `filterAndFindRow` của REMOVE/CHANGE_ROLE).
+ * CHỈ dùng khi danh sách lời mời có ≥ 2 TRANG (user 2026-08-13): email còn thiếu
+ * lúc đó có thể nằm ở trang sau nên quét DOM trang hiện tại không thấy được.
+ * Danh sách 1 trang — trường hợp gần như luôn xảy ra — thì `scanPendingForEmails`
+ * quét thẳng DOM là đủ và nhanh hơn (mỗi email gõ ở đây tốn ~1s + rủi ro ô lọc
+ * đổi UI). Xem [`scan-pending-page.ts`](./scan-pending-page.ts).
  *
  * Trả về:
- *   - `ScrapedMember[]` (status="pending") của các email vừa mời ĐÃ thấy. Mảng
- *     rỗng = list render OK nhưng chưa thấy email nào (caller tự F5 retry).
- *   - `null` khi KHÔNG dùng được ô lọc (không vào được tab / không thấy input)
- *     → caller fallback sang scrape full như cũ.
+ *   - `ScrapedMember[]` (status="pending") của các email ĐÃ thấy (có thể rỗng).
+ *   - `null` khi KHÔNG thấy ô tìm kiếm → caller giữ kết quả quét DOM / fallback.
  *
  * KHÔNG throw — mọi lỗi nội bộ (waitFor timeout) coi như "chưa thấy email đó".
  */
-export async function verifyPendingViaFilter(
+export async function searchPendingForEmails(
   emails: string[],
 ): Promise<ScrapedMember[] | null> {
-  // Bảo đảm đang ở tab "Lời mời đang chờ xử lý".
-  //   - Nếu URL đã ?tab=invites (page vừa F5 từ flow invite) → clickTabAndWait
-  //     trả true ngay, KHÔNG bounce tab.
-  //   - `waitForButtonMs=12000`: chờ thanh tab render trước khi tìm/click — tab mới
-  //     (v0.8.13) content chạy ngay khi trang vừa load, nút tab có thể chưa render.
-  //   - `verifyTabParam="tab=invites"`: verify URL đã đổi (retry) để không kẹt ở
-  //     tab Người dùng khi humanClick không trigger React onClick.
-  const onTab = await clickTabAndWait(
-    "tab_pending_invites",
-    TEXT_FALLBACKS.tabPendingInvites,
-    1500,
-    "tab=invites",
-    12_000,
-  );
-  if (!onTab) {
-    console.warn(
-      "[autogpt-invite-verify] không vào được tab Lời mời → null (fallback scrape full)",
-    );
-    return null;
-  }
-
   const input = findPendingFilterInput();
   if (!input) {
     console.warn(
-      "[autogpt-invite-verify] KHÔNG thấy ô lọc tab Lời mời → null (fallback scrape full)",
+      "[autogpt-invite-verify] KHÔNG thấy ô tìm kiếm tab Lời mời → null",
     );
     return null;
   }
   console.log(
-    `[autogpt-invite-verify] ô lọc OK (placeholder="${input.placeholder}") — verify ${emails.length} email bằng filter`,
+    `[autogpt-invite-verify] ô tìm kiếm OK (placeholder="${input.placeholder}") — tìm ${emails.length} email`,
   );
 
   const matched = new Map<string, ScrapedMember>();
@@ -107,9 +83,9 @@ export async function verifyPendingViaFilter(
 
     if (hit) {
       matched.set(lower, { ...hit, status: "pending" });
-      console.log(`[autogpt-invite-verify] ✓ lọc thấy ${email}`);
+      console.log(`[autogpt-invite-verify] ✓ tìm thấy ${email}`);
     } else {
-      console.log(`[autogpt-invite-verify] ✗ lọc chưa thấy ${email}`);
+      console.log(`[autogpt-invite-verify] ✗ tìm không ra ${email}`);
     }
   }
 
@@ -117,7 +93,7 @@ export async function verifyPendingViaFilter(
   await sleep(200);
 
   console.log(
-    `[autogpt-invite-verify] filter verify: ${matched.size}/${emails.length} email thấy trong tab Lời mời`,
+    `[autogpt-invite-verify] tìm kiếm: ${matched.size}/${emails.length} email thấy trong tab Lời mời`,
   );
   return Array.from(matched.values());
 }

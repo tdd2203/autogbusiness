@@ -5,8 +5,7 @@ import type {
 import { sleep } from "../../human";
 import { reportProgress } from "../../progress";
 import { scrapePendingInvitesAfterInvite } from "../sync";
-import { verifyPendingViaFilter } from "./verify-pending-via-filter";
-import { waitForPendingListStable } from "./wait-for-pending-list-stable";
+import { scanPendingForEmails } from "./scan-pending-page";
 
 /**
  * Phase 2 của INVITE_MEMBER — chạy SAU khi background đã F5 tab admin.
@@ -20,6 +19,11 @@ import { waitForPendingListStable } from "./wait-for-pending-list-stable";
  *   3. nếu còn email chưa thấy (scrape OK) → trả `needs_reload_retry: true`.
  * Background (runner) tự F5 THẬT lại + gọi lại Phase 2 trong ngân sách 10s —
  * ép ChatGPT re-fetch từ server (mạnh hơn bounce tab vốn dễ serve cache stale).
+ *
+ * v0.11.4 (2026-08-13): Phase 1 nay đã tự quét tab Lời mời trước, nên Phase 2
+ * CHỈ chạy cho phần email còn thiếu (hoặc khi Phase 1 chết vô định → salvage).
+ * Cách quét dùng chung `scanPendingForEmails`: đọc thẳng DOM danh sách, KHÔNG gõ
+ * email vào ô tìm kiếm trừ khi danh sách có ≥ 2 trang.
  */
 export async function executeVerifyPendingInvite(
   taskId: string,
@@ -56,11 +60,6 @@ export async function executeVerifyPendingInvite(
     await sleep(1500);
   }
 
-  // v0.7.15: thay sleep(2500) cố định bằng poll render-aware. Trả về NGAY khi
-  // đủ email vừa mời đã hiện trong DOM (fast path ~sub-second), hoặc tối đa 4s
-  // khi list đã render xong (stable) mà chưa thấy đủ. Không treo budget 10s.
-  await waitForPendingListStable(emails, 4000);
-
   await reportProgress(
     taskId,
     {
@@ -78,21 +77,17 @@ export async function executeVerifyPendingInvite(
     ReturnType<typeof scrapePendingInvitesAfterInvite>
   > = [];
   try {
-    // FAST PATH (v0.8.6): dùng ô "Lọc theo tên" để gõ thẳng từng email vừa mời
-    // → list rút còn 0-1 row → đọc ngay. KHÔNG đọc toàn bộ email / KHÔNG lật
-    // trang. Nhanh hơn nhiều lần khi pending list dài.
-    const viaFilter = await verifyPendingViaFilter(emails);
-    if (viaFilter !== null) {
-      scrapedPending = viaFilter;
-      console.log(
-        `[autogpt-invite-verify] filter fast-path: ${scrapedPending.length}/${emails.length} email thấy`,
-      );
+    // QUÉT danh sách lời mời (poll tối đa 5s). Chỉ gõ ô tìm kiếm khi danh sách
+    // ≥ 2 trang — thực tế lời mời gần như luôn gọn trong 1 trang.
+    const scan = await scanPendingForEmails(emails, 5_000);
+    if (scan.usable) {
+      scrapedPending = scan.matched;
     } else {
-      // Ô lọc không khả dụng (UI đổi / chưa render) → fallback scrape full.
+      // Không vào được tab Lời mời (UI đổi / chưa render) → fallback scrape full.
       // forceReload=false: page vừa F5 từ background → DOM đã fresh, KHÔNG bounce
       // tab (bounce serve React Query cache stale). Re-fetch thật = F5 vòng sau.
       console.warn(
-        "[autogpt-invite-verify] ô lọc không dùng được → fallback scrape full",
+        "[autogpt-invite-verify] không vào được tab Lời mời → fallback scrape full",
       );
       scrapedPending = await scrapePendingInvitesAfterInvite(taskId, false);
       console.log(

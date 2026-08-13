@@ -16,7 +16,7 @@ import { clickTabAndWait } from "../sync";
 import { scrapeAllRows } from "../sync/scrape-all-rows";
 import { executeInviteInner } from "./execute-invite-inner";
 import { findInviteOpenButton } from "./finders/find-invite-open-button";
-import { waitForPendingListStable } from "./wait-for-pending-list-stable";
+import { scanPendingForEmails } from "./scan-pending-page";
 
 const RE_LOG = "[autogpt-reinvite]";
 
@@ -236,12 +236,13 @@ export async function executeInvite(
   //      là spec bảo mật user xác nhận: external invites là rủi ro → sau
   //      mỗi invite extension phải về OFF, user bật lại thủ công nếu cần.
   //   4. SAU KHI ĐÃ TẮT TOGGLE, chuyển sang tab "Lời mời đang chờ xử lý" →
-  //      URL = /admin/members?tab=invites. ĐỢI DOM render list pending stable
-  //      (waitForPendingListStable, max 8s) — đảm bảo F5 chạy ở state ổn định,
-  //      không cắt giữa lúc ChatGPT React Query đang fetch.
-  //   5. Background runner F5 + gọi VERIFY_PENDING_INVITE (Phase 2) →
-  //      executeVerifyPendingInvite scrape pending tab → trả verified emails →
-  //      runner bulk-upsert (isFullSync=false) vào DB → dashboard hiển thị.
+  //      URL = /admin/members?tab=invites → QUÉT ngay danh sách tìm email vừa
+  //      mời (scanPendingForEmails, max 8s).
+  //   5a. THẤY ĐỦ → xác minh xong TẠI CHỖ: trả verified_emails + pending_members,
+  //      KHÔNG set awaiting_reload_verify → runner bỏ hẳn vòng F5 (~10s).
+  //   5b. CÒN THIẾU → giữ awaiting_reload_verify: background runner F5 + gọi
+  //      VERIFY_PENDING_INVITE (Phase 2) → quét lại sau khi ChatGPT nạp mới.
+  //      Runner bulk-upsert (isFullSync=false) vào DB → dashboard hiển thị.
   //
   // QUAN TRỌNG: Trình tự PHẢI là 'tắt toggle TRƯỚC, chuyển tab Lời mời SAU'.
   // Nếu đảo lại (chuyển tab → restore toggle navigate qua /admin/identity →
@@ -336,35 +337,40 @@ export async function executeInvite(
     }
   }
 
-  // Bước 4: chuyển tab "Lời mời" SAU khi toggle đã tắt + đã ở /admin/members.
-  // Chỉ chạy khi invite submit thành công — fail thì không cần verify.
+  // Bước 4: chuyển tab "Lời mời" + QUÉT NGAY, SAU khi toggle đã tắt + đã ở
+  // /admin/members. Chỉ chạy khi invite submit thành công — fail thì không verify.
+  //
+  // v0.11.4 (user 2026-08-13): dialog mời của ChatGPT phản hồi chậm, NHƯNG chuyển
+  // sang tab "Lời mời đang chờ xử lý" là thấy người vừa mời NGAY. Nên xác minh
+  // ngay tại đây thay vì mặc định F5 rồi mới quét: thấy đủ ⇒ khỏi F5 (tiết kiệm
+  // trọn vòng verify ~10s + 1-3 lần reload tab). Thiếu ⇒ mới nhờ runner F5.
   if (inviteResult.ok) {
     await sleep(500); // chờ DOM ổn định sau navigate cuối của wrapper
-    const switched = await clickTabAndWait(
-      "tab_pending_invites",
-      TEXT_FALLBACKS.tabPendingInvites,
-      3000, // v0.6.6: tăng 1500 → 3000ms vì ChatGPT cần thời gian fetch +
-            // render pending list lần đầu (lazy load + React Query fetch).
-    );
-    if (switched) {
-      // v0.6.6: Đợi DOM render danh sách pending ỔN ĐỊNH trước khi return.
-      // Lý do: ChatGPT React Query fetch pending list xong vài giây sau khi
-      // tab active. Nếu return ngay → background F5 → ngắt giữa fetch →
-      // sau F5 ChatGPT có thể serve cache cũ → scrape thấy thiếu email
-      // (user report "load thiếu" v0.6.5).
-      //
-      // Strategy: poll DOM row count (text node email pattern) cho tới khi
-      // STABLE 2 ticks liên tiếp HOẶC chứa email vừa mời. Cap 8s.
+    const scan = await scanPendingForEmails(emails, 8_000);
+    const data = (inviteResult as { ok: true; data?: Record<string, unknown> })
+      .data ?? {};
+
+    if (scan.usable && scan.missing.length === 0) {
       console.log(
-        "[autogpt-invite] click tab 'Lời mời' OK — đợi DOM render list pending stable...",
+        `[autogpt-invite] ĐÃ THẤY đủ ${emails.length} email trong tab Lời mời — BỎ QUA F5 + Phase 2`,
       );
-      await waitForPendingListStable(emails, 8_000);
-      console.log(
-        "[autogpt-invite] DOM list pending đã stable — return cho runner F5",
+      // Bỏ awaiting_reload_verify → runner đi thẳng reportToBackend với chính
+      // các trường mà Phase 2 vẫn trả (verified/unverified/pending_members).
+      delete data.awaiting_reload_verify;
+      data.verified_emails = emails.map((e) => e.trim().toLowerCase());
+      data.unverified_emails = [];
+      data.pending_members = scan.matched;
+      data.verify_scrape_failed = false;
+      data.verified_without_reload = true;
+      (inviteResult as { ok: true; data?: Record<string, unknown> }).data = data;
+    } else if (!scan.usable) {
+      console.warn(
+        "[autogpt-invite] không vào được tab 'Lời mời' — để Phase 2 sau F5 tự navigate + quét",
       );
     } else {
-      console.warn(
-        "[autogpt-invite] không click được tab 'Lời mời' — Phase 2 sau F5 sẽ tự navigate",
+      console.log(
+        `[autogpt-invite] còn ${scan.missing.length}/${emails.length} email chưa thấy — nhờ runner F5 rồi quét lại:`,
+        scan.missing,
       );
     }
   }
