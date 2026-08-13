@@ -117,6 +117,78 @@ function openDialogText(): string {
   return (d?.textContent ?? "").trim();
 }
 
+/**
+ * Dialog đang QUAY (nút xác nhận có spinner / disabled / `aria-busy`) — ChatGPT
+ * bản 2026-08 gửi DELETE rồi GIỮ dialog lại cho tới khi server trả lời, chứ
+ * không đóng ngay như bản cũ. Chỉ dùng để log cho dễ soi, không để quyết định.
+ */
+function confirmDialogBusy(): boolean {
+  const d = document.querySelector('[role="alertdialog"], [role="dialog"]');
+  if (!d) return false;
+  if (d.querySelector('[aria-busy="true"], [role="progressbar"], svg.animate-spin, .animate-spin')) {
+    return true;
+  }
+  return Array.from(d.querySelectorAll("button")).some(
+    (b) => b.disabled || b.getAttribute("aria-disabled") === "true",
+  );
+}
+
+/**
+ * Modal còn KHOÁ trang không: Radix để lại lớp phủ + `pointer-events:none` trên
+ * `body` (và `data-scroll-locked`) một nhịp SAU khi dialog rời DOM. Gõ ô lọc
+ * đúng nhịp đó thì event `input` rơi vào lớp phủ → query lọc không bao giờ chạy
+ * → `inconclusive`, và vòng verify cứ thế gõ lại liên tục.
+ */
+function modalLockPresent(): boolean {
+  const body = document.body;
+  if (!body) return false;
+  if (body.hasAttribute("data-scroll-locked")) return true;
+  if (body.style.pointerEvents === "none") return true;
+  return document.querySelector("[data-radix-dialog-overlay]") !== null;
+}
+
+/** Poll 300ms; đòi 4 nhịp LIÊN TIẾP không thấy dialog mới coi là "tắt hẳn". */
+const DIALOG_POLL_MS = 300;
+const DIALOG_GONE_STABLE_HITS = 4;
+
+/**
+ * Chờ dialog xác nhận BIẾN MẤT HẲN (không phải "chớp tắt" giữa 2 lần render).
+ * Trả `true` nếu đã tắt hẳn trong hạn, `false` nếu hết hạn mà dialog vẫn còn.
+ */
+async function waitForConfirmDialogClosed(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  let clearHits = 0;
+  let loggedBusy = false;
+  while (Date.now() < deadline) {
+    if (confirmDialogOpen()) {
+      clearHits = 0;
+      if (!loggedBusy && confirmDialogBusy()) {
+        loggedBusy = true;
+        console.log(`${LOG} dialog xác nhận đang quay (chờ ChatGPT trả lời)...`);
+      }
+    } else {
+      clearHits += 1;
+      if (clearHits >= DIALOG_GONE_STABLE_HITS) return true;
+    }
+    await sleep(DIALOG_POLL_MS);
+  }
+  return false;
+}
+
+/**
+ * Dialog rời DOM rồi nhưng lớp phủ có thể còn — chờ thêm best-effort. KHÔNG
+ * fail nếu lớp phủ lì: coi như hết khoá và đi tiếp (thà tra sớm 1 nhịp còn hơn
+ * bỏ luôn phần xác minh chỉ vì ChatGPT quên gỡ `data-scroll-locked`).
+ */
+async function waitForModalLockGone(maxMs: number): Promise<void> {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    if (!modalLockPresent()) return;
+    await sleep(DIALOG_POLL_MS);
+  }
+  console.warn(`${LOG} lớp phủ modal chưa gỡ sau ${maxMs}ms → vẫn đi tiếp.`);
+}
+
 export async function executeRemove(
   taskId: string,
   email: string,
@@ -332,34 +404,37 @@ export async function executeRemove(
   // trong vài chục giây → verify cũ (theo dõi list / lọc lại) kết luận "còn" =
   // VERIFY_FAILED OAN dù đã xoá xong (bug user 2026-07-12: lần xoá ĐẦU thành công
   // nhưng báo thất bại, 34s sau retry mới thấy đã removed). Tín hiệu TIN CẬY nằm
-  // ngay lúc confirm: dialog xác nhận ĐÓNG = ChatGPT đã nhận thao tác destructive
-  // (giống verify của INVITE — toast/dialog đóng). Chỉ VERIFY_FAILED khi dialog
-  // VẪN mở sau 15s (OTP/2FA/lỗi thật sự chặn xoá).
-  await reportProgress(taskId, { phase: "verifying", message: "Đợi ChatGPT xác nhận đã nhận lệnh xoá..." }, true);
-  let verifyOk = false;
-  try {
-    await waitFor(() => {
-      const toast = querySelectorFirst(SELECTORS.inviteSuccessToast);
-      return toast ?? (confirmDialogOpen() ? null : document.body);
-    }, 15_000, 250);
-    verifyOk = true;
-  } catch {
-    // Dialog xác nhận VẪN mở sau 15s → ChatGPT chặn thao tác (OTP/2FA/lỗi) →
-    // xoá THẬT bại (không phải trễ list). Đọc text dialog để báo rõ nguyên nhân.
-    verifyOk = false;
-  }
+  // ngay lúc confirm: dialog xác nhận ĐÓNG = ChatGPT đã nhận thao tác destructive.
+  //
+  // ChatGPT bản 2026-08 đổi hành vi (user 13/8/2026, ảnh chụp dialog "Remove
+  // member" với nút "Delete" đang QUAY): dialog KHÔNG đóng ngay khi bấm nữa mà
+  // giữ spinner tới khi server trả lời. Nên:
+  //   · KHÔNG còn nhận toast làm tín hiệu — toast có thể hiện KHI DIALOG CÒN MỞ
+  //     → nhánh cũ `toast ?? …` chạy tiếp trong lúc modal vẫn phủ trang.
+  //   · Đòi dialog VẮNG MẶT 4 nhịp liên tiếp (~1.2s) mới coi là "tắt hẳn", rồi
+  //     chờ nốt lớp phủ Radix — có lớp phủ thì mọi cú gõ ô lọc đều rơi vào hư
+  //     không, lọc không chạy, và vòng xác minh chỉ tổ gõ lại liên tục.
+  //   · Hạn chờ 15s → 30s cho vừa nhịp spinner mới.
+  await reportProgress(taskId, { phase: "verifying", message: "Đợi dialog xoá đóng hẳn..." }, true);
+  const dialogClosed = await waitForConfirmDialogClosed(30_000);
 
-  if (!verifyOk) {
+  if (!dialogClosed) {
+    // Dialog xác nhận VẪN mở sau 30s → ChatGPT chặn thao tác (OTP/2FA/lỗi) →
+    // xoá THẬT bại (không phải trễ list). Đọc text dialog để báo rõ nguyên nhân.
     const dialogText = openDialogText();
+    const busy = confirmDialogBusy();
     return {
       ok: false,
       error_code: "VERIFY_FAILED",
       error_message:
-        "Dialog xác nhận xoá KHÔNG đóng sau 15s → ChatGPT có thể yêu cầu OTP/2FA " +
-        "hoặc báo lỗi cho thao tác xoá. Cần xoá thủ công." +
+        `Dialog xác nhận xoá KHÔNG đóng sau 30s (${busy ? "nút xác nhận vẫn đang quay" : "dialog đứng im"}) → ` +
+        "ChatGPT có thể yêu cầu OTP/2FA hoặc báo lỗi cho thao tác xoá. Cần xoá thủ công." +
         (dialogText ? ` Dialog: "${dialogText.slice(0, 200)}"` : ""),
     };
   }
+  // Dialog đã rời DOM — chờ nốt lớp phủ/scroll-lock trước khi đụng vào ô lọc.
+  await waitForModalLockGone(5000);
+  console.log(`${LOG} ${email}: dialog xoá đã tắt hẳn → bắt đầu xác minh bằng ô lọc`);
 
   // ---- XÁC MINH THẬT: member phải BIẾN MẤT khỏi list, không chỉ dialog đóng ----
   // Dialog đóng = ChatGPT NHẬN lệnh, KHÔNG bảo đảm đã xoá server-side (bug user
@@ -367,10 +442,11 @@ export async function executeRemove(
   // removed OAN → đồng bộ thấy còn → hồi sinh active → giờ sau xoá lại → VÒNG LẶP
   // xoá-giả vô hạn, không bao giờ xoá thật). Bản 2026-07-12 gỡ verify vì check QUÁ
   // SỚM: ChatGPT eventual-consistent, sau DELETE THẬT list còn hiện member ~34s rồi
-  // mới biến mất → verify sớm báo "còn" = fail oan. Cách đúng: POLL tới 45s bằng
-  // chính ô lọc server-side (clear+gõ lại mỗi vòng → fetch mới):
-  //   - Row biến mất trong 45s → xoá THỰC SỰ có hiệu lực → verified:true.
-  //   - Tới 45s vẫn còn → xoá KHÔNG có hiệu lực (ChatGPT chặn/quyền/ghế) →
+  // mới biến mất → verify sớm báo "còn" = fail oan. Cách đúng: tra tối đa 3 lần
+  // (cách nhau 3s, trần 60s) bằng chính ô lọc server-side (clear+gõ lại mỗi lần →
+  // fetch mới):
+  //   - Row biến mất trong hạn → xoá THỰC SỰ có hiệu lực → verified:true.
+  //   - Hết 3 lần vẫn còn → xoá KHÔNG có hiệu lực (ChatGPT chặn/quyền/ghế) →
   //     REMOVE_VERIFY_FAILED (ok:false) → backend GIỮ member active, KHÔNG mark
   //     removed; tick sau retry; loop-guard backend chốt STUCK nếu lặp mãi.
   // Hướng an toàn: thà báo chưa-xoá (giữ member) còn hơn báo đã-xoá GIẢ.
@@ -379,15 +455,23 @@ export async function executeRemove(
     { phase: "verifying", message: `Xác minh ${email} đã rời workspace...` },
     true,
   );
+  // Dialog vừa tắt thì ChatGPT còn refetch list — để nó thở 1 nhịp rồi mới gõ,
+  // chứ gõ ngay lúc list đang thay chính là kiểu "tìm kiếm liên tục" vô ích.
+  await sleep(2000);
+
   let gone = false;
-  // 60s (trước 45s): mỗi lần tra giờ tốn hơn vì đòi 2 vòng lọc độc lập, phải chừa
-  // đủ chỗ cho ÍT NHẤT 2 lần tra trong ngân sách 150s của task.
+  // Tra TỐI ĐA 3 lần, mỗi lần cách nhau 3s (không còn bám sát 1.5s/vòng): một
+  // lần `filterOnceAndResolve` đã tự gõ 2 vòng lọc độc lập + positive control
+  // (~15-25s), gõ dồn thêm chỉ làm ChatGPT nuốt event chứ không sớm ra kết quả.
+  // Trần 60s giữ nguyên để không phá ngân sách 150s của task.
+  const VERIFY_ATTEMPTS = 3;
+  const VERIFY_GAP_MS = 3000;
   const verifyDeadlineMs = Date.now() + 60_000;
-  while (Date.now() < verifyDeadlineMs) {
+  for (let attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt++) {
     // Mỗi lần tra: clear + gõ lại email → ép fetch lọc mới, chờ list load xong.
     // `absent` = ChatGPT không còn trả row nào khớp ⇒ xoá đã có hiệu lực.
-    // `inconclusive` (list không phản hồi) KHÔNG được coi là đã xoá — cứ để vòng
-    // sau thử lại, hết giờ thì REMOVE_VERIFY_FAILED (giữ member).
+    // `inconclusive` (list không phản hồi) KHÔNG được coi là đã xoá — cứ để lần
+    // sau thử lại, hết lượt/hết giờ thì REMOVE_VERIFY_FAILED (giữ member).
     //
     // `requireStableList: false`: list vừa bị CHÍNH cú click xoá làm đổi (row rơi
     // ra, ChatGPT eventual-consistent) nên đòi nó "đứng yên" trước khi gõ chỉ đốt
@@ -397,7 +481,12 @@ export async function executeRemove(
       gone = true;
       break;
     }
-    await sleep(1500);
+    console.log(
+      `${LOG} ${email}: xác minh lần ${attempt}/${VERIFY_ATTEMPTS} → ${check.outcome}` +
+        (check.outcome === "inconclusive" ? ` (${check.reason})` : ""),
+    );
+    if (attempt >= VERIFY_ATTEMPTS || Date.now() + VERIFY_GAP_MS >= verifyDeadlineMs) break;
+    await sleep(VERIFY_GAP_MS);
   }
 
   await clearMemberFilter();
@@ -407,9 +496,9 @@ export async function executeRemove(
       ok: false,
       error_code: "REMOVE_VERIFY_FAILED",
       error_message:
-        `Đã click xoá ${email} (dialog đóng) nhưng member VẪN còn trong tab ` +
-        `"Người dùng" sau 60s → xoá CHƯA có hiệu lực. Giữ nguyên (không mark ` +
-        `removed), sẽ thử lại ở lần sau.`,
+        `Đã click xoá ${email} (dialog đã tắt hẳn) nhưng member VẪN còn trong tab ` +
+        `"Người dùng" sau ${VERIFY_ATTEMPTS} lần tra (trần 60s) → xoá CHƯA có hiệu ` +
+        `lực. Giữ nguyên (không mark removed), sẽ thử lại ở lần sau.`,
     };
   }
 
