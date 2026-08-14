@@ -553,7 +553,18 @@ export function MemberCashflow({
         )}
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+      {/* 3 ô tổng: lưới auto-fit thay vì 3 cột cứng — màn hẹp (điện thoại) thì
+          xuống 2/1 ô mỗi hàng, số tiền không bị bóp thành "330 0 ₫". */}
+      <div
+        style={{
+          display: "grid",
+          // 86px: vừa đủ để cột phải 320px trên desktop GIỮ NGUYÊN 3 ô một hàng
+          // (chỗ trống thật ~279px), còn máy hẹp (~320px) thì tự xuống 2 hàng.
+          gridTemplateColumns: "repeat(auto-fit, minmax(86px, 1fr))",
+          gap: 8,
+          marginBottom: 10,
+        }}
+      >
         <CashStat
           label={t("memberDetail.cashCharged")}
           value={data.charged_total}
@@ -916,6 +927,10 @@ export function MemberDetailModal({
   // Dưới 1180px không đủ chỗ cho 3 cột (thẻ thông tin | kỳ hạn + lịch sử | dòng
   // tiền) → dòng tiền xếp vào luồng dọc thay vì đứng thành cột riêng.
   const narrowModal = useIsMobile(1179);
+  // Điện thoại (≤768px): bỏ hẳn bố cục cột — sidebar 284px + cột giữa cạnh nhau
+  // trên màn 390px làm cột giữa còn ~60px, chữ gãy từng ký tự (ảnh user 14/8/2026).
+  // Mobile xếp DỌC: thông tin → kỳ thanh toán → dòng tiền → lịch sử, cuộn 1 mạch.
+  const isMobile = useIsMobile();
   const orderStatusLabel = useTranslateEnum("memberDetail.orderStatus");
   const { user } = useAuth();
   const correctAddDate = useCorrectAddDate(workspaceId);
@@ -1512,7 +1527,7 @@ export function MemberDetailModal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      style={{ padding: 24 }}
+      style={{ padding: isMobile ? 10 : 24 }}
       onClick={onClose}
     >
       <div
@@ -1521,10 +1536,10 @@ export function MemberDetailModal({
           // theo cả kỳ thanh toán lẫn lịch sử hoạt động. Dưới 1180px cột đó xếp
           // xuống luồng dọc (xem narrowModal) nên modal vẫn dùng được ở màn hẹp.
           width: "min(1180px, 100%)",
-          maxHeight: "90vh",
+          maxHeight: isMobile ? "94vh" : "90vh",
           background: "var(--surface)",
           border: "1px solid var(--border)",
-          borderRadius: 20,
+          borderRadius: isMobile ? 16 : 20,
           boxShadow:
             "0 40px 90px -30px rgba(0,0,0,.45), 0 12px 30px -14px rgba(0,0,0,.3)",
           overflow: "hidden",
@@ -1536,10 +1551,10 @@ export function MemberDetailModal({
         {/* Header: nhãn + email + nút đóng. */}
         <div
           style={{
-            padding: "18px 22px",
+            padding: isMobile ? "13px 14px" : "18px 22px",
             display: "flex",
             alignItems: "center",
-            gap: 14,
+            gap: isMobile ? 10 : 14,
             borderBottom: "1px solid var(--border)",
             flexShrink: 0,
           }}
@@ -1559,7 +1574,7 @@ export function MemberDetailModal({
             </div>
             <div
               style={{
-                fontSize: 16,
+                fontSize: isMobile ? 14.5 : 16,
                 fontWeight: 600,
                 color: "var(--ink)",
                 whiteSpace: "nowrap",
@@ -1600,27 +1615,33 @@ export function MemberDetailModal({
             chiều cao body → overflow-y ở cột KHÔNG kích hoạt, timeline bị cắt
             không scroll được. nowrap + minHeight:0 mỗi cột thì cột mới bó đúng
             chiều cao body và scroll được (fix bug user báo). */}
+        {/* Mobile: đổi trục sang DỌC và cho CHÍNH body cuộn — cột 284px + cột giữa
+            trên màn 390px làm cột giữa còn ~60px (chữ gãy từng ký tự), còn hai vùng
+            cuộn lồng nhau thì rất khó dùng bằng ngón tay. */}
         <div
           style={{
             display: "flex",
+            flexDirection: isMobile ? "column" : "row",
             flex: 1,
             minHeight: 0,
-            overflow: "hidden",
+            overflowX: "hidden",
+            overflowY: isMobile ? "auto" : "hidden",
           }}
         >
           {/* ── Cột trái: sidebar ─────────────────────────────────────────── */}
           <div
             style={{
-              width: 284,
+              width: isMobile ? "100%" : 284,
               flexShrink: 0,
               minHeight: 0,
-              padding: "24px 20px",
+              padding: isMobile ? "18px 14px" : "24px 20px",
               background: "var(--bg)",
-              borderRight: "1px solid var(--border)",
+              borderRight: isMobile ? "none" : "1px solid var(--border)",
+              borderBottom: isMobile ? "1px solid var(--border)" : "none",
               display: "flex",
               flexDirection: "column",
               gap: 20,
-              overflowY: "auto",
+              overflowY: isMobile ? "visible" : "auto",
             }}
           >
             {/* Vòng tròn tiến trình "ngày còn lại". */}
@@ -1772,11 +1793,13 @@ export function MemberDetailModal({
           {/* ── Cột giữa: kỳ thanh toán + timeline lịch sử hoạt động ───────── */}
           <div
             style={{
-              flex: 1,
+              // Mobile: body đã cuộn sẵn → cột này KHÔNG được flex:1 (co lại còn
+              // đúng phần trống rồi tự cuộn bên trong), để nó cao theo nội dung.
+              flex: isMobile ? "0 0 auto" : 1,
               minWidth: 0,
               minHeight: 0,
-              padding: "24px 24px",
-              overflowY: "auto",
+              padding: isMobile ? "18px 14px" : "24px 24px",
+              overflowY: isMobile ? "visible" : "auto",
             }}
           >
             {/* ── KỲ THANH TOÁN ─────────────────────────────────────────────
