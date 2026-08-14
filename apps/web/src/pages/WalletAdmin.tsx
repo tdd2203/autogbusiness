@@ -101,12 +101,17 @@ function UsersCard() {
     );
   }, [data, query]);
 
-  async function submitAdjust(userId: string, raw: string) {
+  // Lý do BẮT BUỘC (user 2026-08-14): mọi lần nạp/điều chỉnh phải ghi vì sao, để
+  // dòng giao dịch tự giải thích khi đối soát về sau.
+  async function submitAdjust(userId: string, raw: string, reason: string) {
     const amount = Number(raw);
     if (!raw || !Number.isFinite(amount) || amount === 0) {
       throw new Error("Nhập số tiền khác 0 (số âm để trừ).");
     }
-    await adjust.mutateAsync({ userId, amount_vnd: amount, reason: "nạp (admin)" });
+    if (!reason.trim()) {
+      throw new Error("Nhập lý do nạp/điều chỉnh.");
+    }
+    await adjust.mutateAsync({ userId, amount_vnd: amount, reason: reason.trim() });
     toast.success(`Đã điều chỉnh ${formatVnd(amount)}.`);
   }
 
@@ -187,7 +192,8 @@ function UsersCard() {
           type="number"
           placeholder="vd 500000 hoặc -100000"
           submitLabel="Điều chỉnh"
-          onSubmit={(v) => submitAdjust(modal.user.user_id, v)}
+          extra={{ label: "Lý do", placeholder: "vd: nạp tiền chuyển khoản ngoài hệ thống", required: true }}
+          onSubmit={(v, reason) => submitAdjust(modal.user.user_id, v, reason)}
           onClose={() => setModal(null)}
         />
       )}
@@ -458,6 +464,7 @@ function TxnRow({ t }: { t: WalletTxn }) {
   const kindLabel = TXN_KIND_LABEL[t.kind] ?? t.kind;
   const source = TXN_SOURCE[t.kind];
   const email = t.meta?.email ? String(t.meta.email) : null;
+  const reason = t.meta?.reason ? String(t.meta.reason) : null;
   const v = txnVisual(t);
   const pos = t.amount >= 0;
   return (
@@ -467,6 +474,7 @@ function TxnRow({ t }: { t: WalletTxn }) {
         <div style={{ fontSize: 14, fontWeight: 700, color: "var(--w-ink)" }}>{kindLabel}</div>
         {source && <div style={{ fontSize: 12.5, color: "var(--w-muted)" }}>{source}</div>}
         {email && <div style={{ fontSize: 12.5, color: "var(--w-muted)", marginTop: 1 }}>Thành viên: <span style={{ color: "var(--w-ink)", fontWeight: 500 }}>{email}</span></div>}
+        {reason && <div style={{ fontSize: 12.5, color: "var(--w-muted)", marginTop: 1, overflowWrap: "anywhere" }}>Lý do: <span style={{ color: "var(--w-ink)", fontWeight: 500 }}>{reason}</span></div>}
         <div style={{ fontSize: 11.5, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 3, opacity: 0.85 }}>{new Date(t.created_at).toLocaleString("vi-VN")}</div>
       </div>
       <div style={{ textAlign: "right", flexShrink: 0 }}>

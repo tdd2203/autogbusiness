@@ -443,9 +443,15 @@ def adjust(
     amount: int,
     *,
     actor: User,
-    reason: str | None = None,
+    reason: str,
 ) -> WalletTransaction:
-    """Super-admin cộng/trừ số dư thủ công (vd nạp demo cho tài khoản test)."""
+    """Super-admin cộng/trừ số dư thủ công (vd nạp demo cho tài khoản test).
+
+    `reason` bắt buộc — luôn ghi vào meta để dòng giao dịch tự nói được vì sao có
+    khoản này (đối soát về sau không phải mò audit log)."""
+    reason = reason.strip()
+    if not reason:
+        raise ValueError("Lý do điều chỉnh không được để trống")
     wallet = _lock_wallet(db, user_id)
     return _write_txn(
         db,
@@ -456,6 +462,6 @@ def adjust(
         actor_type="ADMIN",
         actor_label=actor.email,
         action="WALLET_ADJUSTED",
-        meta={"reason": reason} if reason else None,
+        meta={"reason": reason},
         audit_data={"amount": int(amount), "reason": reason},
     )

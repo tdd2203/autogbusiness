@@ -165,7 +165,8 @@ export function useToggleBeta() {
 export function useAdjustBalance() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (args: { userId: string; amount_vnd: number; reason?: string }) =>
+    // reason BẮT BUỘC — API 422 nếu thiếu (xem WalletAdjustIn).
+    mutationFn: (args: { userId: string; amount_vnd: number; reason: string }) =>
       api(`/api/v1/wallet/admin/users/${args.userId}/adjust`, {
         method: "POST",
         body: JSON.stringify({ amount_vnd: args.amount_vnd, reason: args.reason }),
