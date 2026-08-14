@@ -17,6 +17,7 @@ export default function InputModal({
   placeholder,
   type = "text",
   submitLabel = "Lưu",
+  extra,
   onSubmit,
   onClose,
 }: {
@@ -27,20 +28,29 @@ export default function InputModal({
   placeholder?: string;
   type?: "text" | "number";
   submitLabel?: string;
+  /** Ô nhập THỨ HAI (tuỳ chọn) — vd "Lý do" cho nạp/điều chỉnh ví. `required`
+   *  → chặn ngay trong modal, không gọi onSubmit khi bỏ trống. */
+  extra?: { label: string; placeholder?: string; required?: boolean };
   /** Xử lý giá trị nhập. Throw (vd ApiError) → hiện lỗi trong modal, giữ mở. */
-  onSubmit: (value: string) => Promise<void> | void;
+  onSubmit: (value: string, extra: string) => Promise<void> | void;
   onClose: () => void;
 }) {
   const [value, setValue] = useState(initialValue);
+  const [extraValue, setExtraValue] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function submit() {
     if (busy) return;
+    const extraTrimmed = extraValue.trim();
+    if (extra?.required && !extraTrimmed) {
+      setError(`Vui lòng nhập ${extra.label.toLowerCase()}.`);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      await onSubmit(value.trim());
+      await onSubmit(value.trim(), extraTrimmed);
       onClose();
     } catch (e) {
       const msg =
@@ -85,6 +95,27 @@ export default function InputModal({
             }}
             style={input}
           />
+          {extra && (
+            <>
+              <label style={{ ...labelStyle, marginTop: 14 }}>
+                {extra.label}
+                {extra.required && <span style={{ color: "var(--danger)" }}> *</span>}
+              </label>
+              <input
+                type="text"
+                value={extraValue}
+                placeholder={extra.placeholder}
+                onChange={(e) => setExtraValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submit();
+                  }
+                }}
+                style={{ ...input, fontFamily: "inherit" }}
+              />
+            </>
+          )}
           {error && (
             <div style={errorBox}>{error}</div>
           )}

@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 
 # ---------- Auth ----------
@@ -1254,8 +1254,19 @@ class WalletBetaIn(BaseModel):
 
 
 class WalletAdjustIn(BaseModel):
+    """Nạp/điều chỉnh số dư thủ công. `reason` BẮT BUỘC (user 2026-08-14): mọi lần
+    admin đụng vào tiền phải ghi lý do để còn đối soát về sau."""
+
     amount_vnd: int = Field(..., description="Số tiền điều chỉnh (có dấu, VND)")
-    reason: str | None = None
+    reason: str = Field(..., min_length=1, max_length=300, description="Lý do nạp/điều chỉnh")
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Lý do không được để trống")
+        return v
 
 
 class UserFeeIn(BaseModel):

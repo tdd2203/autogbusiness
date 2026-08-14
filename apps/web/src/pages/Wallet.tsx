@@ -256,6 +256,8 @@ function PlainTxnRow({ t }: { t: WalletTxn }) {
     ? `${dupRef ? `Hoá đơn ${dupRef}. ` : ""}Số tiền đã được cộng vào ví.`
     : TXN_SOURCE[t.kind];
   const email = t.meta?.email ? String(t.meta.email) : null;
+  // Lý do do admin nhập khi nạp/điều chỉnh — hiện luôn cho chủ ví thấy vì sao có khoản này.
+  const reason = t.meta?.reason ? String(t.meta.reason) : null;
   return (
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, padding: "9px 0", borderTop: "1px solid var(--border)" }}>
       <div style={{ minWidth: 0 }}>
@@ -269,6 +271,7 @@ function PlainTxnRow({ t }: { t: WalletTxn }) {
         {/* ③ phạm vi: nguồn (tự động/thủ công) + thành viên liên quan + thời gian */}
         {source && <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3 }}>{source}</div>}
         {email && <div style={{ fontSize: 12, color: "var(--ink-2)", marginTop: 2 }}>Thành viên: {email}</div>}
+        {reason && <div style={{ fontSize: 12, color: "var(--ink-2)", marginTop: 2, overflowWrap: "anywhere" }}>Lý do: {reason}</div>}
         <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3, fontFamily: "var(--font-mono)" }}>{new Date(t.created_at).toLocaleString("vi-VN")}</div>
       </div>
       <div style={{ textAlign: "right", flexShrink: 0 }}>

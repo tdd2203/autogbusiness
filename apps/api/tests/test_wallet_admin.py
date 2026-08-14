@@ -83,9 +83,27 @@ def test_admin_adjust_creates_txn_and_audit(client: TestClient, auth_header: dic
     ).json()["items"]
     assert any(t["kind"] == "adjust" and t["amount"] == 500_000 for t in txns)
 
+    assert any(
+        t["kind"] == "adjust" and (t.get("meta") or {}).get("reason") == "nạp demo" for t in txns
+    )
+
     audit = client.get("/api/v1/audit-logs", headers=auth_header).json()
     audit_items = audit if isinstance(audit, list) else audit.get("items", [])
     assert any(a["action"] == "WALLET_ADJUSTED" for a in audit_items)
+
+
+def test_admin_adjust_requires_reason(client: TestClient, auth_header: dict) -> None:
+    """Nạp/điều chỉnh phải kèm lý do — thiếu hoặc để trắng đều 422 (user 2026-08-14)."""
+    user = create_user(client, auth_header, "adjustnoreason", ["MEMBER_VIEW"])
+    url = f"/api/v1/wallet/admin/users/{user['id']}/adjust"
+    for body in ({"amount_vnd": 500_000}, {"amount_vnd": 500_000, "reason": "   "}):
+        r = client.post(url, json=body, headers=auth_header)
+        assert r.status_code == 422, r.text
+
+    txns = client.get(
+        f"/api/v1/wallet/admin/users/{user['id']}/transactions", headers=auth_header
+    ).json()["items"]
+    assert not txns
 
 
 def test_settings_get_reports_webhook_config(client: TestClient, auth_header: dict) -> None:
