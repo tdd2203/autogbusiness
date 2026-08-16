@@ -227,15 +227,18 @@ function TxnHistory({ txns }: { txns: WalletTxn[] }) {
   );
 }
 
-/* (③) Nguồn phát sinh khoản tiền — phân biệt TỰ ĐỘNG (hệ thống trừ/hoàn theo lượt
-   mời·gia hạn, nạp qua hoá đơn) với THỦ CÔNG (quản trị điều chỉnh). Nạp chuyển
-   khoản (topup) do chính chủ ví thực hiện → không ghi nguồn (ngầm hiểu). */
+/* (③) Nguồn phát sinh khoản tiền, dạng "<TIỀN ĐI ĐÂU> · <vì sao>" — user 2026-08-16:
+   "Tự động · trừ khi mời thành viên" không cho biết tiền bị trừ ở đâu ra. Vế đầu LUÔN
+   nói rõ dòng tiền (trừ/cộng/hoàn ở số dư ví, hay thanh toán thẳng qua hoá đơn) để
+   khớp với dòng gộp (GroupTxnRow), vế sau mới là lý do. Dòng phí ĐƠN LẺ ⇔ không có
+   order_topup cùng created_at ⇒ chắc chắn trừ từ số dư ví. */
 const TXN_SOURCE: Partial<Record<WalletTxnKind, string>> = {
-  invite_fee: "Tự động · trừ khi mời thành viên",
-  renew_fee: "Tự động · trừ khi gia hạn",
-  invite_refund: "Tự động · hoàn khi mời thất bại",
-  order_topup: "Tự động · nạp qua hoá đơn",
-  adjust: "Thủ công · quản trị điều chỉnh",
+  topup: "Cộng vào số dư ví · nạp chuyển khoản",
+  invite_fee: "Trừ từ số dư ví · phí mời thành viên",
+  renew_fee: "Trừ từ số dư ví · phí gia hạn thành viên",
+  invite_refund: "Hoàn về số dư ví · mời thành viên thất bại",
+  order_topup: "Cộng vào số dư ví · thanh toán qua hoá đơn",
+  adjust: "Sửa thẳng số dư ví · quản trị điều chỉnh tay",
 };
 
 /** Một dòng giao dịch thường (nạp/phí mời/điều chỉnh…) — trả lời: ① cái gì (loại
@@ -315,7 +318,7 @@ function GroupTxnRow({ txns }: { txns: WalletTxn[] }) {
             </span>
           </div>
           <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3 }}>
-            {paidViaOrder ? "Thanh toán qua hoá đơn" : "Trừ từ số dư ví"}
+            {paidViaOrder ? "Thanh toán qua hoá đơn · không trừ số dư ví" : "Trừ từ số dư ví"}
           </div>
           <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3, fontFamily: "var(--font-mono)" }}>{new Date(txns[0].created_at).toLocaleString("vi-VN")}</div>
         </div>

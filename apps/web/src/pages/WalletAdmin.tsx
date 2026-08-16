@@ -205,17 +205,21 @@ function UsersCard() {
 
 // ── Modal chi tiết: điều khiển + lịch sử giao dịch ví của 1 user ──────────────
 
-// Nguồn phát sinh (giống trang Ví người dùng): phân biệt TỰ ĐỘNG (hệ thống) và
-// THỦ CÔNG (quản trị điều chỉnh). topup do chính chủ ví → không ghi nguồn.
+// Nguồn phát sinh (giống trang Ví người dùng). Dạng "<TIỀN ĐI ĐÂU> · <vì sao>":
+// user 2026-08-16 — "Tự động · trừ khi mời thành viên" không cho biết tiền bị trừ
+// từ đâu. Vế đầu LUÔN nói rõ dòng tiền (trừ/cộng/hoàn/giữ ở số dư ví, hay thanh
+// toán thẳng qua hoá đơn) để khớp với dòng gộp (TxnGroupRow), vế sau mới là lý do.
+// Dòng phí ĐƠN LẺ ⇔ không có order_topup cùng created_at ⇒ chắc chắn trừ từ số dư.
 const TXN_SOURCE: Partial<Record<WalletTxnKind, string>> = {
-  invite_fee: "Tự động · trừ khi mời thành viên",
-  renew_fee: "Tự động · trừ khi gia hạn",
-  invite_refund: "Tự động · hoàn khi mời thất bại",
-  order_topup: "Tự động · nạp qua hoá đơn",
-  withdraw_hold: "Tự động · giữ khi gửi yêu cầu rút",
-  withdraw_settle: "Thủ công · quản trị đã chi rút",
-  withdraw_refund: "Tự động · hoàn khi từ chối rút",
-  adjust: "Thủ công · quản trị điều chỉnh",
+  topup: "Cộng vào số dư ví · nạp chuyển khoản",
+  invite_fee: "Trừ từ số dư ví · phí mời thành viên",
+  renew_fee: "Trừ từ số dư ví · phí gia hạn thành viên",
+  invite_refund: "Hoàn về số dư ví · mời thành viên thất bại",
+  order_topup: "Cộng vào số dư ví · thanh toán qua hoá đơn",
+  withdraw_hold: "Giữ trong số dư ví · chờ duyệt yêu cầu rút",
+  withdraw_settle: "Chi ra khỏi ví · quản trị đã chuyển tiền rút",
+  withdraw_refund: "Hoàn về số dư ví · từ chối yêu cầu rút",
+  adjust: "Sửa thẳng số dư ví · quản trị điều chỉnh tay",
 };
 
 // Nhóm giao dịch cho bộ lọc chip: nạp / phí / hoàn / khác.
@@ -519,7 +523,7 @@ function TxnGroupRow({ g }: { g: TxnGroup }) {
             <span style={{ color: "var(--w-muted)", fontSize: 11, marginLeft: 6, display: "inline-block", transform: open ? "rotate(180deg)" : "none" }}>▾</span>
           </div>
           <div style={{ fontSize: 12.5, color: "var(--w-muted)" }}>
-            {paidViaOrder ? "Thanh toán qua hoá đơn" : "Trừ từ số dư ví"}
+            {paidViaOrder ? "Thanh toán qua hoá đơn · không trừ số dư ví" : "Trừ từ số dư ví"}
           </div>
           <div style={{ fontSize: 11.5, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 3, opacity: 0.85 }}>{created}</div>
         </div>
