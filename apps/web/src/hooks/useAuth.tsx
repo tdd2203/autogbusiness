@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   api,
   getToken,
@@ -42,6 +43,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState<boolean>(!!getToken());
+  const qc = useQueryClient();
 
   const refresh = useCallback(async () => {
     if (!getToken()) {
@@ -71,11 +73,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     function onUnauthorized() {
       setToken(null);
       setUser(null);
+      qc.clear();
     }
     window.addEventListener(AUTH_UNAUTHORIZED_EVENT, onUnauthorized);
     return () =>
       window.removeEventListener(AUTH_UNAUTHORIZED_EVENT, onUnauthorized);
-  }, []);
+  }, [qc]);
 
   const login = useCallback(
     async (identifier: string, password: string) => {
@@ -84,15 +87,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ identifier, password }),
       });
       setToken(res.access_token);
+      // ĐỔI TÀI KHOẢN TRÊN CÙNG MỘT TAB: SPA không reload nên cache react-query
+      // vẫn còn NGUYÊN dữ liệu của người trước. Trang Mời lấy workspace đích từ
+      // cache `/auto-invite/targets` → người vừa đăng nhập bắn thẳng request vào
+      // workspace của người cũ, ăn 404 hàng loạt (sự cố 2026-08-16: cả 2 lần bấm
+      // gửi lời mời đều 404). Chưa kể người mới thoáng thấy dữ liệu người cũ.
+      // Xoá sạch cache NGAY sau khi đổi token: lúc này mới chỉ có trang /login
+      // đang mounted nên không cắt ngang query nào đang chạy.
+      qc.clear();
       await refresh();
     },
-    [refresh],
+    [refresh, qc],
   );
 
   const logout = useCallback(() => {
     setToken(null);
     setUser(null);
-  }, []);
+    // Dọn luôn khi đăng xuất — không để dữ liệu người vừa thoát nằm lại trong bộ
+    // nhớ tab chờ người kế tiếp (máy dùng chung).
+    qc.clear();
+  }, [qc]);
 
   const hasPermission = useCallback(
     (perm: string) => {
