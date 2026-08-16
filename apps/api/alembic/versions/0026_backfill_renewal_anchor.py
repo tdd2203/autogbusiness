@@ -1,7 +1,7 @@
 """backfill renewal anchor + recompute expiry = anchor + months*30 exact
 
 Revision ID: 0026_backfill_renewal_anchor
-Revises: 0025_member_subscription_purchased_at
+Revises: 0025_member_sub_purchased_at
 Create Date: 2026-07-06
 
 Yêu cầu user 2026-07-06: **Ngày hết hạn = Ngày gia hạn + 30×tháng** (CHÍNH XÁC tới
@@ -25,7 +25,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "0026_backfill_renewal_anchor"
-down_revision: Union[str, None] = "0025_member_subscription_purchased_at"
+down_revision: Union[str, None] = "0025_member_sub_purchased_at"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
