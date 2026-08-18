@@ -145,11 +145,14 @@ export const SELECTORS = {
     '[data-testid="member-role"]',
     '.member-role',
   ],
-  // Nút "..." trong row (mở action menu)
+  // Nút "..." trong row (mở action menu). CHỈ giữ selector ĐỊNH DANH ĐƯỢC nút —
+  // KHÔNG thêm `button[aria-haspopup="menu"]` vào đây: row còn dropdown vai trò
+  // cũng mang đúng attribute đó và đứng TRƯỚC "..." trong DOM, nên selector rộng
+  // sẽ trả về dropdown vai trò (sự cố 18/8/2026 — xem `findRowMenuButton`).
+  // Nhánh dò theo hình dạng nằm trong `findRowMenuButton`, không nằm ở đây.
   memberRowMenu: [
     'button[data-testid="member-menu-button"]',
     'button[aria-label*="actions" i]',
-    'button[aria-haspopup="menu"]',
   ],
 
   // Menu item "Remove"
