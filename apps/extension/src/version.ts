@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.11.5";
+export const VERSION = "0.11.6";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,21 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.11.6",
+    date: "2026-08-18",
+    kind: "fix",
+    summary:
+      "Xoá/thu hồi/đổi ghế: hết bấm nhầm dropdown vai trò — ChatGPT gỡ data-testid khỏi nút '...' nên extension lấy trúng ô 'Thành viên ⌄' đứng cạnh.",
+    details: [
+      "Sự cố 18/8/2026: 15 task xoá liên tiếp FAILED_UI_CHANGED với đúng một lỗi 'Menu mở nhưng không có item xoá THÀNH VIÊN. Item thấy: [Member, Analytics Viewer, Admin, Owner]' — 4 item đó là menu VAI TRÒ, tức extension mở nhầm nút. 5 email hết hạn kẹt MEMBER_REMOVE_STUCK phải gỡ tay.",
+      "Gốc: ChatGPT gỡ cả `data-testid=\"member-menu-button\"` lẫn `aria-label` khỏi nút '...' (nút vẫn hiện y nguyên trên UI). Hai selector định danh cùng trượt → rơi xuống fallback `button[aria-haspopup=\"menu\"]`, mà dropdown vai trò cũng mang đúng attribute đó và đứng TRƯỚC '...' trong DOM → querySelector trả về dropdown vai trò.",
+      "Sửa: `findRowMenuButton` nhận diện '...' theo HÌNH DẠNG thay vì attribute — button mở popup menu và KHÔNG có chữ (kebab chỉ có icon; mọi dropdown trong row đều có nhãn chữ). Lấy nút icon CUỐI row. Bỏ hẳn fallback rộng khỏi `SELECTORS.memberRowMenu`.",
+      "Nhiều button popup mà cái nào cũng có chữ → trả null (action fail rõ ràng) thay vì đoán bừa rồi bấm nhầm.",
+      "Sửa một chỗ, lành 7 action dùng chung `findRowMenuButton`: REMOVE_MEMBER, REVOKE_INVITES, CHANGE_LICENSE_TYPE, member-data, harvest-labels (+2 probe). Đổi vai trò cũng hết hỏng vì `findRowRoleDropdown` loại trừ theo kết quả của hàm này.",
+      "Thêm `member-row.test.ts` khoá lại regression: dựng đúng row 18/8/2026 (dropdown vai trò trước, kebab rỗng chữ sau) và đòi chọn ra kebab.",
+    ],
+  },
   {
     version: "0.11.5",
     date: "2026-08-13",

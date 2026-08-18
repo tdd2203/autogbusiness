@@ -23,8 +23,46 @@ export function findMemberRow(email: string): HTMLElement | null {
   return null;
 }
 
+/**
+ * Nút "..." (kebab) của row member — cửa vào MỌI action trên row: xoá thành
+ * viên, thu hồi lời mời, đổi loại ghế, xuất/xoá dữ liệu, harvest label.
+ *
+ * ChatGPT 18/8/2026 GỠ `data-testid="member-menu-button"` lẫn `aria-label` khỏi
+ * nút này. Nút vẫn hiện y nguyên trên UI nhưng thuộc tính chỉ còn
+ * `aria-haspopup="menu"` — trùng KHÍT với dropdown vai trò ("Thành viên ⌄" /
+ * "Member ⌄") cũng nằm trong row và đứng TRƯỚC "..." theo DOM order. Selector cũ
+ * có fallback `button[aria-haspopup="menu"]` nên `querySelector` trả về cái ĐẦU
+ * = dropdown vai trò → mọi action mở nhầm menu vai trò (chỉ có Member/Analytics
+ * Viewer/Admin/Owner, không có "Loại bỏ thành viên") → FAILED_UI_CHANGED hàng
+ * loạt: 15 task xoá trượt, 5 member hết hạn kẹt `MEMBER_REMOVE_STUCK` trong một
+ * buổi sáng.
+ *
+ * Phân biệt bằng HÌNH DẠNG, không bằng attribute: kebab là nút CHỈ CÓ ICON (text
+ * rỗng), còn mọi dropdown trong row đều mang nhãn chữ (vai trò, loại ghế). Dấu
+ * hiệu này bền hơn `data-testid` — ChatGPT đổi/gỡ attribute liên tục, nhưng nút
+ * icon không tự nhiên mọc chữ.
+ */
 export function findRowMenuButton(row: HTMLElement): HTMLElement | null {
-  return querySelectorFirst<HTMLElement>(SELECTORS.memberRowMenu, row);
+  // 1) Selector ĐỊNH DANH — dùng lại ngay nếu ChatGPT trả testid/aria-label về.
+  const exact = querySelectorFirst<HTMLElement>(SELECTORS.memberRowMenu, row);
+  if (exact) return exact;
+
+  // 2) Dò theo hình dạng: button mở popup menu và KHÔNG có chữ.
+  const popups = Array.from(
+    row.querySelectorAll<HTMLElement>(
+      'button[aria-haspopup="menu"], [role="button"][aria-haspopup="menu"]',
+    ),
+  );
+  const iconOnly = popups.filter((b) => !(b.textContent ?? "").trim());
+  // Lấy cái CUỐI: kebab nằm ở cột phải ngoài cùng, nên nếu ChatGPT chèn thêm nút
+  // icon nào đó vào giữa row thì "..." vẫn là cái sau chót.
+  if (iconOnly.length > 0) return iconOnly[iconOnly.length - 1];
+
+  // 3) Row chỉ có ĐÚNG 1 button popup → không có dropdown vai trò để nhầm (tài
+  //    khoản không đủ quyền đổi role, hoặc tab "Lời mời") ⇒ nó chính là kebab.
+  //    Nhiều hơn 1 mà cái nào cũng có chữ thì KHÔNG đoán bừa — trả null để action
+  //    fail rõ ràng, thà vậy còn hơn bấm nhầm dropdown rồi báo lỗi lạc đề.
+  return popups.length === 1 ? popups[0] : null;
 }
 
 /**
