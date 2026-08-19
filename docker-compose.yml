@@ -113,7 +113,10 @@ services:
     container_name: autogpt-cloudflared
     restart: always
     mem_limit: ${CF_MEM_LIMIT:-128m}
-    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN:-}
+    # --protocol http2: chạy tunnel trên TCP thay vì QUIC/UDP. Nhà mạng VN bóp UDP
+    # quốc tế nên QUIC hay rớt ("timeout: no recent network activity") làm API
+    # thỉnh thoảng treo 1-2 giây. Đổi về http2 cho ổn định. (2026-08-19)
+    command: tunnel --no-autoupdate --protocol http2 run --token ${CF_TUNNEL_TOKEN:-}
     depends_on:
       - web
     profiles: ["remote"]
