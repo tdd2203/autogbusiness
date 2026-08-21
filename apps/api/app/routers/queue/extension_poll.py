@@ -17,15 +17,17 @@ import json
 import queue as _queue
 from datetime import datetime, timezone
 
-from fastapi import Depends
+from fastapi import Depends, Header
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from sqlalchemy.orm import Session
 
+from app.db import SessionLocal
 from app.deps import (
     get_session,
     require_extension_workspace,
+    resolve_extension_workspace,
 )
 from app.models import QueueItem, Workspace
 from app.sse import subscribe, unsubscribe
@@ -138,7 +140,7 @@ def active_task(
 
 @router.get("/stream")
 async def stream_queue_events(
-    workspace: Workspace = Depends(require_extension_workspace),
+    x_api_key: str | None = Header(default=None),
 ) -> StreamingResponse:
     """SSE stream: backend push real-time event tới extension khi có task mới.
 
@@ -147,10 +149,20 @@ async def stream_queue_events(
     Extension nhận event → gọi runUntilIdle → drain queue trong 1-2s.
 
     Heartbeat 25s/lần để (a) giữ proxy/SW alive, (b) detect dead connection.
+
+    ⚠️ KHÔNG dùng `Depends(require_extension_workspace)` ở đây (xem mục 5 của
+    `extension_poll.md`): dependency dạng generator chỉ được FastAPI đóng SAU
+    khi response kết thúc, mà response này là stream chạy vô hạn → session DB
+    (và transaction của nó) treo suốt đời connection. Thay vào đó mở một session
+    NGẮN, xác thực, lấy sẵn hai giá trị cần dùng rồi đóng ngay — generator bên
+    dưới không chạm DB nữa.
     """
-    q = subscribe(workspace.id)
-    workspace_id = workspace.id
-    workspace_name = workspace.name
+    with SessionLocal() as db:
+        workspace = resolve_extension_workspace(db, x_api_key)
+        workspace_id = workspace.id
+        workspace_name = workspace.name
+
+    q = subscribe(workspace_id)
 
     async def generator():
         try:
