@@ -3,6 +3,13 @@
 # dựng lại (mất vài giây) thay vì kéo sập cả máy. Muốn nới thì đặt trong .env:
 #   API_MEM_LIMIT=1g   PG_MEM_LIMIT=512m   WEB_MEM_LIMIT=96m   CF_MEM_LIMIT=192m
 # Xem container nào sát trần:  docker stats --no-stream
+# Đo cho chắc thay vì đoán qua `docker stats` (nó gộp cả page cache):
+#   CID=$(docker inspect -f '{{.Id}}' autogpt-postgres)
+#   cat /sys/fs/cgroup/system.slice/docker-$CID.scope/memory.events   # max>0 = đã chạm trần
+#   grep -E '^(anon|file|slab_reclaimable) ' .../memory.stat          # anon mới là RAM thật
+# 2026-08-21: server production đã đặt PG_MEM_LIMIT=512m trong .env vì trần 384m
+# bị chạm 2005 lần (phần lớn là slab reclaimable, anon thật chỉ ~25MB) → kernel
+# quét thu hồi liên tục, sinh nhịp CPU sys thừa.
 services:
   postgres:
     image: postgres:16-alpine

@@ -188,13 +188,24 @@ def assert_workspace_access(db: Session, user: User, workspace_id: UUID) -> None
         )
 
 
-def require_extension_workspace(
-    x_api_key: str | None = Header(default=None),
-    db: Session = Depends(get_session),
-) -> Workspace:
-    """Extension auth: tra X-API-KEY → workspace tương ứng. 401 nếu không khớp.
+# Nhịp ghi `last_extension_seen_at` (tối ưu 2026-08-21). Extension poll
+# `/queue/next` mỗi 5s và MỌI request đều qua đây → trước đây mỗi request là 1
+# UPDATE + COMMIT lên bảng `workspaces`: ~41.000 lượt ghi/ngày lên bảng 2 dòng,
+# heap phình lên 7 MB (1000+ dead tuple thường trực). Chỉ ghi lại khi mốc cũ đã
+# quá ngưỡng này. Dashboard coi extension "online" khi last seen < 5 PHÚT
+# (`ConnectionInfo` trong apps/web) → trễ tối đa 60s không đổi hành vi hiển thị.
+EXTENSION_SEEN_THROTTLE = timedelta(seconds=60)
 
-    Side effect: cập nhật `last_extension_seen_at = NOW()` để dashboard biết extension đang online.
+
+def resolve_extension_workspace(db: Session, x_api_key: str | None) -> Workspace:
+    """Lõi xác thực extension, KHÔNG phải FastAPI dependency.
+
+    Tách riêng để endpoint SSE (`/queue/stream`) gọi được bằng một session ngắn
+    tự quản rồi đóng ngay — dependency generator của FastAPI chỉ được đóng SAU
+    khi response kết thúc, mà SSE thì chạy vô hạn (xem `stream_queue_events`).
+
+    Side effect: cập nhật `last_extension_seen_at` (có tiết chế, xem
+    `EXTENSION_SEEN_THROTTLE`) để dashboard biết extension đang online.
     """
     if not x_api_key:
         raise HTTPException(
@@ -207,11 +218,26 @@ def require_extension_workspace(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API Key"
         )
-    # Update last seen — separate transaction để tránh impact request chính
-    from datetime import datetime, timezone
-
-    workspace.last_extension_seen_at = datetime.now(timezone.utc)
-    db.add(workspace)
-    db.commit()
-    db.refresh(workspace)
+    now = datetime.now(timezone.utc)
+    last_seen = workspace.last_extension_seen_at
+    if last_seen is None or now - last_seen >= EXTENSION_SEEN_THROTTLE:
+        # `db.add` thừa (object đã thuộc session này) và `db.refresh` cũng vậy:
+        # sessionmaker đặt expire_on_commit=False nên sau commit các thuộc tính
+        # vẫn dùng được. Tệ hơn, `refresh` phát thêm 1 SELECT MỞ TRANSACTION MỚI
+        # rồi không commit → connection nằm lại ở trạng thái 'idle in
+        # transaction', giữ snapshot cũ khiến autovacuum không dọn nổi dead
+        # tuple. Bỏ cả hai.
+        workspace.last_extension_seen_at = now
+        db.commit()
     return workspace
+
+
+def require_extension_workspace(
+    x_api_key: str | None = Header(default=None),
+    db: Session = Depends(get_session),
+) -> Workspace:
+    """Extension auth: tra X-API-KEY → workspace tương ứng. 401 nếu không khớp.
+
+    ⚠️ KHÔNG dùng cho endpoint streaming — xem `resolve_extension_workspace`.
+    """
+    return resolve_extension_workspace(db, x_api_key)
