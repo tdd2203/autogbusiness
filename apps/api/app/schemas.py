@@ -449,6 +449,10 @@ class MemberOut(BaseModel):
     invited_by_user_id: UUID | None
     joined_at: datetime | None
     last_synced_at: datetime | None
+    # Lần đồng bộ gần nhất KHÔNG thấy email trong workspace (found_in='none'). Khác
+    # NULL ⇒ dashboard cho phép "Mời lại" kể cả khi status='active' (DB ghi active
+    # nhưng thực tế đã rời đội — xem reinvite_member).
+    sync_missing_at: datetime | None = None
     created_at: datetime
     # Lần CUỐI invite/re-invite qua dashboard (NULL nếu member chỉ đến từ SYNC).
     # Dashboard hiển thị COALESCE(last_invited_at, created_at) cho cột "Ngày thêm"
@@ -838,6 +842,18 @@ class MemberInviteEntry(BaseModel):
 
     email: EmailStr
     subscription_months: int | None = Field(default=1, ge=1, le=60)
+
+
+class MemberReinviteBatchIn(BaseModel):
+    """Body cho MỜI LẠI HÀNG LOẠT (POST /{workspace_id}/members/re-invite-batch).
+
+    Chỉ nhận `member_ids` (các dòng đã tick ở tab "Chờ tham gia"). Backend tự lọc:
+    email CÒN HẠN → mời lại MIỄN PHÍ; HẾT HẠN / vô thời hạn → BỎ QUA và báo số bị bỏ
+    (user 2026-08-22: lệnh hàng loạt không bao giờ bật modal QR giữa chừng; email hết
+    hạn vẫn mời lại được từng dòng qua menu ⋯).
+    """
+
+    member_ids: list[UUID] = Field(min_length=1, max_length=200)
 
 
 class MemberBulkInviteIn(BaseModel):

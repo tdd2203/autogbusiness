@@ -124,6 +124,10 @@ export type Member = {
   invited_by_user_id: string | null;
   joined_at: string | null;
   last_synced_at: string | null;
+  /** Lần đồng bộ gần nhất KHÔNG thấy email trong workspace (found_in='none').
+   *  Khác null ⇒ cho phép "Mời lại" kể cả khi status='active' (DB ghi active nhưng
+   *  thực tế đã rời đội). Sync thấy lại → backend xoá về null. */
+  sync_missing_at: string | null;
   created_at: string;
   /** Lần CUỐI invite/re-invite qua dashboard. NULL nếu member chỉ từ SYNC.
    *  Cột "Ngày thêm" hiển thị last_invited_at ?? created_at để khớp Queue. */

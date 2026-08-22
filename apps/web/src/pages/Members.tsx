@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext, useParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
 import { LICENSE_FEATURE_ENABLED } from "../lib/featureFlags";
@@ -11,6 +11,9 @@ import { useRemoveMembers } from "../hooks/useRemoveMembers";
 import { useMemberDataActions } from "../hooks/useMemberDataActions";
 import { useMemberMutations } from "../hooks/useMemberMutations";
 import { useReinvite } from "../hooks/useReinvite";
+import { reinviteBatch } from "../hooks/useReinviteBatch";
+import { handleCommandBan } from "../lib/commandBan";
+import { triggerExtensionRun } from "../hooks/useExtensionTrigger";
 import OrderQrModal from "../components/OrderQrModal";
 import type { OrderQr } from "../lib/wallet";
 import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
@@ -401,6 +404,29 @@ export default function Members() {
     onPaymentRequired: (order) => setReinviteQr(order),
   });
 
+  // Mời lại HÀNG LOẠT (tab "Chờ tham gia"): chỉ email CÒN HẠN → miễn phí, nên không
+  // có nhánh 402/QR ở đây. Email hết hạn bị backend bỏ qua + báo lại số bị bỏ.
+  const bulkReinvite = useMutation({
+    mutationFn: (memberIds: string[]) =>
+      reinviteBatch(workspaceId as string, memberIds),
+    onSuccess: (r) => {
+      if (r.count > 0) toast.success(t("bulkReinvite.resultQueued", { n: r.count }));
+      else toast.error(t("bulkReinvite.resultNone"));
+      if (r.skipped_expired > 0)
+        toast.error(t("bulkReinvite.skippedExpired", { n: r.skipped_expired }));
+      if (r.skipped_active > 0)
+        toast.error(t("bulkReinvite.skippedActive", { n: r.skipped_active }));
+      qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      qc.invalidateQueries({ queryKey: ["added-members"] });
+      qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
+      triggerExtensionRun();
+    },
+    onError: (e) => {
+      if (handleCommandBan(e)) return;
+      toast.error(e instanceof Error ? e.message : String(e));
+    },
+  });
+
   const canRemove = hasPermission("MEMBER_REMOVE");
   // Xuất/Xoá dữ liệu (2 mục ChatGPT mới): quyền RIÊNG, mặc định TẮT với mọi tài
   // khoản phụ ⇒ chỉ super-admin có. Nút vẫn hiện trong menu "⋯" nhưng bị làm mờ.
@@ -558,6 +584,19 @@ export default function Members() {
         cancelText: t("common.cancel"),
       });
       if (ok) bulkSyncMembers.mutate(emails, clearSelection);
+      return;
+    }
+
+    if (value === "reinvite") {
+      // Mời lại hàng loạt: backend chỉ nhận email CÒN HẠN (miễn phí) và tự bỏ qua
+      // email hết hạn (trả về số bị bỏ) → không bao giờ bật modal QR giữa chừng.
+      // Muốn mời lại email hết hạn thì dùng menu ⋯ từng dòng.
+      const ok = await confirm(t("bulkReinvite.confirmBody", { n: ids.length }), {
+        title: t("bulkReinvite.confirmTitle", { n: ids.length }),
+        okText: t("bulkReinvite.confirmOk", { n: ids.length }),
+        cancelText: t("common.cancel"),
+      });
+      if (ok) bulkReinvite.mutate(ids, clearSelection);
       return;
     }
 
@@ -909,6 +948,7 @@ export default function Members() {
                   bulkChangeLicense.isPending ||
                   bulkSetOwner.isPending ||
                   bulkSyncMembers.isPending ||
+                  bulkReinvite.isPending ||
                   revokeInvites.isPending
                 }
                 onChange={(e) => {
@@ -923,6 +963,7 @@ export default function Members() {
                   bulkChangeLicense.isPending ||
                   bulkSetOwner.isPending ||
                   bulkSyncMembers.isPending ||
+                  bulkReinvite.isPending ||
                   revokeInvites.isPending
                     ? t("bulkRemove.submitBusy")
                     : t("bulkAction.placeholder", { n: selectedCount })}
@@ -932,6 +973,7 @@ export default function Members() {
                 {statusFilter === "pending" ? (
                   <>
                     <option value="sync">{t("bulkAction.sync")}</option>
+                    <option value="reinvite">{t("bulkAction.reinvite")}</option>
                     {canRemove && (
                       <option value="revoke">{t("bulkAction.revoke")}</option>
                     )}
@@ -1265,6 +1307,33 @@ export default function Members() {
                           <RowActionsMenu
                             ariaLabel={t("common.actions")}
                             items={[
+                              /* "Mời lại" cho member ĐANG ACTIVE chỉ hiện khi lần
+                                 ĐỒNG BỘ gần nhất KHÔNG thấy email trong workspace
+                                 (sync_missing_at) — DB ghi active nhưng người đó đã
+                                 rời đội. Sync còn thấy → backend chặn 409, nên
+                                 không bày nút (user 2026-08-22). */
+                              ...(canInvite && m.sync_missing_at
+                                ? [
+                                    {
+                                      key: "reinvite",
+                                      label: t("member.reinviteAction"),
+                                      disabled: reinvite.isPending,
+                                      onClick: async () => {
+                                        const ok = await confirm(
+                                          t("member.confirmReinviteMissing", {
+                                            email: m.email,
+                                          }),
+                                          {
+                                            title: t("member.reinviteAction"),
+                                            okText: t("member.reinviteAction"),
+                                            cancelText: t("common.cancel"),
+                                          },
+                                        );
+                                        if (ok) reinvite.mutate(m.id);
+                                      },
+                                    },
+                                  ]
+                                : []),
                               ...(canChangeSubscription
                                 ? [
                                     {
