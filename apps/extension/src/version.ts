@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.11.9";
+export const VERSION = "0.13.0";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,62 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.13.0",
+    date: "2026-08-22",
+    kind: "feature",
+    summary:
+      "Mời thành viên: việc ĐẦU TIÊN là kiểm tra số suất còn trống, thiếu thì tự mua bù rồi mới mời — hết cảnh ChatGPT bật hộp 'mua suất kèm gửi lời mời' mà mình không kiểm soát được tiền.",
+    details: [
+      "Quy trình mới của MỜI THÀNH VIÊN: mở 'Quản lý số suất' → đọc 'đã gán/tổng' (vd 52/53 → còn trống 1) → so với số email sắp mời → thiếu bao nhiêu thì bấm '+' đúng bấy nhiêu, 'Tiếp tục', 'Xác nhận mua' → ĐỌC LẠI số suất để chắc đã vào → rồi mới mở hộp thoại mời như cũ.",
+      "Vì sao phải mua TRƯỚC: mời khi thiếu suất sẽ làm ChatGPT bật hộp 'Xem lại giao dịch mua' riêng với nút 'Mua suất người dùng và gửi lời mời' — mua suất VÀ gửi lời mời trong MỘT cú bấm. Extension không biết trước nó mua mấy suất, hết bao nhiêu tiền, nên chủ động làm cho hộp đó KHÔNG BAO GIỜ xuất hiện.",
+      "Workspace CHƯA được ChatGPT bật UI mới (không có nút 'Quản lý số suất' cạnh 'Mời thành viên') → BỎ QUA hoàn toàn bước này, mời y như trước. User quan sát 22/8: workspace 47 thành viên có nút, workspace 145 thành viên không có.",
+      "Đọc số suất là thao tác CHỈ-ĐỌC: mở hộp, đọc, đóng bằng 'Quay lại'/Esc. Không bao giờ chạm nút 'Tiếp tục' ở bước kiểm tra.",
+      "Bước kiểm tra chạy SAU tiền tố 'Mời lại' (thu hồi lời mời cũ) vì thu hồi TRẢ LẠI suất — đếm trước khi thu hồi sẽ ra thiếu và đi mua thừa. Và chỉ chạy ở lần gọi thứ nhất, không lặp lại sau vòng hard-reload của toggle mời-ngoài-miền.",
+      "Thiếu quá 20 suất → DỪNG, không mua một phần: mua 20 khi cần 25 thì vẫn không mời đủ, tiền mất mà việc không xong. Mã lỗi mới NOT_ENOUGH_SEATS kèm số liệu còn/thiếu.",
+      "Không đọc được số suất (có UI mới nhưng ChatGPT đổi cách hiển thị) → DỪNG, không mời mù. Mời mù chính là thứ kích hoạt hộp mua-kèm-mời.",
+      "Bấm '+' theo kiểu BÁM THEO CON SỐ thay vì đếm đủ N lần: mỗi vòng đọc bộ đếm, thiếu thì bấm '+', LỠ VƯỢT thì bấm '−' kéo xuống, lặp tới khi bộ đếm bằng đúng 'số hiện có + số cần mua'. Bấm nhanh, không nghỉ. Nhờ vậy cú bấm nhân đôi (ChatGPT/React bắn 2 sự kiện) tự sửa ngay tại chỗ bằng một cú '−', thay vì làm hỏng cả lượt như bản trước.",
+      "Chỉ khi tự sửa không nổi mới LÀM LẠI: đóng hộp 'Quản lý suất', mở lại (bộ đếm trở về số thật của workspace) rồi bấm lại, tối đa 3 lượt. An toàn tuyệt đối về tiền vì chưa hề bấm 'Tiếp tục' — chưa có giao dịch nào tồn tại. Kích hoạt khi: bấm mãi không về đúng số (trần qty×3+6 lần), bấm mà số không đổi (đụng hạn mức ChatGPT), vượt số mà không tìm ra nút '−', hoặc thẻ tóm tắt nói số khác.",
+      "🔒 Loại hẳn các nút MANG CHỮ ('Tiếp tục', 'Quay lại', 'Xác nhận mua', nút đóng…) khỏi ứng viên bộ đếm. Trước đây chỉ nút '+' được bấm nên nhận nhầm chỉ làm hỏng thao tác; nay luồng bấm cả '−' nên nhận nhầm 'Tiếp tục' sẽ nhảy thẳng sang hộp thanh toán. Bộ đếm chỉ nhận nút icon (chữ rỗng hoặc đúng 1-2 ký tự).",
+      "Nút 'Tiếp tục' còn khoá sau khi bộ đếm đã lên cũng chuyển sang LÀM LẠI, và bỏ hẳn câu đổ cho 'thiếu phương thức thanh toán' trong mọi thông báo lỗi — workspace luôn có sẵn thẻ nên đoán vậy là chỉ dẫn sai người đọc.",
+      "Chốt chặn ở hộp thanh toán giờ CHỈ dựa trên SỐ SUẤT, không dựa vào tiền: số suất hộp khai phải bằng số cần mua, và số ghế trước/sau phải chênh đúng bấy nhiêu. Bỏ chốt 'hoá đơn tháng mới không được thấp hơn hiện tại' vì chốt số ghế đã bao trọn ca đó (giảm suất thì chênh ra số âm). Tiền vẫn được đọc để ghi audit nhưng đọc không ra cũng không chặn — user đối soát theo hoá đơn ngân hàng.",
+      "Mua xong ĐỌC LẠI ĐÚNG MỘT LẦN (chờ 3s cho ChatGPT kịp cập nhật rồi đọc): luồng mua báo ok chỉ nghĩa là 'đã bấm Xác nhận mua và hộp đóng', chưa chắc suất đã cộng xong, nên vẫn phải xác nhận bằng mắt — nhưng mở/đóng hộp nhiều lượt vừa chậm vừa thêm cơ hội hộp bị kẹt. Nếu lần đọc đó VẪN thiếu thì TẢI LẠI TRANG một lần rồi đọc lại (trang có thể còn giữ số cũ trong bộ nhớ React); đủ rồi thì mời tiếp như thường.",
+      "Tải lại trang ở đây là điều hướng SPA sang /admin/billing rồi quay lại /admin/members, KHÔNG phải F5. F5 thật sẽ huỷ content script giữa chừng → task chết với CONTENT_TIMEOUT trong khi tiền đã trừ xong.",
+      "Chạy lại task không mua trùng: mỗi lần chạy đều đo suất thật trước, lần trước đã mua thì thấy đủ và bỏ qua bước mua.",
+      "⏱️ Nâng hạn giờ INVITE_MEMBER từ 3 phút lên 8 phút (cả extension lẫn backend) — mời giờ có thể kèm một lần mua. Giữ 3 phút sẽ cắt task GIỮA LÚC thanh toán: tiền đã trừ mà task báo treo.",
+      "Thêm 2 chốt cho luồng mua (phát hiện từ ảnh user): hộp 'Quản lý suất' tự in thẻ 'Thêm N suất Tiêu chuẩn' sau khi bấm '+' → đối chiếu N với số cần mua NGAY, trước khi sang bước thanh toán; và hộp thanh toán in số ghế trước/sau (53 ghế → 55 ghế) → hiệu hai số phải bằng đúng số suất mua.",
+      "Sửa lỗi đua: hộp 'Xem lại giao dịch mua' hiện ra TRƯỚC, số tiền ChatGPT tính xong điền vào SAU vài giây. Bản trước đọc ngay lúc hộp vừa mở sẽ ra rỗng → chốt 'không đọc được số liệu' nổ oan dù UI bình thường. Nay chờ tới khi số liệu thật sự có mặt (tối đa 15s).",
+      "💰 GIÁ NIÊM YẾT KHÔNG PHẢI GIÁ THẬT: workspace được giảm giá. Hộp ghi '+ 1.298.000 đ/tháng' (2 × 649.000) nhưng hoá đơn đi từ 13.806.500 lên 14.327.500 = +521.000 (2 × 260.500). Đối chiếu 2 ảnh: lấy giá sau giảm thì tỷ lệ prorate của cả 2 workspace đều ~9,3%, lấy giá niêm yết thì ra 3,8% và lệch nhau. Code TUYỆT ĐỐI không đọc dòng đơn giá vào đâu, và không đặt chốt kiểu 'mức tăng phải bằng đơn giá × số suất' — chốt đó sẽ chặn oan mọi lần mua có giảm giá.",
+      "💸 KHÔNG con số nào trong hộp thanh toán là CHI PHÍ THẬT: 2 dòng hoá đơn hằng tháng ghi rõ '+ thuế' nên là số TRƯỚC THUẾ, còn phí ngân hàng/phí quy đổi ngoại tệ thì ChatGPT không hiển thị ở đâu cả. Chỉ 'Tổng phải trả hôm nay' là đã cộng thuế (48.027 + 4.803 = 52.830). Vì vậy các trường tiền hằng tháng mang hậu tố _pretax (cố ý, để sau này không ai tưởng đó là số cuối), và payload kèm câu amounts_basis nói rõ số nào gồm gì. Chi phí thật chốt theo hoá đơn ngân hàng — sẽ cập nhật sau.",
+      "🐞 Soát lại phát hiện bẫy: nhãn dự phòng lỏng /theo tỷ lệ/ khớp trúng PHỤ ĐỀ modal ('Các suất mới được tính phí THEO TỶ LỆ đến chu kỳ thanh toán tiếp theo'), rồi cụm tiền gần nhất phía sau lại đúng là dòng ĐƠN GIÁ NIÊM YẾT → đọc ra 1.298.000 thay vì phần prorate. Bản trước thoát chỉ vì cửa sổ quét 90 ký tự cắt đúng giữa '1.298.000' và chữ 'đ' — phụ đề ngắn đi vài chữ là dính. Đã bỏ hết nhãn lỏng, chỉ nhận nhãn đầy đủ, kèm test tái hiện.",
+      "🐞 Soát lại phát hiện lỗi thứ hai: tiền và số ghế của một dòng hoá đơn được dò ĐỘC LẬP, mỗi vế có danh sách nhãn dự phòng riêng → có thể lấy tiền của dòng này ghép với số ghế của dòng khác, rồi đem so với số suất đang mua. Nay cả hai đọc từ CÙNG một nhãn đã khớp; dòng nào không có ghế thì để trống chứ không mượn của dòng khác.",
+      "Modal 'Quản lý suất' không đóng lại được sau bước đọc → DỪNG hẳn task mời. Lớp phủ của nó chặn mọi click phía sau (bấm mua trượt, mở hộp mời cũng trượt), trước đây chỉ ghi cảnh báo rồi đi tiếp nên sẽ fail lung tung ở bước sau.",
+      "Đọc thêm dòng 'Thuế bán hàng (10,001%)' thành sales_tax_text/_vnd/_percent để về sau đối soát hoá đơn cho dễ. Có test kiểm chứng tạm tính + thuế = tổng hôm nay, tức 3 dòng được đọc đúng dòng chứ không lệch.",
+      "Kết quả task mời ghi thêm seat_total / seat_assigned / seat_free / seat_needed / seat_purchased + toàn bộ số liệu tiền của lần mua, để dashboard cập nhật số suất từ con số THẬT của ChatGPT thay vì scrape trang Thanh toán (vốn hay cũ/lệch).",
+    ],
+  },
+  {
+    version: "0.12.0",
+    date: "2026-08-22",
+    kind: "feature",
+    summary:
+      "Mua suất: đi theo UI MỚI của ChatGPT (nút 'Quản lý số suất' ngay trên trang Thành viên) — bỏ hẳn chặng vòng qua Stripe/Link, và đọc luôn khoản tăng CỐ ĐỊNH hằng tháng chứ không chỉ tiền trả hôm nay.",
+    details: [
+      "ChatGPT đổi UI mua suất (quan sát 22/8/2026): nút 'Quản lý số suất' nằm cạnh '+ Mời thành viên' trên /admin/members → modal 'Quản lý suất' (bộ đếm [−] 47 [+]) → 'Tiếp tục' → modal 'Xem lại giao dịch mua' → 'Xác nhận mua' là TRỪ TIỀN THẬT NGAY qua thẻ đã lưu. Đường cũ (/admin/billing?tab=plan → 'Quản lý giấy phép' → 'Thêm người dùng') không còn.",
+      "Hỏng ngay từ bước đầu: danh sách nhãn nút không có 'Quản lý số suất', mà so khớp là 'chứa chuỗi' nên nhãn cũ 'Quản lý suất' KHÔNG đỡ được ('số' chen vào giữa) → task trượt ngay bước 1. Đã thêm nhãn mới lên đầu, giữ nhãn cũ phía dưới cho workspace chưa được bật UI mới.",
+      "🔴 BỎ chặng Stripe + Link khỏi luồng mua: UI mới trừ tiền thẳng trong modal, không tạo hoá đơn 'Đến hạn' để đi trả sau. Giữ lại chặng đó còn TAI HẠI — sau khi đã trừ tiền, code cũ sẽ sang tab Hoá đơn tìm 'hoá đơn chưa thanh toán đầu tiên' rồi tự trả nó, tức trả nhầm một hoá đơn KHÁC không liên quan tới task.",
+      "Quyền truy cập invoice.stripe.com + checkout.link.com trong manifest GIỮ NGUYÊN (không gỡ): chế độ skip_to_payment vẫn cần để dọn nốt hoá đơn 'Đến hạn' tồn đọng từ các lần mua theo UI cũ. Gỡ bây giờ là mất luôn đường trả những hoá đơn đó.",
+      "Đọc tiền viết lại: UI mới ghi 'Tổng phải trả hôm nay' với 'đ' đứng SAU số (27.168 đ), UI cũ ghi 'Tổng đến hạn hôm nay' với 'đ' đứng TRƯỚC. Bản cũ còn có fallback 'lấy cụm tiền đầu tiên gặp trong text' → vớ trúng đơn giá '649.000 đ/tháng' và ghi audit sai ~24 lần số tiền thật. Nay không đoán bừa nữa: không đọc được thì báo không đọc được.",
+      "MỚI: đọc cả 'Hóa đơn hằng tháng hiện tại' (12.243.500 đ) và 'Hóa đơn mới hằng tháng' (12.504.000 đ) để ra mức tăng CỐ ĐỊNH mỗi tháng (260.500 đ/suất). Đây mới là khoản tiền lớn — 'Tổng phải trả hôm nay' chỉ là phần lẻ prorate tới cuối chu kỳ.",
+      "Số prorate ĐỔI theo từng lần mở modal (user chụp 3 lần: 27.311đ / 27.191đ / 27.168đ vì tính theo số giây còn lại của chu kỳ) → toàn bộ số liệu tiền được đọc MỘT LẦN ngay trước khi bấm xác nhận, không cache, và KHÔNG lấy chênh lệch giữa các lần đọc làm dấu hiệu bất thường (lệch là bình thường, chặn theo kiểu đó là chặn oan mọi lần mua).",
+      "Chốt an toàn tiền giữ nguyên (cap 20 suất/task, số suất trong modal phải khớp task, scrape tiền để ghi audit, dedup ở backend) và thêm 2 chốt: (a) modal không đọc được CẢ số suất LẪN tổng tiền thì KHÔNG bấm — nút cuối trừ tiền ngay, thà dừng còn hơn bấm mù; (b) hoá đơn hằng tháng mới THẤP HƠN hiện tại thì dừng, vì đó là modal giảm suất chứ không phải mua thêm.",
+      "Sanity check số suất chỉ khớp dòng NÓI VỀ PHẦN THÊM ('Thêm 1 suất Tiêu chuẩn'), không khớp '47 ghế' / '48 ghế' in cạnh đó — bắt nhầm 2 số này là báo lệch oan, hoặc tệ hơn là PASS nhầm khi số ghế tình cờ trùng.",
+      "Bộ đếm suất đọc được cả khi con số KHÔNG nằm trong <input> (modal mới hiển thị 47 như text giữa 2 nút): chọn con số nằm GIỮA nút '−' và nút '+' nên không vớ nhầm mẩu '47' của dòng '47 người dùng · 46/47 đã gán' ngay dưới — vớ nhầm chỗ đó thì bấm '+' mãi không thấy số đổi, fail oan.",
+      "Mỗi lần bấm '+' chờ tới khi số THỰC SỰ nhích thay vì ngủ 400ms+600ms cố định; nhảy 2 đơn vị (click double-fire) hoặc số giảm (bấm trúng '−') là DỪNG ngay thay vì đi tiếp rồi mua sai số suất.",
+      "Nút 'Tiếp tục' bị ChatGPT khoá cho tới khi số suất đổi → nay chờ mở khoá tới 5s rồi mới kết luận bị chặn, thay vì thấy khoá là fail luôn.",
+      "RANH GIỚI: luồng MỜI THÀNH VIÊN cũng có modal tên 'Xem lại giao dịch mua' nhưng nút cuối là 'Mua suất người dùng và gửi lời mời' — luồng này CHỦ ĐỘNG bỏ qua dialog nào có nút đó, để không bấm nhầm sang mua-kèm-gửi-lời-mời. Không đụng vào code luồng mời.",
+    ],
+  },
   {
     version: "0.11.9",
     date: "2026-08-21",

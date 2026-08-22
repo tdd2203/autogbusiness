@@ -188,14 +188,27 @@ export const TEXT_FALLBACKS = {
     "发票",
     "账单历史",
   ],
-  // Link/button mở modal review để mua thêm seat trên /admin/billing?tab=plan.
+  // Button/link mở modal mua thêm suất.
+  //
+  // UI 2026-08-22: nút "Quản lý số suất" nằm NGAY CẠNH "+ Mời thành viên" trên
+  // /admin/members — không còn phải vòng qua /admin/billing?tab=plan rồi bấm
+  // "Quản lý giấy phép". Nhãn mới đứng ĐẦU danh sách vì so khớp là "chứa chuỗi"
+  // và duyệt theo thứ tự: "Quản lý suất" KHÔNG phải chuỗi con của "Quản lý số
+  // suất" (chữ "số" chen giữa) nên thiếu nhãn mới là trượt hẳn, không nhờ được
+  // nhãn cũ.
+  //
+  // Nhãn cũ giữ nguyên phía dưới để workspace chưa được ChatGPT bật UI mới
+  // (hoặc khi cần đi lại đường /admin/billing) vẫn chạy được.
   billingManageLicenses: [
+    "Quản lý số suất",
     "Quản lý giấy phép",
     "Quản lý suất",
     "Quản lý chỗ ngồi",
+    "Manage seat count",
     "Manage licenses",
     "Manage seats",
     "Manage license",
+    "管理席位数",
     "管理许可证",
     "管理席位",
     "管理许可",
@@ -220,18 +233,31 @@ export const TEXT_FALLBACKS = {
     "增加",
     "加",
   ],
-  // Nút FINAL CHARGE của modal review THỨ 2 ("Quản lý chỗ ngồi") — sau khi
-  // bấm "Tiếp tục" ở modal đầu. Click nút này = THẬT SỰ CHARGE TIỀN qua
-  // Stripe payment method đã lưu. Extension PHẢI verify trước khi click.
+  // Nút FINAL CHARGE của modal review THỨ 2 — sau khi bấm "Tiếp tục" ở modal
+  // đầu. Click nút này = THẬT SỰ TRỪ TIỀN qua thẻ đã lưu. Extension PHẢI verify
+  // trước khi click.
+  //
+  // UI 2026-08-22: modal tên "Xem lại giao dịch mua", nút là "Xác nhận mua" và
+  // trừ tiền NGAY (không còn tạo hoá đơn rồi vòng qua Stripe/Link). Nhãn cũ
+  // "Thêm người dùng" giữ lại cho workspace còn UI cũ.
+  //
+  // ⚠️ RANH GIỚI: luồng MỜI THÀNH VIÊN cũng có modal tên "Xem lại giao dịch
+  // mua", nhưng nút cuối của nó là "Mua suất người dùng và gửi lời mời" (mua +
+  // gửi lời mời trong một cú bấm) và do luồng invite xử lý riêng. KHÔNG thêm
+  // nhãn đó vào đây — thêm vào là action này bấm nhầm nút của luồng mời.
   billingAddUserButton: [
+    "Xác nhận mua",
+    "Xác nhận mua hàng",
     "Thêm người dùng",
     "Thêm thành viên",
     "Xác nhận thanh toán",
+    "Confirm purchase",
     "Add user",
     "Add users",
     "Add member",
     "Confirm payment",
     "Confirm and pay",
+    "确认购买",
     "添加用户",
     "添加成员",
     "确认付款",

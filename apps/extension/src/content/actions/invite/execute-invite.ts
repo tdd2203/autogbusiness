@@ -14,6 +14,7 @@ import { locatePendingRow } from "../revoke/locate-pending-row";
 import { revokeInvite } from "../revoke";
 import { clickTabAndWait } from "../sync";
 import { scrapeAllRows } from "../sync/scrape-all-rows";
+import { ensureSeatsForInvite } from "./ensure-seats";
 import { executeInviteInner } from "./execute-invite-inner";
 import { findInviteOpenButton } from "./finders/find-invite-open-button";
 import { scanPendingForEmails } from "./scan-pending-page";
@@ -226,6 +227,32 @@ export async function executeInvite(
     if (pre.done) return pre.done;
   }
 
+  // ─── BƯỚC SUẤT (2026-08-22): đủ suất rồi mới được mời ────────────────────
+  // Chạy SAU tiền tố "Mời lại" vì tiền tố đó thu hồi lời mời cũ → TRẢ LẠI suất,
+  // đếm trước khi thu hồi sẽ ra thiếu và đi mua thừa.
+  // Chỉ chạy ở lần gọi THỨ NHẤT: lần 2 (externalReady) là quay lại sau khi
+  // background hard-reload, suất đã được đảm bảo ở lần 1 rồi.
+  let seatData: Record<string, unknown> = {};
+  if (!externalReady) {
+    const seats = await ensureSeatsForInvite(taskId, emails.length);
+    seatData = seats.data;
+    if (!seats.ok) {
+      console.warn(`[autogpt-invite] DỪNG trước khi mời: ${seats.error_message}`);
+      // KHÔNG dùng VERIFY_FAILED ở đây: `invite-salvage.ts` chỉ cứu ca
+      // VERIFY_FAILED có `submit_clicked=true` (đã bấm Gửi lời mời rồi mới lỗi).
+      // Ta chưa hề mở dialog mời — dùng mã riêng để không lẫn vào đường cứu đó.
+      return {
+        ok: false,
+        error_code:
+          seats.error_code === "SEAT_CHECK_FAILED"
+            ? "FAILED_UI_CHANGED"
+            : "NOT_ENOUGH_SEATS",
+        error_message: seats.error_message ?? "Không đủ suất để mời.",
+        data: seatData,
+      };
+    }
+  }
+
   // Spec (v0.6.6, theo user 2026-05-20):
   //   1. Kiểm tra toggle "Cho phép lời mời ngoài tên miền" hiện đang ON/OFF.
   //      - Nếu OFF → bật ON.
@@ -305,6 +332,9 @@ export async function executeInvite(
         emails,
         count: emails.length,
         role,
+        // Lần gọi 2 (externalReady) BỎ QUA bước suất → số liệu chỉ có ở đây,
+        // đính kèm để dashboard vẫn ghi nhận được.
+        ...seatData,
       },
     };
   } else {
@@ -373,6 +403,16 @@ export async function executeInvite(
         scan.missing,
       );
     }
+  }
+
+  // Gắn số liệu suất vào kết quả để dashboard cập nhật seat_total/seat_used từ
+  // con số THẬT của ChatGPT (chính xác hơn scrape trang Thanh toán).
+  if (inviteResult.ok && Object.keys(seatData).length > 0) {
+    const data = (inviteResult as { ok: true; data?: Record<string, unknown> }).data ?? {};
+    (inviteResult as { ok: true; data?: Record<string, unknown> }).data = {
+      ...data,
+      ...seatData,
+    };
   }
 
   return inviteResult;

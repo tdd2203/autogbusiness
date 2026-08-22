@@ -56,7 +56,12 @@ def pick_next(
     # INVITE max 79s, SYNC_DATA max 137s, các UI op khác <45s. Ngưỡng để dư buffer
     # trên max thực nhưng vẫn thấp hơn nhiều so với 5 phút cũ.
     STUCK_THRESHOLDS = {
-        "INVITE_MEMBER": timedelta(minutes=3),
+        # INVITE_MEMBER (từ 2026-08-22): trước khi mời, extension kiểm tra số suất
+        # còn trống và MUA BÙ nếu thiếu (modal Quản lý suất → Xem lại giao dịch
+        # mua → Xác nhận mua). Một lần mua tốn tương đương PURCHASE_SEAT, nên
+        # ngưỡng 3' cũ sẽ giết task GIỮA LÚC đang thanh toán → tiền đã trừ mà task
+        # báo treo. Nâng ngang PURCHASE_SEAT. Ca mời thường vẫn xong trong ~80s.
+        "INVITE_MEMBER": timedelta(minutes=8),
         "REMOVE_MEMBER": timedelta(minutes=3),
         "CHANGE_ROLE": timedelta(minutes=3),
         "CHANGE_LICENSE_TYPE": timedelta(minutes=3),

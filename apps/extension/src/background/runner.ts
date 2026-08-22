@@ -129,8 +129,12 @@ const MAX_VERIFY_RELOADS = 3;
  * backend auto-cleanup mơ hồ sau khi đã treo lâu.
  */
 const CONTENT_TIMEOUTS: Record<string, number> = {
+  // INVITE_MEMBER (2026-08-22): mời giờ có thể phải MUA SUẤT trước (kiểm tra số
+  // suất → thiếu thì mua bù → đọc lại → mới mời), tốn thêm gần bằng một
+  // PURCHASE_SEAT. Giữ 150s sẽ cắt task GIỮA LÚC thanh toán: tiền đã trừ mà task
+  // báo CONTENT_TIMEOUT. Nâng ngang PURCHASE_SEAT (backend 8' → 450s).
+  INVITE_MEMBER: 450_000,
   // Backend 180s (3') → extension tự fail ở 150s.
-  INVITE_MEMBER: 150_000,
   REMOVE_MEMBER: 150_000,
   CHANGE_ROLE: 150_000,
   CHANGE_LICENSE_TYPE: 150_000,

@@ -210,6 +210,13 @@ export type ExecuteActionResponse =
         | "CONTENT_TIMEOUT"
         | "STALE_BUILD"
         | "EXTERNAL_TOGGLE_FAILED"
+        // INVITE_MEMBER: workspace không còn đủ suất trống cho lượng email sắp
+        // mời, và extension KHÔNG mua bù được (vượt hạn mức 20/lần, mua thất bại,
+        // hoặc mua xong đọc lại vẫn chưa thấy suất). KHÔNG mời để tránh kích hoạt
+        // luồng "Mua suất người dùng và gửi lời mời" của ChatGPT (mua + gửi lời
+        // mời trong một cú bấm, extension không kiểm soát được số tiền).
+        // `data` kèm seat_* để dashboard hiển thị còn/thiếu bao nhiêu.
+        | "NOT_ENOUGH_SEATS"
         | "UNKNOWN";
       error_message: string;
       /**

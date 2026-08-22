@@ -28,9 +28,14 @@ export const manifest: ManifestV3Export = {
       run_at: "document_start",
     },
     {
-      // Stripe invoice page: tự click button "Link" sau khi PURCHASE_SEAT Phase 1
-      // (chatgpt.com modal #1+#2) tạo invoice "Đến hạn" + Phase 2 (chatgpt.com
-      // tab=invoices) mở URL invoice.stripe.com/i/<account>/<token>/...
+      // Stripe invoice page: tự click button "Link" để thanh toán hoá đơn
+      // "Đến hạn".
+      //
+      // ⚠️ Từ UI ChatGPT 2026-08-22, luồng mua suất CHÍNH không đi qua đây nữa:
+      // modal "Xem lại giao dịch mua" trừ tiền thẳng qua thẻ đã lưu, không tạo
+      // hoá đơn chờ. Chặng Stripe/Link chỉ còn phục vụ PURCHASE_SEAT
+      // `skip_to_payment` — trả nốt hoá đơn "Đến hạn" tồn đọng từ các lần mua
+      // theo UI cũ. Giữ lại cho tới khi dọn hết tồn đọng đó.
       matches: ["https://invoice.stripe.com/*"],
       js: ["src/content/stripe-invoice.ts"],
       run_at: "document_idle",
@@ -64,6 +69,8 @@ export const manifest: ManifestV3Export = {
     "https://chat.openai.com/*",
     // PURCHASE_SEAT payment chain — cần permission để inject content script
     // qua chrome.scripting.executeScript khi auto-injection chậm (fallback).
+    // GIỮ LẠI dù luồng mua suất mới không dùng: chế độ `skip_to_payment` vẫn
+    // cần để thanh toán hoá đơn "Đến hạn" tồn đọng (xem content_scripts trên).
     "https://invoice.stripe.com/*",
     "https://checkout.link.com/*",
   ],

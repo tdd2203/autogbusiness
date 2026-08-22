@@ -43,8 +43,3 @@ export function findFirstUnpaidInvoice(): { url: string; amountText: string | nu
   }
   return null;
 }
-
-/** Backward-compat alias để chain-handler cũ vẫn dùng được. */
-export function findFirstUnpaidInvoiceStripeUrl(): string | null {
-  return findFirstUnpaidInvoice()?.url ?? null;
-}
