@@ -26,6 +26,12 @@ os.environ["SUPER_ADMIN_USERNAME"] = "superadmin"
 os.environ["SUPER_ADMIN_PASSWORD"] = "TestPassword123!"
 os.environ["EXTENSION_API_KEY"] = "test-extension-api-key"
 
+# TẮT rate-limit cho toàn bộ suite: mọi test chia sẻ CÙNG một client (TestClient →
+# IP "testclient"), nên bộ đếm theo IP sẽ cộng dồn qua hàng nghìn request của cả
+# suite và bắt đầu trả 429 ở giữa chừng — lỗi giả, không liên quan nghiệp vụ.
+# `test_rate_limit.py` tự dựng app + Settings riêng có BẬT để kiểm tra limiter.
+os.environ["RATE_LIMIT_ENABLED"] = "false"
+
 # Bí mật webhook HMAC cho SePay — test_wallet_hmac ký body bằng đúng secret này
 # (SECRET = "test-hmac-secret-do-not-use"). Thiếu biến này → sepay_hmac_secret_configured=False.
 os.environ["SEPAY_WEBHOOK_SECRET"] = "test-hmac-secret-do-not-use"

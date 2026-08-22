@@ -12,6 +12,7 @@ import { SearchInput } from "./Members";
 import { Chip } from "./Queue";
 import { MemberDetailModal } from "../components/MemberDetailModal";
 import { ChangeEmailModal } from "../components/ChangeEmailModal";
+import { TransferSubscriptionModal } from "../components/TransferSubscriptionModal";
 import { ChangeSubscriptionModal } from "../components/ChangeSubscriptionModal";
 import { NotifyLinkModal } from "../components/NotifyLinkModal";
 import { RowActionsMenu, type RowActionItem } from "../components/RowActionsMenu";
@@ -110,6 +111,9 @@ export default function AddedEmails() {
   const [changeSubMember, setChangeSubMember] = useState<AddedMember | null>(
     null,
   );
+  // "Chuyển hạn sử dụng đến" — khác Đổi email ở chỗ email nhận ĐƯỢC PHÉP đang là
+  // thành viên (hạn còn lại cộng dồn). Xem hooks/useTransferSubscription.md.
+  const [transferMember, setTransferMember] = useState<AddedMember | null>(null);
   // Email đang mở modal "Thông báo" — lấy link gửi cho khách để họ nhận nhắc gia hạn
   // của đúng email đó. Có mặt ngay sau khi mời thành công (email vào danh sách này).
   const [notifyMember, setNotifyMember] = useState<AddedMember | null>(null);
@@ -489,6 +493,11 @@ export default function AddedEmails() {
                     label: t("member.changeEmailAction"),
                     onClick: () => setChangeEmailMember(m),
                   },
+                  {
+                    key: "transfer-expiry",
+                    label: t("member.transferExpiryAction"),
+                    onClick: () => setTransferMember(m),
+                  },
                 ]
               : []),
             ...(canRemove
@@ -566,6 +575,11 @@ export default function AddedEmails() {
                     key: "change-email",
                     label: t("member.changeEmailAction"),
                     onClick: () => setChangeEmailMember(m),
+                  },
+                  {
+                    key: "transfer-expiry",
+                    label: t("member.transferExpiryAction"),
+                    onClick: () => setTransferMember(m),
                   },
                 ]
               : []),
@@ -666,6 +680,13 @@ export default function AddedEmails() {
           workspaceId={changeEmailMember.workspace_id}
           member={changeEmailMember}
           onClose={() => setChangeEmailMember(null)}
+        />
+      )}
+      {transferMember && (
+        <TransferSubscriptionModal
+          workspaceId={transferMember.workspace_id}
+          member={transferMember}
+          onClose={() => setTransferMember(null)}
         />
       )}
       {changeSubMember && (

@@ -5,13 +5,10 @@
 
 import type { ExecuteActionResponse } from "../../../shared/messages";
 import { sleep } from "../../human";
-import { TEXT_FALLBACKS } from "../../selectors";
 import { executeRemove } from "../remove";
-import { clickTabAndWait } from "../sync";
+import { ensurePendingInvitesTab } from "./pending-tab";
 import { revokeInvites } from "./revoke-invites-loop";
 import type { RevokeResult } from "./revoke-invite";
-
-const PENDING_TAB_LOAD_WAIT_MS = 1500;
 
 export async function executeRevokeInvites(
   taskId: string,
@@ -22,28 +19,9 @@ export async function executeRevokeInvites(
   }
   console.log(`[autogpt-revoke] batch: ${emails.length} emails`);
 
-  // Đảm bảo đang ở /admin/members
-  if (!location.pathname.includes("/admin/members")) {
-    history.pushState({}, "", "/admin/members");
-    window.dispatchEvent(new PopStateEvent("popstate"));
-    await sleep(PENDING_TAB_LOAD_WAIT_MS);
-  }
-
-  // Chuyển sang tab "Lời mời đang chờ xử lý":
-  //   - `waitForButtonMs=12000`: chờ thanh tab RENDER trước khi tìm/click. Từ
-  //     v0.8.13 mỗi action mở tab /admin/members MỚI → content chạy ngay khi trang
-  //     vừa load, nút tab có thể chưa render → nếu không chờ sẽ fail tức thì.
-  //   - `verifyTabParam="tab=invites"`: VERIFY URL đã đổi (retry 3 lần) để không
-  //     kẹt ở tab Người dùng khi humanClick không trigger React onClick.
-  // Cả hai bước gom trong clickTabAndWait → caller không phải tự `waitFor` (trước
-  // đây lặp thủ công ở đây, từng quên ở sync-member gây regression v0.8.16).
-  const switched = await clickTabAndWait(
-    "tab_pending_invites",
-    TEXT_FALLBACKS.tabPendingInvites,
-    PENDING_TAB_LOAD_WAIT_MS,
-    "tab=invites",
-    12_000,
-  );
+  // Về đúng tab "Lời mời đang chờ xử lý" (helper dùng chung với fallback của
+  // REMOVE — xem `pending-tab.ts`).
+  const switched = await ensurePendingInvitesTab();
   if (!switched) {
     return {
       ok: false,
@@ -69,7 +47,9 @@ export async function executeRevokeInvites(
       toRemove,
     );
     for (const email of toRemove) {
-      const rm = await executeRemove(taskId, email);
+      // `allowPendingFallback:false`: chính ta VỪA khẳng định email không có ở tab
+      // Lời mời, nên đừng để executeRemove quay lại đó tra thêm lần nữa.
+      const rm = await executeRemove(taskId, email, { allowPendingFallback: false });
       const idx = results.findIndex((r) => r.email === email);
       const merged: RevokeResult = rm.ok
         ? { email, ok: true, viaRemove: true }

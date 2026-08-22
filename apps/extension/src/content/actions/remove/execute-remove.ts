@@ -18,6 +18,15 @@ import {
   pickRemoveMenuItemIndex,
   sanitizeRemoveLabels,
 } from "../menu-guard";
+import {
+  confirmDialogBusy,
+  confirmDialogOpen,
+  openDialogText,
+  waitForConfirmDialogClosed,
+  waitForModalLockGone,
+} from "../dialog-commit";
+import { ensurePendingInvitesTab } from "../revoke/pending-tab";
+import { revokeInvite } from "../revoke/revoke-invite";
 
 const LOG = "[autogpt-remove]";
 
@@ -101,98 +110,73 @@ function findConfirmRemoveButton(texts: readonly string[]): HTMLElement | null {
 }
 
 /**
- * Dialog xác nhận xoá còn MỞ không? Sau khi click confirm "Xóa", ChatGPT ĐÓNG dialog
- * ngay khi NHẬN thao tác destructive (gửi DELETE) → dialog biến mất = đã nhận lệnh xoá.
- * Nếu bị chặn (OTP/2FA/lỗi) thì dialog VẪN mở (hoặc bị thay bằng dialog challenge).
+ * Chờ ChatGPT chốt thao tác (dialog tắt hẳn + lớp phủ gỡ) — dùng CHUNG với
+ * revoke / change-role / change-license-type / set-usage-limit. Cơ chế + lý do
+ * xem `../dialog-commit.ts`; REMOVE là action đầu tiên làm đúng nhịp này
+ * (v0.11.5) nên helper được tách ra từ đây, hành vi giữ nguyên 100%.
  */
-function confirmDialogOpen(): boolean {
-  return (
-    document.querySelector('[role="alertdialog"], [role="dialog"]') !== null
+
+
+/**
+ * FALLBACK khi email KHÔNG có ở tab "Người dùng": sang tab "Lời mời đang chờ xử
+ * lý" và thu hồi lời mời của email đó.
+ *
+ * Thứ tự này do user chốt (2026-08-21) cho luồng "Chuyển hạn sử dụng đến": *tìm
+ * kiếm trong người dùng — có thì xoá khỏi workspace, không có thì chuyển sang
+ * lời mời đang chờ xử lý*. Nó cũng vá một lỗ có sẵn của REMOVE_MEMBER: xoá một
+ * email đang là lời mời chờ thì trước đây báo COMPLETED (backend mark removed)
+ * trong khi lời mời VẪN sống trên ChatGPT.
+ *
+ * `revokeInvite` tự lo phần định vị đúng luật (1 trang → quét vị trí; nhiều
+ * trang → ô "Search for invites") và tự CHỜ ChatGPT chốt + quét lại xác nhận.
+ *
+ * Trả `null` = email KHÔNG có ở tab Lời mời (caller kết luận đã rời workspace
+ * thật). Trả response = đã xử lý xong (ok hoặc fail, caller trả thẳng ra).
+ */
+async function tryRevokePendingFallback(
+  taskId: string,
+  email: string,
+): Promise<ExecuteActionResponse | null> {
+  console.log(
+    `${LOG} ${email}: không có ở tab Người dùng → thử tab "Lời mời đang chờ xử lý"`,
   );
-}
-
-/** Text dialog đang mở (để báo lý do khi verify fail: OTP/2FA/lỗi). */
-function openDialogText(): string {
-  const d = document.querySelector('[role="alertdialog"], [role="dialog"]');
-  return (d?.textContent ?? "").trim();
-}
-
-/**
- * Dialog đang QUAY (nút xác nhận có spinner / disabled / `aria-busy`) — ChatGPT
- * bản 2026-08 gửi DELETE rồi GIỮ dialog lại cho tới khi server trả lời, chứ
- * không đóng ngay như bản cũ. Chỉ dùng để log cho dễ soi, không để quyết định.
- */
-function confirmDialogBusy(): boolean {
-  const d = document.querySelector('[role="alertdialog"], [role="dialog"]');
-  if (!d) return false;
-  if (d.querySelector('[aria-busy="true"], [role="progressbar"], svg.animate-spin, .animate-spin')) {
-    return true;
-  }
-  return Array.from(d.querySelectorAll("button")).some(
-    (b) => b.disabled || b.getAttribute("aria-disabled") === "true",
+  await reportProgress(
+    taskId,
+    { phase: "searching", message: `Tìm ${email} ở tab Lời mời đang chờ xử lý...` },
+    true,
   );
-}
-
-/**
- * Modal còn KHOÁ trang không: Radix để lại lớp phủ + `pointer-events:none` trên
- * `body` (và `data-scroll-locked`) một nhịp SAU khi dialog rời DOM. Gõ ô lọc
- * đúng nhịp đó thì event `input` rơi vào lớp phủ → query lọc không bao giờ chạy
- * → `inconclusive`, và vòng verify cứ thế gõ lại liên tục.
- */
-function modalLockPresent(): boolean {
-  const body = document.body;
-  if (!body) return false;
-  if (body.hasAttribute("data-scroll-locked")) return true;
-  if (body.style.pointerEvents === "none") return true;
-  return document.querySelector("[data-radix-dialog-overlay]") !== null;
-}
-
-/** Poll 300ms; đòi 4 nhịp LIÊN TIẾP không thấy dialog mới coi là "tắt hẳn". */
-const DIALOG_POLL_MS = 300;
-const DIALOG_GONE_STABLE_HITS = 4;
-
-/**
- * Chờ dialog xác nhận BIẾN MẤT HẲN (không phải "chớp tắt" giữa 2 lần render).
- * Trả `true` nếu đã tắt hẳn trong hạn, `false` nếu hết hạn mà dialog vẫn còn.
- */
-async function waitForConfirmDialogClosed(timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  let clearHits = 0;
-  let loggedBusy = false;
-  while (Date.now() < deadline) {
-    if (confirmDialogOpen()) {
-      clearHits = 0;
-      if (!loggedBusy && confirmDialogBusy()) {
-        loggedBusy = true;
-        console.log(`${LOG} dialog xác nhận đang quay (chờ ChatGPT trả lời)...`);
-      }
-    } else {
-      clearHits += 1;
-      if (clearHits >= DIALOG_GONE_STABLE_HITS) return true;
-    }
-    await sleep(DIALOG_POLL_MS);
+  if (!(await ensurePendingInvitesTab())) {
+    console.warn(
+      `${LOG} ${email}: không sang được tab Lời mời → bỏ fallback, giữ kết luận theo tab Người dùng`,
+    );
+    return null;
   }
-  return false;
-}
-
-/**
- * Dialog rời DOM rồi nhưng lớp phủ có thể còn — chờ thêm best-effort. KHÔNG
- * fail nếu lớp phủ lì: coi như hết khoá và đi tiếp (thà tra sớm 1 nhịp còn hơn
- * bỏ luôn phần xác minh chỉ vì ChatGPT quên gỡ `data-scroll-locked`).
- */
-async function waitForModalLockGone(maxMs: number): Promise<void> {
-  const deadline = Date.now() + maxMs;
-  while (Date.now() < deadline) {
-    if (!modalLockPresent()) return;
-    await sleep(DIALOG_POLL_MS);
+  const r = await revokeInvite(email);
+  if (r.notInPending) return null; // không có ở cả 2 tab ⇒ đã rời thật.
+  if (r.ok) {
+    console.log(`${LOG} ${email}: đã THU HỒI lời mời chờ → COMPLETED`);
+    return { ok: true, data: { email, verified: true, via_revoke: true } };
   }
-  console.warn(`${LOG} lớp phủ modal chưa gỡ sau ${maxMs}ms → vẫn đi tiếp.`);
+  // Có lời mời nhưng thu hồi KHÔNG ăn → báo fail để backend giữ member và retry,
+  // thà báo chưa-xong còn hơn mark removed trong khi lời mời vẫn sống.
+  return {
+    ok: false,
+    error_code: "REMOVE_VERIFY_FAILED",
+    error_message:
+      `${email} không có ở tab "Người dùng" nhưng ĐANG có lời mời chờ xử lý, và ` +
+      `thu hồi lời mời thất bại: ${r.reason ?? "không rõ lý do"}`,
+  };
 }
 
 export async function executeRemove(
   taskId: string,
   email: string,
+  opts: { allowPendingFallback?: boolean } = {},
 ): Promise<ExecuteActionResponse> {
+  // `allowPendingFallback`: không thấy ở tab "Người dùng" thì sang tab "Lời mời
+  // đang chờ xử lý" thu hồi (thứ tự user chốt 2026-08-21). Tắt khi CHÍNH revoke
+  // gọi vào đây làm fallback ngược — bật sẽ thành ping-pong 2 tab vô ích.
+  const { allowPendingFallback = true } = opts;
   if (!location.pathname.includes("/admin")) {
     return {
       ok: false,
@@ -263,8 +247,20 @@ export async function executeRemove(
     // retry tới MEMBER_REMOVE_STUCK.
     if (found.outcome === "absent") {
       await clearMemberFilter();
+
+      // KHÔNG có ở tab "Người dùng" ⇒ CHƯA đủ để kết luận "đã rời workspace":
+      // email có thể đang là LỜI MỜI CHỜ XỬ LÝ (mời rồi nhưng chưa bấm nhận).
+      // Kết luận vội thì backend mark removed trong khi lời mời VẪN sống trên
+      // ChatGPT → ghế vẫn bị giữ, người đó vẫn vào được. Nên: sang tab "Lời mời
+      // đang chờ xử lý" thu hồi (đúng thứ tự user chốt 2026-08-21 cho luồng
+      // "Chuyển hạn sử dụng đến"); không có ở đó nữa thì mới là đã rời thật.
+      if (allowPendingFallback) {
+        const viaRevoke = await tryRevokePendingFallback(taskId, email);
+        if (viaRevoke) return viaRevoke;
+      }
+
       console.log(
-        `${LOG} ${email}: ô lọc load xong, KHÔNG có trong tab Người dùng → đã rời workspace → COMPLETED`,
+        `${LOG} ${email}: ô lọc load xong, KHÔNG có trong tab Người dùng (và không có lời mời chờ) → đã rời workspace → COMPLETED`,
       );
       return {
         ok: true,
@@ -416,7 +412,7 @@ export async function executeRemove(
   //     không, lọc không chạy, và vòng xác minh chỉ tổ gõ lại liên tục.
   //   · Hạn chờ 15s → 30s cho vừa nhịp spinner mới.
   await reportProgress(taskId, { phase: "verifying", message: "Đợi dialog xoá đóng hẳn..." }, true);
-  const dialogClosed = await waitForConfirmDialogClosed(30_000);
+  const dialogClosed = await waitForConfirmDialogClosed(30_000, LOG);
 
   if (!dialogClosed) {
     // Dialog xác nhận VẪN mở sau 30s → ChatGPT chặn thao tác (OTP/2FA/lỗi) →
@@ -433,7 +429,7 @@ export async function executeRemove(
     };
   }
   // Dialog đã rời DOM — chờ nốt lớp phủ/scroll-lock trước khi đụng vào ô lọc.
-  await waitForModalLockGone(5000);
+  await waitForModalLockGone(5000, LOG);
   console.log(`${LOG} ${email}: dialog xoá đã tắt hẳn → bắt đầu xác minh bằng ô lọc`);
 
   // ---- XÁC MINH THẬT: member phải BIẾN MẤT khỏi list, không chỉ dialog đóng ----

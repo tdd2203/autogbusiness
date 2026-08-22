@@ -17,6 +17,7 @@ import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
 import { WorkspaceTaskRail } from "../components/WorkspaceTaskRail";
 import { RowActionsMenu } from "../components/RowActionsMenu";
 import { ChangeEmailModal } from "../components/ChangeEmailModal";
+import { TransferSubscriptionModal } from "../components/TransferSubscriptionModal";
 import { ChangeSubscriptionModal } from "../components/ChangeSubscriptionModal";
 import { MemberDetailModal } from "../components/MemberDetailModal";
 import { confirm, toast } from "../components/Toast";
@@ -146,6 +147,10 @@ export default function Members() {
   // Member đang mở modal "Đổi email" (null = đóng). Đổi email = xoá cũ + mời mới,
   // giữ nguyên hạn dùng — xem components/ChangeEmailModal + hooks/useChangeEmail.md.
   const [changeEmailMember, setChangeEmailMember] = useState<Member | null>(null);
+  // Member đang mở modal "Chuyển hạn sử dụng đến" (null = đóng). KHÁC "Đổi email":
+  // email nhận ĐƯỢC PHÉP đang là thành viên → hạn còn lại cộng dồn vào hạn của họ.
+  // Xem components/TransferSubscriptionModal + hooks/useTransferSubscription.md.
+  const [transferMember, setTransferMember] = useState<Member | null>(null);
   // Member đang mở modal "Đổi hạn dùng" (null = đóng). Đổi hạn CÓ DUYỆT: super-admin
   // áp ngay, sub-admin tạo yêu cầu — xem hooks/useSubscriptionApprovals.md.
   const [changeSubMember, setChangeSubMember] = useState<Member | null>(null);
@@ -1223,6 +1228,11 @@ export default function Members() {
                                     label: t("member.changeEmailAction"),
                                     onClick: () => setChangeEmailMember(m),
                                   },
+                                  {
+                                    key: "transfer-expiry",
+                                    label: t("member.transferExpiryAction"),
+                                    onClick: () => setTransferMember(m),
+                                  },
                                 ]
                               : []),
                             ...(canRemove
@@ -1270,6 +1280,11 @@ export default function Members() {
                                       key: "change-email",
                                       label: t("member.changeEmailAction"),
                                       onClick: () => setChangeEmailMember(m),
+                                    },
+                                    {
+                                      key: "transfer-expiry",
+                                      label: t("member.transferExpiryAction"),
+                                      onClick: () => setTransferMember(m),
                                     },
                                   ]
                                 : []),
@@ -1366,6 +1381,14 @@ export default function Members() {
           workspaceId={workspaceId}
           member={changeEmailMember}
           onClose={() => setChangeEmailMember(null)}
+        />
+      )}
+
+      {transferMember && workspaceId && (
+        <TransferSubscriptionModal
+          workspaceId={workspaceId}
+          member={transferMember}
+          onClose={() => setTransferMember(null)}
         />
       )}
 

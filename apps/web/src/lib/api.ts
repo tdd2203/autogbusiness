@@ -42,7 +42,15 @@ export async function api<T = unknown>(
   const res = await fetch(`${BASE}${path}`, { ...init, headers });
   if (res.status === 204) return undefined as T;
   const text = await res.text();
-  const data = text ? JSON.parse(text) : undefined;
+  // Không phải lỗi nào cũng là JSON: nginx tự sinh trang HTML cho 429/413/502
+  // (rate-limit chặn TRƯỚC khi request tới FastAPI — xem apps/web/nginx.conf).
+  // JSON.parse ném ở đây sẽ nuốt mất status thật và biến thành lỗi khó hiểu.
+  let data: any;
+  try {
+    data = text ? JSON.parse(text) : undefined;
+  } catch {
+    data = undefined;
+  }
   if (!res.ok) {
     if (res.status === 401 && token) {
       // Phiên hết hạn giữa chừng: dọn token + báo AuthProvider đá về /login.
@@ -52,6 +60,19 @@ export async function api<T = unknown>(
       if (typeof window !== "undefined") {
         window.dispatchEvent(new Event(AUTH_UNAUTHORIZED_EVENT));
       }
+    }
+    if (data === undefined && (res.status === 429 || res.status === 503)) {
+      // Bị chặn ở tầng nginx: dựng lại đúng shape detail mà tầng API trả về
+      // ({code, message, retry_after_sec}) để UI xử lý một kiểu duy nhất.
+      const retry = Number(res.headers.get("Retry-After")) || 5;
+      throw new ApiError(res.status, {
+        code: res.status === 429 ? "RATE_LIMITED" : "SERVER_BUSY",
+        message:
+          res.status === 429
+            ? "Bạn thao tác quá nhanh. Vui lòng chờ một chút rồi thử lại."
+            : "Máy chủ đang bận. Vui lòng thử lại sau giây lát.",
+        retry_after_sec: retry,
+      });
     }
     throw new ApiError(res.status, data?.detail ?? data ?? res.statusText);
   }

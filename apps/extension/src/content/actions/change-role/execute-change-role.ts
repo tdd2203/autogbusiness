@@ -5,10 +5,22 @@ import type {
 import { humanClick, randomDelay, sleep } from "../../human";
 import { findRoleOption, TEXT_FALLBACKS } from "../../i18n-ui";
 import { reportProgress } from "../../progress";
-import { findMemberRow, findRowRoleDropdown } from "../member-row";
+import { findRowRoleDropdown } from "../member-row";
 import { clickTabAndWait } from "../sync";
 import { clearMemberFilter } from "../remove/member-filter";
 import { locateMemberRow } from "../remove/locate-member";
+import { waitForChatGptCommit } from "../dialog-commit";
+import { findRoleInRow } from "../sync/row-extractors/role";
+
+const LOG = "[autogpt-change-role]";
+
+/** Hạn chờ dialog (nếu ChatGPT dựng) tắt hẳn — cùng nhịp với REMOVE. */
+const COMMIT_TIMEOUT_MS = 30_000;
+/** Để ChatGPT commit + list refetch 1 nhịp trước khi lọc lại xác minh. */
+const VERIFY_SETTLE_MS = 1500;
+/** Số lần lọc lại row + khoảng cách giữa 2 lần. */
+const VERIFY_ATTEMPTS = 3;
+const VERIFY_GAP_MS = 2500;
 
 /**
  * UI 2026 đổi role qua INLINE dropdown trên row:
@@ -106,23 +118,63 @@ export async function executeChangeRole(
     };
   }
   await humanClick(roleOption);
-  await randomDelay(800, 1500);
 
-  // Verify: dropdown text đổi sang role mới (best-effort)
-  // Re-query dropdown vì DOM có thể re-render
-  const verifyRow = findMemberRow(email);
-  if (verifyRow) {
-    const newDropdown = findRowRoleDropdown(verifyRow, newRole);
-    if (newDropdown) {
-      console.log(
-        `[autogpt-change-role] verified: dropdown giờ có role label '${newRole}'`,
-      );
-    } else {
-      console.warn(
-        `[autogpt-change-role] không verify được dropdown sau đổi role — UI có thể chưa render`,
-      );
-    }
+  // ---- (1) CHỜ CHATGPT XỬ LÝ XONG ----------------------------------------
+  // Đổi vai trò thường KHÔNG có dialog xác nhận, nhưng ChatGPT vẫn gửi PATCH và
+  // có thể dựng dialog cảnh báo (hạ quyền owner / ghế Codex). `waitForChatGptCommit`
+  // phủ cả 2: có dialog thì chờ tắt hẳn, không có thì trả về sau ~1.2s.
+  await reportProgress(
+    taskId,
+    { phase: "verifying", message: "Đợi ChatGPT chốt vai trò..." },
+    true,
+  );
+  const commit = await waitForChatGptCommit(LOG, COMMIT_TIMEOUT_MS);
+  if (!commit.settled) {
+    await clearMemberFilter();
+    return {
+      ok: false,
+      error_code: "VERIFY_FAILED",
+      error_message:
+        `Dialog KHÔNG đóng sau ${COMMIT_TIMEOUT_MS / 1000}s sau khi chọn vai trò ` +
+        `'${newRole}' (${commit.busy ? "vẫn đang quay" : "đứng im"}) → ChatGPT có ` +
+        "thể hỏi OTP/2FA hoặc từ chối." +
+        (commit.dialogText ? ` Dialog: "${commit.dialogText.slice(0, 200)}"` : ""),
+    };
   }
 
-  return { ok: true, data: { email, new_role: newRole, old_role: oldRole } };
+  // ---- (2) QUÉT LẠI XÁC NHẬN ----------------------------------------------
+  // Trước v0.11.7 chỗ này chỉ ngủ 800-1500ms rồi "verify best-effort": không
+  // khớp vẫn `ok:true`. Mà backend lấy ok:true ghi thẳng `Member.chatgpt_role`
+  // (completion.py) ⇒ ChatGPT từ chối im lặng là DB lệch vĩnh viễn tới lần sync
+  // sau. Nay LỌC LẠI row (fetch mới, không đọc DOM cũ) rồi đọc NHÃN THẬT; sai
+  // hoặc không đọc được ⇒ VERIFY_FAILED, thà báo chưa-xong còn hơn xong GIẢ.
+  await sleep(VERIFY_SETTLE_MS);
+  let seen: ChatGPTRole | null = null;
+  for (let attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt++) {
+    // `pageThrough: false`: XÁC MINH thì ô lọc là nguồn sự thật (giống REMOVE).
+    // Cho lật trang ở đây thì 3 lần tra × N trang dễ nuốt trọn 150s của task →
+    // TIMEOUT (không rõ nguyên nhân) thay vì VERIFY_FAILED (rõ, backend retry).
+    const verifyRow = await locateMemberRow(email, { pageThrough: false });
+    seen = verifyRow ? findRoleInRow(verifyRow) : null;
+    if (seen === newRole) {
+      await clearMemberFilter();
+      console.log(`${LOG} verified: row hiện vai trò '${newRole}'`);
+      return { ok: true, data: { email, new_role: newRole, old_role: oldRole } };
+    }
+    console.log(
+      `${LOG} xác minh lần ${attempt}/${VERIFY_ATTEMPTS}: row đang là '${seen ?? "không đọc được"}', chờ '${newRole}'`,
+    );
+    if (attempt < VERIFY_ATTEMPTS) await sleep(VERIFY_GAP_MS);
+  }
+
+  await clearMemberFilter();
+  return {
+    ok: false,
+    error_code: "VERIFY_FAILED",
+    error_message:
+      `Đã chọn vai trò '${newRole}' cho ${email} nhưng sau ${VERIFY_ATTEMPTS} lần ` +
+      `lọc lại row vẫn hiện '${seen ?? "không đọc được nhãn vai trò"}' → đổi vai trò ` +
+      "CHƯA có hiệu lực trên ChatGPT (bị từ chối, hoặc nhãn vai trò đổi — chạy " +
+      "HARVEST_LABELS để cập nhật ui_labels).",
+  };
 }

@@ -18,7 +18,7 @@
 #   REMOTE_DIR="$(target_get DEPLOY_REMOTE_DIR /opt/autogbusiness)"
 #
 # ⚠️ CỐ Ý KHÔNG `source .env`: file đó chứa JWT_SECRET / POSTGRES_PASSWORD /
-# CF_TUNNEL_TOKEN…, source vào sẽ đẩy TOÀN BỘ secret thành biến môi trường của mọi
+# SEPAY_APIKEY…, source vào sẽ đẩy TOÀN BỘ secret thành biến môi trường của mọi
 # lệnh con (ssh, rsync, docker) — thừa và dễ rò. `source` còn vỡ khi giá trị có
 # khoảng trắng hoặc dấu `#`. Ở đây chỉ bới đúng key cần.
 

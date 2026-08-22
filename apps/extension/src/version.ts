@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.11.6";
+export const VERSION = "0.11.9";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,52 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.11.9",
+    date: "2026-08-21",
+    kind: "fix",
+    summary:
+      "Thu hồi lời mời: hết bấm nhầm nút 'Hủy' của hộp thoại xác nhận — lời mời còn nguyên mà dashboard báo lỗi lạc đề.",
+    details: [
+      "Ca vaominh11@gmail.com 21/8/2026: task báo FAILED 'đã click revoke nhưng row vẫn còn', trong khi tab 'Lời mời đang chờ xử lý' trên ChatGPT KHÔNG còn email đó → DB kẹt 1 lời mời ma.",
+      "Gốc rễ: danh sách chữ nút XÁC NHẬN có lẫn sẵn 'Hủy'/'Cancel'/'取消', mà code duyệt theo THỨ TỰ và khớp kiểu CHỨA CHUỖI. ChatGPT chỉ cần đổi chữ nút xác nhận là mấy chữ đầu trượt hết, rơi xuống 'Hủy' → khớp đúng nút HUỶ → bấm huỷ → lời mời còn nguyên.",
+      "Tách DIALOG_DISMISS_TEXTS (Hủy/Đóng/Quay lại/Cancel/Close/取消/关闭…) khỏi REVOKE_CONFIRM_TEXTS; nút huỷ/đóng bị loại bằng so khớp BẰNG NHAU nên 'Hủy lời mời' (hành động thật) vẫn được nhận.",
+      "Không chữ nào khớp (ChatGPT đổi nhãn) → lấy NÚT CUỐI có chữ mà không phải huỷ/đóng, vì hộp thoại luôn đặt nút hành động ở cuối — thà bấm đúng nút hành động còn hơn đứng im rồi để lời mời còn nguyên.",
+      "Chờ hộp thoại xác nhận theo RENDER (tối đa 3s) thay cho sleep(800) cứng: dialog hiện chậm hơn 800ms từng bị coi là 'luồng không có dialog' → bỏ luôn bước xác nhận.",
+      "Cùng hằng số này được HARVEST_LABELS dùng lại, nên trước đây còn có nguy cơ harvest nhầm nhãn nút 'Hủy' rồi lưu vào ui_labels.confirm_revoke_button — nay hết.",
+    ],
+  },
+  {
+    version: "0.11.8",
+    date: "2026-08-21",
+    kind: "feature",
+    summary:
+      "Gỡ thành viên: không thấy ở tab 'Người dùng' thì tự sang tab 'Lời mời đang chờ xử lý' thu hồi — phục vụ nút mới 'Chuyển hạn sử dụng đến'.",
+    details: [
+      "Trước đây REMOVE_MEMBER lọc không ra email ở tab 'Người dùng' là kết luận luôn 'đã rời workspace' → backend mark removed. Nhưng email đó có thể đang là LỜI MỜI CHỜ (mời rồi chưa bấm nhận) ⇒ dashboard nói đã gỡ trong khi lời mời VẪN sống trên ChatGPT, ghế vẫn bị giữ.",
+      "Nay nhánh 'absent' sang tab 'Lời mời đang chờ xử lý' và thu hồi: không có ở cả 2 tab ⇒ đã rời thật (ok như cũ); có và thu hồi được ⇒ ok + via_revoke; có nhưng thu hồi không ăn ⇒ REMOVE_VERIFY_FAILED (giữ member, retry) thay vì báo gỡ giả.",
+      "Định vị trong tab Lời mời theo đúng luật đã chốt: dưới 1 trang thì quét thẳng vị trí, nhiều trang mới gõ ô 'Search for invites'; và vẫn chờ ChatGPT chốt + quét lại xác nhận (v0.11.7).",
+      "Chống ping-pong: executeRevokeInvites gọi ngược executeRemove với allowPendingFallback:false — nó vừa khẳng định email không có ở tab Lời mời rồi.",
+      "MỚI revoke/pending-tab.ts (ensurePendingInvitesTab) — dùng chung cho cả 2 đường vào, thay đoạn điều hướng chép tay trong execute-revoke-batch.",
+      "Phục vụ nút mới 'Chuyển hạn sử dụng đến' trên dashboard: backend LUÔN enqueue REMOVE_MEMBER cho email cho hạn, không phải đoán status từ DB (DB có thể lệch khi member vừa bấm nhận lời mời mà chưa kịp sync).",
+    ],
+  },
+  {
+    version: "0.11.7",
+    date: "2026-08-21",
+    kind: "fix",
+    summary:
+      "Đổi vai trò / đổi giấy phép / thu hồi lời mời / đặt giới hạn: bắt buộc CHỜ ChatGPT xử lý xong rồi quét lại xác nhận — hết báo thành công giả làm dashboard lệch ChatGPT.",
+    details: [
+      "Gốc rễ: backend lấy ok:true của extension làm sự thật và ghi thẳng vào DB (chatgpt_role / license_type / usage_limit_credits). Action nào bấm xong ngủ vài trăm ms rồi báo ok là ChatGPT nuốt lệnh im lặng → DB nói một đằng, ChatGPT một nẻo tới tận lần đồng bộ sau.",
+      "CHANGE_LICENSE_TYPE (nặng nhất): trước đây click xong sleep 500ms + 600-1200ms rồi return ok:true, KHÔNG quét lại gì cả. Nay chờ dialog tắt hẳn → lọc lại row 3 lần (cách 2.5s) → đọc cột 'Loại suất cấp phép'; lệch ⇒ VERIFY_FAILED.",
+      "CHANGE_ROLE: verify cũ là 'best-effort' — không khớp vẫn ok:true, mà findRowRoleDropdown lại có fallback 'bất kỳ nút có aria-haspopup' nên hỏi role nào cũng PASS. Nay đọc NHÃN THẬT bằng findRoleInRow (map ngược ROLE_LABELS + ui_labels), sai ⇒ VERIFY_FAILED.",
+      "REVOKE_INVITES: trước đây bấm confirm xong đo 'row biến mất trong 5s' ngay lúc dialog CÒN QUAY. Nay chờ dialog vắng 4 nhịp liên tiếp (trần 30s) + lớp phủ Radix gỡ, rồi quét lại bằng chính locatePendingRow (1 trang → quét vị trí, nhiều trang → ô Search for invites), tối đa 3 lần cách 3s.",
+      "REVOKE batch chia ngân sách xác minh: 110s cho cả batch, mỗi email được phần còn lại / số email còn lại, kẹp [6s, 25s] — task chỉ có 150s nên không cho email đầu ăn hết giờ của email sau.",
+      "SET_USAGE_LIMIT: sau khi dialog đóng, chờ lớp phủ gỡ rồi lọc lại row — nút phải chuyển sang 'Chỉnh sửa' (đã có ghi đè). Trang không hiện số credits trên row nên không xác minh được đúng con số; SYNC vẫn là chốt cuối.",
+      "Nhịp chờ tách ra content/actions/dialog-commit.ts dùng chung (lấy nguyên từ REMOVE v0.11.5) — sửa nhịp chờ thì sửa một chỗ, không chế lại trong từng action.",
+    ],
+  },
   {
     version: "0.11.6",
     date: "2026-08-18",

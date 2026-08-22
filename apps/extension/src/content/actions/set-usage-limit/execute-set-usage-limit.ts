@@ -17,8 +17,15 @@ import {
   findSaveButton,
   findUsageRowButton,
 } from "./finders";
+import { waitForModalLockGone } from "../dialog-commit";
 
 const LOG = "[autogpt-usage-limit]";
+
+/** Để ChatGPT commit + list refetch 1 nhịp trước khi lọc lại xác minh. */
+const VERIFY_SETTLE_MS = 1500;
+/** Số lần lọc lại row + khoảng cách giữa 2 lần. */
+const VERIFY_ATTEMPTS = 3;
+const VERIFY_GAP_MS = 2500;
 const PAGE = "manage_member_usage_limit";
 
 /** Ô "Lọc theo tên" trên trang usage-limit (dùng chung selector với /admin/members). */
@@ -183,9 +190,9 @@ export async function executeSetUsageLimit(
   } catch {
     /* fall through */
   }
-  await clearMemberFilter();
 
   if (!closed) {
+    await clearMemberFilter();
     return {
       ok: false,
       error_code: "VERIFY_FAILED",
@@ -193,7 +200,50 @@ export async function executeSetUsageLimit(
     };
   }
 
-  console.log(`${LOG} DONE email=${email} → ${limitCredits}`);
+  // Dialog đã rời DOM nhưng lớp phủ Radix còn khoá trang thêm 1 nhịp — gõ ô lọc
+  // lúc đó thì event `input` rơi vào lớp phủ, query lọc không bao giờ chạy.
+  await waitForModalLockGone(5000, LOG);
+
+  // ---- 6) QUÉT LẠI XÁC NHẬN (v0.11.7) ------------------------------------
+  // Trước đây dừng ở "dialog đóng" rồi báo ok. Dialog đóng chỉ nghĩa ChatGPT
+  // NHẬN lệnh; backend lại lấy ok:true ghi thẳng `Member.usage_limit_credits`
+  // (completion.py) nên lệnh bị từ chối là DB lệch im lặng. Nay lọc lại row:
+  // nút hành động phải chuyển sang "Chỉnh sửa" (= member ĐANG có ghi đè giới
+  // hạn). Trang này không hiện số credits trên row nên không xác minh được ĐÚNG
+  // con số — đây là mức xác nhận tối đa mà DOM cho phép; SYNC vẫn là chốt cuối.
+  await reportProgress(
+    taskId,
+    { phase: "verifying", message: "Lọc lại để xác nhận đã đặt giới hạn..." },
+    true,
+  );
+  await sleep(VERIFY_SETTLE_MS);
+  let hasOverride = false;
+  for (let attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt++) {
+    const again = await filterAndFindRowButton(email);
+    if (again?.isEdit) {
+      hasOverride = true;
+      break;
+    }
+    console.log(
+      `${LOG} xác minh lần ${attempt}/${VERIFY_ATTEMPTS}: ` +
+        (again ? "nút vẫn là 'Thêm' (chưa có ghi đè)" : "không thấy row sau khi lọc"),
+    );
+    if (attempt < VERIFY_ATTEMPTS) await sleep(VERIFY_GAP_MS);
+  }
+  await clearMemberFilter();
+
+  if (!hasOverride) {
+    return {
+      ok: false,
+      error_code: "VERIFY_FAILED",
+      error_message:
+        `Đã click Lưu giới hạn ${limitCredits} cho ${email} (dialog đã đóng) nhưng ` +
+        `lọc lại ${VERIFY_ATTEMPTS} lần vẫn không thấy row ở trạng thái "Chỉnh sửa" ` +
+        "→ giới hạn CHƯA được ghi nhận trên ChatGPT.",
+    };
+  }
+
+  console.log(`${LOG} DONE email=${email} → ${limitCredits} (đã xác minh)`);
   return {
     ok: true,
     data: {

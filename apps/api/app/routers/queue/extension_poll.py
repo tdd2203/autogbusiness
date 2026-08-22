@@ -17,7 +17,7 @@ import json
 import queue as _queue
 from datetime import datetime, timezone
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
@@ -30,6 +30,7 @@ from app.deps import (
     resolve_extension_workspace,
 )
 from app.models import QueueItem, Workspace
+from app.ratelimit import acquire_workspace_stream, release_workspace_stream
 from app.sse import subscribe, unsubscribe
 
 from ._shared import router
@@ -162,6 +163,20 @@ async def stream_queue_events(
         workspace_id = workspace.id
         workspace_name = workspace.name
 
+    # Trần kết nối SSE / workspace (app/ratelimit.py). Một API key bị lộ — hoặc
+    # một extension kẹt trong vòng reconnect — không được phép giữ vô hạn kết
+    # nối sống: mỗi stream chiếm một slot đồng thời + một hàng đợi trong sse.py.
+    if not acquire_workspace_stream(workspace_id):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": "TOO_MANY_STREAMS",
+                "message": "Workspace đang mở quá nhiều kết nối realtime.",
+                "retry_after_sec": 30,
+            },
+            headers={"Retry-After": "30"},
+        )
+
     q = subscribe(workspace_id)
 
     async def generator():
@@ -186,6 +201,7 @@ async def stream_queue_events(
                     yield ": heartbeat\n\n"
         finally:
             unsubscribe(workspace_id, q)
+            release_workspace_stream(workspace_id)
 
     return StreamingResponse(
         generator(),
