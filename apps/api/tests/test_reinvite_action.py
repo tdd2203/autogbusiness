@@ -232,3 +232,99 @@ def test_reinvite_other_owner_sub_admin_404(
         headers=bearer(token),
     )
     assert resp.status_code == 404, resp.text
+
+
+# ── Mời lại khi ĐỒNG BỘ KHÔNG THẤY (user 2026-08-22) ────────────────────────────
+#
+# Ca thật: DB ghi member 'active' nhưng người đó đã rời workspace. Bấm Đồng bộ →
+# extension trả found_in='none' → backend đóng dấu `sync_missing_at`. Từ lúc đó nút
+# "Mời lại" mở khoá: member hạ về pending rồi mời lại (còn hạn → miễn phí).
+
+
+def _promote_active(client: TestClient, ws: dict, email: str) -> None:
+    """Đưa email lên 'active' qua bulk-upsert (mô phỏng extension sync)."""
+    client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-upsert",
+        json={
+            "members": [
+                {
+                    "email": email,
+                    "name": None,
+                    "chatgpt_role": "member",
+                    "status": "active",
+                    "joined_at": "2026-05-19T10:00:00+00:00",
+                }
+            ],
+            "is_full_sync": False,
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+
+
+def _sync_not_found(client: TestClient, auth_header: dict, ws: dict, email: str) -> None:
+    """Chạy 1 lượt đồng bộ lẻ trả found_in='none' → set sync_missing_at."""
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/sync-member",
+        json={"email": email},
+        headers=auth_header,
+    )
+    assert r.status_code == 202, r.text
+    client.patch(
+        f"/api/v1/queue/{r.json()['queue_item_id']}",
+        json={"status": "COMPLETED", "result": {"data": {"found_in": "none"}}},
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+
+
+def test_reinvite_active_allowed_when_sync_missing(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Active + đồng bộ KHÔNG thấy → cho mời lại (hạ về pending, miễn phí)."""
+    ws = create_ws(client, auth_header, "Reinvite Missing WS")
+    email = "gone@example.com"
+    m = _invite(client, auth_header["Authorization"].split()[1], ws["id"], email).json()
+    _promote_active(client, ws, email)
+    # Chưa đồng bộ → vẫn chặn 409.
+    blocked = _reinvite(
+        client, auth_header["Authorization"].split()[1], ws["id"], m["id"]
+    )
+    assert blocked.status_code == 409, blocked.text
+
+    _sync_not_found(client, auth_header, ws, email)
+    after_sync = _member(
+        client, auth_header["Authorization"].split()[1], ws["id"], m["id"]
+    )
+    assert after_sync["sync_missing_at"] is not None
+    assert after_sync["status"] == "active"  # sync KHÔNG mark removed
+
+    ok = _reinvite(client, auth_header["Authorization"].split()[1], ws["id"], m["id"])
+    assert ok.status_code == 201, ok.text
+    row = _member(client, auth_header["Authorization"].split()[1], ws["id"], m["id"])
+    assert row["status"] == "pending"
+    assert row["sync_missing_at"] is None  # cờ đã tiêu thụ
+
+
+def test_sync_found_again_clears_missing_flag(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Đồng bộ thấy lại → xoá `sync_missing_at` → mời lại chặn 409 như cũ."""
+    ws = create_ws(client, auth_header, "Reinvite Missing Clear WS")
+    email = "back@example.com"
+    token = auth_header["Authorization"].split()[1]
+    m = _invite(client, token, ws["id"], email).json()
+    _promote_active(client, ws, email)
+    _sync_not_found(client, auth_header, ws, email)
+    assert _member(client, token, ws["id"], m["id"])["sync_missing_at"] is not None
+
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/sync-member",
+        json={"email": email},
+        headers=auth_header,
+    )
+    client.patch(
+        f"/api/v1/queue/{r.json()['queue_item_id']}",
+        json={"status": "COMPLETED", "result": {"data": {"found_in": "active"}}},
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert _member(client, token, ws["id"], m["id"])["sync_missing_at"] is None
+    assert _reinvite(client, token, ws["id"], m["id"]).status_code == 409

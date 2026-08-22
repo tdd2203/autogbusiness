@@ -394,6 +394,13 @@ class Member(Base):
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Mốc lần đồng bộ gần nhất KHÔNG thấy email ở cả tab Người dùng lẫn tab Lời mời
+    # (found_in='none'). NULL = lần sync gần nhất có thấy (hoặc chưa sync bao giờ).
+    # Dùng để mở khoá "Mời lại" cho member DB ghi active nhưng thực tế không còn
+    # trong workspace — xem reinvite_member (invite.py).
+    sync_missing_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # Lần CUỐI member được invite/re-invite qua dashboard. Khác created_at (bất
     # biến từ lần đầu) — reconcile bulk-upsert dùng COALESCE(last_invited_at,
     # created_at) để KHÔNG mark removed oan member vừa re-invite (xem reconcile.py).

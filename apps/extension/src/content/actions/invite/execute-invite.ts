@@ -1,7 +1,6 @@
 import type {
   ExecuteActionResponse,
   ChatGPTRole,
-  ScrapedMember,
 } from "../../../shared/messages";
 import { SESSION_RECOVERY_HINT } from "../../../shared/messages";
 import { sleep, waitFor } from "../../human";
@@ -9,11 +8,9 @@ import { findControlByKey } from "../../i18n-ui";
 import { TEXT_FALLBACKS } from "../../selectors";
 import { navigateTo } from "../external-invites/navigate";
 import { setExternalInvites } from "../external-invites/set-toggle";
-import { locateMemberRow } from "../remove/locate-member";
 import { locatePendingRow } from "../revoke/locate-pending-row";
 import { revokeInvite } from "../revoke";
 import { clickTabAndWait } from "../sync";
-import { scrapeAllRows } from "../sync/scrape-all-rows";
 import { executeInviteInner } from "./execute-invite-inner";
 import { findInviteOpenButton } from "./finders/find-invite-open-button";
 import { scanPendingForEmails } from "./scan-pending-page";
@@ -22,66 +19,20 @@ const RE_LOG = "[autogpt-reinvite]";
 
 /**
  * TIỀN TỐ cho action "Mời lại" (chạy 1 lần trước khi mời — xem executeInvite).
- * Quy trình user 2026-07-14:
- *   1. Tìm ở tab "Người dùng": nếu email CÒN là thành viên → trả
- *      `already_in_workspace` (caller huỷ lệnh mời, chỉ upsert active + báo).
- *   2. Tìm ở tab "Lời mời đang chờ": nếu còn lời mời cũ → THU HỒI (bỏ qua lỗi thu
- *      hồi, vẫn mời tiếp — mời lại tạo lời mời mới đè lên).
- * Trả `{ done: response }` khi cần dừng sớm (đã là thành viên), hoặc `{ done: null }`
- * để caller mời tiếp. Tái dùng locateMemberRow/scrapeAllRows/locatePendingRow/revokeInvite.
+ *
+ * Chỉ còn MỘT việc: vào tab "Lời mời đang chờ" THU HỒI lời mời cũ của các email sắp
+ * mời lại. ChatGPT không cho mời một email đang có lời mời chờ → không thu hồi thì
+ * lệnh mời lại fail ngay trên UI.
+ *
+ * Bước "quét tab Người dùng → huỷ lệnh nếu email còn là thành viên" ĐÃ BỎ (user
+ * 2026-08-22): "mời lại là mời lại một lần nữa, đã thanh toán và còn hạn thì cứ mời,
+ * không cần check". Ca DB ghi active nhưng người đó đã rời đội trước đây bị kẹt vĩnh
+ * viễn vì bước này. Backend giữ phần kiểm soát (chặn 409 member active trừ khi lần
+ * đồng bộ gần nhất không thấy — xem `_unblock_active_if_sync_missing`).
+ *
+ * Lỗi thu hồi được BỎ QUA (vẫn mời tiếp): mời lại tạo lời mời mới đè lên.
  */
-async function runReinvitePreSteps(
-  email: string,
-  role: ChatGPTRole,
-): Promise<{ done: ExecuteActionResponse | null }> {
-  // Bước 1: tab Người dùng — còn là thành viên?
-  const onUsers = await clickTabAndWait(
-    "tab_active_members",
-    TEXT_FALLBACKS.tabActiveMembers,
-    800,
-    undefined,
-    12_000,
-  );
-  if (onUsers) {
-    const row = await locateMemberRow(email, { pageThrough: false });
-    if (row) {
-      const scraped = scrapeAllRows().find(
-        (m) => m.email.toLowerCase() === email,
-      );
-      const activeMember: ScrapedMember = scraped
-        ? { ...scraped, status: "active" }
-        : {
-            email,
-            name: null,
-            chatgpt_role: null,
-            license_type: null,
-            status: "active",
-            joined_at: null,
-          };
-      console.log(`${RE_LOG} ${email} VẪN là thành viên (active) → huỷ mời lại`);
-      // verified_emails + pending_members(active) → reportToBackend upsert active +
-      // COMPLETED; unverified_emails rỗng → KHÔNG phantom-delete. Xem runner 1268.
-      return {
-        done: {
-          ok: true,
-          data: {
-            already_in_workspace: true,
-            verified_emails: [email],
-            unverified_emails: [],
-            pending_members: [activeMember],
-            emails: [email],
-            count: 1,
-            role,
-          },
-        },
-      };
-    }
-    console.log(`${RE_LOG} ${email} KHÔNG còn ở tab Người dùng → tiếp tục`);
-  } else {
-    console.warn(`${RE_LOG} không vào được tab Người dùng — bỏ qua bước kiểm tra`);
-  }
-
-  // Bước 2: tab Lời mời — thu hồi lời mời cũ nếu còn.
+async function runReinvitePreSteps(emails: string[]): Promise<void> {
   const onPending = await clickTabAndWait(
     "tab_pending_invites",
     TEXT_FALLBACKS.tabPendingInvites,
@@ -89,7 +40,11 @@ async function runReinvitePreSteps(
     "tab=invites",
     12_000,
   );
-  if (onPending) {
+  if (!onPending) {
+    console.warn(`${RE_LOG} không vào được tab Lời mời — bỏ qua bước thu hồi`);
+    return;
+  }
+  for (const email of emails) {
     try {
       const pendingRow = await locatePendingRow(email);
       if (pendingRow) {
@@ -101,11 +56,7 @@ async function runReinvitePreSteps(
     } catch (e) {
       console.warn(`${RE_LOG} thu hồi lời mời cũ ${email} lỗi (bỏ qua, vẫn mời):`, e);
     }
-  } else {
-    console.warn(`${RE_LOG} không vào được tab Lời mời — bỏ qua bước thu hồi`);
   }
-
-  return { done: null };
 }
 
 const MEMBERS_PATH = "/admin/members";
@@ -220,10 +171,10 @@ export async function executeInvite(
   }
 
   // Action "Mời lại": chạy TIỀN TỐ 1 lần (trước Phase A/toggle). !externalReady để
-  // KHÔNG lặp lại ở lần gọi thứ 2 sau khi background hard-reload. Mời lại luôn 1 email.
+  // KHÔNG lặp lại ở lần gọi thứ 2 sau khi background hard-reload. Mời lại HÀNG LOẠT
+  // (re-invite-batch) gửi cả bó trong 1 task → thu hồi lời mời cũ cho MỌI email.
   if (reinvite && !externalReady) {
-    const pre = await runReinvitePreSteps(emails[0].trim().toLowerCase(), role);
-    if (pre.done) return pre.done;
+    await runReinvitePreSteps(emails.map((e) => e.trim().toLowerCase()));
   }
 
   // Spec (v0.6.6, theo user 2026-05-20):

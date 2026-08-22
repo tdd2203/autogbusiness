@@ -339,6 +339,26 @@ export default function AddedEmails() {
       });
   }
 
+  // Mời lại hàng loạt các lời mời pending đã chọn — xuyên workspace. Backend chỉ
+  // nhận email CÒN HẠN (miễn phí) và tự bỏ qua email hết hạn (báo lại số bị bỏ) →
+  // lệnh hàng loạt không bao giờ bật modal QR giữa chừng.
+  async function handleBulkReinvite() {
+    const rows = members
+      .filter((m) => selected.has(m.id) && m.status === "pending")
+      .map((m) => ({ workspaceId: m.workspace_id, memberId: m.id }));
+    if (rows.length === 0) return;
+    const n = rows.length;
+    const ok = await confirm(t("bulkReinvite.confirmBody", { n }), {
+      title: t("bulkReinvite.confirmTitle", { n }),
+      okText: t("bulkReinvite.confirmOk", { n }),
+      cancelText: t("common.cancel"),
+    });
+    if (ok)
+      rowActions.bulkReinvite.mutate(rows, {
+        onSuccess: () => setSelected(new Set()),
+      });
+  }
+
   // Thu hồi hàng loạt các lời mời pending đã chọn — xuyên workspace.
   async function handleBulkRevoke() {
     if (pendingSelectedRows.length === 0) return;
@@ -361,6 +381,7 @@ export default function AddedEmails() {
     requestPayment.isPending ||
     transferOwner.isPending ||
     rowActions.bulkSync.isPending ||
+    rowActions.bulkReinvite.isPending ||
     rowActions.bulkRevoke.isPending;
 
   // MỘT menu gom mọi thao tác hàng loạt (giống tab Thành viên trong workspace).
@@ -374,6 +395,12 @@ export default function AddedEmails() {
             label: t("bulkAction.sync"),
             disabled: bulkBusy,
             onClick: () => void handleBulkSync(),
+          },
+          {
+            key: "reinvite",
+            label: t("bulkAction.reinvite"),
+            disabled: bulkBusy,
+            onClick: () => void handleBulkReinvite(),
           },
           ...(canRemove
             ? [
@@ -477,6 +504,34 @@ export default function AddedEmails() {
         <RowActionsMenu
           ariaLabel={t("common.actions")}
           items={[
+            /* "Mời lại" cho member ĐANG ACTIVE chỉ hiện khi lần ĐỒNG BỘ gần nhất
+               KHÔNG thấy email trong workspace (sync_missing_at) — DB ghi active
+               nhưng người đó đã rời đội. Sync còn thấy → backend chặn 409, nên
+               không bày nút (user 2026-08-22). */
+            ...(canInvite && m.sync_missing_at
+              ? [
+                  {
+                    key: "reinvite",
+                    label: t("member.reinviteAction"),
+                    disabled: rowActions.reinvite.isPending,
+                    onClick: async () => {
+                      const ok = await confirm(
+                        t("member.confirmReinviteMissing", { email: m.email }),
+                        {
+                          title: t("member.reinviteAction"),
+                          okText: t("member.reinviteAction"),
+                          cancelText: t("common.cancel"),
+                        },
+                      );
+                      if (ok)
+                        rowActions.reinvite.mutate({
+                          workspaceId: m.workspace_id,
+                          memberId: m.id,
+                        });
+                    },
+                  },
+                ]
+              : []),
             ...(canChangeSubscription
               ? [
                   {
