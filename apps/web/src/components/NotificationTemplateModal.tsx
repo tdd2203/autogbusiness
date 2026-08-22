@@ -45,6 +45,7 @@ type TemplateOut = {
   member_id: string | null;
   body: string | null;
   item_line: string | null;
+  renew_url: string | null;
   default_body: string;
   default_item_line: string;
   base_body: string;
@@ -57,6 +58,8 @@ type TemplateOut = {
   recipients: Recipient[];
   audience: string;
   sample_real: TemplateSample | null;
+  link_is_dashboard: boolean;
+  link_fallback: string;
 };
 
 /**
@@ -95,6 +98,7 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
   const [memberId, setMemberId] = useState<string | null>(null);
   const [body, setBody] = useState("");
   const [line, setLine] = useState("");
+  const [renewUrl, setRenewUrl] = useState("");
   const [touched, setTouched] = useState(false);
   const [tab, setTab] = useState<"real" | "sample">("real");
   const bodyRef = useRef<HTMLTextAreaElement>(null);
@@ -132,7 +136,23 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
     // Chưa có mẫu riêng ⇒ khởi điểm là mẫu đang có hiệu lực (mẫu chung, không thì mẫu gốc).
     setBody(data.body ?? data.base_body);
     setLine(data.item_line ?? data.base_item_line);
+    setRenewUrl(data.renew_url ?? "");
   }, [data, touched]);
+
+  /**
+   * `{link}` của bản xem trước — dựng lại NGAY LÚC GÕ thay vì đợi Lưu rồi gọi lại API.
+   *
+   * Luật phải khớp `renewal_reminder.link_text`: phạm vi gửi cho chính đại lý (người
+   * đăng nhập được) thì `{link}` là link dashboard do server đưa và ô bên dưới không
+   * đổi được nó; các phạm vi còn lại lấy trang gia hạn đang gõ, để trống thì lấy câu
+   * dự phòng của server. Chép luật này lệch đi thì bản xem trước nói dối đúng chỗ
+   * người ta cần tin nó nhất.
+   */
+  const sampleFor = (base: TemplateSample | null | undefined) => {
+    if (!base || !data) return base ?? null;
+    if (data.link_is_dashboard) return base;
+    return { ...base, link: renewUrl.trim() || data.link_fallback };
+  };
 
   const preview = useMemo(() => {
     if (!data) return "";
@@ -140,9 +160,10 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
     return buildPreview(
       body.trim() || data.base_body,
       line.trim() || data.base_item_line,
-      data.sample,
+      sampleFor(data.sample)!,
     );
-  }, [body, line, data]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [body, line, renewUrl, data]);
 
   // Bản thứ hai bằng EMAIL THẬT: dữ liệu giả cho biết mẫu trông thế nào, dữ liệu thật
   // cho biết mẫu ấy áp lên đúng những gì mình đang có.
@@ -151,12 +172,17 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
     return buildPreview(
       body.trim() || data.base_body,
       line.trim() || data.base_item_line,
-      data.sample_real,
+      sampleFor(data.sample_real)!,
     );
-  }, [body, line, data]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [body, line, renewUrl, data]);
 
   const save = useMutation({
-    mutationFn: (vars: { body: string | null; item_line: string | null }) =>
+    mutationFn: (vars: {
+      body: string | null;
+      item_line: string | null;
+      renew_url: string | null;
+    }) =>
       api<TemplateOut>("/api/v1/telegram/template", {
         method: "PUT",
         body: JSON.stringify({
@@ -402,6 +428,30 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
                   }}
                 />
                 {vars(lineRef, setLine, data?.item_placeholders ?? [])}
+
+                {/* Trang gia hạn cho người nhận KHÔNG có tài khoản web. Hiện ở mọi
+                    phạm vi — kể cả "Tất cả", vì chính mẫu chung mới là nơi đại lý đặt
+                    trang gia hạn mặc định cho toàn bộ khách của mình. */}
+                <label className="form-label" style={{ margin: "6px 0 0" }}>
+                  {t("telegram.tplRenewUrl")}
+                </label>
+                <input
+                  className="form-input"
+                  type="url"
+                  inputMode="url"
+                  placeholder="https://shop.cua-ban.vn/gia-han"
+                  value={renewUrl}
+                  onChange={(e) => {
+                    setTouched(true);
+                    setRenewUrl(e.target.value);
+                  }}
+                />
+                <div className="ntpl-note">
+                  {renewUrl.trim()
+                    ? t("telegram.tplRenewUrlHint")
+                    : t("telegram.tplRenewUrlEmpty", { text: data?.link_fallback ?? "" })}
+                  {data?.link_is_dashboard ? ` ${t("telegram.tplRenewUrlOwner")}` : ""}
+                </div>
               </div>
 
               {/* ---------- 3. Xem trước ---------- */}
@@ -452,11 +502,12 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
             {/* Xoá mẫu của RIÊNG phạm vi đang mở — phạm vi khác không bị đụng tới. */}
             <button
               className="btn btn-ghost btn-sm"
-              disabled={save.isPending || !(data?.body || data?.item_line)}
+              disabled={save.isPending || !(data?.body || data?.item_line || data?.renew_url)}
               onClick={() => {
                 setBody(data?.base_body ?? "");
                 setLine(data?.base_item_line ?? "");
-                save.mutate({ body: null, item_line: null });
+                setRenewUrl("");
+                save.mutate({ body: null, item_line: null, renew_url: null });
               }}
             >
               {scope === "all" ? t("telegram.tplReset") : t("telegram.tplScopeClear")}
@@ -467,7 +518,13 @@ export function NotificationTemplateModal({ onClose }: { onClose: () => void }) 
             <button
               className="btn btn-primary"
               disabled={save.isPending}
-              onClick={() => save.mutate({ body: body.trim(), item_line: line.trim() })}
+              onClick={() =>
+                save.mutate({
+                  body: body.trim(),
+                  item_line: line.trim(),
+                  renew_url: renewUrl.trim() || null,
+                })
+              }
             >
               {save.isPending ? t("common.loading") : t("common.save")}
             </button>

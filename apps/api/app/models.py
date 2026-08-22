@@ -1099,9 +1099,10 @@ class TelegramTemplate(Base):
       - `scope='member'` — áp cho tin nói về đúng email `member_id`.
     Cụ thể hơn thì thắng: member > chat > all (`renewal_reminder._pick_template`).
 
-    Hai ô, đều không bắt buộc:
+    Ba ô, đều không bắt buộc (đặt MỘT ô cũng đủ để dòng mẫu tồn tại):
       - `body`: thân tin, chèn `{items}` để bung danh sách email.
       - `item_line`: mẫu MỘT dòng email trong danh sách đó.
+      - `renew_url`: trang gia hạn của đại lý, dành cho người nhận không có tài khoản web.
     Chỗ trống dùng biến `{...}` — xem TEMPLATE_PLACEHOLDERS. Biến lạ ⇒ API trả 400
     ngay lúc lưu, không để tới lúc gửi mới hỏng.
 
@@ -1160,6 +1161,11 @@ class TelegramTemplate(Base):
     )
     body: Mapped[str | None] = mapped_column(Text, nullable=True)
     item_line: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # TRANG GIA HẠN của riêng đại lý cho phạm vi này (http/https). Đây là thứ thay vào
+    # `{link}` khi người nhận KHÔNG đăng nhập được dashboard — khách cuối, người được
+    # mời theo dõi. NULL ⇒ `{link}` thành câu "liên hệ người bán để gia hạn".
+    # Xem `services/renewal_reminder.link_text`.
+    renew_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=_utcnow
     )
