@@ -78,6 +78,15 @@ const DEFAULT_ICONS: Record<string, ReactNode> = {
       <polyline points="22,6 12,13 2,6" />
     </>,
   ),
+  // Chuyển hạn sử dụng: đồng hồ + mũi tên sang phải (chuyển thời gian đi nơi khác).
+  "transfer-expiry": svg(
+    <>
+      <circle cx="9" cy="12" r="7" />
+      <polyline points="9 8 9 12 11.5 13.5" />
+      <line x1="17" y1="12" x2="22" y2="12" />
+      <polyline points="19.5 9.5 22 12 19.5 14.5" />
+    </>,
+  ),
   "change-subscription": svg(
     <>
       <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />

@@ -497,16 +497,44 @@ export const REVOKE_MENU_ITEM_TEXTS = [
   "撤回邀请",
 ];
 
+/**
+ * Chữ trên nút XÁC NHẬN của hộp thoại thu hồi lời mời.
+ *
+ * ⚠️ TUYỆT ĐỐI KHÔNG thêm "Hủy"/"Cancel"/"取消"/"Đóng" vào đây. `revoke-invite.ts`
+ * duyệt danh sách này theo THỨ TỰ và khớp kiểu CHỨA CHUỖI: chỉ cần ChatGPT đổi
+ * chữ nút xác nhận (vd "Xoá lời mời") là mấy chữ đầu trượt hết, rơi xuống "Hủy"
+ * → khớp ĐÚNG nút HUỶ của hộp thoại → bấm huỷ → lời mời còn nguyên mà task lại
+ * báo "row vẫn còn" (ca vaominh11@gmail.com 21/8/2026: ChatGPT đã revoke thật
+ * nhưng dashboard giữ pending, hoặc ngược lại — không phân biệt được).
+ * Các chữ huỷ/đóng nằm ở `DIALOG_DISMISS_TEXTS` để CHỦ ĐỘNG loại trừ.
+ */
 export const REVOKE_CONFIRM_TEXTS = [
   "Thu hồi",
   "Xác nhận",
-  "Hủy",
   "Revoke",
   "Confirm",
-  "Cancel",
   "撤销",
   "确认",
+];
+
+/**
+ * Chữ trên các nút ĐÓNG/HUỶ của hộp thoại — dùng để LOẠI TRỪ, không bao giờ bấm
+ * khi đang tìm nút xác nhận. So khớp BẰNG NHAU (sau `normalizeMatchText`) chứ
+ * không phải chứa chuỗi: "Hủy lời mời" là hành động THẬT, còn "Hủy" trơ trọi mới
+ * là nút bỏ qua.
+ */
+export const DIALOG_DISMISS_TEXTS = [
+  "Hủy",
+  "Huỷ",
+  "Đóng",
+  "Quay lại",
+  "Cancel",
+  "Close",
+  "Back",
+  "Dismiss",
   "取消",
+  "关闭",
+  "返回",
 ];
 
 /**

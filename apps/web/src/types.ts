@@ -74,6 +74,44 @@ export type WorkspaceSettings = {
   dry_run_mode: boolean;
 };
 
+/** Phép tính 1 lần "Chuyển hạn sử dụng đến" — backend trả qua endpoint
+ *  `POST .../members/{id}/transfer-subscription/preview`. Modal hiện đúng các
+ *  con số này; xác nhận xong backend ghi CHÍNH chúng (không tính lại lần 2). */
+export type TransferPreview = {
+  source: {
+    member_id: string;
+    email: string;
+    status: string;
+    subscription_end_at: string | null;
+    subscription_months: number | null;
+    /** months=NULL và end=NULL → vô thời hạn (KHÁC "mất hạn"). */
+    unlimited: boolean;
+    expired: boolean;
+    /** Thời gian còn lại tính tới GIÂY (0 nếu hết hạn / vô thời hạn). */
+    remaining_seconds: number;
+  };
+  target: {
+    email: string;
+    exists: boolean;
+    status: string | null;
+    subscription_end_at: string | null;
+    unlimited: boolean;
+    expired: boolean;
+  };
+  /** fresh = mời email nhận vào, bê nguyên mốc hạn.
+   *  accumulate = email nhận đang dùng → cộng dồn hạn còn lại.
+   *  unlimited = email cho đang vô thời hạn → chuyển nguyên trạng. */
+  mode: "fresh" | "accumulate" | "unlimited";
+  new_end_at: string | null;
+  new_months: number | null;
+  /** Mốc để cộng dồn: hạn cũ email nhận, hoặc "bây giờ" nếu hạn đó đã qua. */
+  accumulate_from: string | null;
+  will_invite: boolean;
+  removal_task_type: string;
+  /** != null → KHÔNG chuyển được; modal khoá nút xác nhận và hiện lý do này. */
+  blocked_reason: string | null;
+};
+
 export type Member = {
   id: string;
   workspace_id: string;

@@ -741,6 +741,72 @@ class MemberChangeEmailIn(BaseModel):
     new_email: EmailStr
 
 
+class MemberTransferSubscriptionIn(BaseModel):
+    """Body cho "chuyển hạn sử dụng đến email khác"
+    (POST /{workspace_id}/members/{id}/transfer-subscription[/preview]).
+
+    KHÁC "đổi email": chuyển hạn CHẤP NHẬN email nhận đang là thành viên — khi đó
+    hạn còn lại được CỘNG DỒN vào hạn sẵn có của email nhận. Xem
+    `routers/members/transfer-subscription.md`.
+    """
+
+    target_email: EmailStr
+
+
+class TransferSourceOut(BaseModel):
+    """Email CHO hạn — số liệu để modal hiện phép tính."""
+
+    member_id: UUID
+    email: EmailStr
+    status: str
+    subscription_end_at: datetime | None = None
+    subscription_months: int | None = None
+    #: Vô thời hạn (months=NULL và end=NULL) — xem EXPIRY_RULES §5.
+    unlimited: bool = False
+    expired: bool = False
+    #: Thời gian còn lại tính tới GIÂY (0 nếu hết hạn / vô thời hạn).
+    remaining_seconds: int = 0
+
+
+class TransferTargetOut(BaseModel):
+    """Email NHẬN hạn — có thể chưa tồn tại trong workspace."""
+
+    email: EmailStr
+    exists: bool = False
+    status: str | None = None
+    subscription_end_at: datetime | None = None
+    unlimited: bool = False
+    #: Hạn hiện tại đã ở quá khứ → phần chuyển sang được tính từ BÂY GIỜ.
+    expired: bool = False
+
+
+class MemberTransferPreviewOut(BaseModel):
+    """Phép tính đầy đủ của 1 lần chuyển hạn — modal hiện TRƯỚC khi xác nhận.
+
+    Cùng một hàm `_plan_transfer` sinh ra preview này và thực thi lệnh thật, nên
+    con số admin nhìn thấy CHÍNH LÀ con số sẽ được ghi (không tính 2 nơi).
+    """
+
+    source: TransferSourceOut
+    target: TransferTargetOut
+    #: 'fresh' = email nhận chưa ở trong workspace → mời mới, bê nguyên mốc hạn.
+    #: 'accumulate' = email nhận đang dùng → cộng dồn hạn còn lại vào hạn sẵn có.
+    #: 'unlimited' = email cho đang vô thời hạn → chuyển nguyên trạng vô thời hạn.
+    mode: str
+    #: Hạn của email NHẬN sau khi chuyển. NULL = vô thời hạn.
+    new_end_at: datetime | None = None
+    new_months: int | None = None
+    #: Mốc để cộng dồn (accumulate): hạn cũ email nhận, hoặc `now` nếu đã hết hạn.
+    accumulate_from: datetime | None = None
+    #: Có phải mời email nhận vào workspace không (mode='fresh').
+    will_invite: bool = False
+    #: Task gỡ email cho: luôn REMOVE_MEMBER — extension tìm ở tab "Người dùng",
+    #: KHÔNG thấy thì tự sang tab "Lời mời đang chờ xử lý" thu hồi.
+    removal_task_type: str = "REMOVE_MEMBER"
+    #: != NULL → KHÔNG chuyển được; modal khoá nút xác nhận và hiện lý do này.
+    blocked_reason: str | None = None
+
+
 class SyncMemberIn(BaseModel):
     """Body cho "đồng bộ 1 tài khoản lẻ" (POST /{workspace_id}/sync-member)."""
 

@@ -22,6 +22,7 @@ from app.models import (
     TopupOrder,
     Workspace,
 )
+from app.ratelimit import RateLimitMiddleware
 from app.routers.members._shared import (
     SUBSCRIPTION_GRACE_AFTER_EXPIRY,
     _has_open_remove_task,
@@ -956,6 +957,12 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    # ⚠️ THỨ TỰ: `add_middleware` bọc từ trong ra ngoài, cái thêm SAU nằm NGOÀI.
+    # Rate-limit thêm TRƯỚC CORS ⇒ nằm TRONG CORS ⇒ response 429/503 vẫn được
+    # CORSMiddleware gắn header `Access-Control-Allow-Origin`. Nếu để rate-limit
+    # ra ngoài cùng, extension (origin `chrome-extension://…`) sẽ thấy "network
+    # error" thay vì đọc được mã lỗi + `retry_after_sec` để tự lùi nhịp.
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.frontend_origin],

@@ -92,6 +92,45 @@ class Settings(BaseSettings):
     # Số thread tối đa của threadpool anyio (xem main.py::_apply_thread_limit).
     thread_pool_size: int = Field(16, alias="THREAD_POOL_SIZE")
 
+    # ---- Chống DDoS / rate-limit (app/ratelimit.py) ----
+    # Tắt khẩn cấp khi nghi limiter chặn nhầm traffic thật: RATE_LIMIT_ENABLED=false
+    # → deploy lại, KHÔNG cần sửa code.
+    rate_limit_enabled: bool = Field(True, alias="RATE_LIMIT_ENABLED")
+    # Trần THÔ theo IP — chỉ để chặn flood, đặt cao hơn nhu cầu thật nhiều lần
+    # vì một IP có thể là NAT của cả văn phòng / nhiều profile MoreLogin.
+    rate_limit_per_ip_per_min: int = Field(3000, alias="RATE_LIMIT_PER_IP_PER_MIN")
+    # Trần theo DANH TÍNH (X-API-KEY hoặc Bearer; không có thì rơi về IP). Một
+    # extension lúc scrape gửi nhiều nhất ~3-4 req/s (progress throttle 300ms),
+    # nên 900/phút = 15 req/s là rộng rãi cho một client đơn lẻ.
+    rate_limit_per_client_per_min: int = Field(900, alias="RATE_LIMIT_PER_CLIENT_PER_MIN")
+    # Login/register/OTP/đổi mật khẩu — theo IP. Mỗi lần là một lần bcrypt hoặc
+    # một email OTP, nên siết chặt: đây là hạn mức chống dò mật khẩu.
+    rate_limit_auth_per_min: int = Field(20, alias="RATE_LIMIT_AUTH_PER_MIN")
+    # Webhook công khai (SePay/Telegram) — theo IP.
+    rate_limit_webhook_per_min: int = Field(120, alias="RATE_LIMIT_WEBHOOK_PER_MIN")
+    # Trần request đang xử lý đồng thời. Endpoint đều là `def` (sync) nên chạy
+    # trong threadpool `THREAD_POOL_SIZE`; vượt trần này = hàng đợi đã quá dài,
+    # trả 503 ngay còn hơn để mọi request cùng timeout.
+    rate_limit_max_inflight: int = Field(80, alias="RATE_LIMIT_MAX_INFLIGHT")
+    # Trần kết nối SSE toàn hệ thống (đếm riêng vì kết nối sống rất lâu).
+    rate_limit_max_streams: int = Field(200, alias="RATE_LIMIT_MAX_STREAMS")
+    # Trần kết nối SSE trên MỖI workspace (một API key bị lộ không được phép
+    # tự mở hàng trăm stream). Xem routers/queue/extension_poll.py.
+    rate_limit_streams_per_workspace: int = Field(
+        8, alias="RATE_LIMIT_STREAMS_PER_WORKSPACE"
+    )
+    # Trần kích thước body (byte). Phải >= client_max_body_size của nginx.
+    rate_limit_max_body_bytes: int = Field(8 * 1024 * 1024, alias="RATE_LIMIT_MAX_BODY_BYTES")
+    # Số khoá tối đa giữ trong bộ nhớ limiter (~100 byte/khoá). Trần này khiến
+    # flood từ hàng vạn IP giả không làm phình RAM của chính limiter.
+    rate_limit_max_keys: int = Field(20_000, alias="RATE_LIMIT_MAX_KEYS")
+    # IP được MIỄN hoàn toàn (cron/monitoring nội bộ), ngăn cách bằng dấu phẩy.
+    rate_limit_trusted_ips: str = Field("", alias="RATE_LIMIT_TRUSTED_IPS")
+
+    def rate_limit_trusted_ip_set(self) -> set[str]:
+        """Parse `RATE_LIMIT_TRUSTED_IPS` → set IP. Rỗng/rác → set rỗng."""
+        return {p.strip() for p in (self.rate_limit_trusted_ips or "").split(",") if p.strip()}
+
     def telegram_admin_chat_ids(self) -> list[int]:
         """Parse `TELEGRAM_ADMIN_CHAT_ID` → danh sách id số. Bỏ qua phần rác."""
         out: list[int] = []

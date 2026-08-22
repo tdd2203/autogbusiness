@@ -13,6 +13,7 @@ Bản đồ chức năng (mỗi module có file `.md` cùng tên):
   - renew.py         : renew_member_subscription (GIA HẠN tự phục vụ — KHÔNG duyệt, tạo chu kỳ + reset chưa TT)
   - correct_add_date.py: correct_member_add_date (sửa "ngày gia hạn" ĐÚNG 1 lần — super-admin)
   - change_email.py  : change_member_email (đổi email — xoá cũ + mời mới, giữ hạn)
+  - transfer_subscription.py: chuyển HẠN CÒN LẠI sang email khác (cộng dồn nếu email nhận đang dùng)
   - remove.py        : remove_member, bulk_remove, cleanup_expired (xoá)
   - data_actions.py  : export_member_data, delete_member_data (2 mục menu "..." mới của ChatGPT)
   - role_license.py  : change role / change license / bulk change license
@@ -48,6 +49,7 @@ from . import (  # noqa: F401  (side-effect: đăng ký route lên router)
     role_license,
     stats,
     subscription,
+    transfer_subscription,
     usage_limit,
 )
 

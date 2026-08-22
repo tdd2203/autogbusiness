@@ -11,26 +11,51 @@
  *   2. Tìm row chứa email
  *   3. Click nút "..." menu trong row
  *   4. Click menu item "Thu hồi lời mời"
- *   5. Verify row biến mất / dialog confirm nếu có
+ *   5. CHỜ ChatGPT chốt (dialog tắt hẳn + lớp phủ gỡ) rồi QUÉT LẠI tab Lời mời
+ *      để xác nhận invite đã biến mất — không quét lại thì không được báo ok.
  *
  * Selectors hiện tại heuristic — ChatGPT có thể đổi UI, cần inspect khi fail.
  */
 
 import {
   humanClick,
+  normalizeMatchText,
   queryByText,
   randomDelay,
   sleep,
   waitFor,
 } from "../../human";
 import {
+  DIALOG_DISMISS_TEXTS,
   REVOKE_CONFIRM_TEXTS,
   REVOKE_MENU_ITEM_TEXTS,
   findMenuItemByKey,
 } from "../../i18n-ui";
 import { dbLabelsFor, reportLabelMismatch } from "../../../shared/ui-labels";
-import { findMemberRow, findRowMenuButton } from "../member-row";
+import { findRowMenuButton } from "../member-row";
+import { waitForChatGptCommit } from "../dialog-commit";
 import { locatePendingRow } from "./locate-pending-row";
+
+const LOG = "[autogpt-revoke]";
+
+/**
+ * Hạn chờ HỘP THOẠI XÁC NHẬN hiện ra. Trước đây là `sleep(800)` cứng rồi soi DOM
+ * đúng 1 lần: dialog render chậm hơn 800ms (máy/mạng chậm) là coi như "luồng này
+ * không có dialog" → BỎ QUA bước bấm xác nhận → lời mời không hề bị thu hồi, mà
+ * `waitForChatGptCommit` thấy không có dialog nào lại chốt "đã xong" → xuống quét
+ * lại thấy row còn nguyên → báo hỏng lạc đề.
+ */
+const CONFIRM_DIALOG_WAIT_MS = 3_000;
+
+/** Hạn chờ dialog thu hồi tắt hẳn — cùng nhịp spinner với REMOVE (v0.11.5). */
+const COMMIT_TIMEOUT_MS = 30_000;
+/** Để ChatGPT refetch list 1 nhịp sau khi dialog đóng rồi mới tra lại. */
+const VERIFY_SETTLE_MS = 2000;
+/** Số lần tra lại tab Lời mời + khoảng cách giữa 2 lần. */
+const VERIFY_ATTEMPTS = 3;
+const VERIFY_GAP_MS = 3000;
+/** Ngân sách xác minh mặc định khi caller không cấp (revoke lẻ 1 email). */
+const VERIFY_DEFAULT_BUDGET_MS = 25_000;
 
 /** Có thể có confirm dialog hoặc không — tuỳ ChatGPT. */
 export type RevokeResult = {
@@ -48,12 +73,56 @@ export type RevokeResult = {
   viaRemove?: boolean;
 };
 
+/** Nút đóng/huỷ của hộp thoại — KHÔNG BAO GIỜ được bấm khi tìm nút xác nhận. */
+function isDismissButton(el: Element): boolean {
+  const txt = normalizeMatchText(el.textContent ?? "");
+  return DIALOG_DISMISS_TEXTS.some((t) => normalizeMatchText(t) === txt);
+}
+
+/**
+ * Nút XÁC NHẬN trong hộp thoại thu hồi.
+ *
+ *   1. Khớp chữ (`REVOKE_CONFIRM_TEXTS` + label từ DB), bỏ qua nút huỷ/đóng.
+ *   2. Không chữ nào khớp (ChatGPT đổi nhãn) → lấy nút CUỐI có chữ mà không phải
+ *      huỷ/đóng: hộp thoại luôn đặt nút hành động ở cuối. Thà bấm đúng nút hành
+ *      động còn hơn đứng im rồi để lời mời còn nguyên.
+ *
+ * Vì sao cần lọc huỷ/đóng: vòng lặp cũ duyệt `REVOKE_CONFIRM_TEXTS` theo thứ tự
+ * và khớp kiểu CHỨA CHUỖI, mà danh sách đó từng có sẵn "Hủy"/"Cancel"/"取消" —
+ * chỉ cần ChatGPT đổi chữ nút xác nhận là mấy chữ đầu trượt hết rồi rơi đúng vào
+ * nút HUỶ của hộp thoại (ca vaominh11@gmail.com 21/8/2026).
+ */
+function findConfirmButton(
+  dialog: Element,
+  texts: readonly string[],
+): HTMLElement | null {
+  for (const text of texts) {
+    const btn = queryByText("button", text, dialog);
+    if (btn && !isDismissButton(btn)) return btn;
+  }
+  const buttons = Array.from(
+    dialog.querySelectorAll<HTMLElement>("button"),
+  ).filter((b) => (b.textContent ?? "").trim());
+  for (let i = buttons.length - 1; i >= 0; i--) {
+    if (!isDismissButton(buttons[i])) {
+      console.warn(
+        `${LOG} không chữ nào khớp nút xác nhận → dùng nút cuối "${(buttons[i].textContent ?? "").trim()}"`,
+      );
+      return buttons[i];
+    }
+  }
+  return null;
+}
+
 /**
  * Revoke 1 invite. Trả về ok=true nếu thành công, ok=false + reason nếu fail.
  * KHÔNG throw — caller iterate được qua list mà không bị break.
  */
-export async function revokeInvite(email: string): Promise<RevokeResult> {
-  console.log(`[autogpt-revoke] start email=${email}`);
+export async function revokeInvite(
+  email: string,
+  verifyBudgetMs = VERIFY_DEFAULT_BUDGET_MS,
+): Promise<RevokeResult> {
+  console.log(`${LOG} start email=${email} (ngân sách xác minh ${verifyBudgetMs}ms)`);
 
   // v0.8.8: định vị row qua ô "Search for invites" (FAST + chính xác) thay vì
   // scroll-scan list virtualized vốn dễ MISS → kết luận nhầm notInPending →
@@ -102,45 +171,83 @@ export async function revokeInvite(email: string): Promise<RevokeResult> {
   await randomDelay(200, 600);
   await humanClick(revokeItem);
 
-  // Có thể có confirm dialog — đợi 1s rồi check
-  await sleep(800);
+  // Hộp thoại xác nhận CÓ THỂ không xuất hiện (tuỳ phiên bản UI) → CHỜ RENDER
+  // thay vì sleep cứng; hết giờ mà vẫn không có thì đi thẳng xuống bước chốt.
   const dbConfirm = dbLabelsFor("confirm_revoke_button", "/admin/members");
   const confirmTexts =
     dbConfirm.length > 0 ? [...dbConfirm, ...REVOKE_CONFIRM_TEXTS] : REVOKE_CONFIRM_TEXTS;
-  let confirmClicked = false;
-  for (const text of confirmTexts) {
-    const dialog = document.querySelector('[role="dialog"]');
-    if (!dialog) break;
-    const btn = queryByText("button", text, dialog);
+  let dialog: Element | null = null;
+  try {
+    dialog = await waitFor(
+      () => document.querySelector('[role="dialog"]'),
+      CONFIRM_DIALOG_WAIT_MS,
+    );
+  } catch {
+    console.log(`${LOG} không có hộp thoại xác nhận → chốt thẳng`);
+  }
+  if (dialog) {
+    const btn = findConfirmButton(dialog, confirmTexts);
     if (btn) {
-      console.log(`[autogpt-revoke] click confirm "${text}"`);
+      console.log(`${LOG} click confirm "${(btn.textContent ?? "").trim()}"`);
       await randomDelay(200, 500);
       await humanClick(btn);
-      confirmClicked = true;
-      break;
+    } else if (dbConfirm.length > 0) {
+      reportLabelMismatch("confirm_revoke_button", dbConfirm[0], "/admin/members");
     }
   }
-  if (
-    !confirmClicked &&
-    dbConfirm.length > 0 &&
-    document.querySelector('[role="dialog"]')
-  ) {
-    reportLabelMismatch("confirm_revoke_button", dbConfirm[0], "/admin/members");
-  }
 
-  // Verify row biến mất (tối đa 5s)
-  try {
-    await waitFor(
-      () => (findMemberRow(email) ? null : document.body),
-      5000,
-    );
-    console.log(`[autogpt-revoke] OK email=${email}`);
-    return { email, ok: true };
-  } catch {
+  // ---- (1) CHỜ CHATGPT XỬ LÝ XONG ----------------------------------------
+  // Trước v0.11.7 chỗ này chỉ `waitFor(row biến mất, 5s)`: bấm xong là đo DOM
+  // ngay trong lúc dialog CÒN QUAY. ChatGPT 2026-08 giữ dialog tới khi server
+  // trả lời (xem remove/README v0.11.5) nên 5s đó đo đúng cái list CHƯA đổi →
+  // vừa fail oan khi mạng chậm, vừa báo ok GIẢ nếu row rơi khỏi DOM vì re-render.
+  // Nay đòi dialog TẮT HẲN (vắng 4 nhịp liên tiếp) + lớp phủ Radix gỡ xong rồi
+  // mới đụng vào ô search.
+  const commit = await waitForChatGptCommit(LOG, COMMIT_TIMEOUT_MS);
+  if (!commit.settled) {
     return {
       email,
       ok: false,
-      reason: "Đã click revoke nhưng row vẫn còn sau 5s",
+      reason:
+        `Dialog thu hồi KHÔNG đóng sau ${COMMIT_TIMEOUT_MS / 1000}s ` +
+        `(${commit.busy ? "nút xác nhận vẫn đang quay" : "dialog đứng im"}) → ` +
+        "ChatGPT có thể hỏi OTP/2FA hoặc báo lỗi." +
+        (commit.dialogText ? ` Dialog: "${commit.dialogText.slice(0, 200)}"` : ""),
     };
   }
+
+  // ---- (2) QUÉT LẠI XÁC NHẬN ----------------------------------------------
+  // Dialog đóng = ChatGPT NHẬN lệnh, KHÔNG bảo đảm đã thu hồi server-side (đúng
+  // bài học của REMOVE: dialog đóng → báo COMPLETED → invite VẪN còn → DB lệch).
+  // Quét lại bằng CHÍNH đường định vị chuẩn (`locatePendingRow`: 1 trang → quét
+  // vị trí, nhiều trang → ô "Search for invites") để lần tra sau là dữ liệu MỚI
+  // của ChatGPT chứ không phải DOM cũ còn treo.
+  //
+  // Tab Lời mời cũng eventual-consistent → tra tối đa 3 lần, cách nhau 3s, trong
+  // ngân sách `verifyBudgetMs` caller cấp (batch nhiều email phải chia nhau 150s
+  // của task). Còn thấy row = thu hồi CHƯA có hiệu lực → ok:false để backend giữ
+  // nguyên trạng thái và retry, thà báo chưa-xong còn hơn báo xong GIẢ.
+  await sleep(VERIFY_SETTLE_MS); // để ChatGPT refetch list 1 nhịp trước khi tra
+  const deadline = Date.now() + Math.max(VERIFY_GAP_MS, verifyBudgetMs);
+  for (let attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt++) {
+    const still = await locatePendingRow(email);
+    if (!still) {
+      console.log(`${LOG} OK email=${email} (đã biến mất khỏi tab Lời mời)`);
+      return { email, ok: true };
+    }
+    console.log(
+      `${LOG} xác minh lần ${attempt}/${VERIFY_ATTEMPTS}: ${email} VẪN còn trên tab Lời mời`,
+    );
+    if (attempt >= VERIFY_ATTEMPTS || Date.now() + VERIFY_GAP_MS >= deadline) break;
+    await sleep(VERIFY_GAP_MS);
+  }
+
+  return {
+    email,
+    ok: false,
+    reason:
+      `Đã click thu hồi ${email} (dialog đã tắt hẳn) nhưng lời mời VẪN còn trên ` +
+      `tab "Lời mời đang chờ xử lý" sau ${VERIFY_ATTEMPTS} lần tra → thu hồi CHƯA ` +
+      "có hiệu lực (ChatGPT chặn/lỗi quyền). Cần thu hồi thủ công hoặc chờ retry.",
+  };
 }

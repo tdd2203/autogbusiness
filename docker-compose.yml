@@ -95,6 +95,19 @@ services:
       DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
       DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
       THREAD_POOL_SIZE: ${THREAD_POOL_SIZE:-16}
+      # Chống DDoS / rate-limit — xem apps/api/app/ratelimit.md.
+      # Mặc định trong app/config.py đã hợp lý; chỉ đặt biến ở đây khi cần nới
+      # hoặc siết trên production. RATE_LIMIT_ENABLED=false = tắt khẩn cấp.
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_PER_IP_PER_MIN: ${RATE_LIMIT_PER_IP_PER_MIN:-3000}
+      RATE_LIMIT_PER_CLIENT_PER_MIN: ${RATE_LIMIT_PER_CLIENT_PER_MIN:-900}
+      RATE_LIMIT_AUTH_PER_MIN: ${RATE_LIMIT_AUTH_PER_MIN:-20}
+      RATE_LIMIT_WEBHOOK_PER_MIN: ${RATE_LIMIT_WEBHOOK_PER_MIN:-120}
+      RATE_LIMIT_MAX_INFLIGHT: ${RATE_LIMIT_MAX_INFLIGHT:-80}
+      RATE_LIMIT_MAX_STREAMS: ${RATE_LIMIT_MAX_STREAMS:-200}
+      RATE_LIMIT_STREAMS_PER_WORKSPACE: ${RATE_LIMIT_STREAMS_PER_WORKSPACE:-8}
+      # IP miễn trừ (cron/monitoring nội bộ), ngăn cách bằng dấu phẩy.
+      RATE_LIMIT_TRUSTED_IPS: ${RATE_LIMIT_TRUSTED_IPS:-}
     ports:
       # Expose cho Chrome Extension chạy native trên Mac.
       # Trong popup extension đặt Backend URL = http://localhost:18000
@@ -106,27 +119,15 @@ services:
     build: ./apps/web
     container_name: autogpt-web
     restart: always
-    mem_limit: ${WEB_MEM_LIMIT:-64m}
+    # 64m → 96m (2026-08-21): nginx cấp phát NGAY ~8MB shared memory cho các
+    # zone limit_req/limit_conn trong nginx.conf, cộng thêm buffer request.
+    mem_limit: ${WEB_MEM_LIMIT:-96m}
     depends_on:
       - api
     ports:
-      # Chỉ bind localhost; team truy cập qua Cloudflare tunnel (service web:80), không qua port này.
+      # Chỉ bind localhost. Caddy trên host nhận 443 rồi reverse_proxy vào đây —
+      # tunnel đã gỡ 2026-08-22 vì chặng edge HKG → tunnel Singapore treo giữa chừng.
       - "127.0.0.1:17173:80"
-
-  # Tunnel cho team truy cập từ xa. Chỉ chạy khi bật profile "remote":
-  #   docker compose --profile remote up -d
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    container_name: autogpt-cloudflared
-    restart: always
-    mem_limit: ${CF_MEM_LIMIT:-128m}
-    # --protocol http2: chạy tunnel trên TCP thay vì QUIC/UDP. Nhà mạng VN bóp UDP
-    # quốc tế nên QUIC hay rớt ("timeout: no recent network activity") làm API
-    # thỉnh thoảng treo 1-2 giây. Đổi về http2 cho ổn định. (2026-08-19)
-    command: tunnel --no-autoupdate --protocol http2 run --token ${CF_TUNNEL_TOKEN:-}
-    depends_on:
-      - web
-    profiles: ["remote"]
 
 volumes:
   autogpt_pgdata:

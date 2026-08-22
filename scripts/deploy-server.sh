@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Deploy backend (api + web + tunnel) lên VPS production — một lệnh duy nhất.
+# Deploy backend (api + web) lên VPS production — một lệnh duy nhất.
 #
 # Khác với scripts/deploy-all.sh (chạy Docker TRÊN MÁY NÀY): script này rsync
 # source từ máy local lên VPS rồi build + khởi động container TRÊN VPS.
-# Truy cập production qua $PUBLIC_URL (Cloudflare tunnel, profile "remote").
+# Truy cập production qua $PUBLIC_URL — DNS trỏ thẳng VPS, Caddy trên host nhận
+# 443 rồi reverse_proxy vào container web (tunnel đã gỡ 2026-08-22).
 #
 # Quy trình: KHÔNG qua git — rsync thẳng working tree hiện tại lên VPS
 # (kể cả thay đổi chưa commit). Git chỉ dùng để quản lý lịch sử code như thường.
@@ -130,12 +131,12 @@ if [ "$SYNC_ONLY" -eq 1 ]; then
 fi
 
 # ----- 3. Build + up trên VPS -----
-step "Build + up trên VPS (api, web, cloudflared)"
+step "Build + up trên VPS (api, web)"
 # `build web` giờ chỉ COPY dist/ đã rsync ở bước 2 → gần như không tốn RAM.
 # api lifespan tự alembic upgrade head lúc startup → migration DB tự áp dụng.
 ssh "$SERVER" "cd $REMOTE_DIR \
   && docker compose build api web \
-  && docker compose --profile remote up -d"
+  && docker compose up -d"
 
 # ----- 4. Health check -----
 step "Health check"
@@ -153,16 +154,17 @@ if [ "$ok" -ne 1 ]; then
 fi
 echo "API (VPS nội bộ): ok"
 
-# Public qua tunnel (check từ máy local — xác nhận cả cloudflared).
+# Public qua Caddy (check từ máy local — xác nhận cả DNS lẫn Caddy trên host).
 # PUBLIC_URL trống (chưa đặt trong .env) → bỏ qua bước này thay vì báo lỗi: deploy
 # đã thành công ở phía VPS rồi, không có lý do gì fail vì thiếu một biến để kiểm tra.
 if [ -z "$PUBLIC_URL" ]; then
-  warn "PUBLIC_URL chưa đặt trong .env — bỏ qua kiểm tra qua tunnel."
+  warn "PUBLIC_URL chưa đặt trong .env — bỏ qua kiểm tra public."
 elif curl -fsS --max-time 15 "$PUBLIC_URL/health" >/dev/null 2>&1; then
   echo "Public $PUBLIC_URL/health: ok"
 else
-  warn "API nội bộ ok nhưng $PUBLIC_URL chưa trả lời — kiểm tra cloudflared:"
-  warn "  ssh $SERVER 'docker logs --tail=30 autogpt-cloudflared'"
+  warn "API nội bộ ok nhưng $PUBLIC_URL chưa trả lời — kiểm tra DNS và Caddy trên host:"
+  warn "  dig +short A ${PUBLIC_URL#https://}   # phải ra IP của VPS, không phải Cloudflare"
+  warn "  ssh $SERVER 'journalctl -u caddy --since \"10 min ago\" | tail -30'"
   exit 1
 fi
 

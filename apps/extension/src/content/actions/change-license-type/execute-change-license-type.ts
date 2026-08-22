@@ -14,6 +14,15 @@ import { clickTabAndWait } from "../sync";
 import { clearMemberFilter } from "../remove/member-filter";
 import { locateMemberRow } from "../remove/locate-member";
 import { findLicenseTypeInRow } from "../sync/row-extractors/license-type";
+import { waitForChatGptCommit } from "../dialog-commit";
+
+/** Hạn chờ dialog xác nhận tắt hẳn — cùng nhịp với REMOVE (v0.11.5). */
+const COMMIT_TIMEOUT_MS = 30_000;
+/** Để ChatGPT commit + list refetch 1 nhịp trước khi lọc lại xác minh. */
+const VERIFY_SETTLE_MS = 1500;
+/** Số lần lọc lại row + khoảng cách giữa 2 lần. */
+const VERIFY_ATTEMPTS = 3;
+const VERIFY_GAP_MS = 2500;
 
 const LOG = "[autogpt-license]";
 
@@ -229,20 +238,67 @@ export async function executeChangeLicenseType(
   if (confirmBtn) {
     console.log(`${LOG} confirm dialog → "${(confirmBtn.textContent ?? "").trim()}"`);
     await humanClick(confirmBtn);
-    await sleep(500);
   }
-  await randomDelay(600, 1200);
 
-  // 5) Clear filter để list về đầy đủ.
+  // ---- 5) CHỜ CHATGPT XỬ LÝ XONG -----------------------------------------
+  // Trước v0.11.7: click xong ngủ 500ms + 600-1200ms rồi `return ok:true` —
+  // KHÔNG chờ, KHÔNG quét lại gì cả. Backend lấy ok:true ghi thẳng
+  // `Member.license_type` (completion.py) nên ChatGPT nuốt lệnh là DB lệch im.
+  await reportProgress(
+    taskId,
+    { phase: "verifying", message: "Đợi ChatGPT chốt giấy phép..." },
+    true,
+  );
+  const commit = await waitForChatGptCommit(LOG, COMMIT_TIMEOUT_MS);
+  if (!commit.settled) {
+    await clearMemberFilter();
+    return {
+      ok: false,
+      error_code: "VERIFY_FAILED",
+      error_message:
+        `Dialog KHÔNG đóng sau ${COMMIT_TIMEOUT_MS / 1000}s khi đổi giấy phép sang ` +
+        `'${newLicenseType}' (${commit.busy ? "vẫn đang quay" : "đứng im"}) → ChatGPT ` +
+        "có thể hỏi OTP/2FA, thiếu ghế Codex, hoặc báo lỗi." +
+        (commit.dialogText ? ` Dialog: "${commit.dialogText.slice(0, 200)}"` : ""),
+    };
+  }
+
+  // ---- 6) QUÉT LẠI XÁC NHẬN ----------------------------------------------
+  // Lọc lại row (fetch mới) rồi đọc CỘT "Loại suất cấp phép" — cùng hàm mà sync
+  // dùng làm nguồn sự thật. Sai/không đọc được ⇒ VERIFY_FAILED.
+  await sleep(VERIFY_SETTLE_MS);
+  let seen: LicenseType | null = null;
+  for (let attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt++) {
+    // `pageThrough: false`: XÁC MINH thì ô lọc là nguồn sự thật (giống REMOVE).
+    // Cho lật trang ở đây thì 3 lần tra × N trang dễ nuốt trọn 150s của task →
+    // TIMEOUT (không rõ nguyên nhân) thay vì VERIFY_FAILED (rõ, backend retry).
+    const verifyRow = await locateMemberRow(email, { pageThrough: false });
+    seen = verifyRow ? findLicenseTypeInRow(verifyRow) : null;
+    if (seen === newLicenseType) {
+      await clearMemberFilter();
+      console.log(`${LOG} DONE email=${email} → ${newLicenseType} (đã xác minh)`);
+      return {
+        ok: true,
+        data: {
+          email,
+          new_license_type: newLicenseType,
+          old_license_type: oldLicenseType,
+        },
+      };
+    }
+    console.log(
+      `${LOG} xác minh lần ${attempt}/${VERIFY_ATTEMPTS}: row đang là '${seen ?? "không đọc được"}', chờ '${newLicenseType}'`,
+    );
+    if (attempt < VERIFY_ATTEMPTS) await sleep(VERIFY_GAP_MS);
+  }
+
   await clearMemberFilter();
-
-  console.log(`${LOG} DONE email=${email} → ${newLicenseType}`);
   return {
-    ok: true,
-    data: {
-      email,
-      new_license_type: newLicenseType,
-      old_license_type: oldLicenseType,
-    },
+    ok: false,
+    error_code: "VERIFY_FAILED",
+    error_message:
+      `Đã chọn '${newLicenseType}' cho ${email} nhưng sau ${VERIFY_ATTEMPTS} lần lọc ` +
+      `lại row vẫn hiện '${seen ?? "không đọc được cột giấy phép"}' → đổi giấy phép ` +
+      "CHƯA có hiệu lực trên ChatGPT (bị từ chối hoặc hết ghế loại đó).",
   };
 }

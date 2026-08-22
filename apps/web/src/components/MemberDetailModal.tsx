@@ -127,6 +127,7 @@ const KNOWN_ACTIONS = new Set([
   "MEMBER_EXPIRY_BULK_REQUESTED",
   "MEMBER_ADD_DATE_CORRECTED",
   "MEMBER_EMAIL_CHANGED",
+  "MEMBER_SUBSCRIPTION_TRANSFERRED",
   "MEMBER_USAGE_LIMIT_REQUESTED",
   "MEMBER_BULK_SET_USAGE_LIMIT_QUEUED",
   "MEMBER_USAGE_LIMIT_SYNCED",
@@ -173,6 +174,7 @@ const MODAL_TIMELINE_ACTIONS = new Set([
   "MEMBER_BULK_OWNER_ASSIGN",
   // đổi email (thay thế 1-đổi-1: gỡ email cũ + mời email mới)
   "MEMBER_EMAIL_CHANGED",
+  "MEMBER_SUBSCRIPTION_TRANSFERRED",
 ]);
 
 const PAYMENT_BADGE: Record<string, string> = {
@@ -204,6 +206,10 @@ const LOG_PAIRS: Record<string, [string, string, string, FieldType][]> = {
     ["subscriptionEnd", "old_end_at", "new_end_at", "date"],
   ],
   MEMBER_EMAIL_CHANGED: [["email", "old_email", "new_email", "text"]],
+  MEMBER_SUBSCRIPTION_TRANSFERRED: [
+    ["email", "source_email", "target_email", "text"],
+    ["subscriptionEnd", "old_target_end_at", "new_end_at", "date"],
+  ],
   MEMBER_CHANGE_ROLE_QUEUED: [["role", "old_role", "new_role", "role"]],
   MEMBER_CHANGE_LICENSE_TYPE_QUEUED: [
     ["license", "old_license_type", "new_license_type", "text"],
@@ -228,6 +234,9 @@ const LOG_SINGLES: Record<string, [string, string, FieldType][]> = {
   MEMBER_SUBSCRIPTION_CHANGE_REQUESTED: [["months", "requested_months", "months"]],
   MEMBER_SUBSCRIPTION_RENEWED: [["months", "months", "months"]],
   MEMBER_EMAIL_CHANGED: [["subscriptionEnd", "subscription_end_at", "date"]],
+  MEMBER_SUBSCRIPTION_TRANSFERRED: [
+    ["subscriptionEnd", "source_end_at", "date"],
+  ],
   MEMBER_ROLE_SYNCED: [["role", "new_role", "role"]],
   MEMBER_LICENSE_TYPE_SYNCED: [["license", "new_license_type", "text"]],
   MEMBER_USAGE_LIMIT_SYNCED: [["credits", "limit_credits", "credits"]],
@@ -1286,8 +1295,14 @@ export function MemberDetailModal({
   const queueIdOf = (log: MemberLog): string | undefined => {
     const d = log.data as Record<string, unknown> | null;
     if (d && typeof d.queue_item_id === "string") return d.queue_item_id;
-    // Đổi email: task mời email mới (gộp MEMBER_INVITE_VERIFIED vào dòng này).
-    if (log.action === "MEMBER_EMAIL_CHANGED" && d) {
+    // Đổi email / chuyển hạn: task mời email mới (gộp MEMBER_INVITE_VERIFIED vào
+    // dòng này). Chuyển hạn kiểu "cộng dồn" KHÔNG sinh task mời → invite_queue_item_id
+    // là null, rơi xuống nhánh dưới như thường.
+    if (
+      (log.action === "MEMBER_EMAIL_CHANGED" ||
+        log.action === "MEMBER_SUBSCRIPTION_TRANSFERRED") &&
+      d
+    ) {
       if (typeof d.invite_queue_item_id === "string") return d.invite_queue_item_id;
     }
     // Mời hàng loạt log target_type=QUEUE_ITEM, target_id CHÍNH LÀ queue id.
@@ -1326,7 +1341,8 @@ export function MemberDetailModal({
   const isInviteQueued = (log: MemberLog) =>
     log.action === "MEMBER_INVITE_QUEUED" ||
     log.action === "MEMBER_BULK_INVITE_QUEUED" ||
-    log.action === "MEMBER_EMAIL_CHANGED";
+    log.action === "MEMBER_EMAIL_CHANGED" ||
+    log.action === "MEMBER_SUBSCRIPTION_TRANSFERRED";
   const isRemoveQueued = (log: MemberLog) =>
     log.action === "MEMBER_REMOVE_QUEUED" ||
     log.action === "MEMBER_BULK_REMOVE_QUEUED" ||
