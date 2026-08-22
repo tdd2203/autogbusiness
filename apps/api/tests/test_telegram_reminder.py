@@ -1641,7 +1641,7 @@ def test_template_starts_from_the_default_of_the_real_audience(
 ) -> None:
     """Mẫu gốc đem ra sửa phải là mẫu của ĐÚNG loại người nhận phạm vi đó gửi tới.
 
-    Email đã chỉ định khách nhận thì tin đi tới khách ('Liên hệ nơi bạn đã mua'), không
+    Email đã chỉ định khách nhận thì tin đi tới khách (không có link dashboard), không
     phải tới đại lý ('Gia hạn tại: link'). Mở ra thấy mẫu của đại lý thì người soạn sửa
     nhầm nội dung ngay từ dòng đầu mà không biết.
     """
@@ -1655,8 +1655,11 @@ def test_template_starts_from_the_default_of_the_real_audience(
         f"/api/v1/telegram/template?scope=member&member_id={assigned}", headers=auth_header
     ).json()
     assert out["audience"] == "assignee"
-    assert "Vui lòng liên hệ nơi bạn đã mua" in out["default_body"]
-    assert "Vui lòng liên hệ nơi bạn đã mua" in out["preview"]
+    # Chưa đặt trang gia hạn riêng ⇒ {link} của khách là câu chỉ dẫn, KHÔNG phải link
+    # dashboard (khách không có tài khoản web để đăng nhập).
+    assert out["link_is_dashboard"] is False
+    assert renewal_reminder.SELLER_CONTACT in out["preview"]
+    assert "/renewals" not in out["preview"]
 
     # Chưa chỉ định ai → chính đại lý nhận tin của email đó.
     out = client.get(
@@ -1664,10 +1667,176 @@ def test_template_starts_from_the_default_of_the_real_audience(
     ).json()
     assert out["audience"] == "owner"
     assert "Gia hạn tại:" in out["default_body"]
+    assert out["link_is_dashboard"] is True
+    assert "/renewals" in out["preview"]
 
     # Mẫu chung vẫn tính theo đại lý — nó áp cho mọi tin của tài khoản này.
     out = client.get("/api/v1/telegram/template", headers=auth_header).json()
     assert out["audience"] == "owner"
+
+
+# ── Link về web: chỉ cho người đăng nhập được ────────────────────────────────
+
+
+def test_dashboard_link_never_reaches_customers_even_via_custom_template(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """GUARD: mẫu tự soạn có `{link}` KHÔNG được đẩy link đăng nhập tới khách cuối.
+
+    Đây là cái bẫy thật: ô soạn "mẫu chung" mở sẵn mẫu gốc của ĐẠI LÝ, vốn có dòng
+    "Gia hạn tại: {link}". Đại lý chỉ cần bấm Lưu là mẫu đó áp cho cả tin gửi khách —
+    trước đây `{link}` luôn là FRONTEND_ORIGIN/renewals, tức là khách nhận link tới
+    trang đăng nhập mà họ không có tài khoản.
+    """
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "cua-toi@example.com", days_left=2, owner_id=owner_id)
+    _add_member(
+        client,
+        ws,
+        "khach@example.com",
+        days_left=2,
+        owner_id=owner_id,
+        **_assigned_to(ASSIGNEE_CHAT),
+    )
+
+    resp = client.put(
+        "/api/v1/telegram/template",
+        json={"body": "SHOP ABC\n\n{items}\n\nGia hạn tại: {link}"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+
+    _run()
+    by_chat = {chat_id: text for chat_id, text in sent}
+
+    # Đại lý (đăng nhập được) vẫn thấy link dashboard.
+    assert "/renewals" in by_chat[OWNER_CHAT]
+    # Khách cuối dùng CHÍNH mẫu đó nhưng {link} thành câu chỉ dẫn, không phải link web.
+    assert "SHOP ABC" in by_chat[ASSIGNEE_CHAT]
+    assert "/renewals" not in by_chat[ASSIGNEE_CHAT]
+    assert renewal_reminder.SELLER_CONTACT in by_chat[ASSIGNEE_CHAT]
+
+
+def test_customer_gets_the_renew_url_the_owner_configured(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Đại lý đặt trang gia hạn riêng ⇒ khách thấy đúng trang đó thay cho câu chỉ dẫn."""
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(
+        client,
+        ws,
+        "khach@example.com",
+        days_left=2,
+        owner_id=owner_id,
+        **_assigned_to(ASSIGNEE_CHAT),
+    )
+
+    # Chỉ đặt link, KHÔNG soạn lại thân tin — dòng mẫu vẫn phải được giữ.
+    resp = client.put(
+        "/api/v1/telegram/template",
+        json={"body": None, "item_line": None, "renew_url": "shop.cua-toi.vn/gia-han"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    # Thiếu lược đồ thì tự thêm https:// — người ta hay dán mỗi tên miền.
+    assert resp.json()["renew_url"] == "https://shop.cua-toi.vn/gia-han"
+
+    _run()
+    text = dict((c, t) for c, t in sent)[ASSIGNEE_CHAT]
+    assert "https://shop.cua-toi.vn/gia-han" in text
+    assert renewal_reminder.SELLER_CONTACT not in text
+    assert "/renewals" not in text
+
+
+def test_dashboard_link_only_for_accounts_that_can_open_the_page(
+    client: TestClient, auth_header: dict, bot_on, sent
+) -> None:
+    """Chỉ tài khoản MỞ ĐƯỢC trang gia hạn mới nhận link về web.
+
+    `/renewals` gác bằng MEMBER_VIEW. Một tài khoản tự đăng ký (OTP) được tạo với
+    `permissions=[]` cho tới khi super-admin cấp quyền — có hàng trong `users` nhưng
+    bấm link vào chỉ ra màn hình từ chối, nên với họ link cũng vô nghĩa hệt như với
+    khách cuối.
+    """
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    _add_member(client, ws, "cua-toi@example.com", days_left=2, owner_id=owner_id)
+
+    with SessionLocal() as db:
+        for username, chat_id, perms in (
+            ("dai_ly_co_quyen", 555010, ["MEMBER_VIEW"]),
+            ("moi_dang_ky", 555011, []),
+        ):
+            db.add(
+                User(
+                    email=f"{username}@example.com",
+                    username=username,
+                    password_hash="x",
+                    permissions=perms,
+                    telegram_chat_id=chat_id,
+                    telegram_username=username,
+                    telegram_linked_at=_now(),
+                )
+            )
+            db.add(
+                TelegramSubscription(
+                    user_id=UUID(owner_id), chat_id=chat_id, scope="all", enabled=True
+                )
+            )
+        db.commit()
+
+    # Mẫu gốc của 'subscriber' không có {link} → soạn mẫu có biến để quan sát được.
+    resp = client.put(
+        "/api/v1/telegram/template",
+        json={"body": "{items}\n\nGia hạn tại: {link}"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+
+    _run()
+    by_chat = {chat_id: text for chat_id, text in sent}
+    assert "/renewals" in by_chat[555010]
+    assert "/renewals" not in by_chat[555011]
+    assert renewal_reminder.SELLER_CONTACT in by_chat[555011]
+
+
+@pytest.mark.parametrize("bad", ["javascript:alert(1)", "mailto:a@b.vn", "ftp://x.vn/a", "  /gia-han"])
+def test_renew_url_rejects_non_http_links(
+    client: TestClient, auth_header: dict, bot_on, bad
+) -> None:
+    """Link đi thẳng vào tin của khách nên phải chặn rác NGAY LÚC LƯU.
+
+    `javascript:alert(1)` là ca dễ lọt nhất: không có '//' nên nếu chỉ tìm '://' rồi tự
+    thêm 'https://' vào đầu thì nó thành 'https://javascript:alert(1)' — parse ra hợp lệ.
+    """
+    resp = client.put(
+        "/api/v1/telegram/template",
+        json={"renew_url": bad},
+        headers=auth_header,
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_link_text_follows_the_recipient_not_the_role() -> None:
+    """Luật dựng `{link}`, kiểm thẳng vì mẫu gốc của vài loại người nhận không có biến này.
+
+    Link dashboard đi theo CHAT ĐĂNG NHẬP ĐƯỢC chứ không theo vai: một đại lý được
+    người khác mời theo dõi vẫn vào được web, chặn theo vai 'subscriber' là cắt nhầm
+    của họ. Ngược lại khách cuối dù ở vai nào cũng chỉ nhận trang gia hạn của đại lý.
+    """
+    shop = "https://shop.vn/gia-han"
+    assert "/renewals" in renewal_reminder.link_text("subscriber", registered=True, renew_url=shop)
+    assert "/renewals" in renewal_reminder.link_text("owner", registered=True, renew_url=None)
+    # Nhóm admin hệ thống là group chat, không gắn với user nào — vẫn phải có link.
+    assert "/renewals" in renewal_reminder.link_text("admin", registered=False, renew_url=shop)
+    assert renewal_reminder.link_text("subscriber", registered=False, renew_url=shop) == shop
+    assert renewal_reminder.link_text("assignee", registered=False, renew_url=shop) == shop
+    assert (
+        renewal_reminder.link_text("assignee", registered=False, renew_url="  ")
+        == renewal_reminder.SELLER_CONTACT
+    )
 
 
 def test_template_previews_with_the_real_emails_of_that_scope(

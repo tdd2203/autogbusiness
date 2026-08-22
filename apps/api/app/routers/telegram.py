@@ -21,9 +21,11 @@ là cách duy nhất vừa lấy đúng chat_id vừa chứng minh chính chủ.
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -166,6 +168,9 @@ class TelegramTemplateOut(BaseModel):
     member_id: UUID | None = None
     body: str | None = None
     item_line: str | None = None
+    # Trang gia hạn riêng của đại lý cho phạm vi này — thứ thay vào `{link}` khi người
+    # nhận KHÔNG đăng nhập được dashboard.
+    renew_url: str | None = None
     default_body: str
     default_item_line: str
     # Mẫu ĐANG có hiệu lực cho phạm vi này khi chưa đặt mẫu riêng (mẫu chung nếu đã
@@ -190,16 +195,28 @@ class TelegramTemplateOut(BaseModel):
     # Loại người nhận mà phạm vi này gửi tới ('owner' | 'assignee' | 'subscriber') —
     # web hiện tên loại đó lên để người soạn biết mình đang viết cho ai.
     audience: str = "owner"
+    # `{link}` của phạm vi này có phải link dashboard không (True = người nhận đăng nhập
+    # được). False ⇒ web hiện ô "Trang gia hạn cho khách" và dựng xem trước bằng
+    # `renew_url` đang gõ, chưa gõ thì `link_fallback`.
+    link_is_dashboard: bool = True
+    # Câu thay vào `{link}` khi chưa đặt `renew_url` — server giữ một bản duy nhất để
+    # web khỏi chép lại chuỗi tiếng Việt rồi lệch nhau.
+    link_fallback: str = ""
 
 
 class TelegramTemplateIn(BaseModel):
-    """Lưu mẫu cho MỘT phạm vi. Bỏ trống cả body lẫn item_line = xoá mẫu phạm vi đó."""
+    """Lưu mẫu cho MỘT phạm vi. Bỏ trống CẢ BA ô = xoá mẫu phạm vi đó.
+
+    `renew_url` tính là một ô: đại lý có thể chỉ đặt trang gia hạn mà giữ nguyên mẫu
+    gốc — xoá dòng mẫu khi hai ô chữ trống sẽ vứt luôn link họ vừa đặt.
+    """
 
     scope: str = "all"
     chat_id: int | None = None
     member_id: UUID | None = None
     body: str | None = Field(default=None, max_length=4000)
     item_line: str | None = Field(default=None, max_length=1000)
+    renew_url: str | None = Field(default=None, max_length=500)
 
 
 class TelegramMemberLinkIn(BaseModel):
@@ -1381,6 +1398,7 @@ def get_template(
         member_id,
         row.body if row else None,
         row.item_line if row else None,
+        row.renew_url if row else None,
     )
 
 
@@ -1400,6 +1418,7 @@ def save_template(
     )
     body = (payload.body or "").strip() or None
     item_line = (payload.item_line or "").strip() or None
+    renew_url = _clean_renew_url(payload.renew_url)
 
     for value, key in ((body, "body"), (item_line, "item_line")):
         if not value:
@@ -1418,7 +1437,7 @@ def save_template(
             )
 
     row = _template_row(db, user, scope, chat_id, member_id)
-    if body is None and item_line is None:
+    if body is None and item_line is None and renew_url is None:
         if row is not None:
             db.delete(row)
     else:
@@ -1429,12 +1448,17 @@ def save_template(
             db.add(row)
         row.body = body
         row.item_line = item_line
+        row.renew_url = renew_url
     log_event(
         db,
         actor_type="ADMIN",
         actor_id=user.id,
         actor_label=user.username,
-        action="TELEGRAM_TEMPLATE_UPDATED" if (body or item_line) else "TELEGRAM_TEMPLATE_RESET",
+        action=(
+            "TELEGRAM_TEMPLATE_UPDATED"
+            if (body or item_line or renew_url)
+            else "TELEGRAM_TEMPLATE_RESET"
+        ),
         target_type="USER",
         target_id=str(user.id),
         # Phạm vi nào bị đổi — không ghi thì log chỉ nói "đã sửa mẫu" mà không biết mẫu nào.
@@ -1442,7 +1466,41 @@ def save_template(
         commit=False,
     )
     db.commit()
-    return _template_out(db, user, scope, chat_id, member_id, body, item_line)
+    return _template_out(db, user, scope, chat_id, member_id, body, item_line, renew_url)
+
+
+# Có lược đồ hay chưa. Bắt theo cú pháp URI (`scheme:`) chứ KHÔNG theo '://': chuỗi
+# nguy hiểm nhất là `javascript:alert(1)` — không có '//' nên nếu chỉ tìm '://' thì nó
+# lọt qua rồi được thêm 'https://' vào đầu, thành một URL "hợp lệ" mà bấm không ra gì.
+_URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
+_RENEW_URL_ERROR = (
+    "Trang gia hạn phải là địa chỉ http(s), ví dụ https://shop.vn/gia-han"
+)
+
+
+def _clean_renew_url(raw: str | None) -> str | None:
+    """Chuẩn hoá ô 'trang gia hạn cho khách' → URL http(s) hoặc None.
+
+    Chặn ngay lúc lưu vì link này đi THẲNG vào tin nhắn của khách: một chuỗi rác thì
+    khách bấm không ra gì mà đại lý chẳng bao giờ biết. Chưa có lược đồ thì tự thêm
+    `https://` — người ta hay dán mỗi 'shop.vn/gia-han'.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    if not _URL_SCHEME_RE.match(text):
+        text = f"https://{text}"
+    if len(text) > 500:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Trang gia hạn quá dài (tối đa 500 ký tự)",
+        )
+    parsed = urlparse(text)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=_RENEW_URL_ERROR
+        )
+    return text
 
 
 def _check_template_scope(
@@ -1605,20 +1663,33 @@ def _template_out(
     member_id: UUID | None,
     body: str | None,
     item_line: str | None,
+    renew_url: str | None = None,
 ) -> TelegramTemplateOut:
     audience = _template_audience(db, user, scope, chat_id, member_id)
+    # Bản xem trước phải dựng `{link}` ĐÚNG NHƯ lúc gửi thật: chỉ đại lý (người đăng
+    # nhập được) mới thấy link dashboard; các phạm vi khác thấy trang gia hạn vừa đặt,
+    # chưa đặt thì thấy câu liên hệ người bán. Xem trước link dashboard rồi khách nhận
+    # một câu khác hẳn là bản xem trước nói dối.
+    link_is_dashboard = audience == "owner"
+    # Phạm vi khác 'all' mà chưa có link riêng ⇒ dùng link của mẫu chung, đúng thứ tự
+    # thắng-thua của thân tin (cụ thể hơn thắng).
+    shared = _template_row(db, user, "all", None, None) if scope != "all" else None
+    effective_url = renew_url or (shared.renew_url if shared else None)
+    link = renewal_reminder.link_text(
+        audience, registered=link_is_dashboard, renew_url=effective_url
+    )
     default_body = renewal_reminder.default_body(audience)
     default_item_line = renewal_reminder.default_item_line(audience)
-    shared = _template_row(db, user, "all", None, None) if scope != "all" else None
     base_body = (shared.body if shared else None) or default_body
     base_item_line = (shared.item_line if shared else None) or default_item_line
-    real = _preview_real_sample(db, user, scope, chat_id, member_id)
+    real = _preview_real_sample(db, user, scope, chat_id, member_id, link)
     return TelegramTemplateOut(
         scope=scope,
         chat_id=chat_id,
         member_id=member_id,
         body=body,
         item_line=item_line,
+        renew_url=renew_url,
         default_body=default_body,
         default_item_line=default_item_line,
         base_body=base_body,
@@ -1627,8 +1698,10 @@ def _template_out(
         item_placeholders=list(renewal_reminder.TEMPLATE_PLACEHOLDERS["item_line"]),
         # Chưa có mẫu riêng thì xem trước phải là mẫu SẼ dùng thay nó (mẫu chung, không
         # thì mẫu gốc của đúng loại người nhận), chứ không phải mẫu gốc của đại lý.
-        preview=_preview_template(body or base_body, item_line or base_item_line, user.username),
-        sample=_preview_sample(user.username),
+        preview=_preview_template(
+            body or base_body, item_line or base_item_line, user.username, link
+        ),
+        sample=_preview_sample(user.username, link),
         preview_real=(
             _render_sample(body or base_body, item_line or base_item_line, real)
             if real
@@ -1638,10 +1711,12 @@ def _template_out(
         overrides=_template_overrides(db, user),
         recipients=_recipient_options(db, user),
         audience=audience,
+        link_is_dashboard=link_is_dashboard,
+        link_fallback=renewal_reminder.SELLER_CONTACT,
     )
 
 
-def _preview_sample(owner_username: str) -> dict[str, Any]:
+def _preview_sample(owner_username: str, link: str) -> dict[str, Any]:
     """DỮ LIỆU MẪU cho bản xem trước — một nguồn duy nhất.
 
     Server dựng `preview` từ đây, và web cũng nhận nguyên bộ này để dựng lại lúc người
@@ -1656,7 +1731,7 @@ def _preview_sample(owner_username: str) -> dict[str, Any]:
         "items": items,
         "count": len(items),
         "bucket": 3,
-        "link": f"{get_settings().frontend_origin.rstrip('/')}/renewals",
+        "link": link,
         "owner": owner_username,
         "workspace": "Workspace 1",
     }
@@ -1717,7 +1792,12 @@ def _preview_real_members(
 
 
 def _preview_real_sample(
-    db: Session, user: User, scope: str, chat_id: int | None, member_id: UUID | None
+    db: Session,
+    user: User,
+    scope: str,
+    chat_id: int | None,
+    member_id: UUID | None,
+    link: str,
 ) -> dict[str, Any] | None:
     """Bộ dữ liệu THẬT cho bản xem trước thứ hai — `None` khi phạm vi chưa có email nào.
 
@@ -1745,7 +1825,7 @@ def _preview_real_sample(
         "count": len(members),
         # Email còn hạn dài chưa thuộc mốc nào → lấy mốc lớn nhất, đúng mốc nó sẽ rơi vào.
         "bucket": renewal_reminder._bucket_for(nearest, buckets) or max(buckets),
-        "link": f"{settings.frontend_origin.rstrip('/')}/renewals",
+        "link": link,
         "owner": esc(user.username),
         "workspace": esc(_workspace_name(db, members[0]) or "—"),
     }
@@ -1772,13 +1852,13 @@ def _render_sample(body_tpl: str, line_tpl: str, sample: dict[str, Any]) -> str:
 
 
 def _preview_template(
-    body: str | None, item_line: str | None, owner_username: str
+    body: str | None, item_line: str | None, owner_username: str, link: str
 ) -> str:
     """Xem trước bằng DỮ LIỆU MẪU — người dùng thấy ngay tin thật trông thế nào."""
     return _render_sample(
         body or renewal_reminder.default_body("owner"),
         item_line or renewal_reminder.default_item_line("owner"),
-        _preview_sample(owner_username),
+        _preview_sample(owner_username, link),
     )
 
 

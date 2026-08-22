@@ -21,6 +21,13 @@ AI NHẬN (theo thứ tự ưu tiên, xem `_recipients_for`):
   - Luôn kèm: các chat trong `TELEGRAM_ADMIN_CHAT_ID` nhận BẢN TỔNG HỢP (trừ email của
     tài khoản gắn cờ `is_test` — tránh nhiễu số liệu/thông báo thử nghiệm).
 
+LINK `{link}` (xem `link_text`): link về dashboard CHỈ gửi cho người đăng nhập được —
+đại lý đã liên kết Telegram và nhóm admin hệ thống. Khách cuối / người theo dõi không
+có tài khoản web nên nhận TRANG GIA HẠN RIÊNG do đại lý đặt (`telegram_templates.
+renew_url`, theo từng phạm vi mẫu), hoặc câu "liên hệ người bán để gia hạn" khi đại lý
+chưa đặt. Quyết định theo NGƯỜI NHẬN chứ không theo mẫu — nếu không, một mẫu chung có
+`{link}` do đại lý soạn sẽ đẩy link đăng nhập thẳng tới khách của họ.
+
 KHUNG GIỜ: quét chỉ chạy trong giờ `RENEWAL_REMINDER_HOUR` (giờ VN) → không nhắn lúc
 nửa đêm. Việc GỬI (kể cả retry) chạy mọi tick.
 """
@@ -46,6 +53,7 @@ from app.models import (
     User,
     Workspace,
 )
+from app.permissions import Permission
 from app.services import telegram
 
 logger = logging.getLogger(__name__)
@@ -328,6 +336,30 @@ def _dashboard_link() -> str:
     return f"{get_settings().frontend_origin.rstrip('/')}/renewals"
 
 
+# Chữ thay vào `{link}` khi người nhận KHÔNG đăng nhập được dashboard và đại lý chưa
+# đặt trang gia hạn riêng. KHÔNG để trống: mẫu tự soạn thường viết "Gia hạn tại:
+# {link}", bỏ trống thì khách đọc được một câu cụt.
+SELLER_CONTACT = "liên hệ người bán để gia hạn"
+
+
+def link_text(kind: str, *, registered: bool, renew_url: str | None) -> str:
+    """Giá trị thay vào `{link}` cho MỘT người nhận.
+
+    Link dashboard chỉ có nghĩa với người MỞ ĐƯỢC trang `/renewals`: đại lý do
+    super-admin cấp quyền, đã liên kết Telegram — và nhóm admin hệ thống. Gửi nó cho
+    khách cuối là đưa họ tới trang đăng nhập mà họ không có tài khoản; gửi cho một tài
+    khoản mới tự đăng ký, chưa được cấp quyền, thì cũng chỉ ra màn hình từ chối. Cả hai
+    trường hợp nhận TRANG GIA HẠN RIÊNG của đại lý (`telegram_templates.renew_url`),
+    hoặc câu chỉ dẫn liên hệ người bán khi đại lý chưa đặt.
+
+    `registered` xét theo CHAT chứ không theo vai: một người vừa là đại lý vừa được mời
+    theo dõi tài khoản khác thì vẫn đăng nhập được, link dashboard vẫn đúng với họ.
+    """
+    if kind == "admin" or registered:
+        return _dashboard_link()
+    return (renew_url or "").strip() or SELLER_CONTACT
+
+
 # Biến dùng được trong mẫu tự soạn. Đổi/ thêm ở đây thì SỬA LUÔN bảng hướng dẫn trong
 # giao diện (i18n `telegram.tplPlaceholders`) — người dùng chỉ biết qua chỗ đó.
 TEMPLATE_PLACEHOLDERS = {
@@ -358,10 +390,13 @@ def default_body(kind: str = "owner") -> str:
             "Bạn nhận tin này vì được mời theo dõi thông báo của tài khoản trên."
         )
     if kind == "assignee":
+        # `{link}` chứ không phải câu cố định: đại lý đặt trang gia hạn riêng thì khách
+        # thấy đúng trang đó; chưa đặt thì `link_text` trả về SELLER_CONTACT nên câu
+        # chốt vẫn là lời nhắn liên hệ người bán như trước.
         return (
             "⏰ <b>Tài khoản ChatGPT sắp hết hạn</b> — còn ≤{bucket} ngày\n\n"
             "{items}\n\n"
-            "Vui lòng liên hệ nơi bạn đã mua để gia hạn trước khi hết hạn."
+            "👉 {link}"
         )
     return (
         "⏰ <b>Nhắc gia hạn</b> — {count} email còn ≤{bucket} ngày\n\n"
@@ -388,11 +423,12 @@ def unknown_placeholders(template: str, allowed: tuple[str, ...]) -> list[str]:
     return sorted({name for name in found if name not in allowed})
 
 
-Tpl = tuple[str | None, str | None]
+Tpl = tuple[str | None, str | None, str | None]
 
 
 class TemplateStore:
-    """Mẫu tự soạn của các chủ tài khoản liên quan, tra theo phạm vi.
+    """Mẫu tự soạn (thân tin, dòng email, TRANG GIA HẠN) của các chủ tài khoản liên
+    quan, tra theo phạm vi.
 
     Nạp một lượt rồi tra nhiều lần: một đợt flush có thể dựng hàng chục tin, mà mỗi tin
     lại cần biết "chat này / email này có mẫu riêng không".
@@ -403,7 +439,7 @@ class TemplateStore:
         self._chat: dict[tuple[UUID, int], Tpl] = {}
         self._member: dict[UUID, Tpl] = {}
         for row in rows:
-            value = (row.body, row.item_line)
+            value = (row.body, row.item_line, row.renew_url)
             if row.scope == "chat" and row.chat_id is not None:
                 self._chat[(row.user_id, row.chat_id)] = value
             elif row.scope == "member" and row.member_id is not None:
@@ -454,16 +490,22 @@ def _render_message(
     bucket: int,
     items: list[tuple[Member, str | None, str | None, UUID | None]],
     now: datetime,
-    custom: tuple[str | None, str | None] | None = None,
+    custom: Tpl | None = None,
+    *,
+    registered: bool = False,
 ) -> list[str]:
     """Dựng (một hoặc nhiều) tin HTML cho 1 người nhận.
 
     `items` = (member, tên workspace, username chủ sở hữu, id chủ sở hữu).
-    `custom` = (body, item_line) tự soạn đã chọn sẵn cho tin này — xem `_pick_template`.
-    Truyền None để buộc dùng mẫu gốc (đường lui khi mẫu tự soạn hỏng HTML).
+    `custom` = (body, item_line, renew_url) tự soạn đã chọn sẵn cho tin này — xem
+    `TemplateStore.pick`. Truyền (None, None, url) để buộc dùng mẫu gốc mà GIỮ trang
+    gia hạn (đường lui khi mẫu tự soạn hỏng HTML — lỗi ở chữ nghĩa, không phải ở link).
+    `{link}` không bao giờ rơi về link dashboard cho khách dù mẫu là gì: `link_text`
+    quyết định theo NGƯỜI NHẬN.
+    `registered` = chat này thuộc một tài khoản dashboard đang hoạt động.
     """
     esc = telegram.escape_html
-    link = _dashboard_link()
+    link = link_text(kind, registered=registered, renew_url=custom[2] if custom else None)
     body_tpl = (custom[0] if custom else None) or default_body(kind)
     line_tpl = (custom[1] if custom else None) or default_item_line(kind)
 
@@ -581,7 +623,30 @@ def flush_pending(db: Session, now: datetime | None = None) -> dict:
             notif
         )
 
+    # Chat nào MỞ ĐƯỢC trang gia hạn → chỉ những chat này mới nhận link về web (xem
+    # `link_text`). Điều kiện là tài khoản còn hoạt động VÀ có quyền vào trang đó —
+    # `/renewals` gác bằng MEMBER_VIEW, nên một tài khoản tự đăng ký chưa được
+    # super-admin cấp quyền mà nhận link thì bấm vào chỉ ra màn hình từ chối.
+    # Tra theo chat_id chứ không theo vai người nhận: một đại lý được người khác mời
+    # theo dõi vẫn là người có tài khoản, link vẫn đúng với họ.
+    # Một truy vấn cho cả đợt flush, KHÔNG hỏi theo từng nhóm.
+    registered_chats = (
+        {
+            chat_id
+            for chat_id, is_super_admin, perms in db.execute(
+                select(User.telegram_chat_id, User.is_super_admin, User.permissions).where(
+                    User.telegram_chat_id.in_({chat_id for chat_id, _, _ in groups}),
+                    User.is_active.is_(True),
+                )
+            ).all()
+            if is_super_admin or Permission.MEMBER_VIEW.value in (perms or [])
+        }
+        if groups
+        else set()
+    )
+
     for (chat_id, kind, bucket), notifs in groups.items():
+        registered = chat_id in registered_chats
         items = [detail[n.member_id] for n in notifs if n.member_id in detail]
         items.sort(key=lambda it: it[0].subscription_end_at or now)
         custom = templates.pick(
@@ -590,7 +655,7 @@ def flush_pending(db: Session, now: datetime | None = None) -> dict:
             chat_id,
             [member.id for member, _, _, _ in items],
         )
-        messages = _render_message(kind, bucket, items, now, custom)
+        messages = _render_message(kind, bucket, items, now, custom, registered=registered)
         try:
             last_message_id = _send_all(chat_id, messages)
         except telegram.TelegramError as exc:
@@ -600,7 +665,16 @@ def flush_pending(db: Session, now: datetime | None = None) -> dict:
             if _is_markup_error(exc) and custom:
                 try:
                     last_message_id = _send_all(
-                        chat_id, _render_message(kind, bucket, items, now, None)
+                        chat_id,
+                        # Giữ nguyên trang gia hạn: hỏng là hỏng thân tin, không phải link.
+                        _render_message(
+                            kind,
+                            bucket,
+                            items,
+                            now,
+                            (None, None, custom[2]),
+                            registered=registered,
+                        ),
                     )
                     logger.warning(
                         "[tele-reminder] mẫu tự soạn lỗi HTML (%s) → đã gửi bằng mẫu gốc",
