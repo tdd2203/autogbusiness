@@ -65,6 +65,7 @@ export const CHANGELOG: ChangelogEntry[] = [
       "🐞 Soát lại phát hiện lỗi thứ hai: tiền và số ghế của một dòng hoá đơn được dò ĐỘC LẬP, mỗi vế có danh sách nhãn dự phòng riêng → có thể lấy tiền của dòng này ghép với số ghế của dòng khác, rồi đem so với số suất đang mua. Nay cả hai đọc từ CÙNG một nhãn đã khớp; dòng nào không có ghế thì để trống chứ không mượn của dòng khác.",
       "Modal 'Quản lý suất' không đóng lại được sau bước đọc → DỪNG hẳn task mời. Lớp phủ của nó chặn mọi click phía sau (bấm mua trượt, mở hộp mời cũng trượt), trước đây chỉ ghi cảnh báo rồi đi tiếp nên sẽ fail lung tung ở bước sau.",
       "Đọc thêm dòng 'Thuế bán hàng (10,001%)' thành sales_tax_text/_vnd/_percent để về sau đối soát hoá đơn cho dễ. Có test kiểm chứng tạm tính + thuế = tổng hôm nay, tức 3 dòng được đọc đúng dòng chứ không lệch.",
+      "Số suất cần mua lấy từ backend (`new_seat_count` = `_count_new_invite_seats`) chứ không đếm bừa theo số email: email đang là thành viên ACTIVE đã giữ một suất rồi, đếm cả vào là đi mua thừa — mất tiền thật. Backend cũ chưa gửi thì rơi về số email; chiều rơi về này là cố ý vì mua THỪA còn hơn mua THIẾU (mua thiếu là ChatGPT bật luồng 'mua kèm gửi lời mời' không kiểm soát được).",
       "Kết quả task mời ghi thêm seat_total / seat_assigned / seat_free / seat_needed / seat_purchased + toàn bộ số liệu tiền của lần mua, để dashboard cập nhật số suất từ con số THẬT của ChatGPT thay vì scrape trang Thanh toán (vốn hay cũ/lệch).",
     ],
   },
