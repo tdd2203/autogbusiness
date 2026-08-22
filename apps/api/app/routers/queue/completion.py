@@ -696,12 +696,15 @@ def update_task(
     #   found_in='pending' → vẫn đang chờ → giữ pending, chỉ chạm last_synced_at.
     #   found_in='none'    → KHÔNG thấy ở cả 2 tab → CHỈ báo (giữ result để
     #                        dashboard hiển thị "email không tồn tại trong
-    #                        workspace"); KHÔNG mark removed (tránh xoá oan khi
-    #                        scan sót row trên list lớn — cùng bài học mục đầu file).
+    #                        workspace") + ĐÁNH DẤU `sync_missing_at` để mở khoá
+    #                        "Mời lại" (member ghi active nhưng thực tế đã rời
+    #                        workspace — xem reinvite_member); KHÔNG mark removed
+    #                        (tránh xoá oan khi scan sót row trên list lớn — cùng
+    #                        bài học mục đầu file).
     if item.type == "SYNC_MEMBER" and effective_status == "COMPLETED":
         target_email = ((item.payload or {}).get("email") or "").lower()
         found_in = ((body.result or {}).get("data") or {}).get("found_in")
-        if target_email and found_in in ("active", "pending"):
+        if target_email and found_in in ("active", "pending", "none"):
             member = db.execute(
                 select(Member).where(
                     Member.workspace_id == workspace.id,
@@ -711,6 +714,8 @@ def update_task(
             if member:
                 now = datetime.now(timezone.utc)
                 member.last_synced_at = now
+                # Thấy lại → xoá cờ "sync không thấy"; không thấy → đóng dấu now.
+                member.sync_missing_at = now if found_in == "none" else None
                 if found_in == "active" and member.status != "active":
                     member.status = "active"
                     if member.joined_at is None:
@@ -737,8 +742,8 @@ def update_task(
     # `result.data.results` = [{email, found_in}]. Cùng ngữ nghĩa với SYNC_MEMBER
     # nhưng áp cho nhiều email trong 1 task (extension quét tab Lời mời 1 lần rồi
     # đối chiếu). found_in='active' → set active + joined_at; 'pending' → giữ,
-    # chạm last_synced_at; 'none' → CHỈ báo, KHÔNG mark removed (an toàn khi scan
-    # sót row — cùng bài học đầu file).
+    # chạm last_synced_at; 'none' → CHỈ báo + đóng dấu `sync_missing_at` (mở khoá
+    # "Mời lại"), KHÔNG mark removed (an toàn khi scan sót row — bài học đầu file).
     if item.type == "SYNC_MEMBERS_BATCH" and effective_status == "COMPLETED":
         results = ((body.result or {}).get("data") or {}).get("results") or []
         now = datetime.now(timezone.utc)
@@ -747,7 +752,7 @@ def update_task(
                 continue
             email = (entry.get("email") or "").lower()
             found_in = entry.get("found_in")
-            if not email or found_in not in ("active", "pending"):
+            if not email or found_in not in ("active", "pending", "none"):
                 continue
             member = db.execute(
                 select(Member).where(
@@ -758,6 +763,8 @@ def update_task(
             if not member:
                 continue
             member.last_synced_at = now
+            # Thấy lại → xoá cờ "sync không thấy"; không thấy → đóng dấu now.
+            member.sync_missing_at = now if found_in == "none" else None
             if found_in == "active" and member.status != "active":
                 member.status = "active"
                 if member.joined_at is None:

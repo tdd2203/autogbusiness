@@ -782,12 +782,21 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
       }
       const verifiedDomain =
         typeof p.verified_domain === "string" ? p.verified_domain : null;
+      // Số suất MỚI lệnh mời này chiếm (backend tính, KHÁC emails.length khi có
+      // email đang là member active). Backend cũ chưa gửi → undefined, content
+      // tự rơi về emails.length.
+      const rawSeatCount = p.new_seat_count;
+      const newSeatCount =
+        typeof rawSeatCount === "number" && Number.isFinite(rawSeatCount) && rawSeatCount >= 0
+          ? rawSeatCount
+          : undefined;
       return {
         kind: "INVITE_MEMBER",
         taskId: task.id,
         emails,
         role: (p.role as "owner" | "admin" | "member") ?? "member",
         verifiedDomain,
+        newSeatCount,
         // Action "Mời lại": chạy tiền tố tìm-thu-hồi trước khi mời (payload.reinvite).
         reinvite: p.reinvite === true,
       };

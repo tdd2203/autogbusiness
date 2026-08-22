@@ -32,6 +32,16 @@ export type ExecuteActionRequest =
        * workspace; (2) thu hồi lời mời cũ ở tab Lời mời. Chỉ chạy 1 lần (khi
        * !externalReady). Xem execute-invite.ts. */
       reinvite?: boolean;
+      /**
+       * Số suất MỚI lệnh mời này thực sự chiếm (backend `_count_new_invite_seats`).
+       * Dùng để biết cần mua bù bao nhiêu suất trước khi mời.
+       *
+       * KHÁC `emails.length`: email đang là thành viên active đã giữ một suất rồi,
+       * đếm cả nó là mua thừa — mất tiền thật. Thiếu/không hợp lệ → rơi về
+       * `emails.length` (mua thừa còn hơn mua thiếu: mua thiếu thì ChatGPT bật
+       * luồng "mua kèm gửi lời mời" mà extension không kiểm soát được).
+       */
+      newSeatCount?: number;
     }
   | { kind: "REMOVE_MEMBER"; taskId: string; email: string }
   | {

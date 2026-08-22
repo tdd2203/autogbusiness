@@ -28,6 +28,7 @@ import { handleCommandBan } from "../lib/commandBan";
 import { useT } from "../i18n";
 import { toast } from "../components/Toast";
 import { triggerExtensionRun } from "./useExtensionTrigger";
+import { mergeReinviteBatch, reinviteBatch } from "./useReinviteBatch";
 
 export function useAddedMemberActions(opts?: {
   /** Mời lại email HẾT HẠN + ví thiếu → 402 kèm QR. Có callback → mở modal QR. */
@@ -158,6 +159,37 @@ export function useAddedMemberActions(opts?: {
     },
   });
 
+  // MỜI LẠI HÀNG LOẠT các lời mời pending đã chọn — xuyên workspace. Gom member_id
+  // theo workspace rồi gọi re-invite-batch cho MỖI workspace. Chỉ email CÒN HẠN được
+  // mời lại (miễn phí); hết hạn bị backend bỏ qua → cộng dồn để báo cho user.
+  const bulkReinvite = useMutation({
+    mutationFn: async (rows: { workspaceId: string; memberId: string }[]) => {
+      const byWs = new Map<string, string[]>();
+      for (const r of rows) {
+        const arr = byWs.get(r.workspaceId) ?? [];
+        arr.push(r.memberId);
+        byWs.set(r.workspaceId, arr);
+      }
+      const results = await Promise.all(
+        Array.from(byWs, ([wsId, ids]) => reinviteBatch(wsId, ids)),
+      );
+      return mergeReinviteBatch(results);
+    },
+    onSuccess: (r) => {
+      if (r.count > 0) toast.success(t("bulkReinvite.resultQueued", { n: r.count }));
+      else toast.error(t("bulkReinvite.resultNone"));
+      if (r.skipped_expired > 0)
+        toast.error(t("bulkReinvite.skippedExpired", { n: r.skipped_expired }));
+      if (r.skipped_active > 0)
+        toast.error(t("bulkReinvite.skippedActive", { n: r.skipped_active }));
+      refresh();
+    },
+    onError: (e) => {
+      if (handleCommandBan(e)) return;
+      toast.error(e instanceof Error ? e.message : String(e));
+    },
+  });
+
   // Xoá 1 thành viên đã tham gia (active) khỏi workspace.
   const remove = useMutation({
     mutationFn: ({
@@ -219,5 +251,5 @@ export function useAddedMemberActions(opts?: {
     },
   });
 
-  return { sync, revoke, remove, reinvite, bulkSync, bulkRevoke };
+  return { sync, revoke, remove, reinvite, bulkSync, bulkRevoke, bulkReinvite };
 }

@@ -4,8 +4,11 @@
 ⚠️ Tính hạn (anchor/end) tuân theo `EXPIRY_RULES.md` — KHÔNG tự chế công thức.
 
 Endpoints:
-  - POST /invite       → invite_member       (1 email)
-  - POST /bulk-invite  → bulk_invite_members  (nhiều email, 1 task)
+  - POST /invite                    → invite_member          (1 email)
+  - POST /bulk-invite               → bulk_invite_members    (nhiều email, 1 task)
+  - POST /{member_id}/re-invite     → reinvite_member        (mời lại 1 email)
+  - POST /re-invite-batch           → reinvite_members_batch (mời lại nhiều email,
+    chỉ email CÒN HẠN — miễn phí; hết hạn bị bỏ qua, không bật QR giữa chừng)
 
 Seat guard `_assert_seat_available` sống ở đây (chỉ luồng invite cần chặn seat).
 
@@ -35,7 +38,12 @@ from app.permissions import Permission
 from app.routers.wallet._shared import get_payment_settings
 from app.services import payment_flow, wallet_service
 from app.sse import publish_task_event
-from app.schemas import MemberBulkInviteIn, MemberInviteIn, MemberOut
+from app.schemas import (
+    MemberBulkInviteIn,
+    MemberInviteIn,
+    MemberOut,
+    MemberReinviteBatchIn,
+)
 
 from ._shared import (
     router,
@@ -173,6 +181,18 @@ def perform_invite_core(
         )
         moved_from: dict[str, UUID] = {}
         payload: dict = {"role": role, "verified_domain": workspace.verified_domain}
+        # Số suất MỚI mà lệnh mời này thực sự chiếm trên ChatGPT. Extension dùng
+        # con số này để biết cần MUA BÙ bao nhiêu suất trước khi mời.
+        #
+        # KHÁC len(emails): email đang là member `active` đã giữ một suất rồi, đếm
+        # cả nó là đi mua thừa (mất tiền thật). Ca "mời lại khi đồng bộ không thấy"
+        # đã được `_unblock_active_if_sync_missing` hạ về `pending` TRƯỚC khi tới
+        # đây nên vẫn được tính — đúng, vì người đó đã rời ChatGPT và suất đã được
+        # trả lại. Còn member active mà đồng bộ VẪN THẤY thì bị chặn 409 từ đầu,
+        # không bao giờ chạy tới dòng này.
+        payload["new_seat_count"] = _count_new_invite_seats(
+            db, workspace_id, invite_emails
+        )
         if single and len(invite_entries) == 1:
             payload["email"] = invite_emails[0]
         else:
@@ -750,6 +770,32 @@ def invite_member(
     return member
 
 
+def _unblock_active_if_sync_missing(member: Member) -> None:
+    """Cho phép MỜI LẠI member đang ghi `active` khi lần ĐỒNG BỘ gần nhất KHÔNG thấy
+    email trong workspace (`sync_missing_at` — extension trả `found_in='none'`).
+
+    Trước đây mọi member `active` đều bị 409 "đang hoạt động, không cần mời lại". Ca
+    thật (user 2026-08-22): DB ghi active nhưng người đó đã rời/không còn trong đội,
+    đồng bộ lại cũng không thấy → vẫn không mời lại được. Nay hạ về `pending` để
+    `perform_invite_core` xếp vào nhánh MỜI (active đi nhánh GIA HẠN, không tạo lời
+    mời). Còn hạn → vẫn miễn phí. Member `active` mà sync VẪN THẤY thì giữ nguyên
+    chặn 409 (đang trong workspace thật, mời lại vô nghĩa)."""
+    if member.status != "active":
+        # pending/removed — không đụng, nhưng lệnh mời lại coi như xoá nghi ngờ cũ.
+        member.sync_missing_at = None
+        return
+    if member.sync_missing_at is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Thành viên đang hoạt động trong workspace, không cần mời lại. "
+                "Bấm Đồng bộ trước — nếu đồng bộ không thấy email này thì mới mời lại được."
+            ),
+        )
+    member.status = "pending"
+    member.sync_missing_at = None
+
+
 @router.post(
     "/{member_id}/re-invite",
     response_model=MemberOut,
@@ -764,9 +810,9 @@ def reinvite_member(
     """Action "Mời lại" cho lời mời LỖI (tỉ lệ cực nhỏ nhưng có thật: email đã trừ phí
     + tạo member pending nhưng lời mời không tới nơi/kẹt). Gửi LẠI cho email của member.
 
-    Extension chạy tiền tố (cờ `payload.reinvite`): (1) tìm tab Người dùng — nếu còn là
-    thành viên → huỷ + báo "vẫn trong workspace"; (2) thu hồi lời mời cũ ở tab Lời mời;
-    rồi (3) mời như thường.
+    Extension chạy tiền tố (cờ `payload.reinvite`): thu hồi lời mời cũ ở tab Lời mời
+    rồi mời như thường. KHÔNG còn bước quét tab Người dùng để huỷ lệnh (user
+    2026-08-22: "mời lại là mời lại 1 lần nữa, không cần check").
 
     Phí (yêu cầu user 2026-07-14): email CÒN HẠN → MIỄN PHÍ, giữ nguyên cửa sổ hạn (đã
     trả rồi). HẾT HẠN → tính phí + chu kỳ mới như mời thường ("ví trước, QR sau"). Chủ
@@ -774,11 +820,7 @@ def reinvite_member(
     """
     ws = _get_workspace_or_404(db, workspace_id)
     member = _member_or_404_visible(db, workspace_id, member_id, user)
-    if member.status == "active":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Thành viên đang hoạt động trong workspace, không cần mời lại.",
-        )
+    _unblock_active_if_sync_missing(member)
 
     email = member.email.lower()
     role = member.chatgpt_role or "member"
@@ -828,6 +870,110 @@ def reinvite_member(
             {"type": "task-available", "task_id": str(queue_item.id), "task_type": "INVITE_MEMBER"},
         )
     return member
+
+
+@router.post(
+    "/re-invite-batch", status_code=status.HTTP_202_ACCEPTED, response_model=dict
+)
+def reinvite_members_batch(
+    workspace_id: UUID,
+    body: MemberReinviteBatchIn,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_permission(Permission.MEMBER_INVITE)),
+) -> dict:
+    """MỜI LẠI HÀNG LOẠT các dòng đã tick ở tab "Chờ tham gia" (user 2026-08-22).
+
+    Chỉ nhận email CÒN HẠN → mời lại MIỄN PHÍ (mirror `reinvite=True` của
+    perform_invite_core). Email HẾT HẠN / VÔ THỜI HẠN bị BỎ QUA và trả về
+    `skipped_expired` để web báo "bỏ qua N email hết hạn" — lệnh hàng loạt KHÔNG bao
+    giờ trừ ví hay bật modal QR giữa chừng (muốn mời lại email hết hạn thì dùng menu
+    ⋯ từng dòng, ở đó có luồng "ví trước, QR sau").
+
+    Member `active` bị bỏ qua (`skipped_active`), TRỪ khi lần đồng bộ gần nhất không
+    thấy email trong workspace (`sync_missing_at`) → hạ về `pending` rồi mời lại (xem
+    `_unblock_active_if_sync_missing`).
+
+    ChatGPT chỉ cho 1 vai trò / dialog → gom theo `chatgpt_role`, mỗi nhóm 1 task
+    INVITE_MEMBER (`payload.reinvite=true`, extension thu hồi lời mời cũ rồi mời lại).
+    """
+    ws = _get_workspace_or_404(db, workspace_id)
+    now = datetime.now(timezone.utc)
+
+    # Visibility filter y hệt re-invite lẻ: sub-admin chỉ thấy member họ mời.
+    stmt = select(Member).where(
+        Member.workspace_id == workspace_id, Member.id.in_(body.member_ids)
+    )
+    if not user.is_super_admin:
+        stmt = stmt.where(Member.invited_by_user_id == user.id)
+    members_in = db.execute(stmt).scalars().all()
+
+    targets: list[Member] = []
+    skipped_active = 0
+    skipped_expired = 0
+    for m in members_in:
+        if m.status == "active":
+            if m.sync_missing_at is None:
+                skipped_active += 1
+                continue
+            # Đồng bộ không thấy → thực tế đã rời workspace, cho mời lại.
+            m.status = "pending"
+        m.sync_missing_at = None
+        if not _is_paid_period_active(m, now):
+            skipped_expired += 1
+            continue
+        targets.append(m)
+
+    if not targets:
+        return {
+            "queue_item_ids": [],
+            "count": 0,
+            "skipped_expired": skipped_expired,
+            "skipped_active": skipped_active,
+            "skipped_missing": len(body.member_ids) - len(members_in),
+        }
+
+    # Thu hồi (đánh dấu superseded) MỌI lời mời pending cũ của các email này — extension
+    # thu hồi bản thật trên ChatGPT ở tiền tố. Làm TRƯỚC khi core tạo Invite mới.
+    emails = [m.email.lower() for m in targets]
+    db.execute(
+        update(Invite)
+        .where(
+            Invite.workspace_id == workspace_id,
+            Invite.email.in_(emails),
+            Invite.status == "pending",
+        )
+        .values(status="superseded")
+    )
+
+    # ChatGPT: 1 vai trò / dialog → 1 task cho MỖI nhóm vai trò.
+    by_role: dict[str, list[Member]] = {}
+    for m in targets:
+        by_role.setdefault(m.chatgpt_role or "member", []).append(m)
+
+    queue_item_ids: list[str] = []
+    for role, group in by_role.items():
+        # months bỏ qua ở nhánh còn-hạn (giữ nguyên cửa sổ đã trả) — truyền để mirror
+        # chữ ký core, KHÔNG dùng tới vì mọi target đều còn hạn ⇒ miễn phí.
+        entries = [(m.email.lower(), m.subscription_months) for m in group]
+        queue_item, _members, _chargeable, _renew = perform_invite_core(
+            db, user, ws, entries, role, single=len(entries) == 1, reinvite=True
+        )
+        if queue_item is not None:
+            queue_item_ids.append(str(queue_item.id))
+
+    db.commit()
+    for qid in queue_item_ids:
+        publish_task_event(
+            workspace_id,
+            {"type": "task-available", "task_id": qid, "task_type": "INVITE_MEMBER"},
+        )
+    return {
+        "queue_item_ids": queue_item_ids,
+        "count": len(targets),
+        "skipped_expired": skipped_expired,
+        "skipped_active": skipped_active,
+        "skipped_missing": len(body.member_ids) - len(members_in),
+    }
 
 
 @router.post("/bulk-invite", status_code=status.HTTP_202_ACCEPTED, response_model=dict)
