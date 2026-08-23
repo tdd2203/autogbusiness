@@ -34,6 +34,7 @@ import { reportProgress } from "../../progress";
 import { TEXT_FALLBACKS } from "../../selectors";
 import {
   CHARGE_MODAL_TIMEOUT_MS,
+  CONFIRM_ENABLE_TIMEOUT_MS,
   CONTINUE_ENABLE_TIMEOUT_MS,
   MAX_QUANTITY,
   MEMBERS_PATH,
@@ -60,19 +61,6 @@ import { waitForChargeModalDismiss } from "./modal2/wait-dismiss";
 
 const LOG = "[autogpt-purchase-seat]";
 
-/**
- * Đợi nút "Xác nhận mua" hết khoá. ChatGPT khoá nút trong lúc còn tính tiền
- * prorate, mở khoá khi tính xong.
- *
- * Ca thật 22/8/2026 (2 task liền, 18:17 và 18:28): hỏi ngay lúc hộp vừa mở thì
- * thấy khoá, bản trước bỏ cuộc luôn → báo "thiếu phương thức thanh toán" OAN
- * trong khi thẻ vẫn có sẵn. Để rộng hơn nút "Tiếp tục" vì bước này ChatGPT còn
- * phải tính tiền.
- *
- * TODO: dời sang `constants.ts` cho đồng bộ. Đang để ở đây vì `constants.ts`
- * có phiên khác sửa dở (thêm SEAT_CROSSCHECK_*) — chạm vào là chặn merge.
- */
-const CONFIRM_ENABLE_TIMEOUT_MS = 10_000;
 
 const DIALOG_SELECTOR =
   '[role="dialog"], [role="alertdialog"], [aria-modal="true"], [data-state="open"]';

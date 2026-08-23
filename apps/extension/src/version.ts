@@ -39,10 +39,11 @@ export const CHANGELOG: ChangelogEntry[] = [
     date: "2026-08-23",
     kind: "fix",
     summary:
-      "Hai lỗi lộ ra ở lần chạy thật đầu tiên của bước đếm suất: nút xác nhận bị hỏi quá sớm, và số liệu lỗi bị vứt nên không tra được gì.",
+      "Ba lỗi lộ ra ở lần chạy thật đầu tiên của bước đếm suất: nút xác nhận bị hỏi quá sớm, đua render làm lệch số suất rồi chặn cả lệnh mời, và số liệu lỗi bị vứt nên không tra được gì.",
     details: [
       "Nút 'Xác nhận mua' bị KHOÁ trong lúc ChatGPT còn tính tiền, mở khoá khi tính xong. Bản trước hỏi ngay lúc hộp vừa mở, thấy khoá là bỏ cuộc → 2 task mời liền (22/8 18:17 và 18:28) FAILED với lời nhắn 'thiếu phương thức thanh toán' OAN, trong khi thẻ vẫn có sẵn. Nay CHỜ mở khoá tối đa 10s, y như đã làm với nút 'Tiếp tục'.",
-      "CÒN NỢ: ca 23/8 09:49 (bộ đếm 150 vs dòng tỉ lệ 151 → chặn cả lệnh mời) CHƯA sửa trong bản này. Một phiên khác đang chữa cùng con bug đó bằng cách chờ hai nguồn khớp nhau rồi mới đọc; sửa chồng lên sẽ đè mất việc họ đang làm, nên tách ra chờ gộp sau.",
+      "Ca 23/8 09:49 (bộ đếm 150 vs dòng tỉ lệ 151 → chặn cả lệnh mời) đã được chữa ở nhánh khác và gộp vào đây: căn nguyên là ĐUA RENDER — code cũ chờ dòng tỉ lệ tới 8s (biết nó render chậm) nhưng đọc bộ đếm ngay dòng kế, không chờ, nên chụp trúng trị số quá độ. Nay đọc lại CẢ HAI cho tới khi khớp (tối đa 2,5s). Lệch đúng 1 đơn vị là chữ ký của kiểu đua này.",
+      "Chốt chặn khi hai nguồn lệch được GIỮ NGUYÊN, cố ý không nới thành 'đoán số nhỏ hơn rồi chạy tiếp'. Chặn thì task mời FAILED, admin chạy lại, KHÔNG mất đồng nào; còn đoán sai là mua một suất không cần và tiền đã đi, không lấy lại được. Căn nguyên đã xử thì chốt này gần như không còn cửa nổ.",
       "Số liệu đính kèm lỗi giờ được GIỮ vào result. Trước đây chỉ giữ khi submit_clicked=true nên mọi task FAILED vì bước đếm suất đều có cột result NULL — có seat_total/seat_free/seat_needed trong tay mà không tra được, phải đoán từ mỗi câu error_message.",
       "Không đọc được dòng '<đã gán>/<tổng> đã gán' thì kèm luôn 300 ký tự đầu nội dung hộp vào thông báo lỗi, để lần sau ChatGPT đổi hiển thị là biết ngay đổi thành gì.",
     ],
