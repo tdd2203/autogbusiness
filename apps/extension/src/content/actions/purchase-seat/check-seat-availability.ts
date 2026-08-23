@@ -14,13 +14,18 @@
 import { humanClick, waitFor } from "../../human";
 import { findControlByKey } from "../../i18n-ui";
 import { TEXT_FALLBACKS } from "../../selectors";
-import { MODAL_OPEN_TIMEOUT_MS } from "./constants";
+import {
+  MODAL_OPEN_TIMEOUT_MS,
+  SEAT_CROSSCHECK_POLL_MS,
+  SEAT_CROSSCHECK_SETTLE_MS,
+} from "./constants";
 import { closeSeatModal } from "./modal1/close-seat-modal";
 import { findSeatStepper } from "./modal1/find-seat-stepper";
 import {
   parseSeatAvailability,
   type SeatAvailability,
 } from "./modal1/parse-seat-availability";
+import { settleSeatCrossCheck } from "./modal1/settle-seat-crosscheck";
 
 const LOG = "[autogpt-seat-check]";
 
@@ -110,7 +115,17 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
     availability = null;
   }
 
-  const stepperTotal = findSeatStepper()?.read() ?? null;
+  // Bộ đếm là component React RIÊNG, có thể ổn định chậm hơn dòng tỉ lệ một nhịp →
+  // đọc lại CẢ HAI cho tới khi khớp. Không chờ ở đây thì lệch quá độ 1 đơn vị sẽ
+  // giết cả task mời (ca thật 23/8/2026 — xem settle-seat-crosscheck.ts).
+  const settled = await settleSeatCrossCheck(
+    () => parseSeatAvailability(modal.textContent ?? ""),
+    () => findSeatStepper()?.read() ?? null,
+    SEAT_CROSSCHECK_SETTLE_MS,
+    SEAT_CROSSCHECK_POLL_MS,
+  );
+  if (settled.availability) availability = settled.availability;
+  const stepperTotal = settled.stepperTotal;
 
   const closed = await closeSeatModal(modal);
   if (!closed) {
@@ -131,14 +146,16 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
 
   // Đối chiếu chéo: bộ đếm khởi điểm PHẢI bằng tổng suất đã mua. Lệch nghĩa là
   // một trong hai chỗ bị đọc sai → không dám dùng con số để quyết định mua.
+  // Tới đây là đã cho hai bên `SEAT_CROSSCHECK_SETTLE_MS` để ổn định mà vẫn lệch,
+  // nên đây là lệch THẬT chứ không phải bắt trúng nhịp render dở.
   if (stepperTotal !== null && stepperTotal !== availability.total) {
     return {
       supported: true,
       availability: null,
       stepperTotal,
       error:
-        `Bộ đếm hiện ${stepperTotal} nhưng dòng tỉ lệ nói tổng ${availability.total} suất — ` +
-        "hai nguồn lệch nhau, không dùng để quyết định mua.",
+        `Số suất hiển thị không khớp sau ${SEAT_CROSSCHECK_SETTLE_MS / 1000}s ` +
+        `(bộ đếm ${stepperTotal}, dòng tỉ lệ ${availability.total}).`,
       modalClosed: closed,
     };
   }

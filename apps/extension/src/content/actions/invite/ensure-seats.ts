@@ -118,8 +118,7 @@ export async function ensureSeatsForInvite(
       skipped: false,
       error_code: "SEAT_CHECK_FAILED",
       error_message:
-        `Không đọc được số suất còn trống: ${check.error ?? "?"} ` +
-        "Dừng lại thay vì mời mù (mời khi thiếu suất sẽ kích hoạt luồng mua-kèm-mời của ChatGPT).",
+        `Không đọc được số suất còn trống: ${check.error ?? "?"} Đã dừng, chưa mời ai.`,
       data: { seat_check: "failed", seat_needed: need },
     };
   }

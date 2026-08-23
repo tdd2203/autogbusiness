@@ -43,6 +43,22 @@ export const SEAT_PREVIEW_TIMEOUT_MS = 3_000;
 export const CHARGE_DISMISS_TIMEOUT_MS = 10_000;
 
 /**
+ * Đợi hai nguồn số suất (dòng tỉ lệ "150/151 đã gán" và bộ đếm "[−] 151 [+]")
+ * KHỚP NHAU trước khi kết luận là chúng lệch.
+ *
+ * Ca thật 23/8/2026: bộ đếm đọc ra 150 khi dòng tỉ lệ đã nói 151 → chốt chặn nổ
+ * OAN và cú "Mời lại" chết, dù thực tế còn trống 1 suất. Hai chỗ đó là hai
+ * component React khởi tạo độc lập; code cũ chờ dòng tỉ lệ tới 8s nhưng đọc bộ
+ * đếm ngay lập tức, không thử lại. Xem `modal1/settle-seat-crosscheck.ts`.
+ *
+ * Khớp ngay lần đọc đầu (đại đa số) → không tốn nhịp nào.
+ */
+export const SEAT_CROSSCHECK_SETTLE_MS = 2_500;
+
+/** Nhịp đọc lại hai nguồn số suất trong lúc chờ chúng khớp nhau. */
+export const SEAT_CROSSCHECK_POLL_MS = 250;
+
+/**
  * Đợi modal "Quản lý suất" đóng sau khi bấm "Quay lại"/Esc ở bước CHỈ-ĐỌC
  * (kiểm tra suất trước khi mời). Modal còn mở sẽ chặn mọi thao tác mời phía sau.
  */
