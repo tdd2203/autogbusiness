@@ -1,9 +1,10 @@
 /**
  * Trang "Mời thành viên" — PHÍA NGƯỜI DÙNG (tính năng TEST, gate super-admin).
  *
- * Mô hình: mỗi người dùng được cấp CỐ ĐỊNH 1 workspace (resolve qua
- * /api/v1/auto-invite/target). Email đã từng tham gia (≥30 ngày, do chính user mời)
- * có thể chọn lại workspace cũ; email mới vào workspace cố định do admin gán.
+ * Mô hình: mỗi người dùng được cấp 1 hoặc NHIỀU workspace đích (resolve qua
+ * /api/v1/auto-invite/targets). Email đã từng tham gia (≥30 ngày, do chính user mời)
+ * có thể chọn lại workspace cũ; email MỚI mặc định vào 1 workspace ngẫu nhiên trong
+ * danh sách được cấp và (từ 2026-08-22) ĐỔI ĐƯỢC bằng dropdown ở cột "Không gian".
  *
  * Giao diện: theo mockup "Emerald Fresh" (2026-07-19) — card mời (ô dán email + bảng
  * preview với chip workspace, stepper tháng, ngày hết hạn) + cột phải task/lịch sử.
@@ -16,11 +17,7 @@ import { useFormatDate, useT, useTranslateEnum } from "../i18n";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useAuth } from "../hooks/useAuth";
 import { parseEmailsFromText } from "../lib/emailParser";
-import {
-  useAutoInviteTargets,
-  useEmailHistory,
-  type EmailHistoryEntry,
-} from "../hooks/useAutoInvite";
+import { useAutoInviteTargets, useEmailHistory } from "../hooks/useAutoInvite";
 import InviteWorkspaceConfigModal from "../components/InviteWorkspaceConfigModal";
 import { useExtensionStatus } from "../hooks/useExtensionTrigger";
 import { queuePollInterval } from "../lib/queuePolling";
@@ -131,19 +128,15 @@ export default function InviteMembers() {
   // Workspace "chính" (cho ExtensionPill + invalidate) = phần tử đầu danh sách đích.
   const workspaceId = eligibleWs[0]?.workspace_id;
   const eligibleIds = useMemo(() => eligibleWs.map((w) => w.workspace_id), [eligibleWs]);
-  const wsNameById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const w of eligibleWs) m.set(w.workspace_id, w.name);
-    return m;
-  }, [eligibleWs]);
   // Đích NGẪU NHIÊN đã gán cho từng email MỚI (ổn định giữa các lần render nhờ ref).
   const randomWsRef = useRef<Record<string, string>>({});
   const [configOpen, setConfigOpen] = useState(false);
 
   const [emailsText, setEmailsText] = useState("");
   const [monthsByEmail, setMonthsByEmail] = useState<Record<string, number>>({});
-  // Workspace ĐÍCH do user chọn cho email đã từng tham gia (key = email lowercase).
-  // Vắng mặt → dùng default (lần dùng dài nhất) nếu có lịch sử, ngược lại workspace cố định.
+  // Workspace ĐÍCH do user tự chọn ở cột "Không gian" (key = email lowercase) — áp cho
+  // CẢ email cũ lẫn email mới. Vắng mặt → default lịch sử (email cũ) / đích cố định
+  // hoặc ngẫu nhiên (email mới).
   const [workspaceByEmail, setWorkspaceByEmail] = useState<Record<string, string>>({});
   const [qrOrder, setQrOrder] = useState<OrderQr | null>(null);
 
@@ -205,12 +198,16 @@ export default function InviteMembers() {
   const historyMap = emailHistory.data ?? {};
   const historyFor = (email: string) => historyMap[email.toLowerCase()];
   /** Workspace ĐÍCH của 1 email. Email cũ (có lịch sử): user chọn > default lịch sử.
-   * Email MỚI: 1 workspace đích, hoặc NGẪU NHIÊN nếu bật nhiều (ổn định theo email). */
+   * Email MỚI: 1 workspace đích, user chọn (nếu được cấp ≥2), ngược lại NGẪU NHIÊN
+   * (ổn định theo email nhờ ref). */
   const targetWsId = (email: string): string | undefined => {
-    const h = historyFor(email);
-    if (h) return workspaceByEmail[email.toLowerCase()] ?? h.default_workspace_id;
-    if (eligibleIds.length <= 1) return eligibleIds[0];
     const key = email.toLowerCase();
+    const picked = workspaceByEmail[key];
+    const h = historyFor(email);
+    if (h) return picked ?? h.default_workspace_id;
+    if (eligibleIds.length <= 1) return eligibleIds[0];
+    // Email mới nhưng user đã tự chọn không gian ở cột "Không gian" → tôn trọng.
+    if (picked && eligibleIds.includes(picked)) return picked;
     const prev = randomWsRef.current[key];
     if (!prev || !eligibleIds.includes(prev)) {
       randomWsRef.current[key] =
@@ -218,10 +215,23 @@ export default function InviteMembers() {
     }
     return randomWsRef.current[key];
   };
-  /** Tên workspace đích của 1 email (để hiện trên chip). */
-  const targetWsName = (email: string): string | undefined => {
-    const id = targetWsId(email);
-    return id ? wsNameById.get(id) : undefined;
+  /** Không gian CHỌN ĐƯỢC cho 1 email (dùng chung desktop + mobile):
+   * - email CŨ (có lịch sử): các workspace lịch sử — giữ nguyên ý nghĩa "chọn lại
+   *   không gian cũ" (kèm usageDays để hiện "đã dùng X tháng" ở tooltip);
+   * - email MỚI: toàn bộ workspace đích được cấp → user đổi được thay vì chịu bản
+   *   ngẫu nhiên (yêu cầu user 2026-08-22).
+   * ≥2 phần tử thì UI hiện dropdown, 1 phần tử hiện chữ tĩnh. */
+  const wsOptionsFor = (
+    email: string,
+  ): { id: string; name: string; usageDays?: number }[] => {
+    const h = historyFor(email);
+    if (h)
+      return h.workspaces.map((w) => ({
+        id: w.workspace_id,
+        name: w.name,
+        usageDays: w.usage_days,
+      }));
+    return eligibleWs.map((w) => ({ id: w.workspace_id, name: w.name }));
   };
 
   // Dự tính phí THẬT từ server. Footer trước đây hard-code 0đ nên "Tổng phí" luôn
@@ -717,10 +727,9 @@ export default function InviteMembers() {
                     entries.map((row) => {
                       const renew = isRenew(row.email);
                       const free = isFree(row.email);
-                      const h = historyFor(row.email);
-                      const selectedWs =
-                        workspaceByEmail[row.email.toLowerCase()] ??
-                        h?.default_workspace_id;
+                      // Không gian ĐANG chọn = đúng đích sẽ mời (user chọn > default
+                      // lịch sử > đích cố định/ngẫu nhiên) → select luôn khớp đích thật.
+                      const selectedWs = targetWsId(row.email);
 
                       // ── MOBILE: thẻ dọc (theo mockup Mời-thành-viên) ──
                       if (isMobile) {
@@ -730,9 +739,8 @@ export default function InviteMembers() {
                             row={row}
                             renew={renew}
                             free={free}
-                            history={h}
+                            wsOptions={wsOptionsFor(row.email)}
                             selectedWs={selectedWs}
-                            targetName={targetWsName(row.email)}
                             busy={bulkInvite.isPending}
                             usedText={usedText}
                             onWs={(v) =>
@@ -803,24 +811,25 @@ export default function InviteMembers() {
                             ) : null}
                           </div>
 
-                          {/* workspace: chip + select (nếu có lịch sử) / read-only.
-                              Hiển thị CHỈ tên không gian; "đã dùng X tháng" ở tooltip.
-                              Ẩn hẳn cột khi màn hình rất hẹp (compact). */}
+                          {/* workspace: chip + select (khi có ≥2 lựa chọn) / chữ
+                              tĩnh. Hiện CHỈ tên không gian; "đã dùng X tháng" (email
+                              cũ) ở tooltip. Ẩn hẳn cột khi màn hình rất hẹp (compact). */}
                           {!compact &&
-                            (h && selectedWs ? (
                             (() => {
-                              const selWs = h.workspaces.find(
-                                (w) => w.workspace_id === selectedWs,
-                              );
-                              const selTitle = selWs
-                                ? t("inviteMembers.wsOption", {
-                                    name: selWs.name,
-                                    used: usedText(selWs.usage_days),
-                                  })
-                                : t("inviteMembers.colWorkspace");
-                              // Chỉ 1 workspace lịch sử → hiện dạng chữ (không dropdown
-                              // rườm rà). ≥2 mới cho chọn lại bằng select.
-                              if (h.workspaces.length <= 1) {
+                              const opts = wsOptionsFor(row.email);
+                              const sel = opts.find((o) => o.id === selectedWs);
+                              const selTitle =
+                                sel === undefined
+                                  ? t("inviteMembers.colWorkspace")
+                                  : sel.usageDays === undefined
+                                    ? sel.name
+                                    : t("inviteMembers.wsOption", {
+                                        name: sel.name,
+                                        used: usedText(sel.usageDays),
+                                      });
+                              // Chỉ 1 không gian khả dĩ → chữ tĩnh (không dropdown
+                              // rườm rà). ≥2 mới cho chọn bằng select.
+                              if (opts.length <= 1) {
                                 return (
                                   <div style={chipBase} title={selTitle}>
                                     <span style={wsDot} />
@@ -833,7 +842,7 @@ export default function InviteMembers() {
                                         whiteSpace: "nowrap",
                                       }}
                                     >
-                                      {selWs?.name ?? "—"}
+                                      {sel?.name ?? opts[0]?.name ?? "—"}
                                     </span>
                                   </div>
                                 );
@@ -842,7 +851,7 @@ export default function InviteMembers() {
                                 <div style={chipBase} title={selTitle}>
                                   <span style={wsDot} />
                                   <select
-                                    value={selectedWs}
+                                    value={selectedWs ?? ""}
                                     onChange={(e) =>
                                       setWorkspaceByEmail((w) => ({
                                         ...w,
@@ -866,36 +875,24 @@ export default function InviteMembers() {
                                       appearance: "none",
                                     }}
                                   >
-                                    {h.workspaces.map((w) => (
+                                    {opts.map((o) => (
                                       <option
-                                        key={w.workspace_id}
-                                        value={w.workspace_id}
-                                        title={usedText(w.usage_days)}
+                                        key={o.id}
+                                        value={o.id}
+                                        title={
+                                          o.usageDays === undefined
+                                            ? undefined
+                                            : usedText(o.usageDays)
+                                        }
                                       >
-                                        {w.name}
+                                        {o.name}
                                       </option>
                                     ))}
                                   </select>
                                   <span style={{ color: "var(--ink-3)", fontSize: 9 }}>▾</span>
                                 </div>
                               );
-                            })()
-                          ) : (
-                            <div style={chipBase} title={targetWsName(row.email)}>
-                              <span style={wsDot} />
-                              <span
-                                style={{
-                                  fontSize: 12.5,
-                                  color: "var(--ink-2)",
-                                  overflow: "hidden",
-                                  textOverflow: "ellipsis",
-                                  whiteSpace: "nowrap",
-                                }}
-                              >
-                                {targetWsName(row.email) ?? "—"}
-                              </span>
-                            </div>
-                            ))}
+                            })()}
 
                           {/* stepper số tháng (nhóm nối liền) */}
                           <div
@@ -1132,9 +1129,8 @@ function MobileInviteCard({
   row,
   renew,
   free,
-  history,
+  wsOptions,
   selectedWs,
-  targetName,
   busy,
   usedText,
   onWs,
@@ -1148,9 +1144,9 @@ function MobileInviteCard({
   row: { email: string; emailRaw: string; months: number };
   renew: boolean;
   free: boolean;
-  history: EmailHistoryEntry | undefined;
+  // Không gian chọn được (lịch sử cho email cũ / đích được cấp cho email mới).
+  wsOptions: { id: string; name: string; usageDays?: number }[];
   selectedWs: string | undefined;
-  targetName: string | undefined;
   busy: boolean;
   usedText: (days: number) => string;
   onWs: (v: string) => void;
@@ -1169,6 +1165,17 @@ function MobileInviteCard({
     color: "var(--ink-3)",
     marginBottom: 6,
   };
+  const selectedOpt = wsOptions.find((o) => o.id === selectedWs);
+  // Tooltip ô Không gian: email cũ kèm "đã dùng X tháng", email mới chỉ tên.
+  const selectedTitle =
+    selectedOpt === undefined
+      ? undefined
+      : selectedOpt.usageDays === undefined
+        ? selectedOpt.name
+        : t("inviteMembers.wsOption", {
+            name: selectedOpt.name,
+            used: usedText(selectedOpt.usageDays),
+          });
   return (
     <div
       style={{
@@ -1245,27 +1252,13 @@ function MobileInviteCard({
               background: "var(--surface)",
               minWidth: 0,
             }}
-            title={
-              history && selectedWs
-                ? (() => {
-                    const sel = history.workspaces.find(
-                      (w) => w.workspace_id === selectedWs,
-                    );
-                    return sel
-                      ? t("inviteMembers.wsOption", {
-                          name: sel.name,
-                          used: usedText(sel.usage_days),
-                        })
-                      : undefined;
-                  })()
-                : targetName
-            }
+            title={selectedTitle}
           >
             <span style={wsDot} />
-            {history && selectedWs && history.workspaces.length > 1 ? (
+            {wsOptions.length > 1 ? (
               <>
                 <select
-                  value={selectedWs}
+                  value={selectedWs ?? ""}
                   onChange={(e) => onWs(e.target.value)}
                   disabled={busy}
                   style={{
@@ -1282,13 +1275,13 @@ function MobileInviteCard({
                     appearance: "none",
                   }}
                 >
-                  {history.workspaces.map((w) => (
+                  {wsOptions.map((o) => (
                     <option
-                      key={w.workspace_id}
-                      value={w.workspace_id}
-                      title={usedText(w.usage_days)}
+                      key={o.id}
+                      value={o.id}
+                      title={o.usageDays === undefined ? undefined : usedText(o.usageDays)}
                     >
-                      {w.name}
+                      {o.name}
                     </option>
                   ))}
                 </select>
@@ -1306,9 +1299,7 @@ function MobileInviteCard({
                   whiteSpace: "nowrap",
                 }}
               >
-                {history && selectedWs
-                  ? (history.workspaces[0]?.name ?? "—")
-                  : (targetName ?? "—")}
+                {selectedOpt?.name ?? wsOptions[0]?.name ?? "—"}
               </span>
             )}
           </div>
