@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.13.0";
+export const VERSION = "0.13.1";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,19 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.13.1",
+    date: "2026-08-23",
+    kind: "fix",
+    summary:
+      "Hai lỗi lộ ra ở lần chạy thật đầu tiên của bước đếm suất: nút xác nhận bị hỏi quá sớm, và số liệu lỗi bị vứt nên không tra được gì.",
+    details: [
+      "Nút 'Xác nhận mua' bị KHOÁ trong lúc ChatGPT còn tính tiền, mở khoá khi tính xong. Bản trước hỏi ngay lúc hộp vừa mở, thấy khoá là bỏ cuộc → 2 task mời liền (22/8 18:17 và 18:28) FAILED với lời nhắn 'thiếu phương thức thanh toán' OAN, trong khi thẻ vẫn có sẵn. Nay CHỜ mở khoá tối đa 10s, y như đã làm với nút 'Tiếp tục'.",
+      "CÒN NỢ: ca 23/8 09:49 (bộ đếm 150 vs dòng tỉ lệ 151 → chặn cả lệnh mời) CHƯA sửa trong bản này. Một phiên khác đang chữa cùng con bug đó bằng cách chờ hai nguồn khớp nhau rồi mới đọc; sửa chồng lên sẽ đè mất việc họ đang làm, nên tách ra chờ gộp sau.",
+      "Số liệu đính kèm lỗi giờ được GIỮ vào result. Trước đây chỉ giữ khi submit_clicked=true nên mọi task FAILED vì bước đếm suất đều có cột result NULL — có seat_total/seat_free/seat_needed trong tay mà không tra được, phải đoán từ mỗi câu error_message.",
+      "Không đọc được dòng '<đã gán>/<tổng> đã gán' thì kèm luôn 300 ký tự đầu nội dung hộp vào thông báo lỗi, để lần sau ChatGPT đổi hiển thị là biết ngay đổi thành gì.",
+    ],
+  },
   {
     version: "0.13.0",
     date: "2026-08-22",

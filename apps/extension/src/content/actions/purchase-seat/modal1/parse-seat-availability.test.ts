@@ -59,6 +59,25 @@ describe("parseSeatAvailability", () => {
     });
   });
 
+  it("ca thật 23/8: '150/151 đã gán' → tổng 151, gán 150, trống 1", () => {
+    // Số thật từ lần chạy đầu tiên (23/8/2026 09:49). Bộ đếm lúc đó hiện 150
+    // trong khi dòng tỉ lệ nói tổng 151 → cả lệnh mời bị chặn. Cách xử phần
+    // LỆCH đang được làm ở nhánh khác; test này chỉ khoá phần ĐỌC dòng tỉ lệ.
+    expect(parseSeatAvailability("151 người dùng · 150/151 đã gán")).toEqual({
+      total: 151,
+      assigned: 150,
+      free: 1,
+    });
+  });
+
+  it("số lớn 3 chữ số vẫn đọc đúng (workspace 150+ suất)", () => {
+    expect(parseSeatAvailability("200 người dùng · 187/200 đã gán")).toEqual({
+      total: 200,
+      assigned: 187,
+      free: 13,
+    });
+  });
+
   it("không có cụm tỉ lệ → null (caller phải coi là KHÔNG đọc được)", () => {
     expect(parseSeatAvailability("Tiêu chuẩn 649.000 đ/tháng")).toBeNull();
   });

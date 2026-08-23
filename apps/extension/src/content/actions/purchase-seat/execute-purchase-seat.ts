@@ -60,6 +60,20 @@ import { waitForChargeModalDismiss } from "./modal2/wait-dismiss";
 
 const LOG = "[autogpt-purchase-seat]";
 
+/**
+ * Đợi nút "Xác nhận mua" hết khoá. ChatGPT khoá nút trong lúc còn tính tiền
+ * prorate, mở khoá khi tính xong.
+ *
+ * Ca thật 22/8/2026 (2 task liền, 18:17 và 18:28): hỏi ngay lúc hộp vừa mở thì
+ * thấy khoá, bản trước bỏ cuộc luôn → báo "thiếu phương thức thanh toán" OAN
+ * trong khi thẻ vẫn có sẵn. Để rộng hơn nút "Tiếp tục" vì bước này ChatGPT còn
+ * phải tính tiền.
+ *
+ * TODO: dời sang `constants.ts` cho đồng bộ. Đang để ở đây vì `constants.ts`
+ * có phiên khác sửa dở (thêm SEAT_CROSSCHECK_*) — chạm vào là chặn merge.
+ */
+const CONFIRM_ENABLE_TIMEOUT_MS = 10_000;
+
 const DIALOG_SELECTOR =
   '[role="dialog"], [role="alertdialog"], [aria-modal="true"], [data-state="open"]';
 
@@ -526,12 +540,25 @@ export async function executePurchaseSeat(
     );
   }
 
+  // ChatGPT KHOÁ nút này trong lúc còn đang tính tiền, mở khoá khi tính xong.
+  // Ca thật 22/8/2026 (2 lần liền): bản trước thấy khoá là bỏ cuộc ngay → task
+  // FAILED "nút bị khoá" dù UI hoàn toàn bình thường, chỉ là ta hỏi quá sớm.
+  // Nay CHỜ mở khoá, y như đã làm với nút "Tiếp tục".
   if (isDisabled(confirmBtn)) {
-    return partial(
-      "Nút 'Xác nhận mua' bị khoá. CHƯA trừ tiền. Workspace luôn có sẵn thẻ nên nhiều " +
-        "khả năng ChatGPT chặn vì lý do khác (hạn mức, thẻ bị từ chối) — admin kiểm tra trên ChatGPT.",
-      auditFields(review),
-    );
+    try {
+      await waitFor(
+        () => (isDisabled(confirmBtn) ? null : true),
+        CONFIRM_ENABLE_TIMEOUT_MS,
+        250,
+      );
+    } catch {
+      return partial(
+        `Nút 'Xác nhận mua' vẫn khoá sau ${CONFIRM_ENABLE_TIMEOUT_MS / 1000}s. CHƯA trừ tiền. ` +
+          "Workspace luôn có sẵn thẻ nên nhiều khả năng ChatGPT chặn vì lý do khác " +
+          "(hạn mức, thẻ bị từ chối) — admin kiểm tra trên ChatGPT.",
+        auditFields(review),
+      );
+    }
   }
 
   await humanClick(confirmBtn);

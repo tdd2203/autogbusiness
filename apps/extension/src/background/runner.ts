@@ -1588,15 +1588,25 @@ async function reportToBackend(
     const failData = (response as { data?: Record<string, unknown> }).data;
     const submitClicked =
       task.type === "INVITE_MEMBER" && failData?.submit_clicked === true;
+    // GIỮ `data` của lỗi vào `result`. Trước đây chỉ giữ khi submit_clicked=true,
+    // nên mọi số liệu đính kèm lỗi đều bị vứt — đúng lúc cần nhất để chẩn đoán.
+    // Ca thật 22-23/8/2026: các task mời FAILED vì bước đếm suất đều có
+    // seat_total/seat_free/seat_needed trong data, nhưng cột result trong DB là
+    // NULL nên không tra được gì, phải đoán từ mỗi câu error_message.
     await updateTask(config, task.id, {
       status: "FAILED",
       error_code: response.error_code,
       error_message: response.error_message,
-      ...(submitClicked
+      ...(failData && Object.keys(failData).length > 0
         ? {
             result: {
-              submit_clicked: true,
-              chatgpt_error_hint: failData?.chatgpt_error_hint ?? null,
+              ...failData,
+              ...(submitClicked
+                ? {
+                    submit_clicked: true,
+                    chatgpt_error_hint: failData.chatgpt_error_hint ?? null,
+                  }
+                : {}),
             },
           }
         : {}),
