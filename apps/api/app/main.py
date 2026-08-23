@@ -557,12 +557,20 @@ def _resolve_stale_pending_invites_once() -> None:
                     },
                     commit=False,
                 )
-                # 2. Hoàn phí (idempotent) + void kỳ đã trả.
-                if qid:
+                # 2. Hoàn phí (idempotent) + void kỳ đã trả — CHỈ void khi lượt hoàn
+                #    này thực sự trả tiền lại cho chính email đó. Không có phí để hoàn
+                #    (mời lại khi còn hạn = miễn phí) mà vẫn void = cắt kỳ khách đã trả
+                #    bằng task khác, không đồng nào bù (ca thật 23/8/2026 —
+                #    xem `queue/completion.py::reconcile_failed_invite`).
+                refunded = (
                     wallet_service.refund_invite(db, UUID(qid), emails=[email])
-                void_refunded_invite_periods(
-                    db, workspace_id=ws_id, emails=[email], now=now
+                    if qid
+                    else None
                 )
+                if refunded and refunded.emails:
+                    void_refunded_invite_periods(
+                        db, workspace_id=ws_id, emails=refunded.emails, now=now
+                    )
                 # 3. Xoá phantom member + invite (email này CHƯA từng tham gia).
                 db.execute(
                     delete(Invite).where(

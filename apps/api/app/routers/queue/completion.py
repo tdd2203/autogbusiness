@@ -128,16 +128,23 @@ def reconcile_failed_invite(
     # 3. Hoàn toàn bộ phí invite_fee của task.
     refunded = wallet_service.refund_invite(db, item.id, emails=None)
 
-    # 4. Hoàn phí ⇒ void kỳ đã trả cho MỌI member còn sống của task (phantom nào
+    # 4. Hoàn phí ⇒ void kỳ đã trả — CHỈ cho email THỰC SỰ có tiền quay về ví lượt
+    #    này (`refunded.emails`), KHÔNG phải mọi email trong payload task. Phantom nào
     #    joined_at != NULL không bị xoá ở bước 2 vẫn phải mất "hạn ma" → không cho
-    #    mời lại miễn phí oan). Xem void_refunded_invite_periods / bug thuylinhtctbg.
+    #    mời lại miễn phí oan. Xem void_refunded_invite_periods / bug thuylinhtctbg.
+    #
+    #    ⚠️ Ca thật 23/8/2026: void theo `task_emails` cắt oan kỳ hạn
+    #    đã trả bằng MỘT TASK KHÁC. Mời lại member còn hạn là MIỄN PHÍ (không có
+    #    invite_fee cho task này) → refund = 0 đồng, nhưng void vẫn chạy ⇒ end_at = now
+    #    ⇒ 50 giây sau job auto-expire gỡ khách khỏi workspace. Khách mất cả ghế lẫn
+    #    tháng đã trả, không một đồng hoàn lại. Bất biến: KHÔNG hoàn tiền ⇒ KHÔNG void.
     from app.routers.members._shared import (
         flag_refunded_invite_debt,
         void_refunded_invite_periods,
     )
 
     void_refunded_invite_periods(
-        db, workspace_id=workspace_id, emails=sorted(task_emails), now=now_terminal
+        db, workspace_id=workspace_id, emails=refunded.emails, now=now_terminal
     )
     # 5. Member đã `active` thì bước 4 KHÔNG đụng tới (void = xoá hạn = tặng vô thời
     #    hạn, xem docstring flag_refunded_invite_debt) → đánh dấu CHƯA THANH TOÁN +
@@ -148,7 +155,7 @@ def reconcile_failed_invite(
             flag_refunded_invite_debt,
             workspace_id=workspace_id,
             workspace_name=workspace_name,
-            emails=sorted(task_emails),
+            emails=refunded.emails,
             item_id=item.id,
             now=now_terminal,
         )
@@ -1008,7 +1015,9 @@ def update_task(
                 db, item.id, emails=emails_to_delete
             )
             # Hoàn phí ⇒ void kỳ đã trả (phantom joined_at != NULL sống sót bộ lọc
-            # xoá bên trên vẫn phải mất "hạn ma"). Xem void_refunded_invite_periods.
+            # xoá bên trên vẫn phải mất "hạn ma"). Void theo `refunded.emails` —
+            # email KHÔNG được hoàn đồng nào thì kỳ hạn của họ do task khác trả,
+            # cắt là cướp hạn (ca thật 23/8, xem reconcile_failed_invite).
             from app.routers.members._shared import (
                 flag_refunded_invite_debt,
                 void_refunded_invite_periods,
@@ -1017,7 +1026,7 @@ def update_task(
             void_refunded_invite_periods(
                 db,
                 workspace_id=workspace.id,
-                emails=emails_to_delete,
+                emails=refunded.emails,
                 now=now_terminal,
             )
             # Member `active` không bị void đụng tới → đánh dấu nợ + báo động.
@@ -1027,7 +1036,7 @@ def update_task(
                     flag_refunded_invite_debt,
                     workspace_id=workspace.id,
                     workspace_name=workspace.name,
-                    emails=emails_to_delete,
+                    emails=refunded.emails,
                     item_id=item.id,
                     now=now_terminal,
                 )

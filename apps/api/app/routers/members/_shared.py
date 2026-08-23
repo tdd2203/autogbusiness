@@ -344,6 +344,14 @@ def void_refunded_invite_periods(
     False ⇒ mời lại vẫn TÍNH PHÍ, không có "hạn ma") nhưng member hiện ĐÚNG là "đã hết
     hạn" và bị quét gỡ như mọi email hết hạn khác — sai thì lộ ra, không im lặng.
 
+    ⚠️ CALLER PHẢI TRUYỀN `emails` = ĐÚNG các email vừa được HOÀN TIỀN
+    (`InviteRefund.emails`), KHÔNG phải mọi email trong payload task (ca
+    thật 23/8/2026): mời lại email CÒN HẠN là miễn phí ⇒ task đó
+    không sinh `invite_fee` ⇒ hoàn 0đ, nhưng void theo payload vẫn cắt kỳ hạn mà MỘT
+    TASK KHÁC đã trả tiền → `end_at = now` → job auto-expire gỡ khách khỏi workspace
+    trong vòng 1 phút, không đồng nào bù. Bất biến là HAI CHIỀU: hoàn phí ⇒ void kỳ,
+    và KHÔNG hoàn phí ⇒ KHÔNG void. Xem `tests/test_reinvite_free_fail_keeps_period.py`.
+
     Trả list email đã void (để caller log). KHÔNG commit — caller commit."""
     if not emails:
         return []

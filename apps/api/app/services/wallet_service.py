@@ -302,18 +302,45 @@ def charge_renew(
     )
 
 
+class InviteRefund:
+    """Kết quả 1 lượt `refund_invite`: hoàn BAO NHIÊU và hoàn CHO NHỮNG EMAIL NÀO.
+
+    ⚠️ `emails` KHÔNG phải "các email của task" mà là "các email THỰC SỰ được trả
+    tiền lại lượt này" (lượt trước đã hoàn → `reversed=true` → không nằm ở đây; email
+    chưa từng bị tính phí cũng không). Caller PHẢI void kỳ hạn theo đúng danh sách
+    này, không void theo payload của task — xem `void_refunded_invite_periods` và ca
+    thật 23/8/2026 (`queue/completion.md` §5).
+
+    Truthy khi có tiền thật quay về ví → `if refunded:` ở call site giữ nguyên nghĩa.
+    """
+
+    __slots__ = ("total_vnd", "emails")
+
+    def __init__(self, total_vnd: int, emails: list[str]) -> None:
+        self.total_vnd = int(total_vnd)
+        self.emails = emails
+
+    def __bool__(self) -> bool:
+        return self.total_vnd > 0
+
+    def __repr__(self) -> str:  # pragma: no cover - chỉ để debug/log
+        return f"InviteRefund(total_vnd={self.total_vnd}, emails={self.emails})"
+
+
 def refund_invite(
     db: Session,
     queue_item_id: UUID,
     emails: list[str] | None = None,
-) -> int:
+) -> InviteRefund:
     """Hoàn phí các lời mời thất bại — IDEMPOTENT (mỗi invite_fee hoàn ≤ 1 lần).
 
     `emails=None` → hoàn MỌI invite_fee của queue_item (task FAILED toàn bộ).
     `emails=[...]` → chỉ hoàn các email đó (COMPLETED nhưng 1 số email không verify).
 
     Dùng `UPDATE ... SET reversed=true WHERE reversed=false RETURNING ...` để chốt
-    tập cần hoàn nguyên tử; gọi lại cũng không hoàn 2 lần. Trả tổng số tiền đã hoàn.
+    tập cần hoàn nguyên tử; gọi lại cũng không hoàn 2 lần. Trả `InviteRefund` (tổng
+    tiền + ĐÚNG các email được hoàn lượt này) — caller cần danh sách đó để void kỳ
+    hạn CHỈ cho email có tiền quay về, xem docstring `InviteRefund`.
     """
     sql = (
         "UPDATE wallet_transactions SET reversed = true "
@@ -323,14 +350,15 @@ def refund_invite(
     if emails is not None:
         norm = [str(e).lower() for e in emails]
         if not norm:
-            return 0
+            return InviteRefund(0, [])
         sql += " AND lower(meta->>'email') = ANY(:emails)"
         params["emails"] = norm
     sql += " RETURNING user_id, amount, meta"
     rows = db.execute(text(sql), params).mappings().all()
     if not rows:
-        return 0
+        return InviteRefund(0, [])
     total_refunded = 0
+    refunded_emails: list[str] = []
     # Gom theo user để khoá ví 1 lần / user.
     by_user: dict[UUID, list[dict]] = {}
     for r in rows:
@@ -356,7 +384,9 @@ def refund_invite(
                 audit_data={"email": email, "fee": fee, "queue_item_id": str(queue_item_id)},
             )
             total_refunded += fee
-    return total_refunded
+            if isinstance(email, str) and email:
+                refunded_emails.append(email.lower())
+    return InviteRefund(total_refunded, sorted(set(refunded_emails)))
 
 
 # ── Rút tiền (hold → settle/refund) ─────────────────────────────────────────
