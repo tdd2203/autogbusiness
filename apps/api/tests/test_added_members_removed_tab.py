@@ -243,6 +243,57 @@ def test_reinvite_clears_removed_reason(client: TestClient, auth_header: dict) -
         assert row.removed_reason is None
 
 
+def test_removed_tab_shows_email_change_chain(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Email đổi sang email khác, rồi email đó lại đổi tiếp → chuỗi chỉ tới email CUỐI.
+
+    Người dùng nhìn email cũ trong tab "Đã xoá" cần biết hạn/tiền của nó giờ nằm ở
+    đâu; bảng members KHÔNG có liên kết cũ→mới nên chuỗi phải lần theo nhật ký
+    `MEMBER_EMAIL_CHANGED` (xem `_email_change_next_map`).
+    """
+    ws = _ws(client, auth_header, "WS email chain")
+    first = _invite(client, auth_header, ws["id"], "first@example.com")
+
+    second = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{first['id']}/change-email",
+        json={"new_email": "second@example.com"},
+        headers=auth_header,
+    )
+    assert second.status_code == 201, second.text
+    third = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{second.json()['id']}/change-email",
+        json={"new_email": "third@example.com"},
+        headers=auth_header,
+    )
+    assert third.status_code == 201, third.text
+
+    rows = client.get("/api/v1/added-members?removed=true", headers=auth_header).json()
+    chains = {r["email"]: r["email_changed_to"] for r in rows}
+    assert chains == {
+        # Email đầu chuỗi phải đi hết 2 chặng, không dừng ở chặng 1.
+        "first@example.com": ["second@example.com", "third@example.com"],
+        "second@example.com": ["third@example.com"],
+    }
+    reasons = {r["email"]: r["removed_reason"] for r in rows}
+    assert reasons == {
+        "first@example.com": "email_changed",
+        "second@example.com": "email_changed",
+    }
+
+
+def test_removed_tab_chain_empty_for_other_reasons(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Email bị gỡ vì lý do KHÁC không được dính chuỗi đổi email (rỗng)."""
+    ws = _ws(client, auth_header, "WS chain empty")
+    member = _invite(client, auth_header, ws["id"], "revoked@example.com")
+    _remove_complete(client, auth_header, ws, member["id"])
+
+    rows = client.get("/api/v1/added-members?removed=true", headers=auth_header).json()
+    assert [r["email_changed_to"] for r in rows] == [[]]
+
+
 def test_removed_tab_respects_ownership_visibility(
     client: TestClient, auth_header: dict
 ) -> None:

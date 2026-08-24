@@ -54,8 +54,20 @@ export function RemovedEmailsList({
       : t("addedEmails.expiryNone");
   const reasonBadge = (m: AddedMember) => {
     const code = m.removed_reason ?? "";
+    const chain = m.email_changed_to ?? [];
     return (
-      <span className={REASON_BADGE[code] ?? "badge badge-neutral badge-plain"}>
+      <span
+        className={REASON_BADGE[code] ?? "badge badge-neutral badge-plain"}
+        // Ca đổi email: rê chuột là biết hạn/tiền đã sang email nào, khỏi mở modal.
+        // Chuỗi đầy đủ (A → B → C) hiện trong modal chi tiết.
+        title={
+          chain.length > 0
+            ? t("memberDetail.badgeRemovedMovedTo", {
+                email: chain[chain.length - 1],
+              })
+            : undefined
+        }
+      >
         {code
           ? t(`removedReason.${code}`)
           : t("removedReason.unknown")}

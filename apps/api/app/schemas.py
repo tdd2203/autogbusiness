@@ -513,6 +513,10 @@ class AddedMemberOut(MemberOut):
     # Username của sub-admin sở hữu email (để super-admin biết email của ai).
     # None nếu là 'email còn lại' (chưa có chủ).
     invited_by_username: str | None = None
+    # Chuỗi email THAY THẾ cho email này, theo thứ tự đổi (A → B → C): phần tử cuối là
+    # email đang giữ hạn/tiền. Chỉ đổ đầy ở tab "Đã xoá" cho dòng `removed_reason=
+    # 'email_changed'`; rỗng ở mọi trường hợp khác.
+    email_changed_to: list[str] = Field(default_factory=list)
 
 
 class PaymentRequestNotice(BaseModel):

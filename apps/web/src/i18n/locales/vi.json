@@ -1258,6 +1258,8 @@
   "memberDetail.activityTitle": "Lịch sử hoạt động",
   "memberDetail.activityEmpty": "Chưa có hoạt động nào được ghi nhận.",
   "memberDetail.daysLeftLabel": "ngày còn lại",
+  "memberDetail.removedRingLabel": "đã rời team",
+  "memberDetail.badgeRemovedMovedTo": "Đã xoá · hạn theo {email}",
   "memberDetail.daysOverdueLabel": "ngày quá hạn",
   "memberDetail.badgeActive": "Còn hạn",
   "memberDetail.badgeUnlimited": "Vô hạn",

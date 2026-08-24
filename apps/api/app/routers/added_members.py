@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.audit import log_event
 from app.deps import get_current_user, get_session
-from app.models import Member, MemberSubscriptionCycle, User
+from app.models import REMOVED_REASON_EMAIL_CHANGED, AuditLog, Member, MemberSubscriptionCycle, User
 from app.schemas import (
     AddedMemberOut,
     MemberBulkSetExpiryIn,
@@ -40,6 +40,34 @@ _LIST_CHUNK = 200
 # ngày, do user chốt 2026-07-19). Email bị xoá quá 30 ngày rơi khỏi tab nhưng lịch
 # sử vẫn còn để tra cứu chỗ khác.
 REMOVED_TAB_WINDOW = timedelta(days=30)
+
+
+# Số bước tối đa khi lần theo chuỗi đổi email (A → B → C…). Chuỗi thật dài 1–2 bước;
+# trần này chỉ để một dữ liệu vòng (A → B → A, do email cũ được mời lại rồi lại đổi)
+# không treo vòng lặp.
+_EMAIL_CHAIN_MAX_HOPS = 10
+
+
+def _email_change_next_map(db: Session) -> dict[str, tuple[str, str]]:
+    """`id member cũ` → (email mới, `id member mới`) của MỖI lần đổi email.
+
+    Nguồn: nhật ký `MEMBER_EMAIL_CHANGED` — chỉ nó biết email nào thay cho email nào
+    (bảng members KHÔNG có liên kết cũ→mới). Sắp theo thời gian rồi ghi đè, nên một
+    email từng bị đổi NHIỀU LẦN (đổi đi, được mời lại, lại đổi) sẽ lấy lần GẦN NHẤT —
+    đúng với lần bị gỡ đang hiển thị.
+    """
+    rows = db.execute(
+        select(AuditLog.target_id, AuditLog.data)
+        .where(AuditLog.action == "MEMBER_EMAIL_CHANGED")
+        .order_by(AuditLog.timestamp)
+    ).all()
+    out: dict[str, tuple[str, str]] = {}
+    for target_id, data in rows:
+        old_id = (data or {}).get("old_member_id")
+        new_email = (data or {}).get("new_email")
+        if old_id and new_email and target_id:
+            out[str(old_id)] = (str(new_email), str(target_id))
+    return out
 
 
 def _recompute_member_payment_status(member: Member) -> None:
@@ -155,6 +183,10 @@ def list_added_members(
     #    lưu. Expunge giữ nguyên đúng hành vi đó.
     #  - Mọi thuộc tính cần dùng đều đã đọc xong TRƯỚC khi expunge lô.
     # `selectinload` chạy được cùng `yield_per` (một truy vấn phụ cho mỗi lô).
+    # Tab "Đã xoá": nạp SẴN bản đồ đổi email (1 truy vấn cho cả danh sách) để mỗi
+    # dòng kể được "email này đã đổi sang đâu". Danh sách thường không cần → không tốn.
+    next_email_map = _email_change_next_map(db) if removed else {}
+
     rows: list[AddedMemberOut] = []
     result = db.execute(stmt.execution_options(yield_per=_LIST_CHUNK)).scalars()
     for chunk in result.partitions():
@@ -173,6 +205,25 @@ def list_added_members(
                 SubscriptionCycleOut.model_validate(c)
                 for c in member.subscription_cycles
             ]
+            # Email bị gỡ VÌ ĐỔI EMAIL: lần theo cả chuỗi tới email nhận CUỐI CÙNG
+            # (A → B → C). Người dùng nhìn email cũ phải biết hạn/tiền của nó giờ nằm
+            # ở đâu — không có chuỗi này thì email cũ trông như "mất trắng mà vẫn còn
+            # hạn" (user hỏi 2026-08-24).
+            if removed and member.removed_reason == REMOVED_REASON_EMAIL_CHANGED:
+                chain: list[str] = []
+                seen = {str(member.id)}
+                cursor = str(member.id)
+                for _ in range(_EMAIL_CHAIN_MAX_HOPS):
+                    step = next_email_map.get(cursor)
+                    if step is None:
+                        break
+                    next_email, next_id = step
+                    chain.append(next_email)
+                    if next_id in seen:
+                        break  # vòng (email cũ được mời lại rồi lại đổi) → dừng
+                    seen.add(next_id)
+                    cursor = next_id
+                out.email_changed_to = chain
             rows.append(out)
         for member in chunk:
             db.expunge(member)

@@ -1386,6 +1386,13 @@ export function MemberDetailModal({
     else groups.push({ date, items: [log] });
   }
 
+  // Chuỗi email thay thế (chỉ có ở tab "Đã xoá", dòng bị gỡ vì đổi email).
+  const emailChain = member.email_changed_to ?? [];
+  // Email ĐÃ RỜI TEAM: `subscription_end_at` trên dòng này KHÔNG còn là hạn đang
+  // chạy — với ca đổi email nó là bản sao của hạn đã theo email mới đi. Vòng tròn
+  // vì thế không được khoe "còn hạn / 27 ngày còn lại" như member đang sống.
+  const isRemoved = member.status === "removed";
+
   // ── Vòng tròn "ngày còn lại" (sidebar) — dẫn xuất từ subscription_end_at ────
   //   không có hạn → ∞ (vô hạn) · còn hạn → số ngày · hết hạn → số ngày quá hạn.
   // Tỉ lệ vòng = ngày còn lại / (số tháng × 30) — khớp Model B (mốc + tháng×30).
@@ -1419,20 +1426,30 @@ export function MemberDetailModal({
     : expired
       ? 1
       : Math.max(0, Math.min(1, (diffDays as number) / cycleDays));
-  const ringColor = !hasSub
-    ? "var(--success-strong)"
-    : expired || (diffDays as number) < 3
-      ? "var(--danger)"
-      : (diffDays as number) < 7
-        ? "var(--warning-accent)"
-        : "var(--success-strong)";
+  const ringColor = isRemoved
+    ? "var(--ink-3)"
+    : !hasSub
+      ? "var(--success-strong)"
+      : expired || (diffDays as number) < 3
+        ? "var(--danger)"
+        : (diffDays as number) < 7
+          ? "var(--warning-accent)"
+          : "var(--success-strong)";
   const ringDeg = Math.round(ringFraction * 360);
-  const ringBig = !hasSub ? "∞" : expired ? -(diffDays as number) : (diffDays as number);
-  const ringLabel = !hasSub
-    ? t("memberDetail.unlimited")
-    : expired
-      ? t("memberDetail.daysOverdueLabel")
-      : t("memberDetail.daysLeftLabel");
+  const ringBig = isRemoved
+    ? "—"
+    : !hasSub
+      ? "∞"
+      : expired
+        ? -(diffDays as number)
+        : (diffDays as number);
+  const ringLabel = isRemoved
+    ? t("memberDetail.removedRingLabel")
+    : !hasSub
+      ? t("memberDetail.unlimited")
+      : expired
+        ? t("memberDetail.daysOverdueLabel")
+        : t("memberDetail.daysLeftLabel");
 
   // Chip trạng thái hạn dùng dưới vòng tròn: xanh (còn hạn) / hổ phách (≤7 ngày) /
   // đỏ (hết hạn) / xanh (vô hạn).
@@ -1440,7 +1457,19 @@ export function MemberDetailModal({
   let pillColor = "var(--success)";
   let pillDot = "var(--success-strong)";
   let pillText = t("memberDetail.badgeUnlimited");
-  if (hasSub) {
+  if (isRemoved) {
+    // Đã rời team: nói thẳng "đã xoá" + hạn/tiền giờ nằm ở đâu (nếu là ca đổi email),
+    // thay vì chip xanh "còn hạn đến 20/9" của một email không còn tồn tại.
+    pillBg = "var(--surface-2)";
+    pillColor = "var(--ink-2)";
+    pillDot = "var(--ink-3)";
+    pillText =
+      emailChain.length > 0
+        ? t("memberDetail.badgeRemovedMovedTo", {
+            email: emailChain[emailChain.length - 1],
+          })
+        : t("member.statusRemoved");
+  } else if (hasSub) {
     if (expired) {
       pillBg = "var(--danger-bg)";
       pillColor = "var(--danger)";
@@ -1601,6 +1630,49 @@ export function MemberDetailModal({
             >
               {member.email}
             </div>
+            {/* Email này đã ĐỔI SANG email khác → chỉ thẳng chuỗi thay thế ngay dưới
+                tên, tới email nhận CUỐI CÙNG (A → B → C). Chỉ mũi tên, KHÔNG kèm chữ
+                "đã đổi sang": mũi tên tự nói rồi (user chốt 2026-08-24). */}
+            {emailChain.length > 0 && (
+              <div
+                style={{
+                  marginTop: 5,
+                  fontSize: isMobile ? 12 : 12.5,
+                  fontFamily: "var(--font-mono)",
+                  color: "var(--ink-3)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  flexWrap: "wrap",
+                }}
+              >
+                {emailChain.map((email, i) => (
+                  <span
+                    key={email}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                    }}
+                  >
+                    <span aria-hidden="true">→</span>
+                    {/* Email CUỐI chuỗi là nơi đang giữ hạn + tiền → in đậm; các
+                        chặng giữa chỉ là đường đi, để nhạt. */}
+                    <span
+                      style={{
+                        color:
+                          i === emailChain.length - 1
+                            ? "var(--ink)"
+                            : "var(--ink-3)",
+                        fontWeight: i === emailChain.length - 1 ? 600 : 400,
+                      }}
+                    >
+                      {email}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
           <button
             type="button"

@@ -135,6 +135,10 @@ export type Member = {
    *  "sync_missing" | "email_changed" | "subscription_transferred".
    *  null = email bị xoá trước khi có cột này → UI hiện "Không rõ". */
   removed_reason?: string | null;
+  /** Chuỗi email THAY THẾ cho email này, theo thứ tự đổi (A → B → C): phần tử cuối là
+   *  email đang giữ hạn/tiền. Backend CHỈ đổ đầy ở danh sách tab "Đã xoá" cho dòng
+   *  removed_reason="email_changed"; mọi nơi khác undefined/rỗng. */
+  email_changed_to?: string[];
   created_at: string;
   /** Lần CUỐI invite/re-invite qua dashboard. NULL nếu member chỉ từ SYNC.
    *  Cột "Ngày thêm" hiển thị last_invited_at ?? created_at để khớp Queue. */

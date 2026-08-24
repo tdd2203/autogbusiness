@@ -1258,6 +1258,8 @@
   "memberDetail.activityTitle": "活动记录",
   "memberDetail.activityEmpty": "暂无活动记录。",
   "memberDetail.daysLeftLabel": "剩余天数",
+  "memberDetail.removedRingLabel": "已离开团队",
+  "memberDetail.badgeRemovedMovedTo": "已删除 · 有效期已转到 {email}",
   "memberDetail.daysOverdueLabel": "逾期天数",
   "memberDetail.badgeActive": "有效",
   "memberDetail.badgeUnlimited": "无限",
