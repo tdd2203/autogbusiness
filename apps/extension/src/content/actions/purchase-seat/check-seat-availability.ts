@@ -11,10 +11,13 @@
  * thay vì fail.
  */
 
+import { dbLabelsFor } from "../../../shared/ui-labels";
 import { humanClick, waitFor } from "../../human";
-import { findControlByKey } from "../../i18n-ui";
+import { findControlByKey, findUiControlByTexts } from "../../i18n-ui";
 import { TEXT_FALLBACKS } from "../../selectors";
 import {
+  MANAGE_SEATS_BUTTON_POLL_MS,
+  MANAGE_SEATS_BUTTON_WAIT_MS,
   MODAL_OPEN_TIMEOUT_MS,
   SEAT_CROSSCHECK_POLL_MS,
   SEAT_CROSSCHECK_SETTLE_MS,
@@ -71,11 +74,44 @@ function findSeatModal(): HTMLElement | null {
  * Phải đang ở /admin/members và trang đã render xong (caller lo).
  */
 export async function checkSeatAvailability(): Promise<SeatCheckResult> {
-  const manageBtn = findControlByKey(
-    "billing_manage_licenses",
-    TEXT_FALLBACKS.billingManageLicenses,
-    { page: "/admin/members" },
-  );
+  // Hỏi ĐÚNG MỘT LẦN ngay lúc vừa tới trang là quá sớm: hàng nút của tab "Người
+  // dùng" là component React render SAU danh sách, mà `membersListReady` của
+  // ensure-seats chỉ đòi "trang có >2 nút" nên đã cho đi tiếp từ trước đó.
+  //
+  // ⚠️ Ca thật 22/8/2026 (2 lần: 18:03 và 18:20, workspace hết sạch suất): không
+  // thấy nút ⇒ `supported:false` ⇒ ensure-seats hiểu là "workspace UI cũ" và BỎ
+  // QUA chốt suất ⇒ mời mù ⇒ ChatGPT bật hộp "mua kèm gửi lời mời" ⇒ 15s không có
+  // toast ⇒ VERIFY_FAILED. Đúng cái hộp mà cả thiết kế đếm-suất-trước sinh ra để
+  // tránh. Hai lệnh "Mời lại" 14 phút sau (đi qua tiền tố thu hồi nên trang đã
+  // render xong) lại đếm suất chuẩn — đó là dấu vân tay của một cuộc đua render,
+  // không phải workspace UI cũ.
+  //
+  // Nay CHỜ nút xuất hiện rồi mới dám kết luận. Poll bằng finder IM LẶNG
+  // (`findUiControlByTexts`) chứ không phải `findControlByKey`: hàm kia bắn
+  // `reportLabelMismatch` mỗi lần trượt → poll sẽ spam dashboard. Hết giờ mới hỏi
+  // lại đúng một lần qua `findControlByKey` để báo lệch nhãn như cũ.
+  const probeManageBtn = (): HTMLElement | null =>
+    findUiControlByTexts([
+      ...dbLabelsFor("billing_manage_licenses", "/admin/members"),
+      ...TEXT_FALLBACKS.billingManageLicenses,
+    ]);
+
+  let manageBtn = probeManageBtn();
+  if (!manageBtn) {
+    try {
+      manageBtn = await waitFor(
+        probeManageBtn,
+        MANAGE_SEATS_BUTTON_WAIT_MS,
+        MANAGE_SEATS_BUTTON_POLL_MS,
+      );
+    } catch {
+      manageBtn = findControlByKey(
+        "billing_manage_licenses",
+        TEXT_FALLBACKS.billingManageLicenses,
+        { page: "/admin/members" },
+      );
+    }
+  }
   if (!manageBtn) {
     console.log(`${LOG} workspace KHÔNG có nút 'Quản lý số suất' → bỏ qua kiểm tra suất`);
     return {

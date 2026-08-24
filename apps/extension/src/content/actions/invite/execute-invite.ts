@@ -373,12 +373,15 @@ export async function executeInvite(
 
   // Gắn số liệu suất vào kết quả để dashboard cập nhật seat_total/seat_used từ
   // con số THẬT của ChatGPT (chính xác hơn scrape trang Thanh toán).
-  if (inviteResult.ok && Object.keys(seatData).length > 0) {
-    const data = (inviteResult as { ok: true; data?: Record<string, unknown> }).data ?? {};
-    (inviteResult as { ok: true; data?: Record<string, unknown> }).data = {
-      ...data,
-      ...seatData,
-    };
+  //
+  // Gắn cho CẢ ca HỎNG (trước đây chỉ gắn khi `ok`): chính lúc mời hỏng mới cần
+  // biết bước suất đã thấy gì. Hai task VERIFY_FAILED ngày 22/8/2026 để lại đúng
+  // `{submit_clicked:true}` trong DB, không một con số suất nào — phải suy ngược
+  // từ hành vi mới đoán ra là chốt suất đã bị bỏ qua. (v0.13.1 đã giữ `data` của
+  // lỗi vào `result`, nhưng `seatData` vẫn rơi ở đây nên vẫn trắng thông tin.)
+  if (Object.keys(seatData).length > 0) {
+    const withData = inviteResult as { data?: Record<string, unknown> };
+    withData.data = { ...(withData.data ?? {}), ...seatData };
   }
 
   return inviteResult;

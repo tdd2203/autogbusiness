@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.13.1";
+export const VERSION = "0.13.2";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,19 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.13.2",
+    date: "2026-08-24",
+    kind: "fix",
+    summary:
+      "Chốt suất im lặng bỏ qua vì trang chưa render kịp → mời mù khi workspace hết suất. Đây là gốc của 2 lệnh mời hỏng ngày 22/8 mà chủ hệ thống phải hoàn tiền tay.",
+    details: [
+      "Nút 'Quản lý số suất' là component render SAU danh sách thành viên. Bản trước hỏi ĐÚNG MỘT LẦN ngay lúc vừa tới trang: chưa thấy là kết luận 'workspace chưa được bật UI mới' rồi BỎ QUA chốt suất và mời thẳng. Ca thật 22/8 18:03 và 18:20 (workspace hết sạch 60 suất): mời mù → ChatGPT bật hộp 'mua kèm gửi lời mời' → 15s không có toast → VERIFY_FAILED. Đúng cái hộp mà cả thiết kế đếm-suất-trước sinh ra để tránh.",
+      "Dấu vân tay của cuộc đua: hai lệnh 'Mời lại' 14 phút sau, trong CÙNG workspace đó, lại đếm suất chuẩn — vì tiền tố thu hồi lời mời đã kịp làm trang render xong.",
+      "Nay CHỜ nút xuất hiện tối đa 6s rồi mới dám kết luận 'workspace UI cũ'. Dò bằng finder im lặng để không spam báo lệch nhãn về dashboard; hết giờ mới hỏi lại một lần qua đường có báo.",
+      "Số liệu bước suất (seat_total/seat_free/seat_needed) giờ đính kèm CẢ ca mời hỏng. Hai task 22/8 chỉ để lại `{submit_clicked:true}` trong DB nên phải suy ngược từ hành vi mới đoán ra chốt suất đã bị bỏ qua — lần sau nhìn thẳng vào result là biết.",
+    ],
+  },
   {
     version: "0.13.1",
     date: "2026-08-23",

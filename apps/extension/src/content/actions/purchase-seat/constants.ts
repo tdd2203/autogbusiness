@@ -17,6 +17,23 @@ export const BILLING_PLAN_SEARCH = "?tab=plan";
  * render sau nav → phụ thuộc tốc độ mạng/máy, giảm = thao tác sớm khi chưa render. */
 export const POST_NAV_RENDER_MS = 2500;
 
+/**
+ * Đợi nút "Quản lý số suất" xuất hiện trên trang Thành viên trước khi dám kết
+ * luận "workspace này chưa được ChatGPT bật UI mới".
+ *
+ * Ca thật 22/8/2026 (2 lệnh mời, 18:03 và 18:20): hỏi một lần ngay lúc vừa tới
+ * trang → chưa render → tưởng workspace UI cũ → BỎ QUA chốt suất → mời mù trong
+ * lúc workspace hết sạch suất → ChatGPT bật hộp "mua kèm gửi lời mời" → hỏng.
+ * Xem `check-seat-availability.ts`.
+ *
+ * Workspace UI cũ THẬT thì phải trả giá bằng đúng chừng này giây mỗi lần mời —
+ * đổi lại không bao giờ mời mù nữa. Nút có sẵn (đại đa số) → trả về tức thì.
+ */
+export const MANAGE_SEATS_BUTTON_WAIT_MS = 6_000;
+
+/** Nhịp dò lại nút "Quản lý số suất" trong lúc chờ. */
+export const MANAGE_SEATS_BUTTON_POLL_MS = 400;
+
 /** Hard cap đợi modal "Quản lý suất" (có bộ [−] n [+]) mở. */
 export const MODAL_OPEN_TIMEOUT_MS = 15_000;
 

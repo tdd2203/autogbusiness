@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -29,6 +29,108 @@ from app.schemas import QueueOut, QueueUpdate
 from app.services import wallet_service
 
 from ._shared import router
+
+
+def _refund_stranded_deferred_fees(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    emails: set[str],
+    exclude_item_id: UUID,
+) -> wallet_service.InviteRefund:
+    """Hoàn nốt phí của lời mời TRƯỚC ĐÓ cùng email đang KẸT ở "chờ xác minh".
+
+    Ca thật 22/8/2026 (mất 330k, user phải cộng tay bù):
+      18:20  mời `k…@gmail.com` → trừ 330k → task FAILED `VERIFY_FAILED` nhưng đã
+             bấm Gửi ⇒ `defer_unverified_invite` HOÃN phán xử (đúng): phí giữ lại,
+             member còn 'pending', chờ resolver 20′ chốt bằng bằng chứng.
+      18:28  admin "Mời lại" cùng email → task MIỄN PHÍ đó cũng FAILED
+             (`NOT_ENOUGH_SEATS`, lỗi trước lúc bấm Gửi) ⇒ `reconcile_failed_invite`:
+             xoá member pending, ghi `MEMBER_INVITE_FAILED`, và hoàn phí **của chính
+             nó** = 0đ. 330k của lần 18:20 KHÔNG ai đụng tới.
+      ⇒ resolver 20′ sau đó bỏ qua vĩnh viễn: member đã bị xoá (`member is None`) VÀ
+        đã có audit `MEMBER_INVITE_FAILED` sau mốc defer (`resolved_after`). Tiền
+        nằm lại trong doanh thu, ghế thì không có.
+
+    Bất biến bị hở: phí đi theo TASK, còn kết luận "lời mời hỏng" lại đi theo EMAIL.
+    Task sau chốt hỏng cho email nào thì phải đóng luôn đường tiền còn treo của email
+    đó — bằng không mỗi cú mời-lại-hỏng lại nuốt một khoản phí của lần mời trả tiền.
+
+    Chỉ đụng phí THỰC SỰ mồ côi, ba lớp chặn:
+      1. Task cũ phải `FAILED` + `invite_fee` chưa `reversed` (FAILED mà còn giữ phí
+         thì chỉ có thể là đường hoãn — không có đường nào khác).
+      2. Email chưa từng có `MEMBER_INVITE_VERIFIED` sau khi task cũ kết thúc — đồng
+         bộ đã thấy người ta trong team thì lời mời ĐI ĐƯỢC, phí thu đúng.
+      3. Không còn member `active` sống với email đó — cùng lý lẽ với (2), đây là
+         bằng chứng mạnh nhất và cũng là luật `defer_unverified_invite` đang dùng.
+
+    KHÔNG commit — caller commit. Trả `InviteRefund` để caller gộp vào `refunded`
+    rồi void/đánh dấu nợ theo đúng bất biến "hoàn phí ⇒ void kỳ".
+    """
+    if not emails:
+        return wallet_service.InviteRefund(0, [])
+
+    rows = db.execute(
+        text(
+            """
+            SELECT DISTINCT wt.ref_id AS item_id,
+                   lower(wt.meta->>'email') AS email,
+                   COALESCE(q.completed_at, q.created_at) AS ended_at
+            FROM wallet_transactions wt
+            JOIN queue_items q ON q.id::text = wt.ref_id
+            WHERE wt.kind = 'invite_fee'
+              AND wt.reversed = false
+              AND lower(wt.meta->>'email') = ANY(:emails)
+              AND wt.ref_id <> :exclude
+              AND q.type = 'INVITE_MEMBER'
+              AND q.status = 'FAILED'
+              AND q.workspace_id = :ws
+            """
+        ),
+        {
+            "emails": sorted(emails),
+            "exclude": str(exclude_item_id),
+            "ws": str(workspace_id),
+        },
+    ).mappings().all()
+    if not rows:
+        return wallet_service.InviteRefund(0, [])
+
+    total = 0
+    refunded_emails: list[str] = []
+    for row in rows:
+        email = row["email"]
+        if not email:
+            continue
+        verified_after = db.execute(
+            select(AuditLog.id)
+            .where(
+                AuditLog.action == "MEMBER_INVITE_VERIFIED",
+                AuditLog.data["email"].astext == email,
+                AuditLog.data["workspace_id"].astext == str(workspace_id),
+                AuditLog.timestamp > row["ended_at"],
+            )
+            .limit(1)
+        ).first()
+        if verified_after is not None:
+            continue
+        still_active = db.execute(
+            select(Member.id)
+            .where(
+                Member.workspace_id == workspace_id,
+                Member.email == email,
+                Member.status == "active",
+            )
+            .limit(1)
+        ).first()
+        if still_active is not None:
+            continue
+        one = wallet_service.refund_invite(
+            db, UUID(row["item_id"]), emails=[email]
+        )
+        total += one.total_vnd
+        refunded_emails.extend(one.emails)
+    return wallet_service.InviteRefund(total, sorted(set(refunded_emails)))
 
 
 def reconcile_failed_invite(
@@ -55,7 +157,9 @@ def reconcile_failed_invite(
       2. Xoá Member(pending, joined_at IS NULL) + Invite phantom của task (không
          đụng record đã active/đã join).
       3. Hoàn TOÀN BỘ phí invite_fee của task về ví (idempotent qua cột `reversed`;
-         no-op nếu task không có giao dịch — user non-beta).
+         no-op nếu task không có giao dịch — user non-beta), VÀ phí còn treo của lời
+         mời trước đó cùng email đang kẹt "chờ xác minh"
+         (`_refund_stranded_deferred_fees` — ca thật 22/8/2026).
 
     KHÔNG commit — caller commit (completion: cuối update_task; execution: sau vòng
     lặp stuck_tasks).
@@ -127,6 +231,24 @@ def reconcile_failed_invite(
 
     # 3. Hoàn toàn bộ phí invite_fee của task.
     refunded = wallet_service.refund_invite(db, item.id, emails=None)
+
+    # 3b. …VÀ phí còn treo của lời mời TRƯỚC ĐÓ cùng email (đường "chờ xác minh").
+    #     Phí đi theo TASK nhưng kết luận "hỏng" đi theo EMAIL — task này vừa chốt
+    #     hỏng cho các email đó thì khoản treo kia cũng hết cửa thành công. Không
+    #     làm ở đây thì resolver 20′ sẽ bỏ qua vĩnh viễn (member vừa bị xoá ở bước 2
+    #     + audit FAILED vừa ghi ở bước 1 khớp đúng 2 điều kiện SKIP của nó) — ca
+    #     thật 22/8/2026, xem docstring `_refund_stranded_deferred_fees`.
+    stranded = _refund_stranded_deferred_fees(
+        db,
+        workspace_id=workspace_id,
+        emails=task_emails,
+        exclude_item_id=item.id,
+    )
+    if stranded:
+        refunded = wallet_service.InviteRefund(
+            refunded.total_vnd + stranded.total_vnd,
+            sorted(set(refunded.emails) | set(stranded.emails)),
+        )
 
     # 4. Hoàn phí ⇒ void kỳ đã trả — CHỈ cho email THỰC SỰ có tiền quay về ví lượt
     #    này (`refunded.emails`), KHÔNG phải mọi email trong payload task. Phantom nào

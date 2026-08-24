@@ -163,11 +163,15 @@ def test_timeout_defers_then_resolver_refunds(
     picked = client.get("/api/v1/queue/next", headers={"X-API-KEY": key})
     assert picked.status_code == 200 and picked.json()["id"] == item_id
 
-    # Ép picked_at về 5 phút trước (vượt ngưỡng INVITE_MEMBER = 3 phút).
+    # Ép picked_at về 10 phút trước (vượt ngưỡng treo của INVITE_MEMBER).
+    # ⚠️ Ngưỡng này ĐÃ ĐỔI 3′ → 8′ ngày 22/8/2026 (bước đếm suất/mua bù trước khi mời
+    # dài ngang PURCHASE_SEAT — xem `STUCK_THRESHOLDS` trong execution.py). Test vẫn
+    # lùi 5 phút nên từ hôm đó không còn chạm được lazy-cleanup: task đứng
+    # IN_PROGRESS và cả chặng resolver-hoàn-phí phía dưới KHÔNG được kiểm nữa.
     db = SessionLocal()
     try:
         it = db.get(QueueItem, UUID(item_id))
-        it.picked_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+        it.picked_at = datetime.now(timezone.utc) - timedelta(minutes=10)
         db.add(it)
         db.commit()
     finally:
@@ -176,7 +180,7 @@ def test_timeout_defers_then_resolver_refunds(
     # Pick lần nữa → lazy-cleanup auto-fail task treo + reconcile.
     client.get("/api/v1/queue/next", headers={"X-API-KEY": key})
 
-    # ── Chặng 1 (mốc 3′): HOÃN — task FAILED nhưng tiền và bản ghi còn nguyên ──
+    # ── Chặng 1 (mốc treo): HOÃN — task FAILED nhưng tiền và bản ghi còn nguyên ──
     member_id: str
     db = SessionLocal()
     try:
