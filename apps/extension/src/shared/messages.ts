@@ -45,7 +45,8 @@ export type ExecuteActionRequest =
       /**
        * Số suất dashboard đang biết (backend `_seat_hint`): `total` = seat_total
        * đã scrape từ trang thanh toán (CÓ THỂ CŨ), `occupied` = member chưa bị gỡ
-       * (active + pending — lời mời đang chờ VẪN giữ suất).
+       * (active + pending). Cộng pending là ĐẾM THỪA CÓ CHỦ Ý, không phải vì lời
+       * mời chờ đang giữ suất — xem `headroomWithoutModal` (ensure-seats.ts).
        *
        * Dùng để BỎ QUA hẳn bước mở hộp "Quản lý suất" khi thấy chắc chắn còn thừa
        * chỗ. Thiếu/không đủ dư → mở hộp đếm tận nơi như cũ.

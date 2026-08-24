@@ -415,8 +415,19 @@ def _seat_hint(db: Session, workspace: Workspace) -> dict:
     hộp không mở sau 15s, hoặc bộ đếm lệch dòng tỉ lệ → chết cả task mời).
 
     - `total` = `seat_total` scrape từ trang thanh toán (SYNC_BILLING). Có thể CŨ.
-    - `occupied` = member CHƯA bị gỡ = active + pending. Lời mời ĐANG CHỜ vẫn giữ
-      suất trên ChatGPT nên PHẢI tính vào, không được chỉ đếm active.
+    - `occupied` = member CHƯA bị gỡ = active + pending.
+
+    Cộng pending vào `occupied` là ĐẾM THỪA CÓ CHỦ Ý, KHÔNG phải vì lời mời đang
+    chờ giữ suất trên ChatGPT — đo trên production 24/8/2026 thì ngược lại:
+    GPT1 có 148 active + 1 chờ, ChatGPT báo đúng `148/151 đã gán`; CHATGPT PRO
+    thì `60/60 đã gán`, hết sạch suất trống, mà vẫn treo 1 lời mời chờ — lời mời
+    chờ mà giữ suất thì ca đó không tồn tại được. Tức "đã gán" = đúng số active.
+
+    Vẫn cộng, vì lời mời chờ BIẾN THÀNH suất thật ngay khi người ta bấm nhận, có
+    thể xảy ra đúng giữa lúc extension đọc số và lúc bấm mời. Đếm thừa thì cùng
+    lắm extension mở hộp đếm tận nơi (chậm); đếm thiếu là mời mù vào chỗ không
+    có, kích hoạt hộp "Mua suất người dùng và gửi lời mời" — mua bằng tiền thật,
+    số tiền do ChatGPT tự quyết. Đừng "sửa" chỗ này thành chỉ đếm active.
 
     Cả hai đều là gợi ý, không phải chân lý: extension chỉ bỏ qua hộp khi khoảng
     thừa tính từ đây còn dư so với số suất cần, còn lại vẫn mở hộp đọc tận nơi.

@@ -8,9 +8,10 @@
  * không tốn cú bấm nào.
  *
  * ⚠️ Số này KHÔNG phải "số suất đã gán". Tab "Người dùng" chỉ đếm người ĐÃ tham
- * gia; lời mời ĐANG CHỜ cũng giữ suất mà không nằm trong số này. Nên nó chỉ là
- * CẬN DƯỚI của số suất đang bị chiếm — dùng để kết luận "chắc chắn còn thừa" thì
- * phải cộng thêm số lời mời đang chờ (dashboard gửi kèm). Xem `ensure-seats.ts`.
+ * gia, không thấy lời mời đang chờ — mà lời mời chờ thành suất thật ngay khi
+ * người ta bấm nhận. Nên nó chỉ là CẬN DƯỚI của số suất sắp bị chiếm; muốn kết
+ * luận "chắc chắn còn thừa" thì phải đối chiếu với số dashboard gửi kèm (đã cộng
+ * cả pending). Xem `headroomWithoutModal` trong `ensure-seats.ts`.
  */
 
 import { normalizeForMatch } from "../purchase-seat/modal2/money";

@@ -91,12 +91,25 @@ async function softReloadMembersPage(): Promise<void> {
  * Chắc chắn còn thừa chỗ chưa? Chỉ dựa vào những gì ĐỌC ĐƯỢC MÀ KHÔNG mở hộp:
  * số thành viên in trên trang + cặp số dashboard gửi kèm.
  *
- * Số suất ĐANG BỊ CHIẾM lấy theo bên LỚN HƠN giữa hai nguồn:
- *  - trang chỉ đếm người ĐÃ tham gia, bỏ sót lời mời đang chờ (vẫn giữ suất);
- *  - DB có cả pending nhưng lại thiếu người vào ChatGPT bằng đường khác.
- * Lấy max là cận trên của cả hai chiều sót.
+ * Số suất ĐANG BỊ CHIẾM lấy theo bên LỚN HƠN giữa hai nguồn, vì mỗi bên sót một
+ * kiểu: trang chỉ đếm người ĐÃ tham gia, còn DB thì thiếu người vào ChatGPT bằng
+ * đường khác. Lấy max là cận trên của cả hai chiều sót.
+ *
+ * ⚠️ `hint.occupied` CÓ cộng lời mời đang chờ, và đó là ĐẾM THỪA CÓ CHỦ Ý — không
+ * phải vì lời mời chờ đang giữ suất. Đo trên production 24/8/2026: GPT1 có 148
+ * active + 1 chờ, ChatGPT báo đúng `148/151 đã gán`; CHATGPT PRO còn rõ hơn —
+ * `60/60 đã gán`, KHÔNG còn suất trống nào, mà vẫn đang treo 1 lời mời chờ. Nếu
+ * lời mời chờ giữ suất thì ca đó không tồn tại được. Tức "đã gán" của ChatGPT =
+ * đúng số active.
+ *
+ * Vẫn cộng vào vì lời mời chờ BIẾN THÀNH suất thật ngay khi người ta bấm nhận —
+ * có thể xảy ra đúng giữa lúc đọc số này và lúc bấm mời. Đếm thừa thì cùng lắm là
+ * mở hộp đếm tận nơi (chậm); đếm thiếu là mời mù vào chỗ không có, đúng cái hộp
+ * "Mua suất người dùng và gửi lời mời" mà cả thiết kế này sinh ra để tránh.
+ *
+ * Xuất khẩu để test được — đây là một trong hai đường quyết định dính tới tiền.
  */
-function headroomWithoutModal(
+export function headroomWithoutModal(
   need: number,
   hint: SeatHint | undefined,
   pageMembers: number | null,
@@ -107,6 +120,31 @@ function headroomWithoutModal(
   if (occupied <= 0) return { enough: false, total, occupied: null, free: null };
   const free = total - occupied;
   return { enough: free >= need + SEAT_HINT_SPARE, total, occupied, free };
+}
+
+/**
+ * Có được phép SUY RA tổng suất mới từ bộ đếm của hộp mua, thay vì mở lại hộp
+ * "Quản lý suất" để đọc kiểm?
+ *
+ * Chỉ dám tin khi CẢ BA khớp: hộp xác nhận đã đóng (giao dịch đã đi qua), bộ đếm
+ * khởi điểm đúng bằng tổng vừa đọc được, và điểm đến đúng bằng tổng + số mua.
+ * Lệch bất kỳ chỗ nào = một trong hai bên đọc sai, hoặc admin khác vừa đổi suất
+ * giữa chừng → caller quay về đường đọc lại tận nơi.
+ *
+ * Cả ba đều so BẰNG NHAU chứ không so "đủ lớn": chỉ cần tổng thật thấp hơn số
+ * suy ra là bước mời phía sau đâm vào hộp mua-kèm-mời. Xuất khẩu để test được —
+ * đây là đường thứ hai dính tới tiền.
+ */
+export function canDeriveTotalAfterPurchase(
+  purchaseData: Record<string, unknown>,
+  totalBefore: number,
+  shortfall: number,
+): boolean {
+  return (
+    purchaseData.charge_modal_dismissed === true &&
+    asInt(purchaseData.initial_seat) === totalBefore &&
+    asInt(purchaseData.target_seat) === totalBefore + shortfall
+  );
 }
 
 /**
@@ -308,15 +346,11 @@ export async function ensureSeatsForInvite(
   // chặn luôn cả bước mời phía sau.
   const initialSeat = asInt(purchaseData.initial_seat);
   const targetSeat = asInt(purchaseData.target_seat);
-
-  // Chỉ dám tin con số suy ra khi CẢ BA khớp: hộp xác nhận đã đóng (giao dịch đã
-  // đi qua), bộ đếm khởi điểm đúng bằng tổng vừa đọc được, và điểm đến đúng bằng
-  // tổng + số mua. Lệch bất kỳ chỗ nào = một trong hai bên đọc sai, hoặc admin
-  // khác vừa đổi suất giữa chừng → quay về đường đọc lại tận nơi.
-  const derived =
-    purchaseData.charge_modal_dismissed === true &&
-    initialSeat === before.total &&
-    targetSeat === before.total + shortfall;
+  const derived = canDeriveTotalAfterPurchase(
+    purchaseData,
+    before.total,
+    shortfall,
+  );
 
   if (derived) {
     // free mới = before.free + shortfall = need → đủ đúng số cần, khỏi so lại.
