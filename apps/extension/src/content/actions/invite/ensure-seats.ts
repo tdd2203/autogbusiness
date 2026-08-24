@@ -480,6 +480,25 @@ export async function ensureSeatsForInvite(
     // (xem `seatsToBuy`), nên chỗ trống mới ĐÚNG BẰNG `need` — kể cả ca workspace
     // đang âm chỗ. Khỏi phải đọc lại để so.
     const totalAfter = before.total + shortfall;
+
+    // Hộp mua đã đóng nhưng LỚP PHỦ còn nằm lại → mọi cú bấm của bước mời phía
+    // sau rơi vào lớp phủ chứ không tới nút thật. Tải lại trang cho sạch rồi mới
+    // mời (số suất thì đã biết chắc, không cần đọc lại).
+    if (purchaseData.charge_overlay_cleared === false) {
+      console.warn(
+        `${LOG} mua xong nhưng lớp phủ của hộp còn nằm lại → tải lại trang cho sạch trước khi mời`,
+      );
+      await reportProgress(
+        taskId,
+        {
+          phase: "seat-purchased",
+          message:
+            `Đã mua ${shortfall} suất (tiền đã trừ trên ChatGPT) — hộp còn lớp phủ, đang tải lại trang trước khi mời...`,
+        },
+        true,
+      );
+      await softReloadMembersPage();
+    }
     console.log(
       `${LOG} mua xong ${shortfall} suất (bộ đếm ${before.total} → ${totalAfter}), ` +
         `đã gán ${before.assigned} → đủ ${need} suất trống. Mời tiếp, KHÔNG mở lại hộp suất.`,
@@ -496,7 +515,7 @@ export async function ensureSeatsForInvite(
         seat_assigned_after: before.assigned,
         seat_free_after: totalAfter - before.assigned,
         seat_after_source: "purchase_counter",
-        seat_reloaded_once: false,
+        seat_reloaded_once: purchaseData.charge_overlay_cleared === false,
       },
     };
   }
@@ -511,6 +530,31 @@ export async function ensureSeatsForInvite(
       `hộp đóng=${purchaseData.charge_modal_dismissed === true}) → mở lại hộp đọc kiểm.`,
   );
   await sleep(SEAT_SETTLE_AFTER_PURCHASE_MS);
+
+  // Hộp thanh toán chưa đóng (hoặc lớp phủ còn đó) → trang đang bị chặn, mở hộp
+  // "Quản lý suất" để đọc kiểm chắc chắn trượt. Tải lại trang TRƯỚC cho sạch,
+  // thay vì đốt một lượt chờ 15s rồi mới tải.
+  // Đã tải lại trang chưa — dùng chung cho cả hai lý do (hộp kẹt / số cũ) để
+  // không bao giờ tải quá MỘT lần sau khi tiền đã trừ.
+  let reloadedOnce = false;
+  if (
+    purchaseData.charge_modal_dismissed !== true ||
+    purchaseData.charge_overlay_cleared === false
+  ) {
+    reloadedOnce = true;
+    console.warn(`${LOG} hộp mua chưa đóng sạch → tải lại trang trước khi đọc kiểm`);
+    await reportProgress(
+      taskId,
+      {
+        phase: "seat-purchased",
+        message:
+          `Đã bấm mua ${shortfall} suất nhưng hộp chưa đóng sạch — đang tải lại trang để đọc lại số suất...`,
+      },
+      true,
+    );
+    await softReloadMembersPage();
+  }
+
   let recheck = await checkSeatAvailability();
   let after =
     recheck.availability && recheck.modalClosed ? recheck.availability : null;
@@ -523,8 +567,7 @@ export async function ensureSeatsForInvite(
   const freeOf = (a: { total: number; assigned: number } | null): number | null =>
     a ? freeSeatsWithPendingDebt(a.total, a.assigned, pendingDebt) : null;
 
-  let reloadedOnce = false;
-  if ((freeOf(after) ?? -1) < need) {
+  if (!reloadedOnce && (freeOf(after) ?? -1) < need) {
     reloadedOnce = true;
     console.log(`${LOG} đọc lần 1 vẫn thiếu → tải lại trang rồi đọc lại`);
     // Ghi DẤU VẾT trước khi điều hướng: progress đi content → background →

@@ -56,8 +56,60 @@ export const REVIEW_READY_TIMEOUT_MS = 15_000;
  */
 export const SEAT_PREVIEW_TIMEOUT_MS = 3_000;
 
-/** Đợi modal xác nhận đóng (= ChatGPT đã nhận lệnh mua) sau khi bấm xác nhận. */
-export const CHARGE_DISMISS_TIMEOUT_MS = 10_000;
+/**
+ * Đợi hộp "Xem lại giao dịch mua" đóng hẳn (= ChatGPT đã xử lý xong lệnh mua)
+ * sau khi bấm "Xác nhận mua".
+ *
+ * Ca thật 24/8/2026 (lệnh mời wallet_tester): bấm "Xác nhận mua" xong ChatGPT
+ * quay vòng khá lâu — bản cũ chờ 10s là bỏ đi mời tiếp trong khi hộp CÒN ĐANG
+ * MỞ. Hộp mở là một lớp phủ chặn cả trang: cú mời ngay sau đó hỏng, user phải
+ * chạy lại lệnh thứ hai mới mời được.
+ *
+ * Chờ lâu KHÔNG tốn gì khi máy nhanh (hộp đóng là đi tiếp ngay), mà ngân sách
+ * thì có sẵn: runner cho INVITE_MEMBER và PURCHASE_SEAT 450s.
+ */
+export const CHARGE_DISMISS_TIMEOUT_MS = 120_000;
+
+/** Nhịp dò lại trạng thái hộp trong lúc chờ giao dịch. */
+export const CHARGE_DISMISS_POLL_MS = 500;
+
+/**
+ * Số lần đọc LIÊN TIẾP phải thấy hộp đã đóng mới tin là đóng thật. Radix có
+ * nhịp animation đóng/mở; đọc đúng một lần dễ bắt trúng khung hình chuyển tiếp.
+ */
+export const CHARGE_DISMISS_STABLE_POLLS = 3;
+
+/**
+ * Hộp đóng rồi vẫn phải đợi LỚP PHỦ (backdrop/overlay của Radix) rời DOM. Lớp
+ * phủ còn nằm đó thì mọi cú bấm phía sau rơi vào nó chứ không tới nút thật —
+ * đúng kiểu hỏng mà lệnh mời gặp phải.
+ */
+export const OVERLAY_CLEAR_TIMEOUT_MS = 20_000;
+
+/**
+ * Nghỉ sau khi giao dịch xong, TRƯỚC thao tác kế (mở dialog mời). Cho ChatGPT
+ * kịp cập nhật lại trang sau khi số suất đổi.
+ */
+export const POST_PURCHASE_SETTLE_MS = 5_000;
+
+/**
+ * Nghỉ sau khi hộp "Quản lý suất" vừa mở, trước khi đụng vào bộ đếm. Hộp mở ra
+ * trước, số thật điền vào sau một nhịp re-render.
+ */
+export const SEAT_MODAL_SETTLE_MS = 1_500;
+
+/**
+ * Nghỉ giữa hai cú bấm "+"/"−" trong hộp "Quản lý suất" (user 2026-08-24: "thao
+ * tác rất là nhanh, cần làm chậm lại, không cần vội"). Bản cũ bấm liên tục ngay
+ * khi số vừa nhích — React còn đang re-render thì cú kế dễ rơi vào node cũ.
+ */
+export const SEAT_STEP_GAP_MS = 700;
+
+/** Nghỉ trước khi bấm "Tiếp tục" (mở hộp thanh toán). */
+export const PRE_CONTINUE_PAUSE_MS = 1_500;
+
+/** Nghỉ trước khi bấm "Xác nhận mua" — ⚠️ cú bấm TRỪ TIỀN THẬT. */
+export const PRE_CONFIRM_PAUSE_MS = 2_500;
 
 /**
  * Đợi hai nguồn số suất (dòng tỉ lệ "150/151 đã gán" và bộ đếm "[−] 151 [+]")

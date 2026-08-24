@@ -41,11 +41,16 @@ import {
   MEMBERS_SEARCH,
   MODAL_OPEN_TIMEOUT_MS,
   POST_NAV_RENDER_MS,
+  POST_PURCHASE_SETTLE_MS,
+  PRE_CONFIRM_PAUSE_MS,
+  PRE_CONTINUE_PAUSE_MS,
   REVIEW_MONEY_GRACE_MS,
   REVIEW_READY_TIMEOUT_MS,
+  SEAT_MODAL_SETTLE_MS,
   SEAT_PREVIEW_TIMEOUT_MS,
   SEAT_RETRY_GAP_MS,
   SEAT_SETUP_MAX_ATTEMPTS,
+  SEAT_STEP_GAP_MS,
   SEAT_STEP_TIMEOUT_MS,
   seatAdjustMaxSteps,
 } from "./constants";
@@ -211,6 +216,10 @@ export async function executePurchaseSeat(
       };
     }
 
+    // Hộp vừa mở: cho nó đứng yên một nhịp rồi mới đọc/bấm. Không vội — số
+    // trong bộ đếm điền vào sau một lượt re-render, đọc sớm là đọc số cũ.
+    await sleep(SEAT_MODAL_SETTLE_MS);
+
     const initialSeat = stepper.read();
     if (initialSeat === null || initialSeat < 1) {
       return {
@@ -229,8 +238,14 @@ export async function executePurchaseSeat(
     // ── Bước 4: đưa bộ đếm về đúng targetSeat ─────────────────────────────
     //
     // KHÔNG đếm "bấm đủ qty lần" mà BÁM THEO CON SỐ: thiếu thì bấm "+", lỡ vượt
-    // thì bấm "−" kéo xuống, tới khi bộ đếm bằng đúng targetSeat. Bấm nhanh,
-    // không nghỉ — sai thì tự sửa ngay tại chỗ.
+    // thì bấm "−" kéo xuống, tới khi bộ đếm bằng đúng targetSeat. Sai thì tự sửa
+    // ngay tại chỗ.
+    //
+    // Nhịp bấm CÓ NGHỈ (user 2026-08-24: "thao tác rất nhanh, cần làm chậm lại,
+    // không cần vội"): số nhích lên rồi React vẫn còn re-render, bấm chồng lên
+    // lúc đó dễ trúng node đã rời DOM → cú bấm rơi vào khoảng không, hoặc ChatGPT
+    // nhận hai sự kiện cho một cú. Vài trăm ms mỗi suất đổi lấy một lượt bấm sạch
+    // là quá rẻ so với việc phải mở lại hộp.
     //
     // Vì sao hơn cách cũ: cú bấm nhân đôi (ChatGPT/React bắn 2 sự kiện) trước
     // đây làm hỏng cả lượt và phải mở lại hộp; giờ chỉ tốn thêm một cú "−".
@@ -295,7 +310,13 @@ export async function executePurchaseSeat(
             `${SEAT_STEP_TIMEOUT_MS / 1000}s — có thể đã đụng hạn mức của ChatGPT`,
         };
       }
+
+      // Số đã đổi, nhưng để hộp thở một nhịp rồi hẵng bấm tiếp.
+      if (current !== targetSeat) await sleep(SEAT_STEP_GAP_MS);
     }
+
+    // Bấm xong: chờ hộp cập nhật lại thẻ tóm tắt/nút trước khi đọc kiểm.
+    await sleep(SEAT_STEP_GAP_MS);
 
     const finalSeat = stepper.read();
     if (finalSeat !== targetSeat) {
@@ -368,6 +389,8 @@ export async function executePurchaseSeat(
       }
     }
 
+    // Nghỉ một nhịp trước cú bấm mở hộp thanh toán — không vội.
+    await sleep(PRE_CONTINUE_PAUSE_MS);
     await humanClick(continueBtn);
     return { kind: "continued", initialSeat, finalSeat };
   };
@@ -549,11 +572,31 @@ export async function executePurchaseSeat(
     }
   }
 
+  // Nghỉ một nhịp trước cú bấm TRỪ TIỀN. Nút vừa hết khoá xong mà bấm ngay thì
+  // có lúc React chưa gắn handler mới — cú bấm rơi vào khoảng không, hộp đứng im
+  // và ta không biết là chưa mua hay đang mua.
+  await sleep(PRE_CONFIRM_PAUSE_MS);
+
   await humanClick(confirmBtn);
 
-  // ── Bước 8: đợi hộp đóng = ChatGPT đã nhận lệnh mua ──────────────────────
+  // ── Bước 8: đợi hộp đóng HẲN = ChatGPT đã xử lý xong lệnh mua ────────────
+  //
+  // ⚠️ KHÔNG được đi tiếp khi hộp còn mở: hộp là lớp phủ chặn cả trang, thao tác
+  // ngay sau (mở dialog mời) sẽ bấm vào lớp phủ. Ca thật 24/8/2026 — lệnh mời
+  // wallet_tester hỏng đúng vì vậy, user phải chạy lệnh thứ hai mới mời được.
   await progress("confirm_charge", "Đang đợi ChatGPT xử lý giao dịch...", qty + 4);
-  const dismissed = await waitForChargeModalDismiss(reviewModal);
+  const charge = await waitForChargeModalDismiss(reviewModal, async (elapsed) => {
+    await progress(
+      "confirm_charge",
+      `Đã bấm 'Xác nhận mua', ChatGPT đang xử lý giao dịch (${Math.round(elapsed / 1000)}s)...`,
+      qty + 4,
+    );
+  });
+  const dismissed = charge.dismissed;
+
+  // Giao dịch xong → nghỉ thêm một nhịp cho trang cập nhật số suất mới trước khi
+  // caller (luồng mời) đụng vào trang.
+  if (dismissed) await sleep(POST_PURCHASE_SETTLE_MS);
 
   // KHÔNG còn Phase 3 (tab Hoá đơn) + Phase 4 (Stripe → Link) như bản cũ: UI mới
   // trừ tiền ngay tại đây. Giữ lại 2 phase đó còn TAI HẠI: sau khi đã trừ tiền,
@@ -569,6 +612,8 @@ export async function executePurchaseSeat(
       modal_advanced: true,
       confirm_charge_clicked: true,
       charge_modal_dismissed: dismissed,
+      charge_overlay_cleared: charge.overlayCleared,
+      charge_wait_ms: charge.waitedMs,
       setup_retries: retryReasons.length,
       ...auditFields(review),
       note: dismissed
@@ -576,8 +621,8 @@ export async function executePurchaseSeat(
           (monthly.deltaVnd !== null
             ? `; hoá đơn hằng tháng ${monthly.currentText} → ${monthly.newText} (+${monthly.deltaVnd.toLocaleString("vi-VN")} đ TRƯỚC thuế).`
             : ".")
-        : "Đã bấm 'Xác nhận mua' nhưng hộp chưa đóng sau khi chờ. Giao dịch CÓ THỂ đã đi qua — " +
-          "kiểm tra lại số suất trên ChatGPT trước khi tạo task mua mới.",
+        : `Đã bấm 'Xác nhận mua' nhưng hộp chưa đóng sau ${Math.round(charge.waitedMs / 1000)}s chờ. ` +
+          "Giao dịch CÓ THỂ đã đi qua — kiểm tra lại số suất trên ChatGPT trước khi tạo task mua mới.",
     },
   };
 }
