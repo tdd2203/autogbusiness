@@ -89,7 +89,11 @@ def test_toi_moc_ma_hom_nay_chua_sync_thi_tu_enqueue(
     tasks = _sync_tasks(ws["id"])
     assert len(tasks) == 1, [t.payload for t in tasks]
     assert tasks[0].status == "PENDING"
-    assert tasks[0].payload["sync_scope"] == "members"
+    # scope 'both' (user 2026-08-24): scope 'members' KHÔNG được phép dọn lời mời
+    # chết — reconcile chỉ dám xoá pending khi lượt sync có quét CẢ tab "Người
+    # dùng". Xem khối hằng số ĐỒNG BỘ ĐỊNH KỲ trong app/main.py.
+    assert tasks[0].payload["sync_scope"] == "both"
+    assert tasks[0].payload["include_pending"] is True
     assert tasks[0].payload["source"] == "scheduler"
     # created_by_id NULL: cooldown 5 tiếng của admin phụ lọc theo NGƯỜI TẠO nên
     # lệnh nền không được phép chiếm suất sync tay của họ.

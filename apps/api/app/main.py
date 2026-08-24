@@ -73,9 +73,25 @@ _expiry_timer: threading.Timer | None = None
 # việc admin có nhớ bấm hay không là bỏ ngỏ.
 #
 # Nên backend tự enqueue SYNC_DATA cho từng workspace:
-#  - scope 'members' (chỉ tab "Người dùng", ~1/3 thời gian so với 'both'): đủ để
-#    đối chiếu member active — đúng nơi xoá-giả lộ ra. Tab Lời mời/Yêu cầu vẫn
-#    dành cho sync tay khi cần.
+#  - scope 'both' (cả tab "Người dùng" LẪN "Lời mời đang chờ") — user chốt
+#    2026-08-24, thay scope 'members' của bản đầu.
+#
+#    Vì sao phải có tab Lời mời: một member rời tab Lời mời có HAI nguyên nhân
+#    không phân biệt được nếu chỉ nhìn một tab — đã nhận lời mời, hay lời mời bị
+#    thu hồi/hết hạn. Nên `reconcile` cố tình KHÔNG cho scope 'members' xoá
+#    pending (xem members/reconcile.py). Hệ quả của bản 'members': chiều "đã tham
+#    gia → active" tự lành mỗi ngày, còn chiều "lời mời chết → removed" thì KHÔNG
+#    BAO GIỜ tự lành — phải có người nhớ bấm sync tay. Thực đo 7 ngày (17–24/8):
+#    đúng 2 lượt 'both', cả hai đều do người bấm.
+#
+#    Giá phải trả, đo trên production: GPT1 (~150 dòng) 'members' 31–60s →
+#    'both' 35–148s; CHATGPT PRO (~60 dòng) 14–19s → 19–28s. Tức thêm 15–90 giây,
+#    MỘT LẦN MỘT NGÀY. Trần cứng `MAX_SYNC_MS` 5 phút và ngưỡng treo SYNC_DATA
+#    6 phút đều còn dư rộng.
+#
+#    Kéo theo: `invites_scanned` nay bật ở lượt sync TỰ ĐỘNG, nên đường tự mua bù
+#    suất (`_auto_buy_seats_for_pending`) chạy được mà không cần ai bấm — đó là
+#    chủ ý của user, không phải hệ quả ngoài ý muốn.
 #  - `created_by_id = NULL` ⇒ KHÔNG đụng cooldown 5 tiếng của admin phụ
 #    (`_last_full_sync_at` lọc theo người tạo — xem workspaces/triggers.py).
 #  - Guard "đã có SYNC_DATA đang mở thì thôi" ⇒ extension offline lâu ngày cũng
@@ -620,7 +636,7 @@ def _auto_sync_slot_at(workspace_id: object, day: date) -> datetime:
 
 def _enqueue_periodic_sync_once() -> None:
     """ĐỒNG BỘ ĐỊNH KỲ: mỗi workspace 1 LẦN/NGÀY, vào mốc ngẫu nhiên của ngày đó →
-    enqueue SYNC_DATA scope 'members' + publish SSE cho extension pick.
+    enqueue SYNC_DATA scope 'both' + publish SSE cho extension pick.
 
     Vì sao cần (xem khối hằng số trên): sync là nguồn đối chiếu DUY NHẤT giữa DB và
     ChatGPT — nó chỉ chạy khi có người bấm thì mọi lưới an toàn dựa trên sync
@@ -681,12 +697,13 @@ def _enqueue_periodic_sync_once() -> None:
                     type="SYNC_DATA",
                     status="PENDING",
                     workspace_id=workspace_id,
-                    # scope 'members': chỉ tab "Người dùng" — rẻ hơn 'both' ~3 lần,
-                    # đủ để đối chiếu member active. Giữ đúng khoá payload mà
+                    # scope 'both': quét CẢ tab "Người dùng" lẫn "Lời mời đang
+                    # chờ" — chỉ khi có cả hai thì reconcile mới dám dọn lời mời
+                    # chết (xem chú thích đầu file). Giữ đúng khoá payload mà
                     # extension đọc (xem workspaces/triggers.py::trigger_sync).
                     payload={
-                        "sync_scope": "members",
-                        "include_pending": False,
+                        "sync_scope": "both",
+                        "include_pending": True,
                         "source": "scheduler",
                     },
                     # NULL: job nền không có user → cooldown 5 tiếng của admin phụ
@@ -704,7 +721,7 @@ def _enqueue_periodic_sync_once() -> None:
                     target_id=str(workspace_id),
                     data={
                         "queue_item_id": str(queue_item.id),
-                        "sync_scope": "members",
+                        "sync_scope": "both",
                         "source": "scheduler",
                         "last_sync_at": last_at.isoformat() if last_at else None,
                         # Mốc ngẫu nhiên đã chọn cho ngày hôm nay — có trong nhật ký
