@@ -1373,6 +1373,7 @@ async function reportToBackend(
             seat_total?: number | null;
             seat_assigned?: number | null;
             seat_uncertain?: boolean;
+            invites_scanned?: boolean;
           }
         | undefined;
       const members = (data?.members ?? []) as Array<{
@@ -1408,6 +1409,11 @@ async function reportToBackend(
       // Lệch số lượng sau sync (do backend đối chiếu ở request reconcile cuối) —
       // đích danh email để dashboard cảnh báo admin. null = khớp.
       let syncMismatch: SyncMismatch | null = null;
+      // Backend TỪ CHỐI reconcile (nghi mẻ sync này thiếu dữ liệu) → member cũ
+      // được giữ nguyên, KHÔNG ai bị mark removed. Phải báo về trong result:
+      // backend dùng cờ này để KHÔNG tự mua bù suất theo số lời mời chờ trong DB
+      // — đúng ca reconcile bị từ chối là ca DB còn ôm lời mời đã chết.
+      let reconcileSkipped = false;
       try {
         // Bước 1: upsert từng chunk KHÔNG reconcile (isFullSync:false). Reconcile
         // per-chunk sẽ mark removed oan member của chunk khác (mỗi chunk chỉ thấy
@@ -1497,6 +1503,7 @@ async function reportToBackend(
                 `→ đã tạo task tra tab Người dùng (${result.joined_check_task_id ?? "dedupe"})`,
             );
           }
+          reconcileSkipped = result.reconcile_skipped === true;
           if (result.reconcile_skipped) {
             // Backend từ chối reconcile vì nghi sync thiếu → member đã upsert vẫn
             // được lưu, nhưng KHÔNG mark removed (dữ liệu cũ được giữ nguyên).
@@ -1545,9 +1552,12 @@ async function reportToBackend(
           seat_total: typeof data?.seat_total === "number" ? data.seat_total : null,
           seat_assigned:
             typeof data?.seat_assigned === "number" ? data.seat_assigned : null,
-          // Số suất đọc được có chắc chắn không (bộ đếm vs dòng tỉ lệ) — giữ trong
-          // result để tra khi con số trông lạ.
+          // Ba cờ chốt chặn cho việc backend TỰ MUA bù suất (tiền thật): số suất
+          // có chắc chắn không, mẻ này có quét tab "Lời mời đang chờ" không, và
+          // reconcile có bị từ chối không (bị từ chối = lời mời chết chưa dọn).
           seat_uncertain: data?.seat_uncertain === true,
+          invites_scanned: data?.invites_scanned === true,
+          reconcile_skipped: reconcileSkipped,
         },
       });
       return;

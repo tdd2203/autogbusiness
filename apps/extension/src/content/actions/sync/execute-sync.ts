@@ -251,8 +251,8 @@ export async function executeSync(
   // thì một mẻ sync đang thành công có thể bị đẩy quá `MAX_SYNC_MS`.
   let seatTotal: number | null = null;
   let seatAssigned: number | null = null;
-  // Hai chỗ trong hộp nói hai tổng khác nhau → số suất đọc được KHÔNG chắc. Ghi
-  // vào result để tra được về sau, và để không ai lỡ dùng số đó quyết định mua.
+  // Hai chỗ trong hộp nói hai tổng khác nhau. Backend dựa vào cờ này để KHÔNG tự
+  // mua bù theo số chưa chắc — mua theo số sai là mất tiền thật.
   let seatUncertain = false;
   if (scrapeActive) {
     try {
@@ -300,6 +300,11 @@ export async function executeSync(
       seat_total: seatTotal,
       seat_assigned: seatAssigned,
       seat_uncertain: seatUncertain,
+      // Mẻ này có QUÉT tab "Lời mời đang chờ" hay không. Backend chỉ dám tự mua
+      // bù suất cho lời mời đang treo khi cờ này TRUE: chưa quét tab đó thì số
+      // lời mời trong DB là số của lần sync trước, có thể đã chết (hết hạn / bị
+      // thu hồi) → mua theo nó là mua thừa bằng tiền thật.
+      invites_scanned: scrapeInvites && invitesTabFound,
     },
   };
 }

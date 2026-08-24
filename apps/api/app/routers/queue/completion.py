@@ -36,6 +36,7 @@ from app.models import (
 )
 from app.schemas import QueueOut, QueueUpdate
 from app.services import wallet_service
+from app.sse import publish_task_event
 
 from ._shared import router
 
@@ -497,6 +498,236 @@ def _absorb_seat_reading(workspace: Workspace, result: object) -> bool:
     return False
 
 
+# ── TỰ MUA BÙ SUẤT CHO LỜI MỜI ĐANG TREO (chốt user 2026-08-24) ─────────────
+# Lời mời đang chờ KHÔNG chiếm suất trên ChatGPT (hộp "Quản lý suất" chỉ đếm người
+# ĐÃ tham gia), nhưng sẽ chiếm ngay khi người ta bấm nhận. Ca thật CHATGPT PRO
+# 24/8/2026: 60/60 đã gán + 1 lời mời treo ⇒ đang NỢ 1 suất mà không chỗ nào báo.
+# Người đó bấm nhận thì ChatGPT vẫn phải cấp suất thứ 61 và vẫn tính tiền — mua
+# trước là trả sớm khoản đằng nào cũng tới, đổi lại tránh được hộp "Mua suất người
+# dùng và gửi lời mời" do ChatGPT tự quyết số tiền.
+#
+# Đây là đường DUY NHẤT hệ thống tự tiêu tiền thật mà không có người bấm — sau khi
+# sync định kỳ đổi sang quét cả hai tab, nó chạy cả lúc không ai ngồi trước máy.
+# User biết điều đó và vẫn chọn như vậy. Rào chắn phải dày hơn mọi đường khác:
+# xem `_auto_buy_seats_for_pending`.
+
+# Trần mỗi lần tự mua. Thiếu nhiều hơn số này là bất thường (sync hỏng, hoặc admin
+# vừa mời cả mẻ lớn) → chỉ ghi nhật ký cảnh báo, để người thật nhìn trước.
+AUTO_SEAT_BUY_MAX = 5
+
+# Khoảng cách tối thiểu giữa 2 lần MUA SUẤT của cùng workspace (mọi nguồn, kể cả
+# admin bấm tay). Chặn vòng lặp mua: ChatGPT cập nhật số suất chậm một nhịp thì mẻ
+# sync kế tiếp vẫn thấy thiếu và mua lần nữa.
+AUTO_SEAT_BUY_COOLDOWN = timedelta(hours=6)
+
+# Lời mời treo LÂU HƠN mốc này KHÔNG được kéo hệ thống đi mua suất.
+#
+# "Còn trong tab Lời mời" chỉ chứng minh lời mời CÒN ĐÓ, không chứng minh nó SẼ
+# ĐƯỢC NHẬN — GPT1 có `lucrativoa2@gmail.com` treo 11 ngày, hạn thuê bao còn 3
+# ngày, vẫn nằm nguyên trong tab. Mua suất cho lời mời đã nguội là trả phí THÁNG
+# LẶP LẠI cho một chỗ ngồi nhiều khả năng bỏ trống.
+#
+# ⚠️ CHỈ áp cho đường TỰ MUA. Đường mời (`_seat_hint.pending`) vẫn đếm ĐỦ MỌI lời
+# mời chờ: ở đó đếm thừa cùng lắm là mở hộp đếm tận nơi, còn đếm thiếu là mời mù
+# vào chỗ không có → ChatGPT bật hộp "Mua suất người dùng và gửi lời mời" với số
+# tiền do nó tự quyết. Hai đường chịu rủi ro ngược nhau nên rào khác nhau.
+AUTO_SEAT_PENDING_MAX_AGE = timedelta(days=7)
+
+
+def _pending_worth_a_seat(
+    db: Session, workspace: Workspace
+) -> tuple[list[str], list[str]]:
+    """Chia lời mời đang chờ thành (ĐÁNG mua suất, KHÔNG đáng) — xem
+    `AUTO_SEAT_PENDING_MAX_AGE`.
+
+    Không đáng khi:
+      - mời đã quá `AUTO_SEAT_PENDING_MAX_AGE` mà vẫn chưa ai nhận. Mốc tính theo
+        lần mời GẦN NHẤT: `max(created_at, last_invited_at)` — admin bấm "Mời lại"
+        là lời mời tươi lại, dù member được tạo từ lâu.
+      - hạn thuê bao đã qua: có nhận cũng không còn gì để dùng.
+    """
+    rows = db.execute(
+        select(
+            Member.email,
+            Member.created_at,
+            Member.last_invited_at,
+            Member.subscription_end_at,
+        ).where(Member.workspace_id == workspace.id, Member.status == "pending")
+    ).all()
+    now = datetime.now(timezone.utc)
+    worth: list[str] = []
+    stale: list[str] = []
+    for email, created_at, last_invited_at, subscription_end_at in rows:
+        invited_at = max(
+            [d for d in (created_at, last_invited_at) if d is not None],
+            default=None,
+        )
+        too_old = invited_at is None or (now - invited_at) > AUTO_SEAT_PENDING_MAX_AGE
+        expired = subscription_end_at is not None and subscription_end_at <= now
+        (stale if (too_old or expired) else worth).append(email)
+    return worth, stale
+
+
+def _auto_buy_seats_for_pending(
+    db: Session, workspace: Workspace, item: QueueItem, result: object
+) -> UUID | None:
+    """Thiếu suất cho lời mời đang treo → tự tạo task PURCHASE_SEAT mua bù.
+
+    Công thức: `thiếu = đã_gán + lời_mời_đang_chờ − tổng_suất`.
+      - `đã_gán`, `tổng_suất`: extension vừa đọc TẬN NƠI ở hộp "Quản lý suất".
+      - `lời_mời_đang_chờ`: đếm trong DB, nhưng CHỈ tin khi mẻ sync này vừa quét
+        tab "Lời mời đang chờ" (`invites_scanned`) VÀ reconcile đã thật sự chạy
+        (`reconcile_skipped` không bật) — chỉ khi đó lời mời chết mới vừa được
+        dọn xong, số đếm được mới là số CÒN SỐNG THẬT.
+
+    Sáu rào chắn (bỏ bất kỳ cái nào là mở đường tiêu tiền sai):
+      1. CHỈ chạy sau SYNC_DATA có quét tab Lời mời VÀ reconcile không bị từ chối.
+      2. Số suất phải CHẮC CHẮN — `seat_uncertain` (bộ đếm ≠ dòng tỉ lệ) thì dừng.
+      3. Lời mời treo quá lâu / hết hạn thuê bao KHÔNG được tính (xem
+         `_pending_worth_a_seat`).
+      4. Trần `AUTO_SEAT_BUY_MAX` suất/lần.
+      5. Đang có PURCHASE_SEAT chờ/chạy → không tạo thêm (khoá hàng workspace
+         FOR UPDATE trước khi check-then-insert, y như `trigger_purchase_seat`).
+      6. Cách lần mua suất gần nhất < `AUTO_SEAT_BUY_COOLDOWN` → không mua.
+
+    Trả về id task vừa tạo (caller publish SSE SAU commit), hoặc None.
+    """
+    if item.type != "SYNC_DATA" or not isinstance(result, dict):
+        return None
+    if result.get("invites_scanned") is not True:
+        return None
+    # Backend vừa TỪ CHỐI reconcile (nghi mẻ sync thiếu dữ liệu, xem reconcile.py)
+    # ⇒ lời mời chờ trong DB CHƯA được dọn theo mẻ này. Quét được tab chỉ chứng
+    # minh "đã nhìn", không chứng minh "đã đối chiếu xong" — mà đúng ca bị từ chối
+    # lại là ca DB còn ôm lời mời đã chết. Tiêu tiền theo số đó là mua thừa.
+    if result.get("reconcile_skipped") is True:
+        return None
+    total = result.get("seat_total")
+    assigned = result.get("seat_assigned")
+    if not isinstance(total, int) or not isinstance(assigned, int) or total <= 0:
+        return None
+
+    pending_emails, stale_emails = _pending_worth_a_seat(db, workspace)
+    pending = len(pending_emails)
+    shortfall = assigned + pending - total
+    if shortfall <= 0:
+        return None
+
+    def _skip(reason: str, extra: dict | None = None) -> None:
+        """Ghi nhật ký ca THIẾU SUẤT mà không mua — để admin biết mà xử tay."""
+        log_event(
+            db,
+            actor_type="SYSTEM",
+            actor_label="auto-seat",
+            action="AUTO_PURCHASE_SEAT_SKIPPED",
+            result="FAILED",
+            target_type="WORKSPACE",
+            target_id=str(workspace.id),
+            data={
+                "reason": reason,
+                "shortfall": shortfall,
+                "seat_total": total,
+                "seat_assigned": assigned,
+                "pending": pending,
+                "pending_emails": pending_emails,
+                "pending_stale_ignored": stale_emails,
+                **(extra or {}),
+            },
+            commit=False,
+        )
+
+    # (2) Số mơ hồ thì tuyệt đối không mua — tiền đã trừ không đòi lại được.
+    if result.get("seat_uncertain") is True:
+        _skip("seat_uncertain")
+        return None
+
+    # (4) Thiếu quá nhiều: dừng cho người thật nhìn.
+    if shortfall > AUTO_SEAT_BUY_MAX:
+        _skip("over_auto_cap", {"cap": AUTO_SEAT_BUY_MAX})
+        return None
+
+    # (5) Khoá hàng workspace rồi mới check-then-insert.
+    db.execute(select(Workspace.id).where(Workspace.id == workspace.id).with_for_update())
+    running = (
+        db.execute(
+            select(QueueItem.id).where(
+                QueueItem.workspace_id == workspace.id,
+                QueueItem.type == "PURCHASE_SEAT",
+                QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if running:
+        _skip("purchase_in_flight", {"queue_item_id": str(running)})
+        return None
+
+    # (6) Cách lần mua trước quá gần → chờ. Tính theo MỌI task mua suất (kể cả
+    # admin bấm tay): ChatGPT cộng suất chậm một nhịp thì mẻ sync kế tiếp vẫn đọc
+    # ra số cũ và sẽ mua chồng lần nữa.
+    since = datetime.now(timezone.utc) - AUTO_SEAT_BUY_COOLDOWN
+    recent = (
+        db.execute(
+            select(QueueItem.id).where(
+                QueueItem.workspace_id == workspace.id,
+                QueueItem.type == "PURCHASE_SEAT",
+                QueueItem.created_at >= since,
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if recent:
+        _skip(
+            "cooldown",
+            {
+                "queue_item_id": str(recent),
+                "hours": AUTO_SEAT_BUY_COOLDOWN.total_seconds() / 3600,
+            },
+        )
+        return None
+
+    purchase = QueueItem(
+        type="PURCHASE_SEAT",
+        status="PENDING",
+        workspace_id=workspace.id,
+        payload={"quantity": shortfall, "reason": "auto_pending_seat"},
+        # Không có người bấm — task này do hệ thống sinh ra.
+        created_by_id=None,
+    )
+    db.add(purchase)
+    db.flush()
+    log_event(
+        db,
+        actor_type="SYSTEM",
+        actor_label="auto-seat",
+        action="AUTO_PURCHASE_SEAT_QUEUED",
+        result="PENDING",
+        target_type="WORKSPACE",
+        target_id=str(workspace.id),
+        data={
+            "queue_item_id": str(purchase.id),
+            "quantity": shortfall,
+            "seat_total": total,
+            "seat_assigned": assigned,
+            "pending": pending,
+            # Đích danh email kéo việc mua này — để admin đối chiếu khi thấy giao
+            # dịch lạ, và thấy luôn lời mời nào đã bị loại vì quá cũ / hết hạn.
+            "pending_emails": pending_emails,
+            "pending_stale_ignored": stale_emails,
+            "sync_item_id": str(item.id),
+            "note": (
+                f"{assigned} người đang dùng + {pending} lời mời đang chờ = "
+                f"{assigned + pending} suất sẽ bị chiếm, workspace mới có {total} "
+                f"→ tự mua bù {shortfall} suất."
+            ),
+        },
+        commit=False,
+    )
+    return purchase.id
+
+
 @router.patch("/{item_id}", response_model=QueueOut)
 def update_task(
     item_id: UUID,
@@ -563,6 +794,14 @@ def update_task(
     # ở bước sau vẫn có thể đã đếm suất xong. Xem `_absorb_seat_reading`.
     if _absorb_seat_reading(workspace, body.result):
         db.add(workspace)
+
+    # Thiếu suất cho lời mời đang treo → tự mua bù (xem `_auto_buy_seats_for_pending`).
+    # Chỉ xét khi task ĐI TỚI ĐÍCH: task hỏng giữa chừng thì số nó mang về không
+    # đủ tin để tiêu tiền. SSE bắn SAU commit — task chưa nằm trong DB mà đã báo
+    # "có việc" thì extension quay lại hỏi sẽ không thấy gì.
+    auto_purchase_id: UUID | None = None
+    if body.status == "COMPLETED":
+        auto_purchase_id = _auto_buy_seats_for_pending(db, workspace, item, body.result)
 
     reconcile_note: str | None = None
     effective_status = body.status
@@ -1287,4 +1526,13 @@ def update_task(
     )
     db.commit()
     db.refresh(item)
+    if auto_purchase_id is not None:
+        publish_task_event(
+            workspace.id,
+            {
+                "type": "task-available",
+                "task_id": str(auto_purchase_id),
+                "task_type": "PURCHASE_SEAT",
+            },
+        )
     return item
