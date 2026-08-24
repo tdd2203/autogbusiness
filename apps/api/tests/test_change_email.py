@@ -8,13 +8,21 @@ Xác minh:
     REMOVE_MEMBER (extension thu hồi ở tab Lời mời, fallback xoá nếu đã tham gia).
   - Member mới (email mới) status=pending, subscription_end_at == hạn cũ (copy y nguyên);
     last_invited_at kế thừa từ email gốc (thời gian mời/tham gia giữ nguyên).
-  - Member cũ → status=removed ngay trong DB.
+  - Member cũ → status=removed ngay trong DB, và HẠN ĐÓNG NGAY (hạn đã theo email mới
+    đi ⇒ dòng cũ không được giữ bản sao mốc hết hạn — nếu giữ thì mời lại email cũ
+    được coi là "còn hạn → miễn phí", xem test_change_email_closes_old_member_window).
   - new_email trùng email cũ → 400.
   - new_email đã là member active khác → 409.
   - Đổi email của member đã removed → 409.
 """
 
+import uuid
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
+
+from app.db import SessionLocal
+from app.models import Member
 
 
 def _create_workspace(client: TestClient, auth_header: dict) -> dict:
@@ -80,6 +88,41 @@ def _change_email(
         json={"new_email": new_email},
         headers=headers,
     )
+
+
+def test_change_email_closes_old_member_window(
+    client: TestClient, auth_header: dict
+):
+    """Email CŨ phải MẤT hạn ngay khi đổi — hạn đã theo email mới đi.
+
+    Không đóng thì `_is_paid_period_active` vẫn thấy "còn hạn" trên dòng cũ ⇒ mời lại
+    chính email đó được MIỄN PHÍ và giữ nguyên cửa sổ, trong khi email mới đang tiêu
+    đúng kỳ đã trả đó — một suất đã trả thành hai người dùng (sửa 24/8/2026).
+    """
+    ws = _create_workspace(client, auth_header)
+    _upsert_active(client, ws, ["holder@example.com"])
+    old = _members(client, ws["id"], auth_header)["holder@example.com"]
+    old_end = _set_subscription(client, ws["id"], old["id"], 3, auth_header)
+    assert old_end is not None
+
+    resp = _change_email(client, ws["id"], old["id"], "receiver@example.com", auth_header)
+    assert resp.status_code == 201, resp.text
+
+    with SessionLocal() as db:
+        source = db.get(Member, uuid.UUID(old["id"]))
+        target = db.get(Member, uuid.UUID(resp.json()["id"]))
+        # Email mới giữ NGUYÊN hạn cũ (đây là chuyển chỗ, không phải kỳ mới)...
+        # So sánh theo THỜI ĐIỂM, không theo chuỗi: API trả "…Z" còn isoformat() của
+        # Python cho "…+00:00" — cùng một mốc, khác cách viết.
+        assert target.subscription_end_at is not None
+        assert target.subscription_end_at == datetime.fromisoformat(
+            old_end.replace("Z", "+00:00")
+        )
+        # ...còn email cũ hết hạn NGAY, và KHÔNG được là None ("vô thời hạn").
+        assert source.subscription_end_at is not None
+        assert source.subscription_end_at <= datetime.now(timezone.utc)
+        assert source.removed_at is not None
+        assert source.subscription_end_at == source.removed_at
 
 
 def test_change_email_carries_expiry_and_enqueues_two_tasks(

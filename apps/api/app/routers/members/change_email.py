@@ -156,9 +156,23 @@ def change_member_email(
     db.flush()
 
     # Email cũ → removed ngay trong DB (extension sẽ thực thi xoá trên ChatGPT).
+    now = datetime.now(timezone.utc)
     old.status = "removed"
-    old.removed_at = datetime.now(timezone.utc)
+    old.removed_at = now
     old.removed_reason = REMOVED_REASON_EMAIL_CHANGED
+    # HẠN ĐÃ THEO EMAIL MỚI ĐI ⇒ đóng hạn dòng cũ NGAY (đặt = now), giống hệt
+    # transfer_subscription làm với email cho. Trước 24/8/2026 dòng cũ giữ nguyên
+    # `subscription_end_at` tương lai (bản sao của hạn vừa chuyển) và sinh ra hai
+    # cái sai cùng lúc:
+    #   - hiển thị: email đã xoá vẫn khoe "còn hạn 27 ngày" (user hỏi 24/8);
+    #   - TIỀN: `_is_paid_period_active` chỉ đọc mốc này ⇒ mời lại CHÍNH email cũ
+    #     được coi là "còn hạn → MIỄN PHÍ", trong khi email mới vẫn đang tiêu đúng
+    #     kỳ đã trả đó. Một suất đã trả thành hai người dùng, mà ghế trên ChatGPT
+    #     thì vẫn tính tiền cả hai. `find_movable_paid_members` cũng sẽ chuyển
+    #     miễn phí "hạn ma" này sang workspace khác.
+    # TUYỆT ĐỐI không đặt None: None = "vô thời hạn", không phải "hết hạn"
+    # (EXPIRY_RULES §5 — đã có ca mất tiền vì đúng chỗ này).
+    old.subscription_end_at = now
 
     # Tạo/cập nhật member email mới với hạn dùng cũ. Giữ chủ sở hữu (invited_by)
     # của member cũ — đây là thay thế, không phải lời mời mới của admin thao tác.
