@@ -273,7 +273,7 @@ def test_het_thoi_gian_cho_thi_duoc_mua_tiep(client: TestClient, auth_header: di
 def test_loi_moi_treo_qua_lau_khong_keo_di_mua_suat(
     client: TestClient, auth_header: dict
 ):
-    """Ca thật GPT1 `lucrativoa2@gmail.com`: treo 11 ngày chưa ai nhận.
+    """Ca thật GPT1 `lucrativoa2`: treo 11 ngày chưa ai nhận.
 
     "Còn trong tab Lời mời" ≠ "sẽ được nhận". Mua suất cho lời mời đã nguội là trả
     phí THÁNG lặp lại cho một chỗ ngồi nhiều khả năng bỏ trống.
@@ -286,7 +286,7 @@ def test_loi_moi_treo_qua_lau_khong_keo_di_mua_suat(
 
 
 def test_loi_moi_moi_gui_van_duoc_mua_bu(client: TestClient, auth_header: dict):
-    """Ca thật CHATGPT PRO `lampesdafret22@gmail.com`: mời 2 ngày trước, hạn thuê
+    """Ca thật CHATGPT PRO `lampesdafret22`: mời 2 ngày trước, hạn thuê
     bao còn xa ⇒ vẫn mua bù như thường. Rào chống lời mời cũ không được chặn oan."""
     ws = _ws_with_pending(client, auth_header, "Auto Buy Fresh WS")
     _age_pending(ws["id"], days=2)

@@ -523,7 +523,7 @@ AUTO_SEAT_BUY_COOLDOWN = timedelta(hours=6)
 # Lời mời treo LÂU HƠN mốc này KHÔNG được kéo hệ thống đi mua suất.
 #
 # "Còn trong tab Lời mời" chỉ chứng minh lời mời CÒN ĐÓ, không chứng minh nó SẼ
-# ĐƯỢC NHẬN — GPT1 có `lucrativoa2@gmail.com` treo 11 ngày, hạn thuê bao còn 3
+# ĐƯỢC NHẬN — GPT1 có `lucrativoa2` treo 11 ngày, hạn thuê bao còn 3
 # ngày, vẫn nằm nguyên trong tab. Mua suất cho lời mời đã nguội là trả phí THÁNG
 # LẶP LẠI cho một chỗ ngồi nhiều khả năng bỏ trống.
 #
