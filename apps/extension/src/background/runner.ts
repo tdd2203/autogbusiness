@@ -822,6 +822,49 @@ async function sendToContent(
 }
 
 /**
+ * Tắt toggle "mời ngoài tên miền" bằng một LỆNH RIÊNG sau khi lần mời đã trả kết
+ * quả. Best-effort tuyệt đối: mọi lỗi chỉ log — task mời đã có kết luận, không
+ * được để bước dọn dẹp này lật ngược nó.
+ *
+ * Trang có thể bị đóng băng (bfcache) trong lúc điều hướng sang /admin/identity —
+ * đó chính là lý do bước này KHÔNG còn nằm trong lần mời. Ở đây kênh đứt chỉ có
+ * nghĩa "không xác nhận được đã tắt", và người dùng còn thấy cảnh báo trong log.
+ */
+async function restoreExternalInvites(
+  tabId: number,
+  taskId: string,
+): Promise<void> {
+  try {
+    const resp = await withTimeout(
+      sendToContent(tabId, {
+        kind: "SET_EXTERNAL_INVITES",
+        taskId,
+        enabled: false,
+      }),
+      60_000,
+      "content-SET_EXTERNAL_INVITES",
+    );
+    const confirmed =
+      resp.ok && (resp.data as { confirmed?: boolean } | undefined)?.confirmed;
+    if (confirmed) {
+      console.log("[autogpt-runner] đã tắt lại toggle 'mời ngoài tên miền'");
+    } else {
+      console.warn(
+        "[autogpt-runner] KHÔNG xác nhận được toggle 'mời ngoài tên miền' đã tắt — " +
+          "kiểm tra trên ChatGPT /admin/identity và tắt tay nếu cần. " +
+          (resp.ok ? "" : `Lỗi: ${resp.error_code} ${resp.error_message}`),
+      );
+    }
+  } catch (e) {
+    console.warn(
+      `[autogpt-runner] lệnh tắt toggle 'mời ngoài tên miền' lỗi (bỏ qua): ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+    );
+  }
+}
+
+/**
  * Báo progress lifecycle từ background (trước cả khi content script chạy).
  * Dùng cho task long-op (HARVEST_LABELS, SYNC_DATA) để dashboard không bị
  * "đứng yên" trong 5-30s mở tab + inject content script + rate-limit.
@@ -2333,6 +2376,19 @@ async function runOnceOnSlot(
           ` Lỗi gốc: ${msg}`,
       };
     }
+    // ─── TẮT LẠI TOGGLE (spec bảo mật) — LÀM Ở ĐÂY, KHÔNG PHẢI TRONG LẦN MỜI ──
+    // Bước tắt phải điều hướng sang /admin/identity. Trước đây content tự làm
+    // trong `finally` của chính lần mời, nên trang đang giữ kênh message bị Chrome
+    // đẩy vào back/forward cache và kết quả mời KHÔNG về được background → task
+    // báo hỏng dù lời mời ĐÃ đi → backend hoàn phí + xoá bản ghi (ca 2a5d6450
+    // ngày 31/7/2026: hoàn 340.000đ oan, hôm sau phải thu lại tay).
+    //
+    // Giờ `response` đã nằm trong tay, mọi thứ sau đây là DỌN DẸP: mất kênh ở
+    // bước tắt cũng không đổi được kết luận của task. Chạy KHÔNG ĐIỀU KIỆN cho
+    // nhánh external (không phụ thuộc cờ `needs_external_restore`): mời hỏng thì
+    // toggle vẫn ON, càng phải tắt; content bản cũ tự tắt rồi thì lệnh này thấy
+    // OFF sẵn và bỏ qua.
+    await restoreExternalInvites(tab.id, task.id);
   }
 
   // ─── PHASE 2 INVITE: F5 + VERIFY ──────────────────────────────────────────

@@ -8,6 +8,7 @@ import {
   executeVerifyPendingInvite,
   executeCheckActiveAfterInvite,
 } from "./actions/invite";
+import { executeSetExternalInvites } from "./actions/external-invites/execute-set-toggle";
 import { executeRemove } from "./actions/remove";
 import { executeMemberData } from "./actions/member-data";
 import { executeSyncMember, executeSyncMembersBatch } from "./actions/sync-member";
@@ -21,6 +22,19 @@ import { executeHarvestLabels } from "./actions/harvest-labels";
 import { executePurchaseSeat } from "./actions/purchase-seat";
 
 console.log("[autogpt-content] injected vào", location.href);
+
+/**
+ * ID của LẦN NẠP NÀY của content script, trả kèm mọi `PING`.
+ *
+ * Runner dùng nó để biết message tiếp theo sẽ tới trang MỚI hay trang cũ đang bị
+ * Chrome đóng băng trong back/forward cache — trang trong bfcache vẫn trả lời
+ * PING bằng `loadId` CŨ, gửi lệnh vào đó là mất kênh giữa chừng (4 ca thật, xem
+ * `background/content-ready.ts`). Sinh mới mỗi lần script khởi tạo: mỗi lần nạp
+ * trang là một instance khác, và inject lại bằng `executeScript` cũng vậy.
+ */
+const CONTENT_LOAD_ID =
+  globalThis.crypto?.randomUUID?.() ??
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
 // Lưu ý: KHÔNG hiện toast kết quả trên trang chatgpt.com nữa. Thông báo kết quả
 // lệnh chỉ hiển thị ở web app (dashboard) để người thực thi theo dõi — tránh
@@ -82,7 +96,7 @@ async function dispatch(
 ): Promise<ExecuteActionResponse> {
   switch (msg.kind) {
     case "PING":
-      return { ok: true, data: { url: location.href } };
+      return { ok: true, data: { url: location.href, loadId: CONTENT_LOAD_ID } };
     case "INVITE_MEMBER":
       return executeInvite(
         msg.taskId,
@@ -94,6 +108,8 @@ async function dispatch(
         msg.newSeatCount,
         msg.seatHint,
       );
+    case "SET_EXTERNAL_INVITES":
+      return executeSetExternalInvites(msg.enabled);
     case "VERIFY_PENDING_INVITE":
       return executeVerifyPendingInvite(msg.taskId, msg.emails, msg.role);
     case "CHECK_ACTIVE_AFTER_INVITE":

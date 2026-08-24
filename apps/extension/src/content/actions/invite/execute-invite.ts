@@ -250,6 +250,11 @@ export async function executeInvite(
   const needExternal = !allEmailsInVerifiedDomain(emails, verifiedDomain);
 
   let inviteResult: ExecuteActionResponse;
+  /**
+   * Đã bật toggle "mời ngoài tên miền" ⇒ background PHẢI tắt lại sau khi nhận
+   * kết quả (`needs_external_restore` trong `data`). Xem chú thích ở Phase A'.
+   */
+  let externalRestorePending = false;
   if (!needExternal) {
     console.log(
       `[autogpt-invite] mọi email thuộc domain xác minh "${verifiedDomain}" → BỎ QUA toggle external invites`,
@@ -312,26 +317,30 @@ export async function executeInvite(
     console.log(
       "[autogpt-invite] PHASE A': trang đã hard-reload với external=ON → mở dialog mời.",
     );
+    // ⚠️ KHÔNG tắt toggle ở đây nữa (sửa 24/8/2026 — ca 2a5d6450 ngày 31/7 mất
+    // 340.000đ). Bước tắt phải điều hướng sang /admin/identity, mà điều hướng
+    // NGAY TRONG lần mời này thì trang đang giữ kênh message bị Chrome đẩy vào
+    // back/forward cache → kết quả mời KHÔNG về được background → task báo hỏng
+    // dù lời mời đã tới hộp thư người nhận → backend hoàn phí + xoá bản ghi.
+    // Nay `needs_external_restore` báo cho background tự gọi lệnh
+    // SET_EXTERNAL_INVITES sau khi đã nhận kết quả. Xem `execute-set-toggle.ts`.
+    //
+    // Bọc try/catch (thay cho try/finally cũ): lỗi văng ra vẫn phải trả về một
+    // response CÓ CỜ, kẻo toggle nằm ON mà không ai biết mà tắt.
     try {
       await navigateTo(MEMBERS_PATH, membersPageReady, 10_000);
       inviteResult = await executeInviteInner(taskId, emails, role);
-    } finally {
-      // Spec bảo mật: LUÔN tắt toggle về OFF sau invite (kể cả invite throw) +
-      // về /admin/members cho task kế tiếp.
-      try {
-        await setExternalInvites(false);
-      } catch (e) {
-        console.warn(
-          "[autogpt-invite] force OFF toggle external invites FAILED — tắt thủ công nếu cần.",
-          e,
-        );
-      }
-      try {
-        await navigateTo(MEMBERS_PATH, membersPageReady, 10_000);
-      } catch (e) {
-        console.warn("[autogpt-invite] navigate về /admin/members fail", e);
-      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[autogpt-invite] Phase A' văng lỗi: ${msg}`);
+      inviteResult = {
+        ok: false,
+        error_code: "UNKNOWN",
+        error_message: `Lỗi khi mời (Phase A'): ${msg}`,
+        data: { needs_external_restore: true },
+      };
     }
+    externalRestorePending = true;
   }
 
   // Bước 4: chuyển tab "Lời mời" + QUÉT NGAY, SAU khi toggle đã tắt + đã ở
@@ -383,6 +392,15 @@ export async function executeInvite(
   if (Object.keys(seatData).length > 0) {
     const withData = inviteResult as { data?: Record<string, unknown> };
     withData.data = { ...(withData.data ?? {}), ...seatData };
+  }
+
+  // Cờ dọn-dẹp: gắn cho CẢ ca hỏng — mời hỏng thì toggle vẫn đang ON, càng phải
+  // tắt. Background đọc cờ này ở `runner.ts` (nhánh external) rồi gọi
+  // SET_EXTERNAL_INVITES. Background bản mới thực ra luôn tắt sau nhánh external
+  // dù có cờ hay không; cờ để log/chẩn đoán và cho bản background cũ hơn.
+  if (externalRestorePending) {
+    const withData = inviteResult as { data?: Record<string, unknown> };
+    withData.data = { ...(withData.data ?? {}), needs_external_restore: true };
   }
 
   return inviteResult;

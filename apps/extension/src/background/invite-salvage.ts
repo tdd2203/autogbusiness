@@ -30,9 +30,31 @@ export type InviteFailureLike = {
   data?: Record<string, unknown>;
 };
 
-/** Lỗi hạ tầng nuốt mất kết quả: kênh message chết giữa lúc content đang chạy. */
+/**
+ * Lỗi hạ tầng nuốt mất kết quả: kênh message chết giữa lúc content đang chạy.
+ *
+ * ⚠️ KHỚP THEO CHUỖI CỦA CHROME nên phải bám đúng từng chữ. Ba biến thể đã gặp
+ * thật (chép nguyên văn từ `queue_items.error_message` trên production):
+ *
+ *   "The message port closed before a response was received."
+ *   "A listener indicated an asynchronous response by returning true, but the
+ *    message channel closed before a response was received"
+ *   "The page keeping the extension port is moved into back/forward cache, so
+ *    the message channel is closed."          ← 24/8/2026, task e5c67d9e
+ *
+ * Biến thể thứ ba là bfcache: content script đang chạy thì trang giữ port bị
+ * Chrome đóng băng (điều hướng qua `/admin/identity` để bật toggle "mời ngoài
+ * tên miền" — đúng đường mà mọi email NGOÀI miền phải đi). Nó ghi "message
+ * channel **is** closed", chen một chữ `is` mà bản trước không lường: regex
+ * trượt → salvage không chạy → task báo FAILED thẳng → backend hoàn phí + xoá
+ * bản ghi. Hôm đó lời mời chưa kịp đi nên không mất tiền, nhưng cùng lỗi ấy xảy
+ * ra SAU cú bấm Gửi thì mất đúng như CA 1 ngày 12/8.
+ *
+ * Nên `channel (is )?closed` và bắt thẳng cả cụm `back/forward cache` — kênh chết
+ * vì trang bị đóng băng thì kết quả vô định bất kể Chrome diễn đạt thế nào.
+ */
 const INDETERMINATE_CHANNEL_RE =
-  /message channel closed|message port closed|asynchronous response/i;
+  /message channel (?:is )?closed|message port closed|asynchronous response|back\/forward cache/i;
 
 /**
  * `true` ⇒ ĐỪNG kết luận hỏng: chạy vòng verify (F5 + VERIFY_PENDING_INVITE +

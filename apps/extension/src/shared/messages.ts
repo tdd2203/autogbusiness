@@ -52,6 +52,16 @@ export type ExecuteActionRequest =
        */
       seatHint?: { total: number | null; occupied: number };
     }
+  /**
+   * Bật/tắt toggle "Cho phép lời mời ngoài tên miền" như một LỆNH RIÊNG.
+   *
+   * Background gọi lệnh này để TẮT toggle SAU KHI đã nhận kết quả mời — trước
+   * đây content tự tắt trong `finally` của chính lần mời, mà bước tắt phải điều
+   * hướng sang /admin/identity nên trang giữ kênh bị đẩy vào back/forward cache
+   * → kết quả mời không về được → task báo hỏng dù lời mời ĐÃ đi (ca 31/7/2026,
+   * hoàn 340.000đ oan). Xem `content/actions/external-invites/execute-set-toggle.ts`.
+   */
+  | { kind: "SET_EXTERNAL_INVITES"; taskId: string; enabled: boolean }
   | { kind: "REMOVE_MEMBER"; taskId: string; email: string }
   | {
       /** 2 mục MỚI trong menu "..." của member ĐÃ THAM GIA (ChatGPT 2026-08):

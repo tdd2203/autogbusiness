@@ -38,6 +38,28 @@ describe("lỗi mời nào là VÔ ĐỊNH (phải F5 phân xử, không hoàn p
     ).toBe(true);
   });
 
+  it("bfcache: trang giữ port bị đóng băng → phân xử lại (task e5c67d9e, 24/8/2026)", () => {
+    // Nguyên văn `queue_items.error_message` trên production. Chuỗi này ghi
+    // "channel IS closed" — bản regex trước thiếu chữ `is` nên trượt, task báo
+    // FAILED thẳng và backend hoàn phí + xoá bản ghi.
+    expect(
+      shouldSalvageInvite({
+        error_code: "UNKNOWN",
+        error_message:
+          "Lỗi gửi message tới content script: The page keeping the extension port is moved into back/forward cache, so the message channel is closed.",
+      }),
+    ).toBe(true);
+  });
+
+  it("port đóng trước khi có phản hồi → phân xử lại", () => {
+    expect(
+      shouldSalvageInvite({
+        error_code: "UNKNOWN",
+        error_message: "The message port closed before a response was received.",
+      }),
+    ).toBe(true);
+  });
+
   it("CONTENT_TIMEOUT → phân xử lại", () => {
     expect(shouldSalvageInvite({ error_code: "CONTENT_TIMEOUT" })).toBe(true);
   });
@@ -50,6 +72,9 @@ describe("lỗi mời nào là VÔ ĐỊNH (phải F5 phân xử, không hoàn p
       "FAILED_UI_CHANGED",
       "PAGE_NOT_ADMIN",
       "NOT_LOGGED_IN_CHATGPT",
+      // Nút gửi là "Mua suất người dùng và gửi lời mời" → đã DỪNG trước khi bấm
+      // (execute-invite-inner.ts). Chưa click thì không có gì phải phân xử.
+      "NOT_ENOUGH_SEATS",
     ]) {
       expect(shouldSalvageInvite({ error_code, error_message: "" })).toBe(false);
     }
