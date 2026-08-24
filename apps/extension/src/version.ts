@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.13.6";
+export const VERSION = "0.13.7";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,20 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.13.7",
+    date: "2026-08-24",
+    kind: "feature",
+    summary:
+      "Thiếu suất cho lời mời đang chờ thì hệ thống TỰ MUA BÙ sau mỗi lần đồng bộ, không đợi tới lúc có lệnh mời.",
+    details: [
+      "Lời mời đang treo không chiếm suất trên ChatGPT, nhưng người ta bấm nhận là ChatGPT buộc phải cấp suất và vẫn tính tiền. Mua trước là trả sớm khoản đằng nào cũng tới, đổi lại tránh được hộp 'Mua suất người dùng và gửi lời mời' — hộp đó ChatGPT tự quyết số tiền.",
+      "Ca thật CHATGPT PRO 24/8: 60 suất, 60 người đang dùng, 1 lời mời chờ ⇒ đang nợ 1 suất mà không chỗ nào báo.",
+      "SÁU rào chắn, vì đây là đường DUY NHẤT hệ thống tự tiêu tiền khi không có ai bấm: chỉ chạy khi mẻ đồng bộ vừa quét tab 'Lời mời đang chờ' VÀ việc đối chiếu không bị từ chối; chỉ khi số suất đọc được rõ ràng; bỏ qua lời mời treo quá 7 ngày hoặc đã hết hạn thuê bao; tối đa 5 suất mỗi lần; không mua khi đang có lệnh mua chờ/chạy; và cách lần mua trước ít nhất 6 tiếng.",
+      "Bấm 'Mời lại' làm lời mời tươi lại — tính theo lần mời gần nhất, nên lời mời cũ được mời lại vẫn đủ điều kiện mua bù.",
+      "Mọi ca THIẾU SUẤT MÀ KHÔNG MUA đều ghi nhật ký kèm lý do và đích danh email, để admin biết mà xử tay thay vì im lặng bỏ qua.",
+    ],
+  },
   {
     version: "0.13.6",
     date: "2026-08-24",
