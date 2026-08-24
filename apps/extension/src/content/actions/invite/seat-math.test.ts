@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { dashboardPendingDebt, freeSeatsWithPendingDebt } from "./seat-math";
+import {
+  dashboardPendingDebt,
+  freeSeatsWithPendingDebt,
+  seatsToBuy,
+} from "./seat-math";
 
 describe("freeSeatsWithPendingDebt", () => {
   it("ca thật CHATGPT PRO 24/8/2026: 60/60 đã gán + 1 lời mời treo → HẾT chỗ", () => {
@@ -74,5 +78,33 @@ describe("dashboardPendingDebt", () => {
 
   it("pending âm (dữ liệu hỏng) bị kẹp về 0", () => {
     expect(dashboardPendingDebt(150, 148, -5)).toBe(0);
+  });
+});
+
+describe("seatsToBuy", () => {
+  it("CA USER CHỐT 24/8/2026: PRO 60 suất, 60 đã gán, 1 lời mời chờ, mời thêm 1 → MUA 2", () => {
+    // Một suất cho người đang chờ, một suất cho email mới. Tính qua chỗ-trống-kẹp-sàn
+    // sẽ ra 1 (mua hụt) vì phần ÂM CHỖ bị kẹp mất.
+    expect(seatsToBuy(60, 60, 1, 1)).toBe(2);
+    expect(1 - freeSeatsWithPendingDebt(60, 60, 1)).toBe(1); // đường cũ: mua hụt
+  });
+
+  it("workspace âm chỗ sẵn 2 suất, mời thêm 3 → mua 5", () => {
+    expect(seatsToBuy(60, 60, 2, 3)).toBe(5);
+  });
+
+  it("còn dư chỗ thì khớp với đường cũ — không đổi hành vi ca thường", () => {
+    // GPT1: 151 suất, 148 đã gán, 1 chờ ⇒ trống 2. Mời 3 → mua 1.
+    expect(seatsToBuy(151, 148, 1, 3)).toBe(1);
+    expect(3 - freeSeatsWithPendingDebt(151, 148, 1)).toBe(1);
+  });
+
+  it("đủ chỗ thì KHÔNG mua gì", () => {
+    expect(seatsToBuy(151, 148, 1, 2)).toBe(0);
+    expect(seatsToBuy(151, 100, 0, 1)).toBe(0);
+  });
+
+  it("nợ suất âm (dữ liệu hỏng) không được biến thành chỗ trống", () => {
+    expect(seatsToBuy(60, 60, -5, 1)).toBe(1);
   });
 });

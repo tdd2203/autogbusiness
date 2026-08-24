@@ -29,6 +29,34 @@ export function freeSeatsWithPendingDebt(
 }
 
 /**
+ * SỐ SUẤT PHẢI MUA để mời thêm `need` email — KHÔNG suy từ `freeSeatsWithPendingDebt`.
+ *
+ * Hàm kia kẹp sàn ở 0 vì nó trả lời "còn mời được mấy người", mà số đó không thể
+ * âm. Nhưng khi workspace đang ÂM CHỖ (đã gán + lời mời chờ > tổng suất) thì phần
+ * âm chính là số suất đang thiếu sẵn — kẹp mất nó là mua hụt đúng bằng phần âm đó.
+ *
+ * Ca thật CHATGPT PRO 24/8/2026: 60 suất, 60 đã gán, 1 lời mời chờ, mời thêm 1
+ * email.
+ *
+ *     kẹp sàn:  chỗ trống = max(0, 60 − 61) = 0  ⇒  thiếu = 1 − 0 = 1   ✗ mua hụt
+ *     đúng:     cần = 60 + 1 + 1 = 62 trên 60 suất ⇒ thiếu = 2          ✓
+ *
+ * Mua hụt 1 suất nghĩa là một trong hai người kia bấm nhận sẽ không có chỗ →
+ * ChatGPT tự bật hộp "Mua suất người dùng và gửi lời mời", số tiền do nó quyết —
+ * đúng cái mà cả thiết kế đếm-suất-trước sinh ra để tránh.
+ *
+ * @returns số suất cần mua thêm, 0 nếu đã đủ.
+ */
+export function seatsToBuy(
+  total: number,
+  assigned: number,
+  pendingDebt: number,
+  need: number,
+): number {
+  return Math.max(0, assigned + Math.max(0, pendingDebt) + need - total);
+}
+
+/**
  * NỢ SUẤT suy từ CẶP SỐ CỦA DASHBOARD — chỉ dùng khi KHÔNG đếm được tận nơi ở
  * tab "Lời mời đang chờ" của ChatGPT (`count-pending-invites.ts` trả
  * `authoritative:false`).
