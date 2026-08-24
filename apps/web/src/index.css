@@ -905,6 +905,24 @@ body {
     border-bottom-color: var(--ink);
     font-weight: 600;
   }
+  /* Số đếm đi kèm nhãn tab (vd "Đã tham gia 205"). ChatGPT không có phần này —
+     giữ lại vì nó là thông tin thật của bảng, nhưng để nhạt hơn nhãn để không
+     phá kiểu tab gạch chân. */
+  .tab .count {
+    margin-left: 7px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--ink-3);
+  }
+  .tab.active .count {
+    color: var(--ink-2);
+  }
+  /* Thanh tab nằm TRONG thẻ bảng (không phải đầu trang): đường kẻ dưới chạy hết
+     bề ngang thẻ, còn nhãn thụt vào 20px cho thẳng cột với .table-head. */
+  .tabs-bar-inset {
+    margin-bottom: 0;
+    padding: 0 20px;
+  }
 
   /* ---------- Filter chips ---------- */
   .filter-chip {

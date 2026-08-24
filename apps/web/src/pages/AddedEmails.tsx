@@ -9,7 +9,6 @@ import { useAddedEmails } from "../hooks/useAddedEmails";
 import { useFormatDate, useFormatDateTime, useT } from "../i18n";
 import type { AddedMember, QueueItem, SubscriptionCycle } from "../types";
 import { SearchInput } from "./Members";
-import { Chip } from "./Queue";
 import { MemberDetailModal } from "../components/MemberDetailModal";
 import { ChangeEmailModal } from "../components/ChangeEmailModal";
 import { TransferSubscriptionModal } from "../components/TransferSubscriptionModal";
@@ -961,39 +960,52 @@ export default function AddedEmails() {
           })()}
         </div>
 
-        {/* Tab trạng thái CHÍNH — giống bảng Thành viên trong workspace, nhưng gom
-            mọi không gian. "Chờ tham gia" bật bộ thao tác đồng bộ/thu hồi hàng loạt. */}
-        <div className="flex flex-wrap gap-2" style={{ padding: "0 16px 12px" }}>
-          <Chip
-            active={statusTab === "active"}
-            onClick={() => {
-              setStatusTab("active");
-              setSelected(new Set());
-            }}
-            label={t("member.statusActive")}
-            count={tabActiveCount}
-          />
-          <Chip
-            active={statusTab === "pending"}
-            onClick={() => {
-              setStatusTab("pending");
-              setSelected(new Set());
-            }}
-            label={t("member.statusPending")}
-            count={tabPendingCount}
-          />
-          {/* "Đã xoá" — email đã rời team trong 30 ngày gần nhất (chỉ đọc). Số đếm
-              chỉ hiện khi đã tải xong danh sách: query này lười, chưa vào tab thì
-              chưa gọi → hiện "0" lúc đó là NÓI SAI, không phải "chưa biết". */}
-          <Chip
-            active={statusTab === "removed"}
-            onClick={() => {
-              setStatusTab("removed");
-              setSelected(new Set());
-            }}
-            label={t("member.statusRemoved")}
-            count={statusTab === "removed" && !removedLoading ? filtered.length : undefined}
-          />
+        {/* Tab trạng thái CHÍNH — kiểu GẠCH CHÂN như trang quản trị ChatGPT (yêu cầu
+            user 2026-08-24): nhãn phẳng, tab đang xem gạch chân đậm, và MỘT đường kẻ
+            chạy hết bề ngang thẻ ở dưới. Dùng lại đúng .tabs-bar/.tab đã có ở đầu
+            trang workspace nên hai chỗ trông như một. "Chờ tham gia" bật bộ thao tác
+            đồng bộ/thu hồi hàng loạt. */}
+        <div className="tabs-bar tabs-bar-inset">
+          {(
+            [
+              {
+                key: "active" as const,
+                label: t("member.statusActive"),
+                count: tabActiveCount,
+              },
+              {
+                key: "pending" as const,
+                label: t("member.statusPending"),
+                count: tabPendingCount,
+              },
+              {
+                // "Đã xoá" — email đã rời team trong 30 ngày gần nhất (chỉ đọc). Số
+                // đếm chỉ hiện khi đã tải xong danh sách: query này lười, chưa vào
+                // tab thì chưa gọi → hiện "0" lúc đó là NÓI SAI, không phải "chưa biết".
+                key: "removed" as const,
+                label: t("member.statusRemoved"),
+                count:
+                  statusTab === "removed" && !removedLoading
+                    ? filtered.length
+                    : undefined,
+              },
+            ] satisfies { key: StatusTab; label: string; count?: number }[]
+          ).map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              className={statusTab === tab.key ? "tab active" : "tab"}
+              onClick={() => {
+                setStatusTab(tab.key);
+                setSelected(new Set());
+              }}
+            >
+              {tab.label}
+              {typeof tab.count === "number" && (
+                <span className="count">{tab.count}</span>
+              )}
+            </button>
+          ))}
         </div>
 
         {selectedIds.length > 0 && (
