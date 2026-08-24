@@ -77,6 +77,7 @@ def _adopt_member_into_workspace(
     member.invited_by_user_id = owner_id
     member.joined_at = now
     member.removed_at = None  # gỡ mốc retention 30 ngày
+    member.removed_reason = None
     member.last_invited_at = now
 
 
@@ -235,6 +236,7 @@ def perform_invite_core(
                     if existing.status == "removed":
                         existing.joined_at = now  # bất biến invite-time = join-date
                         existing.removed_at = None  # gỡ mốc retention 30 ngày
+                        existing.removed_reason = None
                     existing.status = "pending"
                     existing.chatgpt_role = role
                     existing.invited_by_user_id = user.id
@@ -263,6 +265,7 @@ def perform_invite_core(
                     if existing.status == "removed":
                         existing.joined_at = now
                         existing.removed_at = None  # reset mốc retention 30 ngày
+                        existing.removed_reason = None
                     existing.status = "pending"
                     existing.chatgpt_role = role
                     existing.invited_by_user_id = user.id

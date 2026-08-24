@@ -353,6 +353,17 @@ class WorkspaceSettings(Base):
     dry_run_mode: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
+# Lý do member rời team (`Member.removed_reason`). Mã ổn định — UI dịch sang nhãn
+# người đọc (i18n key `removedReason.<mã>`), nên ĐỔI TÊN mã = phải sửa cả hai locale.
+REMOVED_REASON_EXPIRED = "expired"  # hết hạn → job nền tự enqueue gỡ
+REMOVED_REASON_BY_ADMIN = "removed_by_admin"  # admin bấm Xoá ở dashboard
+REMOVED_REASON_INVITE_REVOKED = "invite_revoked"  # thu hồi lời mời đang chờ
+REMOVED_REASON_INVITE_FAILED = "invite_failed"  # lời mời không vào được ChatGPT
+REMOVED_REASON_SYNC_MISSING = "sync_missing"  # đồng bộ không còn thấy trong workspace
+REMOVED_REASON_EMAIL_CHANGED = "email_changed"  # đổi sang email khác (email cũ rời)
+REMOVED_REASON_TRANSFERRED = "subscription_transferred"  # chuyển hạn sang email khác
+
+
 class Member(Base):
     """Member của 1 Workspace ChatGPT — đồng bộ từ scrape Extension hoặc tạo qua invite."""
 
@@ -384,6 +395,13 @@ class Member(Base):
     removed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    # VÌ SAO email rời khỏi team — nguồn cho cột "Lý do" ở tab "Đã xoá" (trang
+    # Email đã thêm). Đặt CÙNG LÚC với removed_at ở mọi đường xoá, xoá về NULL khi
+    # member hồi sinh (mời lại / sync thấy lại). Giá trị = các hằng REMOVED_REASON_*
+    # ngay phía trên: expired | removed_by_admin | invite_revoked |
+    # invite_failed | sync_missing | email_changed | subscription_transferred.
+    # NULL = dữ liệu cũ (xoá trước khi có cột này) → UI hiện "Không rõ".
+    removed_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     invited_by_user_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True),
         ForeignKey("users.id", ondelete="SET NULL"),

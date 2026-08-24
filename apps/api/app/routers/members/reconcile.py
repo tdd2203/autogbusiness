@@ -21,7 +21,15 @@ from sqlalchemy.orm import Session
 
 from app.audit import log_event
 from app.deps import get_session, require_extension_workspace
-from app.models import AuditLog, Invite, Member, QueueItem, Workspace
+from app.models import (
+    REMOVED_REASON_INVITE_FAILED,
+    REMOVED_REASON_SYNC_MISSING,
+    AuditLog,
+    Invite,
+    Member,
+    QueueItem,
+    Workspace,
+)
 from app.schemas import InviteVerifyReconcileIn, MemberBulkUpsert
 from app.sse import publish_task_event
 
@@ -224,6 +232,7 @@ def bulk_upsert_members(
             # active mà vẫn còn removed_at rác + để job hard-delete không dính.
             if existing.status != "removed" and existing.removed_at is not None:
                 existing.removed_at = None
+                existing.removed_reason = None
             # ⚠️ "Sống lại" KHÔNG vô hại: nếu lần removed gần nhất là do XOÁ TỰ
             # ĐỘNG kết luận vắng-mặt-không-click (`absent_confirmed`) thì việc
             # ChatGPT vẫn trả email này chính là BẰNG CHỨNG lần xoá đó là GIẢ.
@@ -411,6 +420,7 @@ def bulk_upsert_members(
         for m in stale:
             m.status = "removed"
             m.removed_at = now
+            m.removed_reason = REMOVED_REASON_SYNC_MISSING
             m.last_synced_at = now
             removed_count += 1
             removed_emails.append(m.email)
@@ -753,6 +763,7 @@ def reconcile_after_invite(
     for m in rows:
         m.status = "removed"
         m.removed_at = now
+        m.removed_reason = REMOVED_REASON_INVITE_FAILED
         m.last_synced_at = now
         removed_emails.append(m.email)
 

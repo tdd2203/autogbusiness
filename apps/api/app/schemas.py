@@ -453,6 +453,11 @@ class MemberOut(BaseModel):
     # NULL ⇒ dashboard cho phép "Mời lại" kể cả khi status='active' (DB ghi active
     # nhưng thực tế đã rời đội — xem reinvite_member).
     sync_missing_at: datetime | None = None
+    # Thời điểm + LÝ DO email rời team (chỉ có nghĩa khi status='removed'). Nguồn
+    # cho tab "Đã xoá" ở trang Email đã thêm; removed_reason=None ⇒ "không rõ"
+    # (email bị xoá trước khi có cột này).
+    removed_at: datetime | None = None
+    removed_reason: str | None = None
     created_at: datetime
     # Lần CUỐI invite/re-invite qua dashboard (NULL nếu member chỉ đến từ SYNC).
     # Dashboard hiển thị COALESCE(last_invited_at, created_at) cho cột "Ngày thêm"

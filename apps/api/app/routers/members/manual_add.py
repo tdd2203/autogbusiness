@@ -199,6 +199,7 @@ def manual_add_members(
                 existing.invited_by_user_id = user.id
                 existing.joined_at = now
                 existing.removed_at = None
+                existing.removed_reason = None
                 existing.last_synced_at = None
                 existing.subscription_months = months
                 existing.subscription_purchased_at = now

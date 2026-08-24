@@ -7,7 +7,7 @@ requested) qua /request-payment; super-admin XÁC NHẬN đã thanh toán (reque
 paid) qua /mark-paid. Super-admin có thể xem theo từng tài khoản phụ (?user_id=).
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -33,6 +33,13 @@ router = APIRouter(prefix="/api/v1/added-members", tags=["added-members"])
 # Số member đọc mỗi lô khi duyệt danh sách dài (xem `list_added_members`). Chỉ ảnh
 # hưởng RAM/số truy vấn phụ của selectinload, KHÔNG ảnh hưởng dữ liệu trả về.
 _LIST_CHUNK = 200
+
+# Cửa sổ HIỂN THỊ của tab "Đã xoá" (yêu cầu user 2026-08-24: "lưu trong 30 ngày ở
+# tab này"). Đây là mốc LỌC LÚC ĐỌC, KHÔNG phải retention: bản ghi vẫn nằm trong DB
+# tới khi job nền hard-delete ở mốc riêng, dài hơn (REMOVED_MEMBER_RETENTION = 90
+# ngày, do user chốt 2026-07-19). Email bị xoá quá 30 ngày rơi khỏi tab nhưng lịch
+# sử vẫn còn để tra cứu chỗ khác.
+REMOVED_TAB_WINDOW = timedelta(days=30)
 
 
 def _recompute_member_payment_status(member: Member) -> None:
@@ -84,6 +91,7 @@ def _recompute_member_payment_status(member: Member) -> None:
 def list_added_members(
     user_id: UUID | None = None,
     unassigned: bool = False,
+    removed: bool = False,
     db: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ) -> list[AddedMemberOut]:
@@ -94,6 +102,10 @@ def list_added_members(
         ?user_id=<id>   → xem riêng 1 tài khoản phụ
         ?unassigned=true → xem "email còn lại" (CHƯA có chủ) — super-admin quản lý
         bỏ trống         → tất cả email đã có chủ (add qua dashboard)
+    - ?removed=true → ĐẢO danh sách sang tab "Đã xoá": chỉ email đã rời team trong
+      `REMOVED_TAB_WINDOW` (30 ngày) gần nhất, mới xoá xếp trước. Quy tắc ai-thấy-gì
+      giữ NGUYÊN như trên. Email `removed` mà thiếu `removed_at` (dữ liệu cũ trước
+      khi có cột) KHÔNG lọt vào — không biết xoá lúc nào thì không xếp được vào cửa sổ.
     """
     if user.is_super_admin:
         target_user_id = user_id
@@ -101,16 +113,22 @@ def list_added_members(
         target_user_id = user.id
         unassigned = False  # sub-admin không xem pool email còn lại
 
-    stmt = (
-        select(Member)
-        .options(
-            selectinload(Member.workspace),
-            selectinload(Member.invited_by),
-            selectinload(Member.subscription_cycles),
-        )
-        .where(Member.status != "removed")
-        .order_by(Member.created_at.desc())
+    stmt = select(Member).options(
+        selectinload(Member.workspace),
+        selectinload(Member.invited_by),
+        selectinload(Member.subscription_cycles),
     )
+    if removed:
+        cutoff = datetime.now(timezone.utc) - REMOVED_TAB_WINDOW
+        stmt = stmt.where(
+            Member.status == "removed",
+            Member.removed_at.isnot(None),
+            Member.removed_at >= cutoff,
+        ).order_by(Member.removed_at.desc())
+    else:
+        stmt = stmt.where(Member.status != "removed").order_by(
+            Member.created_at.desc()
+        )
     if unassigned:
         # Email còn lại: chưa gán cho ai → super-admin quản lý.
         stmt = stmt.where(Member.invited_by_user_id.is_(None))

@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from app.audit import log_event
 from app.deps import get_session, require_permission
 from app.models import (
+    REMOVED_REASON_TRANSFERRED,
     Invite,
     Member,
     MemberSubscriptionCycle,
@@ -357,6 +358,7 @@ def transfer_subscription(
     # ---- (2) Email CHO: mất hạn + rời workspace -----------------------------
     source.status = "removed"
     source.removed_at = now
+    source.removed_reason = REMOVED_REASON_TRANSFERRED
     # Hạn đã chuyển đi ⇒ đặt HẾT HẠN NGAY (= now). TUYỆT ĐỐI không đặt NULL:
     # NULL nghĩa là "vô thời hạn" chứ không phải "mất hạn" (EXPIRY_RULES §5 — đã
     # có ca mất tiền vì đúng chỗ này).
@@ -385,6 +387,7 @@ def transfer_subscription(
         else:
             target.status = "pending"
             target.removed_at = None
+            target.removed_reason = None
             target.chatgpt_role = role
             target.invited_by_user_id = source.invited_by_user_id
         # Kế thừa mốc "thời gian mời/thêm" của email gốc — đây là chuyển chỗ, không

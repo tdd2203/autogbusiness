@@ -16,6 +16,7 @@ import { TransferSubscriptionModal } from "../components/TransferSubscriptionMod
 import { ChangeSubscriptionModal } from "../components/ChangeSubscriptionModal";
 import { NotifyLinkModal } from "../components/NotifyLinkModal";
 import { RowActionsMenu, type RowActionItem } from "../components/RowActionsMenu";
+import { RemovedEmailsList } from "../components/RemovedEmailsList";
 import { isRenewalDue } from "../components/RenewalsPanel";
 import { confirm, toast } from "../components/Toast";
 import { useAddedMemberActions } from "../hooks/useAddedMemberActions";
@@ -32,7 +33,9 @@ type SubAccount = {
 type PaymentFilter = "all" | "today" | "unpaid" | "requested";
 // Tab trạng thái CHÍNH (giống bảng Thành viên trong workspace, nhưng ở đây gom mọi
 // không gian): "active" = Đã tham gia, "pending" = Chờ tham gia.
-type StatusTab = "active" | "pending";
+// "removed" = tab "Đã xoá": email đã rời team trong 30 ngày gần nhất, CHỈ ĐỌC
+// (danh sách đến từ query riêng ?removed=true, không nằm trong `members`).
+type StatusTab = "active" | "pending" | "removed";
 
 function isToday(iso: string): boolean {
   const d = new Date(iso);
@@ -153,6 +156,24 @@ export default function AddedEmails() {
     refetchOnWindowFocus: false,
   });
 
+  // Tab "Đã xoá" — danh sách RIÊNG (?removed=true): email đã rời team trong 30 ngày
+  // gần nhất, backend sắp mới-xoá-trước. Tách khỏi query chính vì hai tập không giao
+  // nhau (list chính lọc status != 'removed') và tab này ít khi mở → chỉ gọi khi user
+  // thực sự vào tab (`enabled`), khỏi tốn 1 truy vấn cho mọi lần mở trang.
+  //
+  // Key giữ TIỀN TỐ ["added-members", ...] → mọi invalidate ["added-members"] sẵn có
+  // (mutation + watcher task nền) cũng làm mới tab này, khỏi đi thêm đường riêng.
+  const { data: removedMembers = [], isLoading: removedLoading } = useQuery({
+    queryKey: ["added-members", isSuper ? selectedUserId : "self", "removed"],
+    queryFn: () =>
+      api<AddedMember[]>(
+        `/api/v1/added-members${queryParam ? `${queryParam}&` : "?"}removed=true`,
+      ),
+    enabled: statusTab === "removed",
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+
   // Auto-refresh list khi task extension (Thu hồi / Xoá / Đồng bộ 1 email) mà
   // owner enqueue TỪ TRANG NÀY chuyển sang terminal (COMPLETED/FAILED).
   //
@@ -213,17 +234,19 @@ export default function AddedEmails() {
     }
   }, [recentTasks, qc, t]);
 
-  // Workspace có mặt trong danh sách hiện tại → đổ vào dropdown lọc riêng.
+  // Workspace có mặt trong danh sách hiện tại → đổ vào dropdown lọc riêng. Ở tab
+  // "Đã xoá" thì lấy theo danh sách email đã xoá — không gian của email còn sống
+  // chưa chắc còn email nào bị xoá và ngược lại.
   const workspaces = useMemo(() => {
     const map = new Map<string, string>();
-    for (const m of members) {
+    for (const m of statusTab === "removed" ? removedMembers : members) {
       if (m.workspace_id)
         map.set(m.workspace_id, m.workspace_name ?? m.workspace_id);
     }
     return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) =>
       a.name.localeCompare(b.name),
     );
-  }, [members]);
+  }, [members, removedMembers, statusTab]);
 
   // Số đếm cho 2 tab "Đã tham gia / Chờ tham gia": tôn trọng bộ lọc không gian
   // (dropdown workspace) để badge khớp danh sách đang xem, nhưng KHÔNG phụ thuộc ô
@@ -240,18 +263,26 @@ export default function AddedEmails() {
   const tabPendingCount = wsScoped.filter((m) => m.status === "pending").length;
 
   const filtered = useMemo(() => {
-    let rows = members.filter((m) => m.status === statusTab);
+    // Tab "Đã xoá" đọc danh sách riêng; hai tab kia lọc theo status trong `members`.
+    let rows =
+      statusTab === "removed"
+        ? removedMembers
+        : members.filter((m) => m.status === statusTab);
     if (selectedWorkspace)
       rows = rows.filter((m) => m.workspace_id === selectedWorkspace);
-    // "Ngày thêm" = last_invited_at ?? created_at (xem Members.tsx): re-invite
-    // giữ created_at cũ → filter "hôm nay" theo last_invited_at mới để email
-    // vừa mời lại hôm nay không bị loại oan.
-    if (filter === "today")
-      rows = rows.filter((m) => isToday(m.last_invited_at ?? m.created_at));
-    else if (filter === "unpaid")
-      rows = rows.filter((m) => m.payment_status === "unpaid");
-    else if (filter === "requested")
-      rows = rows.filter((m) => m.payment_status === "requested");
+    // Chip lọc thanh toán nói về email CÒN SỐNG (add hôm nay / chưa trả / chờ duyệt)
+    // → tab "Đã xoá" bỏ qua hẳn, và UI cũng ẩn nhóm chip đó đi.
+    if (statusTab !== "removed") {
+      // "Ngày thêm" = last_invited_at ?? created_at (xem Members.tsx): re-invite
+      // giữ created_at cũ → filter "hôm nay" theo last_invited_at mới để email
+      // vừa mời lại hôm nay không bị loại oan.
+      if (filter === "today")
+        rows = rows.filter((m) => isToday(m.last_invited_at ?? m.created_at));
+      else if (filter === "unpaid")
+        rows = rows.filter((m) => m.payment_status === "unpaid");
+      else if (filter === "requested")
+        rows = rows.filter((m) => m.payment_status === "requested");
+    }
     if (search.trim()) {
       const s = search.trim().toLowerCase();
       rows = rows.filter(
@@ -262,7 +293,14 @@ export default function AddedEmails() {
       );
     }
     return rows;
-  }, [members, filter, search, selectedWorkspace, statusTab]);
+  }, [
+    members,
+    removedMembers,
+    filter,
+    search,
+    selectedWorkspace,
+    statusTab,
+  ]);
 
   const total = members.length;
   const paidCount = members.filter((m) => m.payment_status === "paid").length;
@@ -864,30 +902,36 @@ export default function AddedEmails() {
                     ))}
                   </select>
                 )}
-                <FilterChip
-                  active={filter === "all"}
-                  onClick={() => setFilter("all")}
-                >
-                  {t("addedEmails.filterAll")}
-                </FilterChip>
-                <FilterChip
-                  active={filter === "today"}
-                  onClick={() => setFilter("today")}
-                >
-                  {t("addedEmails.filterToday")}
-                </FilterChip>
-                <FilterChip
-                  active={filter === "requested"}
-                  onClick={() => setFilter("requested")}
-                >
-                  {t("addedEmails.filterRequested")}
-                </FilterChip>
-                <FilterChip
-                  active={filter === "unpaid"}
-                  onClick={() => setFilter("unpaid")}
-                >
-                  {t("addedEmails.filterUnpaid")}
-                </FilterChip>
+                {/* Lọc theo thanh toán chỉ có nghĩa với email còn sống → ẩn ở tab
+                    "Đã xoá" (bảng ở đó không có cột thanh toán). */}
+                {statusTab !== "removed" && (
+                  <>
+                    <FilterChip
+                      active={filter === "all"}
+                      onClick={() => setFilter("all")}
+                    >
+                      {t("addedEmails.filterAll")}
+                    </FilterChip>
+                    <FilterChip
+                      active={filter === "today"}
+                      onClick={() => setFilter("today")}
+                    >
+                      {t("addedEmails.filterToday")}
+                    </FilterChip>
+                    <FilterChip
+                      active={filter === "requested"}
+                      onClick={() => setFilter("requested")}
+                    >
+                      {t("addedEmails.filterRequested")}
+                    </FilterChip>
+                    <FilterChip
+                      active={filter === "unpaid"}
+                      onClick={() => setFilter("unpaid")}
+                    >
+                      {t("addedEmails.filterUnpaid")}
+                    </FilterChip>
+                  </>
+                )}
               </>
             );
             const searchEl = (
@@ -937,6 +981,18 @@ export default function AddedEmails() {
             }}
             label={t("member.statusPending")}
             count={tabPendingCount}
+          />
+          {/* "Đã xoá" — email đã rời team trong 30 ngày gần nhất (chỉ đọc). Số đếm
+              chỉ hiện khi đã tải xong danh sách: query này lười, chưa vào tab thì
+              chưa gọi → hiện "0" lúc đó là NÓI SAI, không phải "chưa biết". */}
+          <Chip
+            active={statusTab === "removed"}
+            onClick={() => {
+              setStatusTab("removed");
+              setSelected(new Set());
+            }}
+            label={t("member.statusRemoved")}
+            count={statusTab === "removed" && !removedLoading ? filtered.length : undefined}
           />
         </div>
 
@@ -988,7 +1044,15 @@ export default function AddedEmails() {
           </div>
         )}
 
-        {isMobile ? (
+        {statusTab === "removed" ? (
+          /* ---------- Tab "Đã xoá": bảng CHỈ ĐỌC riêng (mobile + desktop) ------- */
+          <RemovedEmailsList
+            rows={filtered}
+            isLoading={removedLoading}
+            isSuper={isSuper}
+            onOpenDetail={setDetailMember}
+          />
+        ) : isMobile ? (
           /* ---------- Mobile: danh sách THẺ (mỗi email 1 thẻ) ---------- */
           <div className="email-card-list">
             {isLoading && (

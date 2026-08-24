@@ -24,7 +24,16 @@ from app.deps import (
     get_session,
     require_extension_workspace,
 )
-from app.models import AuditLog, Invite, Member, QueueItem, Workspace
+from app.models import (
+    REMOVED_REASON_BY_ADMIN,
+    REMOVED_REASON_EXPIRED,
+    REMOVED_REASON_INVITE_REVOKED,
+    AuditLog,
+    Invite,
+    Member,
+    QueueItem,
+    Workspace,
+)
 from app.schemas import QueueOut, QueueUpdate
 from app.services import wallet_service
 
@@ -625,9 +634,26 @@ def update_task(
                 .all()
             )
             revoked_at = datetime.now(timezone.utc)
+            # Lời mời đang chờ của email HẾT HẠN cũng bị gỡ bằng REVOKE_INVITES (job
+            # nền `_enqueue_expired_removals_once` chọn REVOKE cho pending, REMOVE cho
+            # active). Không phân biệt ở đây thì tab "Đã xoá" ghi nhầm "thu hồi lời
+            # mời" cho email thực chất chết vì hết hạn. Căn cứ = task này có được job
+            # hết hạn tạo ra không (cùng cách nhận diện với nhánh REMOVE_MEMBER).
+            expired_revoke = db.execute(
+                select(AuditLog.id)
+                .where(
+                    AuditLog.action == "MEMBER_EXPIRED_REMOVE_QUEUED",
+                    AuditLog.data["queue_item_id"].astext == str(item.id),
+                )
+                .limit(1)
+            ).first()
+            revoke_reason = (
+                REMOVED_REASON_EXPIRED if expired_revoke else REMOVED_REASON_INVITE_REVOKED
+            )
             for member in stale_members:
                 member.status = "removed"
                 member.removed_at = revoked_at
+                member.removed_reason = revoke_reason
                 db.add(member)
                 log_event(
                     db,
@@ -850,8 +876,14 @@ def update_task(
                     )
                     .limit(1)
                 ).first()
+                # Lý do lưu THẲNG lên member (cột removed_reason) để tab "Đã xoá"
+                # đọc trực tiếp, khỏi truy ngược audit log — nhiều đường xoá khác
+                # ghi log ở cấp WORKSPACE nên không tra ngược theo email được.
                 if expired_init:
                     remove_data["removal_reason"] = "expired"
+                    member.removed_reason = REMOVED_REASON_EXPIRED
+                else:
+                    member.removed_reason = REMOVED_REASON_BY_ADMIN
                 log_event(
                     db,
                     actor_type="EXTENSION",
@@ -907,6 +939,7 @@ def update_task(
                     # hard-delete 90 ngày dù member đang active) — khớp reconcile.py.
                     if member.removed_at is not None:
                         member.removed_at = None
+                        member.removed_reason = None
                     log_event(
                         db,
                         actor_type="EXTENSION",
@@ -956,6 +989,7 @@ def update_task(
                 # hard-delete 90 ngày dù member đang active) — khớp reconcile.py.
                 if member.removed_at is not None:
                     member.removed_at = None
+                    member.removed_reason = None
                 log_event(
                     db,
                     actor_type="EXTENSION",

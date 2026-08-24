@@ -128,6 +128,13 @@ export type Member = {
    *  Khác null ⇒ cho phép "Mời lại" kể cả khi status='active' (DB ghi active nhưng
    *  thực tế đã rời đội). Sync thấy lại → backend xoá về null. */
   sync_missing_at: string | null;
+  /** Thời điểm email rời team (chỉ có nghĩa khi status="removed"). */
+  removed_at?: string | null;
+  /** VÌ SAO rời team — mã cố định từ backend (models.REMOVED_REASON_*):
+   *  "expired" | "removed_by_admin" | "invite_revoked" | "invite_failed" |
+   *  "sync_missing" | "email_changed" | "subscription_transferred".
+   *  null = email bị xoá trước khi có cột này → UI hiện "Không rõ". */
+  removed_reason?: string | null;
   created_at: string;
   /** Lần CUỐI invite/re-invite qua dashboard. NULL nếu member chỉ từ SYNC.
    *  Cột "Ngày thêm" hiển thị last_invited_at ?? created_at để khớp Queue. */

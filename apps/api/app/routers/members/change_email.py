@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.audit import log_event
 from app.deps import get_session, require_permission
 from app.models import (
+    REMOVED_REASON_EMAIL_CHANGED,
     Invite,
     Member,
     MemberSubscriptionCycle,
@@ -157,6 +158,7 @@ def change_member_email(
     # Email cũ → removed ngay trong DB (extension sẽ thực thi xoá trên ChatGPT).
     old.status = "removed"
     old.removed_at = datetime.now(timezone.utc)
+    old.removed_reason = REMOVED_REASON_EMAIL_CHANGED
 
     # Tạo/cập nhật member email mới với hạn dùng cũ. Giữ chủ sở hữu (invited_by)
     # của member cũ — đây là thay thế, không phải lời mời mới của admin thao tác.
@@ -164,6 +166,7 @@ def change_member_email(
         member = existing_new
         member.status = "pending"
         member.removed_at = None  # tái kích hoạt → hết trạng thái removed
+        member.removed_reason = None
         member.chatgpt_role = role
         member.invited_by_user_id = old.invited_by_user_id
         member.subscription_months = carried_months
