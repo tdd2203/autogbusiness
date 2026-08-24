@@ -155,9 +155,10 @@ def test_popup_extension_thay_cung_so_seat_voi_dashboard(
 
 
 def test_seat_hint_loai_email_cua_chinh_lenh_moi(client: TestClient, auth_header: dict):
-    """`seat_hint.pending` là nợ suất của NGƯỜI KHÁC — email đang mời không được
-    đếm ở đây vì đã nằm trong `new_seat_count`. Đếm hai lần = mua thừa 1 suất
-    bằng tiền thật, đúng ca admin bấm "Mời lại" cho email đang chờ."""
+    """`seat_hint.pending` VÀ `seat_hint.occupied` đều là chỗ NGƯỜI KHÁC đang
+    giữ — email đang mời không được đếm ở đây vì đã nằm trong `new_seat_count`.
+    Đếm hai lần = mua thừa 1 suất bằng tiền thật, đúng ca admin bấm "Mời lại"
+    cho email đang chờ."""
     from app.db import SessionLocal
     from app.models import Workspace
     from app.routers.members.invite import _seat_hint
@@ -183,4 +184,8 @@ def test_seat_hint_loai_email_cua_chinh_lenh_moi(client: TestClient, auth_header
 
     assert hint["total"] == 60
     assert hint["pending"] == 1, "chỉ còn lời mời của NGƯỜI KHÁC"
-    assert hint["occupied"] == 3, "`occupied` vẫn đếm đủ — đếm thừa có chủ ý"
+    assert hint["occupied"] == 2, (
+        "`occupied` cũng phải loại email đang mời: extension đối chiếu nó với "
+        "'đã gán' của ChatGPT để suy nợ suất (`dashboardPendingDebt`) — thổi lên "
+        "1 là mua thừa một suất bằng tiền thật"
+    )

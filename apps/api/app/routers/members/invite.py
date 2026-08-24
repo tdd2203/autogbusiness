@@ -418,7 +418,8 @@ def _seat_hint(db: Session, workspace: Workspace, emails: list[str]) -> dict:
     hộp không mở sau 15s, hoặc bộ đếm lệch dòng tỉ lệ → chết cả task mời).
 
     - `total` = `seat_total` scrape từ trang thanh toán (SYNC_BILLING). Có thể CŨ.
-    - `occupied` = member CHƯA bị gỡ = active + pending.
+    - `occupied` = member CHƯA bị gỡ = active + pending, KHÔNG kể email của chính
+      lệnh mời này (giống `pending` — xem lý do ở dưới).
 
     Cộng pending vào `occupied` là ĐẾM THỪA CÓ CHỦ Ý, KHÔNG phải vì lời mời đang
     chờ giữ suất trên ChatGPT — đo trên production 24/8/2026 thì ngược lại:
@@ -441,24 +442,31 @@ def _seat_hint(db: Session, workspace: Workspace, emails: list[str]) -> dict:
       `new_seat_count` — để nguyên là đếm hai lần ⇒ mua thừa bằng tiền thật, đúng
       ca admin bấm "Mời lại" cho email đang chờ.
 
+    `occupied` LOẠI email của lệnh này vì đúng lý do đó, và vì từ 24/8/2026 nó
+    không còn chỉ dùng cho đường tắt: extension đối chiếu `occupied` với "đã gán"
+    của ChatGPT để trừ ra người ĐÃ bấm nhận lời mời mà đồng bộ chưa kịp lật trạng
+    thái (`dashboardPendingDebt`, `seat-math.ts`). Để nguyên email của lệnh này ở
+    trong là thổi `occupied` lên 1 ⇒ nợ suất tính thừa 1 ⇒ mua thừa một suất bằng
+    tiền thật, đúng ca bấm "Mời lại" cho email đang chờ.
+
     Cả ba đều là gợi ý, không phải chân lý: extension chỉ bỏ qua hộp khi khoảng
     thừa tính từ đây còn dư so với số suất cần, còn lại vẫn mở hộp đọc tận nơi.
     """
-    occupied = int(
-        db.execute(
-            select(func.count())
-            .select_from(Member)
-            .where(Member.workspace_id == workspace.id, Member.status != "removed")
-        ).scalar_one()
-    )
     lowered = [e.strip().lower() for e in emails if e]
+    occupied_stmt = (
+        select(func.count())
+        .select_from(Member)
+        .where(Member.workspace_id == workspace.id, Member.status != "removed")
+    )
     pending_stmt = (
         select(func.count())
         .select_from(Member)
         .where(Member.workspace_id == workspace.id, Member.status == "pending")
     )
     if lowered:
+        occupied_stmt = occupied_stmt.where(Member.email.notin_(lowered))
         pending_stmt = pending_stmt.where(Member.email.notin_(lowered))
+    occupied = int(db.execute(occupied_stmt).scalar_one())
     pending = int(db.execute(pending_stmt).scalar_one())
     return {
         "total": workspace.seat_total,
