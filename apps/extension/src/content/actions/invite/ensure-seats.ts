@@ -24,14 +24,20 @@ import {
 import { executePurchaseSeat } from "../purchase-seat/execute-purchase-seat";
 import { navigateTo } from "../external-invites/navigate";
 import { readMemberCountFromPage } from "./read-member-count";
+import { freeSeatsWithPendingDebt } from "./seat-math";
 
 const LOG = "[autogpt-invite-seats]";
 
 /**
  * Số suất dashboard đang biết, gửi kèm task (backend `_seat_hint`).
- * `total` = seat_total (có thể CŨ), `occupied` = member chưa bị gỡ (active + pending).
+ * `total` = seat_total (có thể CŨ), `occupied` = member chưa bị gỡ (active + pending),
+ * `pending` = RIÊNG lời mời đang chờ, không kể email của chính lệnh mời này.
  */
-export type SeatHint = { total: number | null; occupied: number };
+export type SeatHint = {
+  total: number | null;
+  occupied: number;
+  pending?: number;
+};
 
 /**
  * Đòi dư thêm bằng này suất so với số cần thì mới dám bỏ qua hộp "Quản lý suất".
@@ -249,6 +255,24 @@ export async function ensureSeatsForInvite(
   }
 
   const before = check.availability;
+
+  // ── NỢ SUẤT CỦA LỜI MỜI ĐANG TREO ───────────────────────────────────────
+  // Hộp "Quản lý suất" đếm "đã gán" = người ĐÃ THAM GIA. Lời mời treo không nằm
+  // trong đó nhưng sẽ chiếm suất ngay khi người ta bấm nhận (ca thật CHATGPT PRO
+  // 24/8/2026: "60/60 đã gán" mà vẫn còn 1 lời mời chưa ai nhận). Lấy thẳng
+  // `total − đã gán` làm chỗ trống là bỏ quên món nợ đó: mời thêm 1 email ở
+  // workspace đó sẽ chỉ mua 1 suất trong khi phải mua 2 (user chốt 24/8/2026).
+  //
+  // `seatHint.pending` đã LOẠI email của chính lệnh mời này (backend `_seat_hint`)
+  // nên không đếm hai lần với `need`. Backend cũ chưa gửi field → 0, hành vi y
+  // như trước.
+  const pendingDebt = seatHint?.pending ?? 0;
+  const freeReal = freeSeatsWithPendingDebt(
+    before.total,
+    before.assigned,
+    pendingDebt,
+  );
+
   const baseData: Record<string, unknown> = {
     seat_check: check.uncertain ? "ok_uncertain" : "ok",
     // `seat_total` là con số DASHBOARD hiển thị → lấy DÒNG TỈ LỆ ("147/151 đã
@@ -261,12 +285,18 @@ export async function ensureSeatsForInvite(
     // Tổng DÈ DẶT đã dùng để quyết định còn chỗ / mua thêm (khác `seat_total`
     // đúng khi `seat_uncertain`). `seat_free` tính theo số này.
     seat_total_safe: before.total,
-    seat_free: before.free,
+    // `seat_free` = chỗ trống THẬT (đã trừ nợ suất của lời mời treo) — đây là số
+    // mọi quyết định bên dưới dùng. `seat_free_raw` là số thô ChatGPT ngụ ý
+    // (total − đã gán), giữ lại để tra khi cần.
+    seat_free: freeReal,
+    seat_free_raw: before.free,
+    seat_pending_debt: pendingDebt,
     seat_needed: need,
     seat_uncertain: check.uncertain,
   };
   console.log(
-    `${LOG} cần ${need} suất, đang trống ${before.free}/${before.total} (đã gán ${before.assigned})` +
+    `${LOG} cần ${need} suất, đang trống ${freeReal}/${before.total} ` +
+      `(đã gán ${before.assigned} + ${pendingDebt} lời mời đang chờ)` +
       (check.uncertain
         ? ` — hai nguồn lệch, quyết định theo tổng thấp hơn (${before.total}), dashboard nhận ${check.ratioTotal ?? before.total}`
         : ""),
@@ -276,12 +306,12 @@ export async function ensureSeatsForInvite(
   // Kể cả khi bộ đếm lệch dòng tỉ lệ: `before.total` khi đó đã là tổng THẤP HƠN
   // trong hai số, thấy vẫn còn trống nghĩa là còn trống thật. Mời không tiêu tiền
   // nên số chưa chắc cũng không hại — chỉ cấm MUA theo nó (nhánh dưới).
-  if (before.free >= need) {
+  if (freeReal >= need) {
     return { ok: true, skipped: false, data: { ...baseData, seat_purchased: 0 } };
   }
 
   // ── Thiếu → mua bù ──────────────────────────────────────────────────────
-  const shortfall = need - before.free;
+  const shortfall = need - freeReal;
 
   // Số chưa chắc thì TUYỆT ĐỐI không mua: bộ đếm và dòng tỉ lệ đang nói hai tổng
   // khác nhau, mua theo số sai là mất tiền thật (mà tiền đã trừ thì không đòi lại
@@ -307,7 +337,7 @@ export async function ensureSeatsForInvite(
       skipped: false,
       error_code: "NOT_ENOUGH_SEATS",
       error_message:
-        `Thiếu ${shortfall} suất (cần ${need}, còn trống ${before.free}) — vượt hạn mức ` +
+        `Thiếu ${shortfall} suất (cần ${need}, còn trống ${freeReal}) — vượt hạn mức ` +
         `${MAX_QUANTITY} suất/lần. KHÔNG mua một phần. Chia nhỏ danh sách mời, hoặc mua suất thủ công trước.`,
       data: { ...baseData, seat_shortfall: shortfall, seat_purchased: 0 },
     };
@@ -361,7 +391,7 @@ export async function ensureSeatsForInvite(
   );
 
   if (derived) {
-    // free mới = before.free + shortfall = need → đủ đúng số cần, khỏi so lại.
+    // free mới = freeReal + shortfall = need → đủ đúng số cần, khỏi so lại.
     const totalAfter = before.total + shortfall;
     console.log(
       `${LOG} mua xong ${shortfall} suất (bộ đếm ${before.total} → ${totalAfter}), ` +
@@ -400,8 +430,14 @@ export async function ensureSeatsForInvite(
 
   // Vẫn thiếu ở lần đọc đầu → nhiều khả năng trang còn giữ số cũ trong bộ nhớ
   // của React. TẢI LẠI TRANG MỘT LẦN rồi đọc lại. Đủ thì mời tiếp như thường.
+  // Chỗ trống THẬT = tổng − (đã gán + nợ suất của lời mời treo). Suất vừa mua đã
+  // bao gồm phần bù cho món nợ đó nên phải trừ lại y như lúc đầu, bằng không đọc
+  // lại sẽ tưởng dư và mời vào đúng chỗ của người đang chờ.
+  const freeOf = (a: { total: number; assigned: number } | null): number | null =>
+    a ? freeSeatsWithPendingDebt(a.total, a.assigned, pendingDebt) : null;
+
   let reloadedOnce = false;
-  if (!after || after.free < need) {
+  if ((freeOf(after) ?? -1) < need) {
     reloadedOnce = true;
     console.log(`${LOG} đọc lần 1 vẫn thiếu → tải lại trang rồi đọc lại`);
     // Ghi DẤU VẾT trước khi điều hướng: progress đi content → background →
@@ -432,26 +468,28 @@ export async function ensureSeatsForInvite(
     // đã bị hạ theo bộ đếm.
     seat_total_after: after ? recheck.ratioTotal ?? after.total : null,
     seat_assigned_after: after?.assigned ?? null,
-    seat_free_after: after?.free ?? null,
+    seat_free_after: freeOf(after),
+    seat_free_after_raw: after?.free ?? null,
     seat_after_source: "recheck",
     seat_reloaded_once: reloadedOnce,
   };
 
-  if (!after || after.free < need) {
+  const afterFree = freeOf(after);
+  if (afterFree === null || afterFree < need) {
     return {
       ok: false,
       skipped: false,
       error_code: "SEAT_PURCHASE_FAILED",
       error_message:
         `ĐÃ MUA ${shortfall} suất (đã trừ tiền: ${String(purchaseData.charge_amount_text ?? "?")}) ` +
-        `nhưng đọc lại (đã tải lại trang) vẫn thấy còn ${after?.free ?? "?"} suất trống, cần ${need}. ` +
+        `nhưng đọc lại (đã tải lại trang) vẫn thấy còn ${afterFree ?? "?"} suất trống, cần ${need}. ` +
         "KHÔNG mời. Kiểm tra ChatGPT rồi chạy lại task — lần sau sẽ thấy suất đã mua và không mua nữa.",
       data: purchasedData,
     };
   }
 
   console.log(
-    `${LOG} mua xong ${shortfall} suất → còn trống ${after.free}/${after.total}, mời tiếp`,
+    `${LOG} mua xong ${shortfall} suất → còn trống ${afterFree}/${after?.total ?? "?"}, mời tiếp`,
   );
   return { ok: true, skipped: false, data: purchasedData };
 }

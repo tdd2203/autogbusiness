@@ -48,10 +48,16 @@ export type ExecuteActionRequest =
        * (active + pending). Cộng pending là ĐẾM THỪA CÓ CHỦ Ý, không phải vì lời
        * mời chờ đang giữ suất — xem `headroomWithoutModal` (ensure-seats.ts).
        *
+       * `pending` = RIÊNG lời mời đang chờ (đã loại email của chính lệnh mời
+       * này). Đường ĐẾM TẬN NƠI trừ số đó khỏi chỗ trống: hộp "Quản lý suất" chỉ
+       * đếm người ĐÃ tham gia, nên `tổng − đã gán` bỏ quên nợ suất của lời mời
+       * treo — mời thêm 1 email ở workspace đầy suất mà còn 1 lời mời chờ thì
+       * phải mua 2 suất, không phải 1.
+       *
        * Dùng để BỎ QUA hẳn bước mở hộp "Quản lý suất" khi thấy chắc chắn còn thừa
        * chỗ. Thiếu/không đủ dư → mở hộp đếm tận nơi như cũ.
        */
-      seatHint?: { total: number | null; occupied: number };
+      seatHint?: { total: number | null; occupied: number; pending?: number };
     }
   /**
    * Bật/tắt toggle "Cho phép lời mời ngoài tên miền" như một LỆNH RIÊNG.

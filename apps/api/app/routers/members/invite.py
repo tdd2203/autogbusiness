@@ -195,7 +195,7 @@ def perform_invite_core(
         )
         # Số suất dashboard đang biết → extension dùng để BỎ QUA bước mở hộp
         # "Quản lý suất" khi thấy chắc chắn còn thừa chỗ. Xem `_seat_hint`.
-        payload["seat_hint"] = _seat_hint(db, workspace)
+        payload["seat_hint"] = _seat_hint(db, workspace, invite_emails)
         if single and len(invite_entries) == 1:
             payload["email"] = invite_emails[0]
         else:
@@ -407,7 +407,7 @@ def _charge_renewals(
             wallet_service.charge_renew(db, user, m.id, fee, email=m.email)
 
 
-def _seat_hint(db: Session, workspace: Workspace) -> dict:
+def _seat_hint(db: Session, workspace: Workspace, emails: list[str]) -> dict:
     """Số suất dashboard đang biết về workspace, gửi kèm task mời.
 
     Extension dùng cặp số này để quyết định có được BỎ QUA bước mở hộp "Quản lý
@@ -429,7 +429,16 @@ def _seat_hint(db: Session, workspace: Workspace) -> dict:
     có, kích hoạt hộp "Mua suất người dùng và gửi lời mời" — mua bằng tiền thật,
     số tiền do ChatGPT tự quyết. Đừng "sửa" chỗ này thành chỉ đếm active.
 
-    Cả hai đều là gợi ý, không phải chân lý: extension chỉ bỏ qua hộp khi khoảng
+    - `pending` = RIÊNG số lời mời đang chờ, KHÔNG kể email của chính lệnh mời
+      này. Đường ĐẾM TẬN NƠI cần nó: hộp "Quản lý suất" chỉ nói "đã gán" (= người
+      đã tham gia), nên `còn trống = tổng − đã gán` đang bỏ quên nợ suất của lời
+      mời treo. Ca thật CHATGPT PRO 24/8/2026: "60/60 đã gán" + 1 lời mời treo,
+      mời thêm 1 email thì phải mua 2 suất chứ không phải 1 (user chốt).
+      LOẠI email của lệnh này ra vì chúng đã được đếm một lần trong
+      `new_seat_count` — để nguyên là đếm hai lần ⇒ mua thừa bằng tiền thật, đúng
+      ca admin bấm "Mời lại" cho email đang chờ.
+
+    Cả ba đều là gợi ý, không phải chân lý: extension chỉ bỏ qua hộp khi khoảng
     thừa tính từ đây còn dư so với số suất cần, còn lại vẫn mở hộp đọc tận nơi.
     """
     occupied = int(
@@ -439,7 +448,20 @@ def _seat_hint(db: Session, workspace: Workspace) -> dict:
             .where(Member.workspace_id == workspace.id, Member.status != "removed")
         ).scalar_one()
     )
-    return {"total": workspace.seat_total, "occupied": occupied}
+    lowered = [e.strip().lower() for e in emails if e]
+    pending_stmt = (
+        select(func.count())
+        .select_from(Member)
+        .where(Member.workspace_id == workspace.id, Member.status == "pending")
+    )
+    if lowered:
+        pending_stmt = pending_stmt.where(Member.email.notin_(lowered))
+    pending = int(db.execute(pending_stmt).scalar_one())
+    return {
+        "total": workspace.seat_total,
+        "occupied": occupied,
+        "pending": pending,
+    }
 
 
 def _count_new_invite_seats(

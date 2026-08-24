@@ -251,6 +251,9 @@ export async function executeSync(
   // thì một mẻ sync đang thành công có thể bị đẩy quá `MAX_SYNC_MS`.
   let seatTotal: number | null = null;
   let seatAssigned: number | null = null;
+  // Hai chỗ trong hộp nói hai tổng khác nhau → số suất đọc được KHÔNG chắc. Ghi
+  // vào result để tra được về sau, và để không ai lỡ dùng số đó quyết định mua.
+  let seatUncertain = false;
   if (scrapeActive) {
     try {
       const seat = await checkSeatAvailability();
@@ -258,11 +261,14 @@ export async function executeSync(
       // giữ. Xem `check-seat-availability.ts` vì sao không lấy `availability.total`.
       seatTotal = seat.ratioTotal;
       seatAssigned = seat.availability?.assigned ?? null;
+      seatUncertain = seat.uncertain;
       console.log(
         `[autogpt-sync] suất đọc từ hộp 'Quản lý suất': ${seatAssigned ?? "?"}/${seatTotal ?? "?"}` +
+          (seat.uncertain ? " (hai nguồn lệch — số chưa chắc)" : "") +
           (seat.error ? ` (lỗi: ${seat.error})` : ""),
       );
     } catch (e) {
+      seatUncertain = true;
       console.warn(
         `[autogpt-sync] không đọc được số suất (bỏ qua): ${e instanceof Error ? e.message : String(e)}`,
       );
@@ -293,6 +299,7 @@ export async function executeSync(
       // workspace (`_absorb_seat_reading`).
       seat_total: seatTotal,
       seat_assigned: seatAssigned,
+      seat_uncertain: seatUncertain,
     },
   };
 }

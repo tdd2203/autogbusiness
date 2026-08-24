@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.13.4";
+export const VERSION = "0.13.5";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,19 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.13.5",
+    date: "2026-08-24",
+    kind: "fix",
+    summary:
+      "Mời thêm người vào workspace đã đầy suất giờ mua ĐỦ suất: lời mời đang treo cũng cần một chỗ, dù ChatGPT không tính nó vào ô 'đã gán'.",
+    details: [
+      "Đo trên chính hai workspace ngày 24/8: hộp 'Quản lý suất' của CHATGPT PRO ghi '60/60 đã gán' mà vẫn còn 1 lời mời chưa ai bấm nhận; GPT1 ghi '148/151 đã gán' trong khi hệ thống có 148 người + 1 chờ. Tức ô 'đã gán' = đúng số người ĐÃ THAM GIA.",
+      "Hệ quả cũ: mời thêm 1 email vào workspace đầy suất chỉ mua 1 suất, trong khi cần 2 — một cho người đang chờ, một cho email mới. Nay chỗ trống ở đường đếm tận nơi luôn tính là 'tổng − (đã gán + lời mời đang chờ)'.",
+      "Email của chính lệnh mời được LOẠI khỏi phần đó: nó đã được đếm một lần rồi. Không loại thì bấm 'Mời lại' cho email đang chờ sẽ mua thừa một suất bằng tiền thật.",
+      "Hệ thống KHÔNG bao giờ tự mua suất khi không có lệnh mời: lời mời treo không nói lên điều gì về việc người ta có vào hay không (chốt user 24/8). Tiền chỉ tiêu khi admin ra lệnh.",
+    ],
+  },
   {
     version: "0.13.4",
     date: "2026-08-24",

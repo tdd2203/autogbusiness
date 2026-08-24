@@ -152,3 +152,35 @@ def test_popup_extension_thay_cung_so_seat_voi_dashboard(
     assert who["seat_total"] == 151
     assert who["seat_used"] == 3, "2 người dùng + 1 lời mời chờ (lời mời chờ vẫn giữ suất)"
     assert who["seat_used"] == _get_ws(client, auth_header, ws["id"])["seat_used"]
+
+
+def test_seat_hint_loai_email_cua_chinh_lenh_moi(client: TestClient, auth_header: dict):
+    """`seat_hint.pending` là nợ suất của NGƯỜI KHÁC — email đang mời không được
+    đếm ở đây vì đã nằm trong `new_seat_count`. Đếm hai lần = mua thừa 1 suất
+    bằng tiền thật, đúng ca admin bấm "Mời lại" cho email đang chờ."""
+    from app.db import SessionLocal
+    from app.models import Workspace
+    from app.routers.members.invite import _seat_hint
+
+    ws = create_ws(client, auth_header, "Seat Hint WS 2", plan="business", seat_total=60)
+    client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-upsert",
+        json={
+            "members": [
+                {"email": "nguoi-khac@example.com", "status": "pending"},
+                {"email": "moi-lai@example.com", "status": "pending"},
+                {"email": "dang-dung@example.com", "status": "active"},
+            ],
+            "is_full_sync": False,
+        },
+        headers=_ext(ws),
+    )
+
+    with SessionLocal() as db:
+        row = db.get(Workspace, uuid.UUID(ws["id"]))
+        assert row is not None
+        hint = _seat_hint(db, row, ["moi-lai@example.com"])
+
+    assert hint["total"] == 60
+    assert hint["pending"] == 1, "chỉ còn lời mời của NGƯỜI KHÁC"
+    assert hint["occupied"] == 3, "`occupied` vẫn đếm đủ — đếm thừa có chủ ý"

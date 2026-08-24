@@ -908,13 +908,19 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
       // Gợi ý số suất (backend `_seat_hint`) → content bỏ qua bước mở hộp
       // "Quản lý suất" khi thừa chỗ. Backend cũ chưa gửi → undefined.
       const rawHint = p.seat_hint;
-      let seatHint: { total: number | null; occupied: number } | undefined;
+      let seatHint:
+        | { total: number | null; occupied: number; pending?: number }
+        | undefined;
       if (rawHint && typeof rawHint === "object") {
         const h = rawHint as Record<string, unknown>;
         const total = typeof h.total === "number" && h.total > 0 ? h.total : null;
         const occupied =
           typeof h.occupied === "number" && h.occupied >= 0 ? h.occupied : null;
-        if (occupied !== null) seatHint = { total, occupied };
+        // `pending` = nợ suất của lời mời đang treo. Backend cũ chưa gửi →
+        // undefined → content tính chỗ trống y như trước.
+        const pending =
+          typeof h.pending === "number" && h.pending >= 0 ? h.pending : undefined;
+        if (occupied !== null) seatHint = { total, occupied, pending };
       }
       return {
         kind: "INVITE_MEMBER",
@@ -1366,6 +1372,7 @@ async function reportToBackend(
             active_tab_ok?: boolean;
             seat_total?: number | null;
             seat_assigned?: number | null;
+            seat_uncertain?: boolean;
           }
         | undefined;
       const members = (data?.members ?? []) as Array<{
@@ -1538,6 +1545,9 @@ async function reportToBackend(
           seat_total: typeof data?.seat_total === "number" ? data.seat_total : null,
           seat_assigned:
             typeof data?.seat_assigned === "number" ? data.seat_assigned : null,
+          // Số suất đọc được có chắc chắn không (bộ đếm vs dòng tỉ lệ) — giữ trong
+          // result để tra khi con số trông lạ.
+          seat_uncertain: data?.seat_uncertain === true,
         },
       });
       return;
