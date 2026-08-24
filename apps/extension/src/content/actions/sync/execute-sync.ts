@@ -254,6 +254,11 @@ export async function executeSync(
   // Hai chỗ trong hộp nói hai tổng khác nhau. Backend dựa vào cờ này để KHÔNG tự
   // mua bù theo số chưa chắc — mua theo số sai là mất tiền thật.
   let seatUncertain = false;
+  // Giá trị bộ đếm + nội dung hộp: khi hai nguồn lệch thì đây là toàn bộ manh mối
+  // về nguyên nhân. Bản trước chỉ gửi cờ `uncertain` nên mỗi lần gặp lại vẫn phải
+  // nhờ người mở ChatGPT nhìn tận mắt.
+  let seatStepperTotal: number | null = null;
+  let seatModalText: string | null = null;
   if (scrapeActive) {
     try {
       const seat = await checkSeatAvailability();
@@ -262,9 +267,13 @@ export async function executeSync(
       seatTotal = seat.ratioTotal;
       seatAssigned = seat.availability?.assigned ?? null;
       seatUncertain = seat.uncertain;
+      seatStepperTotal = seat.stepperTotal;
+      seatModalText = seat.modalText;
       console.log(
         `[autogpt-sync] suất đọc từ hộp 'Quản lý suất': ${seatAssigned ?? "?"}/${seatTotal ?? "?"}` +
-          (seat.uncertain ? " (hai nguồn lệch — số chưa chắc)" : "") +
+          (seat.uncertain
+            ? ` (hai nguồn lệch — bộ đếm ${seat.stepperTotal ?? "?"}, dòng tỉ lệ ${seat.ratioTotal ?? "?"})`
+            : "") +
           (seat.error ? ` (lỗi: ${seat.error})` : ""),
       );
     } catch (e) {
@@ -300,6 +309,8 @@ export async function executeSync(
       seat_total: seatTotal,
       seat_assigned: seatAssigned,
       seat_uncertain: seatUncertain,
+      seat_stepper_total: seatStepperTotal,
+      seat_modal_text: seatModalText,
       // Mẻ này có QUÉT tab "Lời mời đang chờ" hay không. Backend chỉ dám tự mua
       // bù suất cho lời mời đang treo khi cờ này TRUE: chưa quét tab đó thì số
       // lời mời trong DB là số của lần sync trước, có thể đã chết (hết hạn / bị

@@ -1373,6 +1373,8 @@ async function reportToBackend(
             seat_total?: number | null;
             seat_assigned?: number | null;
             seat_uncertain?: boolean;
+            seat_stepper_total?: number | null;
+            seat_modal_text?: string | null;
             invites_scanned?: boolean;
           }
         | undefined;
@@ -1556,6 +1558,14 @@ async function reportToBackend(
           // có chắc chắn không, mẻ này có quét tab "Lời mời đang chờ" không, và
           // reconcile có bị từ chối không (bị từ chối = lời mời chết chưa dọn).
           seat_uncertain: data?.seat_uncertain === true,
+          // Chỉ CÓ Ý NGHĨA khi `seat_uncertain` — giá trị bộ đếm và nội dung hộp,
+          // để truy nguyên nhân vênh mà không phải nhờ người mở ChatGPT xem hộ.
+          seat_stepper_total:
+            typeof data?.seat_stepper_total === "number"
+              ? data.seat_stepper_total
+              : null,
+          seat_modal_text:
+            typeof data?.seat_modal_text === "string" ? data.seat_modal_text : null,
           invites_scanned: data?.invites_scanned === true,
           reconcile_skipped: reconcileSkipped,
         },

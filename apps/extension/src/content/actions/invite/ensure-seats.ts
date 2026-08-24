@@ -348,6 +348,10 @@ export async function ensureSeatsForInvite(
     seat_pending_scan_skipped: scannedPending.reason,
     seat_needed: need,
     seat_uncertain: check.uncertain,
+    // Chỉ có ý nghĩa khi `seat_uncertain`: giá trị bộ đếm + nội dung hộp, để truy
+    // nguyên nhân vênh. Xem `summarizeSeatModalText`.
+    seat_stepper_total: check.stepperTotal,
+    seat_modal_text: check.modalText,
   };
   console.log(
     `${LOG} cần ${need} suất, đang trống ${freeReal}/${before.total} ` +
@@ -380,15 +384,33 @@ export async function ensureSeatsForInvite(
   // khác nhau, mua theo số sai là mất tiền thật (mà tiền đã trừ thì không đòi lại
   // được). Dừng, báo rõ để admin mở ChatGPT xem rồi mua tay.
   if (check.uncertain) {
+    // Luồng mua lái BỘ ĐẾM, mà bộ đếm đang khởi điểm ở một số khác tổng thật →
+    // bấm `+ shortfall` lần sẽ ra sai đích. Không đoán hộ: dừng, nhưng đưa cho
+    // admin ĐÚNG con số cần đặt thay vì bảo chung chung "mua thủ công".
+    //
+    // Đích = tổng THẬT (dòng tỉ lệ) + số thiếu. Nếu bộ đếm thấp hơn tổng thật thì
+    // đặt tới đích này cũng huỷ luôn phần chênh đang hẹn hiệu lực kỳ sau — đó là
+    // quyết định chi tiền, phải do người bấm, không để máy tự làm.
+    const target =
+      check.ratioTotal !== null ? check.ratioTotal + shortfall : null;
     return {
       ok: false,
       skipped: false,
       error_code: "SEAT_CHECK_FAILED",
       error_message:
-        `Thiếu ${shortfall} suất (cần ${need}) nhưng số suất hiển thị KHÔNG KHỚP ` +
-        `(bộ đếm ${check.stepperTotal ?? "?"}, dòng tỉ lệ khác) — không dám mua theo số ` +
-        "chưa chắc. Mở ChatGPT kiểm tra rồi mua suất thủ công, sau đó chạy lại task.",
-      data: { ...baseData, seat_shortfall: shortfall, seat_purchased: 0 },
+        `Thiếu ${shortfall} suất (cần ${need}) nhưng hộp "Quản lý suất" đang nói HAI tổng ` +
+        `khác nhau: bộ đếm ${check.stepperTotal ?? "?"}, dòng tỉ lệ ${before.assigned}/` +
+        `${check.ratioTotal ?? "?"}. Không mua tự động theo số chưa chắc. ` +
+        (target !== null
+          ? `Mở "Quản lý số suất" trên ChatGPT, đặt bộ đếm lên ${target} rồi chạy lại task.`
+          : "Mở ChatGPT kiểm tra rồi mua suất thủ công, sau đó chạy lại task.") +
+        (check.modalText ? ` — Hộp đang hiện: "${check.modalText}"` : ""),
+      data: {
+        ...baseData,
+        seat_shortfall: shortfall,
+        seat_purchased: 0,
+        seat_manual_target: target,
+      },
     };
   }
 

@@ -55,6 +55,11 @@ export type SeatCheckResult = {
    * dùng `availability.total`, còn quyết định MUA thì `uncertain` đã cấm hẳn.
    */
   safeTotal: number | null;
+  /**
+   * Nội dung hộp đã rút gọn (1 dòng, đã xoá email). Manh mối DUY NHẤT về nguyên
+   * nhân khi bộ đếm lệch dòng tỉ lệ — xem `summarizeSeatModalText`.
+   */
+  modalText: string | null;
   /** Mô tả vì sao không đọc được (null nếu đọc được). */
   error: string | null;
   /**
@@ -69,6 +74,32 @@ export type SeatCheckResult = {
    */
   modalClosed: boolean;
 };
+
+/** Dài nhất được giữ lại của nội dung hộp — đủ đọc, không phình `result` của task. */
+const MODAL_TEXT_MAX = 500;
+
+/**
+ * Rút gọn nội dung hộp "Quản lý suất" thành MỘT dòng để ghi vào `result` của task.
+ *
+ * VÌ SAO PHẢI GIỮ: khi bộ đếm và dòng tỉ lệ nói hai số khác nhau, đó là toàn bộ
+ * manh mối về NGUYÊN NHÂN — hộp thường tự nói ra ("đang chờ N lượt gỡ", "có hiệu
+ * lực từ kỳ sau"…). Bản trước vứt hết, chỉ giữ đúng cờ `uncertain`, nên mỗi lần
+ * gặp lại vẫn phải nhờ người mở ChatGPT nhìn tận mắt.
+ *
+ * Xoá mọi thứ hình dạng email trước khi trả về: `result` của task đi vào DB và
+ * có thể lọt vào nhật ký/commit, mà hộp này không có lý do gì cần tới danh tính.
+ */
+export function summarizeSeatModalText(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const cleaned = raw
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "<email>")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return null;
+  return cleaned.length > MODAL_TEXT_MAX
+    ? `${cleaned.slice(0, MODAL_TEXT_MAX)}…`
+    : cleaned;
+}
 
 /**
  * Chốt hai con số tổng suất từ hai nguồn của hộp "Quản lý suất".
@@ -165,6 +196,7 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
       stepperTotal: null,
       ratioTotal: null,
       safeTotal: null,
+      modalText: null,
       error: null,
       uncertain: false,
       modalClosed: true,
@@ -202,6 +234,7 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
       stepperTotal: null,
       ratioTotal: null,
       safeTotal: null,
+      modalText: null,
       error:
         `Đã bấm 'Quản lý số suất' 2 lần nhưng modal không mở sau ` +
         `${(MODAL_OPEN_TIMEOUT_MS * 2) / 1000}s.`,
@@ -234,6 +267,9 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
   if (settled.availability) availability = settled.availability;
   const stepperTotal = settled.stepperTotal;
 
+  // Chụp nội dung hộp TRƯỚC khi đóng — đóng rồi thì DOM không còn gì để đọc.
+  const modalText = summarizeSeatModalText(modal.textContent);
+
   const closed = await closeSeatModal(modal);
   if (!closed) {
     console.warn(`${LOG} KHÔNG đóng được modal 'Quản lý suất' — thao tác sau có thể bị chặn`);
@@ -246,6 +282,7 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
       stepperTotal,
       ratioTotal: null,
       safeTotal: null,
+      modalText,
       error:
         "Modal 'Quản lý suất' mở nhưng không đọc được dòng '<đã gán>/<tổng> đã gán'. " +
         "Có thể ChatGPT đổi cách hiển thị.",
@@ -285,7 +322,8 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
     console.warn(
       `${LOG} bộ đếm ${stepperTotal} ≠ dòng tỉ lệ ${ratioTotal} sau ` +
         `${SEAT_CROSSCHECK_SETTLE_MS / 1000}s → GIỮ tổng theo dòng tỉ lệ ` +
-        `(${ratioTotal}, tổng dè dặt ${safeTotal}), nhưng CẤM mua theo số này`,
+        `(${ratioTotal}, tổng dè dặt ${safeTotal}), nhưng CẤM mua theo số này.` +
+        ` Nội dung hộp: ${modalText ?? "(không đọc được)"}`,
     );
   }
 
@@ -300,6 +338,7 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
     stepperTotal,
     ratioTotal,
     safeTotal,
+    modalText,
     error: null,
     uncertain,
     modalClosed: closed,
