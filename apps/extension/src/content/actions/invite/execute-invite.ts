@@ -201,7 +201,7 @@ export async function executeInvite(
           `(${emails.length - need} email đang là thành viên, đã giữ suất sẵn)`,
       );
     }
-    const seats = await ensureSeatsForInvite(taskId, need, seatHint);
+    const seats = await ensureSeatsForInvite(taskId, need, emails, seatHint);
     seatData = seats.data;
     if (!seats.ok) {
       console.warn(`[autogpt-invite] DỪNG trước khi mời: ${seats.error_message}`);

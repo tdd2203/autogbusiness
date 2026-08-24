@@ -23,15 +23,21 @@ import {
 } from "../purchase-seat/constants";
 import { executePurchaseSeat } from "../purchase-seat/execute-purchase-seat";
 import { navigateTo } from "../external-invites/navigate";
+import { countPendingInvites } from "./count-pending-invites";
 import { readMemberCountFromPage } from "./read-member-count";
-import { freeSeatsWithPendingDebt } from "./seat-math";
+import {
+  dashboardPendingDebt,
+  freeSeatsWithPendingDebt,
+  seatsToBuy,
+} from "./seat-math";
 
 const LOG = "[autogpt-invite-seats]";
 
 /**
  * Số suất dashboard đang biết, gửi kèm task (backend `_seat_hint`).
  * `total` = seat_total (có thể CŨ), `occupied` = member chưa bị gỡ (active + pending),
- * `pending` = RIÊNG lời mời đang chờ, không kể email của chính lệnh mời này.
+ * `pending` = RIÊNG lời mời đang chờ. Cả `occupied` lẫn `pending` đều KHÔNG kể
+ * email của chính lệnh mời này — chúng đã được đếm một lần trong `need`.
  */
 export type SeatHint = {
   total: number | null;
@@ -163,11 +169,14 @@ export function canDeriveTotalAfterPurchase(
 
 /**
  * @param need số suất MỚI mà lần mời này cần (số email sắp mời).
+ * @param inviteEmails các email sắp mời — LOẠI khỏi phép đếm lời mời đang chờ
+ *   (chúng đã được tính một lần trong `need`; đếm hai lần ⇒ mua thừa tiền thật).
  * @param seatHint cặp số dashboard đang biết — có thì thử bỏ qua hộp "Quản lý suất".
  */
 export async function ensureSeatsForInvite(
   taskId: string,
   need: number,
+  inviteEmails: string[],
   seatHint?: SeatHint,
 ): Promise<EnsureSeatsResult> {
   // Hàng nút "Quản lý số suất" thuộc tab "Người dùng". Tiền tố "Mời lại" trước
@@ -211,6 +220,24 @@ export async function ensureSeatsForInvite(
         seat_purchased: 0,
       },
     };
+  }
+
+  // ── NỢ SUẤT: đếm TẬN NƠI, đừng tin DB ──────────────────────────────────
+  // Tới đây là đã phải mở hộp "Quản lý suất" rồi — chậm sẵn, nên thêm một cú
+  // click sang tab "Lời mời đang chờ" để đếm cho ĐÚNG là đáng. Dashboard có thể
+  // đang giữ bản ghi "Chờ tham gia" mà lời mời trên ChatGPT đã chết từ lâu; mỗi
+  // bản ghi ma như vậy ăn oan một suất và giết mọi lệnh mời sau đó
+  // (ca lucrativoa2 — xem `count-pending-invites.ts`).
+  //
+  // Đọc không được thì rơi về số của DB: nó đếm THỪA, mà thừa thì cùng lắm là
+  // mở hộp / mua dư một suất, còn thiếu là mời mù vào chỗ không có.
+  const scannedPending = await countPendingInvites(inviteEmails);
+  // Quay lại tab "Người dùng": nút "Quản lý số suất" chỉ có ở đó.
+  await navigateTo(MEMBERS_PATH, membersListReady, 10_000);
+  if (/[?&]tab=(invites|requests)/.test(location.search)) {
+    history.pushState({}, "", MEMBERS_PATH);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await sleep(1200);
   }
 
   const check = await checkSeatAvailability();
@@ -263,10 +290,28 @@ export async function ensureSeatsForInvite(
   // `total − đã gán` làm chỗ trống là bỏ quên món nợ đó: mời thêm 1 email ở
   // workspace đó sẽ chỉ mua 1 suất trong khi phải mua 2 (user chốt 24/8/2026).
   //
-  // `seatHint.pending` đã LOẠI email của chính lệnh mời này (backend `_seat_hint`)
-  // nên không đếm hai lần với `need`. Backend cũ chưa gửi field → 0, hành vi y
-  // như trước.
-  const pendingDebt = seatHint?.pending ?? 0;
+  // NGUỒN của con số này: ưu tiên bản ĐẾM TẬN NƠI ở tab "Lời mời đang chờ"
+  // (`countPendingInvites` phía trên) — đó là sự thật. Chỉ khi không đọc được
+  // mới rơi về `seatHint.pending` của dashboard, vốn có thể còn giữ bản ghi ma
+  // của lời mời đã chết (ca GPT1 24/8/2026: DB 3, ChatGPT 2 ⇒ tính hụt đúng 1
+  // suất ⇒ mọi lệnh mời chết bằng "thiếu 1 suất").
+  //
+  // Cả hai nguồn đều đã LOẠI email của chính lệnh mời này nên không đếm hai lần
+  // với `need`. Backend cũ chưa gửi `pending` → 0, hành vi y như trước.
+  //
+  // Số của DB còn một kiểu đếm thừa NỮA, ngược chiều với bản ghi ma: người vừa
+  // bấm nhận lời mời đã nằm trong "đã gán" của ChatGPT trong khi DB còn để
+  // 'pending' tới lần đồng bộ sau ⇒ cộng thẳng là đếm họ HAI lần. Đối chiếu với
+  // `seatHint.occupied` để trừ ra — xem `dashboardPendingDebt`.
+  const hintPending = seatHint?.pending ?? 0;
+  const hintDebt = dashboardPendingDebt(
+    seatHint?.occupied,
+    before.assigned,
+    hintPending,
+  );
+  const pendingDebt = scannedPending.authoritative
+    ? scannedPending.emails.length
+    : hintDebt;
   const freeReal = freeSeatsWithPendingDebt(
     before.total,
     before.assigned,
@@ -275,43 +320,61 @@ export async function ensureSeatsForInvite(
 
   const baseData: Record<string, unknown> = {
     seat_check: check.uncertain ? "ok_uncertain" : "ok",
-    // `seat_total` là con số DASHBOARD hiển thị → lấy DÒNG TỈ LỆ ("147/151 đã
-    // gán" → 151), tức số suất workspace ĐANG giữ. Không lấy `before.total`: khi
-    // hai nguồn lệch thì đó là số đã bị hạ theo bộ đếm (workspace có lượt gỡ hẹn
-    // kỳ sau → bộ đếm 150 trong khi đang có 151) — dè dặt như vậy đúng cho việc
-    // quyết định mua, nhưng hiển thị lên dashboard thì thành sai thực tế.
+    // `seat_total` là con số DASHBOARD hiển thị → DÒNG TỈ LỆ ("147/151 đã gán"
+    // → 151), tức số suất workspace ĐANG giữ. Từ 24/8/2026 `before.total` cũng
+    // đúng bằng số này (không còn bị hạ theo bộ đếm); `?? ` chỉ là lưới an toàn.
     seat_total: check.ratioTotal ?? before.total,
     seat_assigned: before.assigned,
-    // Tổng DÈ DẶT đã dùng để quyết định còn chỗ / mua thêm (khác `seat_total`
-    // đúng khi `seat_uncertain`). `seat_free` tính theo số này.
-    seat_total_safe: before.total,
+    // Tổng DÈ DẶT = số thấp hơn giữa bộ đếm và dòng tỉ lệ. CHỈ để chẩn đoán —
+    // `seat_free` tính theo `seat_total` (dòng tỉ lệ = suất ĐANG có). Xem khối
+    // chú thích cuối `check-seat-availability.ts`.
+    seat_total_safe: check.safeTotal ?? before.total,
     // `seat_free` = chỗ trống THẬT (đã trừ nợ suất của lời mời treo) — đây là số
     // mọi quyết định bên dưới dùng. `seat_free_raw` là số thô ChatGPT ngụ ý
     // (total − đã gán), giữ lại để tra khi cần.
     seat_free: freeReal,
     seat_free_raw: before.free,
     seat_pending_debt: pendingDebt,
+    // Nợ suất lấy từ đâu — cần khi truy ngược một ca "thiếu suất" khó hiểu.
+    seat_pending_source: scannedPending.authoritative ? "chatgpt_tab" : "dashboard",
+    seat_pending_scanned: scannedPending.authoritative
+      ? scannedPending.emails.length
+      : null,
+    seat_pending_hint: hintPending,
+    // Nợ suất suy từ cặp số DB sau khi trừ người đã nhận lời mời mà sync chưa
+    // biết. Lệch `seat_pending_hint` = đúng số người đang ở giữa hai trạng thái.
+    seat_pending_hint_debt: hintDebt,
+    seat_hint_occupied: seatHint?.occupied ?? null,
+    seat_pending_scan_skipped: scannedPending.reason,
     seat_needed: need,
     seat_uncertain: check.uncertain,
   };
   console.log(
     `${LOG} cần ${need} suất, đang trống ${freeReal}/${before.total} ` +
-      `(đã gán ${before.assigned} + ${pendingDebt} lời mời đang chờ)` +
+      `(đã gán ${before.assigned} + ${pendingDebt} lời mời đang chờ, nguồn ` +
+      `${scannedPending.authoritative ? "tab Lời mời của ChatGPT" : `dashboard — ${scannedPending.reason}`})` +
       (check.uncertain
-        ? ` — hai nguồn lệch, quyết định theo tổng thấp hơn (${before.total}), dashboard nhận ${check.ratioTotal ?? before.total}`
+        ? ` — bộ đếm lệch dòng tỉ lệ, giữ tổng theo dòng tỉ lệ (${check.ratioTotal ?? before.total}), tổng dè dặt ${check.safeTotal ?? before.total}, CẤM mua`
         : ""),
   );
 
   // ── Đủ suất → mời luôn ──────────────────────────────────────────────────
-  // Kể cả khi bộ đếm lệch dòng tỉ lệ: `before.total` khi đó đã là tổng THẤP HƠN
-  // trong hai số, thấy vẫn còn trống nghĩa là còn trống thật. Mời không tiêu tiền
-  // nên số chưa chắc cũng không hại — chỉ cấm MUA theo nó (nhánh dưới).
+  // Kể cả khi bộ đếm lệch dòng tỉ lệ: `before.total` là tổng của DÒNG TỈ LỆ, tức
+  // số suất workspace ĐANG giữ — đúng số cho câu hỏi "mời thêm được không". Mời
+  // không tiêu tiền nên số chưa chắc cũng không hại, và nếu nó sai thật thì chặn
+  // cuối ở `execute-invite-inner` (nhãn nút "Mua suất người dùng và gửi lời mời")
+  // vẫn dừng trước khi bấm. Chỉ cấm MUA theo nó (nhánh dưới).
   if (freeReal >= need) {
     return { ok: true, skipped: false, data: { ...baseData, seat_purchased: 0 } };
   }
 
   // ── Thiếu → mua bù ──────────────────────────────────────────────────────
-  const shortfall = need - freeReal;
+  // KHÔNG lấy `need − freeReal`: `freeReal` kẹp sàn ở 0 nên khi workspace đang ÂM
+  // CHỖ (đã gán + lời mời chờ > tổng suất) thì phần âm bị nuốt mất ⇒ mua hụt đúng
+  // bằng phần đó. Ca thật CHATGPT PRO 24/8/2026 (60 suất, 60 đã gán, 1 lời mời
+  // chờ, mời thêm 1): đường cũ ra 1, đúng phải là 2 — một suất cho người đang
+  // chờ, một cho email mới (user chốt). Xem `seatsToBuy`.
+  const shortfall = seatsToBuy(before.total, before.assigned, pendingDebt, need);
 
   // Số chưa chắc thì TUYỆT ĐỐI không mua: bộ đếm và dòng tỉ lệ đang nói hai tổng
   // khác nhau, mua theo số sai là mất tiền thật (mà tiền đã trừ thì không đòi lại
@@ -391,7 +454,9 @@ export async function ensureSeatsForInvite(
   );
 
   if (derived) {
-    // free mới = freeReal + shortfall = need → đủ đúng số cần, khỏi so lại.
+    // `shortfall` được tính sao cho `tổng + shortfall = đã gán + nợ suất + need`
+    // (xem `seatsToBuy`), nên chỗ trống mới ĐÚNG BẰNG `need` — kể cả ca workspace
+    // đang âm chỗ. Khỏi phải đọc lại để so.
     const totalAfter = before.total + shortfall;
     console.log(
       `${LOG} mua xong ${shortfall} suất (bộ đếm ${before.total} → ${totalAfter}), ` +

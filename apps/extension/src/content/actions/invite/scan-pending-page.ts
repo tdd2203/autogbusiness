@@ -32,8 +32,13 @@ export type PendingScanResult = {
   pages: number;
 };
 
-/** Email hiển thị trong VÙNG DANH SÁCH (đã loại toast/dialog) của trang hiện tại. */
-function emailsInListRegion(): Set<string> {
+/**
+ * Email hiển thị trong VÙNG DANH SÁCH (đã loại toast/dialog) của trang hiện tại.
+ *
+ * Xuất khẩu cho `count-pending-invites.ts` — bước chốt suất cần ĐẾM cả tab "Lời
+ * mời đang chờ", không chỉ tra vài email đã biết.
+ */
+export function emailsInListRegion(): Set<string> {
   const root = document.querySelector("main, [role='main']") ?? document.body;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const found = new Set<string>();

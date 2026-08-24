@@ -43,22 +43,23 @@ export type SeatCheckResult = {
   /** Giá trị bộ đếm `[−] n [+]` — đối chiếu chéo với `availability.total`. */
   stepperTotal: number | null;
   /**
-   * Tổng suất ĐANG CÓ theo DÒNG TỈ LỆ ("147/151 đã gán" → 151) — chưa bị hạ
-   * xuống theo bộ đếm khi hai nguồn lệch.
+   * Tổng suất ĐANG CÓ theo DÒNG TỈ LỆ ("147/151 đã gán" → 151).
    *
-   * Đây là con số DASHBOARD phải hiển thị: nó là số suất workspace ĐANG giữ ở
-   * thời điểm này. Bộ đếm có thể thấp hơn khi workspace có lượt gỡ hẹn hiệu lực
-   * kỳ sau (hộp ghi "Đang chờ 1 lượt gỡ" → bộ đếm 150 trong khi đang có 151).
-   * Ngược lại `availability.total` cố tình lấy số THẤP HƠN vì nó dùng để quyết
-   * định còn chỗ / có phải mua thêm không — chỗ đó thà thiếu còn hơn thừa.
+   * `availability.total` LUÔN bằng số này — kể cả khi bộ đếm nói khác. Xem khối
+   * chú thích ở cuối `checkSeatAvailability`.
    */
   ratioTotal: number | null;
+  /**
+   * Tổng DÈ DẶT = số THẤP HƠN giữa bộ đếm và dòng tỉ lệ. Bằng `ratioTotal` khi
+   * hai nguồn khớp. CHỈ để hiển thị/chẩn đoán: mọi quyết định "còn chỗ không"
+   * dùng `availability.total`, còn quyết định MUA thì `uncertain` đã cấm hẳn.
+   */
+  safeTotal: number | null;
   /** Mô tả vì sao không đọc được (null nếu đọc được). */
   error: string | null;
   /**
    * Bộ đếm và dòng tỉ lệ nói hai tổng KHÁC NHAU (đã chờ ổn định mà vẫn lệch).
-   * `availability` khi đó lấy tổng THẤP HƠN — an toàn cho việc quyết định còn
-   * trống hay không. Nhưng KHÔNG được dùng để quyết định MUA: xem `ensure-seats.ts`.
+   * KHÔNG được dùng để quyết định MUA: xem `ensure-seats.ts`.
    */
   uncertain: boolean;
   /**
@@ -68,6 +69,33 @@ export type SeatCheckResult = {
    */
   modalClosed: boolean;
 };
+
+/**
+ * Chốt hai con số tổng suất từ hai nguồn của hộp "Quản lý suất".
+ *
+ * @param ratioTotal tổng theo DÒNG TỈ LỆ ("148/151 đã gán" → 151) — số suất
+ *   workspace ĐANG giữ ở thời điểm này.
+ * @param stepperTotal tổng theo bộ đếm `[−] n [+]`, hoặc null khi không định vị
+ *   được bộ đếm.
+ * @returns `total` = số dùng cho MỌI quyết định "còn chỗ không" (luôn là dòng tỉ
+ *   lệ); `safeTotal` = số thấp hơn, chỉ để hiển thị/chẩn đoán; `uncertain` = hai
+ *   nguồn lệch ⇒ CẤM mua (`ensure-seats.ts`).
+ *
+ * Xuất khẩu để test được — đây là đường quyết định dính tới tiền.
+ */
+export function resolveSeatTotals(
+  ratioTotal: number,
+  stepperTotal: number | null,
+): { total: number; safeTotal: number; uncertain: boolean } {
+  if (stepperTotal === null || stepperTotal === ratioTotal) {
+    return { total: ratioTotal, safeTotal: ratioTotal, uncertain: false };
+  }
+  return {
+    total: ratioTotal,
+    safeTotal: Math.min(stepperTotal, ratioTotal),
+    uncertain: true,
+  };
+}
 
 /** Dialog đang mở chứa nội dung modal "Quản lý suất". */
 function findSeatModal(): HTMLElement | null {
@@ -136,6 +164,7 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
       availability: null,
       stepperTotal: null,
       ratioTotal: null,
+      safeTotal: null,
       error: null,
       uncertain: false,
       modalClosed: true,
@@ -172,6 +201,7 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
       availability: null,
       stepperTotal: null,
       ratioTotal: null,
+      safeTotal: null,
       error:
         `Đã bấm 'Quản lý số suất' 2 lần nhưng modal không mở sau ` +
         `${(MODAL_OPEN_TIMEOUT_MS * 2) / 1000}s.`,
@@ -215,6 +245,7 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
       availability: null,
       stepperTotal,
       ratioTotal: null,
+      safeTotal: null,
       error:
         "Modal 'Quản lý suất' mở nhưng không đọc được dòng '<đã gán>/<tổng> đã gán'. " +
         "Có thể ChatGPT đổi cách hiển thị.",
@@ -227,30 +258,35 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
   // cho hai bên `SEAT_CROSSCHECK_SETTLE_MS` để ổn định mà vẫn lệch, nên đây là
   // lệch THẬT chứ không phải bắt trúng nhịp render dở.
   //
-  // Lệch KHÔNG còn là lỗi chết task (user 2026-08-24 — ca thật: bộ đếm 150, dòng
-  // tỉ lệ 151, lặp lại y hệt mọi lần chạy nên chờ thêm bao lâu cũng vô ích; hộp
-  // "Quản lý suất" của workspace này có thay đổi hẹn hiệu lực kỳ sau nên hai chỗ
-  // vốn nói hai kỳ khác nhau). Xử lý: lấy tổng THẤP HƠN rồi gắn cờ `uncertain`.
-  //  - Quyết định "còn trống không" với tổng thấp hơn là an toàn: cùng lắm là
-  //    tưởng thiếu suất chứ không tưởng thừa.
-  //  - Quyết định MUA thì vẫn CẤM — mua theo số không chắc là mất tiền thật.
-  //    `ensure-seats.ts` chặn ở đó.
-  // Giữ lại tổng của DÒNG TỈ LỆ trước khi (có thể) hạ xuống theo bộ đếm — đây là
-  // số suất workspace ĐANG có, tức số dashboard phải hiển thị. Xem `ratioTotal`.
+  // Lệch KHÔNG phải lỗi chết task, và cũng KHÔNG được hạ tổng xuống theo bộ đếm
+  // nữa (user 2026-08-24 — ca GPT1). Lịch sử của chỗ này:
+  //   - Bản đầu: lệch ⇒ chết task.
+  //   - Bản hai: lệch ⇒ lấy `min(bộ đếm, dòng tỉ lệ)` cho MỌI quyết định, vì
+  //     "tưởng thiếu suất còn hơn tưởng thừa".
+  // Bản hai làm GPT1 KẸT VĨNH VIỄN: bộ đếm 150, dòng tỉ lệ 151 (workspace có lượt
+  // hạ suất hẹn hiệu lực kỳ sau nên hai chỗ nói hai KỲ khác nhau — lệch này lặp
+  // lại y hệt mọi lần chạy, chờ bao lâu cũng vô ích). Thực tế còn 1 suất trống,
+  // nhưng hạ tổng về 150 ⇒ tính ra 0 ⇒ đòi mua ⇒ `uncertain` cấm mua ⇒ mọi lệnh
+  // mời cần suất trên workspace này chết, lần nào cũng vậy (maitran.hy
+  // 24/8: 16:20 và 16:28, cùng một `FAILED_UI_CHANGED`).
+  //
+  // Nay: `availability.total` LUÔN là dòng tỉ lệ — đó mới là số suất workspace
+  // ĐANG giữ ở thời điểm này, tức số đúng cho câu hỏi "mời thêm được không". Bộ
+  // đếm nói về kỳ sau, không phải bây giờ.
+  //  - MUA vẫn CẤM khi lệch (`ensure-seats.ts`): mua theo số không chắc là mất
+  //    tiền thật, mà tiền đã trừ thì không đòi lại được.
+  //  - Rủi ro còn lại của việc mời theo số cao hơn — nếu dòng tỉ lệ mới là số
+  //    sai — đã có CHẶN CUỐI đỡ: trước khi bấm nút gửi, `execute-invite-inner`
+  //    đọc nhãn nút, thấy "Mua suất người dùng và gửi lời mời" thì DỪNG, không
+  //    bấm. Tức sai về phía rộng chỉ tốn một task hỏng, không tiêu tiền.
   const ratioTotal = availability.total;
-  let uncertain = false;
-  if (stepperTotal !== null && stepperTotal !== availability.total) {
-    uncertain = true;
-    const total = Math.min(stepperTotal, availability.total);
+  const { safeTotal, uncertain } = resolveSeatTotals(ratioTotal, stepperTotal);
+  if (uncertain) {
     console.warn(
-      `${LOG} bộ đếm ${stepperTotal} ≠ dòng tỉ lệ ${availability.total} sau ` +
-        `${SEAT_CROSSCHECK_SETTLE_MS / 1000}s → lấy tổng thấp hơn (${total}), cấm mua theo số này`,
+      `${LOG} bộ đếm ${stepperTotal} ≠ dòng tỉ lệ ${ratioTotal} sau ` +
+        `${SEAT_CROSSCHECK_SETTLE_MS / 1000}s → GIỮ tổng theo dòng tỉ lệ ` +
+        `(${ratioTotal}, tổng dè dặt ${safeTotal}), nhưng CẤM mua theo số này`,
     );
-    availability = {
-      total,
-      assigned: availability.assigned,
-      free: Math.max(0, total - availability.assigned),
-    };
   }
 
   console.log(
@@ -263,6 +299,7 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
     availability,
     stepperTotal,
     ratioTotal,
+    safeTotal,
     error: null,
     uncertain,
     modalClosed: closed,

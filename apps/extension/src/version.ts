@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.13.5";
+export const VERSION = "0.13.6";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,23 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.13.6",
+    date: "2026-08-24",
+    kind: "fix",
+    summary:
+      "Lệnh mời không còn chết oan vì 'thiếu suất' khi workspace vẫn còn chỗ: đếm lời mời đang chờ ngay trên ChatGPT, và không hạ tổng suất xuống theo bộ đếm nữa.",
+    details: [
+      "Ca thật GPT1: maitran.hy hết hạn, đã gỡ sạch khỏi ChatGPT lúc 14:31, gia hạn xong mời lại lúc 16:20 và 16:28 — cả hai lần chết y hệt nhau ở bước chốt suất ('Thiếu 1 suất... bộ đếm 150, dòng tỉ lệ khác'), trong khi màn hình ChatGPT nói còn trống 1 suất. Chạy lại bao nhiêu lần cũng ra đúng như vậy.",
+      "Sự thật: 151 suất, 148 đã gán, 2 lời mời đang chờ → còn trống ĐÚNG 1. Bản cũ tính ra 0 vì sai cả hai chiều, mỗi chiều mất đúng 1 suất.",
+      "Sai chiều thứ nhất — tổng suất: bộ đếm của hộp 'Quản lý suất' nói 150, dòng tỉ lệ nói 151 (workspace này có lượt hạ suất hẹn hiệu lực KỲ SAU nên hai chỗ nói hai kỳ khác nhau, lệch vĩnh viễn). Bản cũ lấy số thấp hơn cho mọi quyết định. Nay tổng LUÔN theo dòng tỉ lệ — đó mới là số suất đang giữ HÔM NAY. Mua thì vẫn cấm khi hai số lệch.",
+      "An toàn của việc đó: nếu dòng tỉ lệ mới là số sai thì chặn cuối vẫn đỡ — trước khi bấm nút gửi, extension đọc nhãn nút, thấy 'Mua suất người dùng và gửi lời mời' là dừng. Sai về phía rộng chỉ tốn một lệnh hỏng, không tiêu tiền.",
+      "Sai chiều thứ hai — nợ suất của lời mời đang chờ: bản cũ lấy con số này từ dashboard, đếm 3, trong khi ChatGPT chỉ còn 2. Chênh đúng một bản ghi ma: lucrativoa2 mời 28/7, gần một tháng không ai bấm nhận, lời mời trên ChatGPT đã chết mà dashboard vẫn để 'Chờ tham gia'. Mỗi bản ghi ma như vậy ăn oan một suất và giết mọi lệnh mời sau đó.",
+      "Nay bước chốt suất tự sang tab 'Lời mời đang chờ' ĐẾM TẬN NƠI. Chỉ khi không vào được tab, hoặc danh sách nhiều hơn 1 trang (quét DOM không thấy hết), mới quay về con số của dashboard — số đó đếm thừa, mà thừa thì cùng lắm là mua dư, còn thiếu là mời mù vào chỗ không có.",
+      "Đường rơi về dashboard cũng hết đếm thừa: người vừa BẤM NHẬN lời mời đã nằm trong ô 'đã gán' của ChatGPT trong khi hệ thống còn để 'Chờ tham gia' tới lần đồng bộ sau, cộng thẳng là đếm họ hai lần. Nay đối chiếu với tổng số email hệ thống đã phát ra — mọi email đều vào bằng lệnh của dashboard nên số người ChatGPT giữ không bao giờ vượt quá đó — và trừ phần chênh ra.",
+      "Kết quả task ghi rõ nợ suất lấy từ đâu (seat_pending_source: tab ChatGPT hay dashboard) để lần sau truy ngược được.",
+    ],
+  },
   {
     version: "0.13.5",
     date: "2026-08-24",
