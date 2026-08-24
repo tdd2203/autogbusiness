@@ -14,6 +14,7 @@
  */
 
 import { sleep } from "../../human";
+import { reportProgress } from "../../progress";
 import { checkSeatAvailability } from "../purchase-seat/check-seat-availability";
 import {
   MAX_QUANTITY,
@@ -77,13 +78,20 @@ function membersListReady(): boolean {
  * nên task chạy tiếp được tới bước mời.
  */
 async function softReloadMembersPage(): Promise<void> {
+  // `spaFirst`: đổi URL bằng pushState trước, chỉ click link khi trang không chịu
+  // render. Hàm này CHỈ được gọi SAU KHI ĐÃ MUA SUẤT — tiền đã trừ thật — nên
+  // tuyệt đối không được để cú điều hướng làm rời trang: rời trang là kênh với
+  // background đứt (back/forward cache), kết quả không về được, dashboard mất dấu
+  // khoản vừa mua. Xem `external-invites/navigate.ts` và `background/content-ready.ts`.
+  const opts = { spaFirst: true } as const;
   await navigateTo(
     BILLING_PATH,
     () => location.pathname.includes(BILLING_PATH),
     10_000,
+    opts,
   );
   await sleep(POST_NAV_RENDER_MS);
-  await navigateTo(MEMBERS_PATH, membersListReady, 10_000);
+  await navigateTo(MEMBERS_PATH, membersListReady, 10_000, opts);
   await sleep(POST_NAV_RENDER_MS);
 }
 
@@ -396,6 +404,19 @@ export async function ensureSeatsForInvite(
   if (!after || after.free < need) {
     reloadedOnce = true;
     console.log(`${LOG} đọc lần 1 vẫn thiếu → tải lại trang rồi đọc lại`);
+    // Ghi DẤU VẾT trước khi điều hướng: progress đi content → background →
+    // backend nên nó nằm lại trong DB kể cả khi lần điều hướng ngay sau đây làm
+    // đứt kênh và task chết. Không có dòng này thì "đã mua N suất, tiền đã trừ"
+    // chỉ tồn tại trong `result` — mà `result` chỉ về khi task chạy tới cuối.
+    await reportProgress(
+      taskId,
+      {
+        phase: "seat-purchased",
+        message:
+          `Đã mua ${shortfall} suất (tiền đã trừ trên ChatGPT) — đang tải lại trang để đọc lại số suất...`,
+      },
+      true,
+    );
     await softReloadMembersPage();
     recheck = await checkSeatAvailability();
     after =
