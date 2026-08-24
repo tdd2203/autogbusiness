@@ -11,7 +11,7 @@ import { setExternalInvites } from "../external-invites/set-toggle";
 import { locatePendingRow } from "../revoke/locate-pending-row";
 import { revokeInvite } from "../revoke";
 import { clickTabAndWait } from "../sync";
-import { ensureSeatsForInvite } from "./ensure-seats";
+import { ensureSeatsForInvite, type SeatHint } from "./ensure-seats";
 import { executeInviteInner } from "./execute-invite-inner";
 import { findInviteOpenButton } from "./finders/find-invite-open-button";
 import { scanPendingForEmails } from "./scan-pending-page";
@@ -137,6 +137,7 @@ export async function executeInvite(
   externalReady = false,
   reinvite = false,
   newSeatCount?: number,
+  seatHint?: SeatHint,
 ): Promise<ExecuteActionResponse> {
   console.log(
     `[autogpt-invite] START ${emails.length} email(s) role=${role} verifiedDomain=${verifiedDomain ?? "(chưa cấu hình)"} externalReady=${externalReady} reinvite=${reinvite} pathname=${location.pathname}`,
@@ -200,7 +201,7 @@ export async function executeInvite(
           `(${emails.length - need} email đang là thành viên, đã giữ suất sẵn)`,
       );
     }
-    const seats = await ensureSeatsForInvite(taskId, need);
+    const seats = await ensureSeatsForInvite(taskId, need, seatHint);
     seatData = seats.data;
     if (!seats.ok) {
       console.warn(`[autogpt-invite] DỪNG trước khi mời: ${seats.error_message}`);

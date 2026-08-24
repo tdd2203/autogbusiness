@@ -221,7 +221,10 @@ def paste_billing_invoice(
 
     Thay cho việc extension scrape trang chi tiết Stripe. Lưu hoá đơn vào JSONB
     `billing_invoices` (merge theo invoice_number / date+amount, bảo toàn phí NHẬP
-    TAY), set `renewal_date` = period_end, `seat_total`/`seat_used` = quantity.
+    TAY) + set `renewal_date` = period_end.
+
+    KHÔNG set `seat_total`/`seat_used` — số ghế trên hoá đơn là số của KỲ đó, dán
+    hoá đơn cũ sẽ kéo tổng suất về quá khứ (xem chú thích trong thân hàm).
     """
     if body.quantity is None or body.total_vnd is None or body.period_end is None:
         raise HTTPException(
@@ -294,11 +297,22 @@ def paste_billing_invoice(
             "after": body.period_end.isoformat(),
         }
         ws.renewal_date = body.period_end
-    # seat_total/seat_used = số ghế dòng "(per seat)" (= ghế đã thanh toán kỳ này).
-    for field in ("seat_total", "seat_used"):
-        if getattr(ws, field) != body.quantity:
-            changes[field] = {"before": getattr(ws, field), "after": body.quantity}
-            setattr(ws, field, body.quantity)
+    # KHÔNG đụng vào `seat_total`/`seat_used` (user 2026-08-24).
+    #
+    # `body.quantity` là số ghế GHI TRÊN HOÁ ĐƠN — số ghế tại thời điểm CHỐT hoá
+    # đơn đó, không phải số suất workspace đang có. Dán hoá đơn CŨ (admin dán lại
+    # cả lịch sử để đủ báo cáo tài chính) sẽ kéo tổng suất về quá khứ: ca thật
+    # GPT1 13/8/2026 dán 3 hoá đơn liên tiếp → seat_total nhảy 151 → 2 → 102 →
+    # 148 và đứng ở 148 suốt 11 ngày, trong khi ChatGPT đang có 151.
+    #
+    # Tổng suất chỉ nhận từ chỗ ĐỌC TẬN NƠI trên ChatGPT: hộp "Quản lý suất"
+    # (`_absorb_seat_reading` — queue/completion.py) hoặc dòng tỉ lệ trang thanh
+    # toán (SYNC_BILLING). Số ghế của hoá đơn vẫn được lưu trong chính dòng hoá
+    # đơn (`quantity`) để tính tiền — không mất gì.
+    changes["invoice_quantity"] = {
+        "seats_on_invoice": body.quantity,
+        "workspace_seat_total_kept": ws.seat_total,
+    }
     if ws.billing_status != "PAID":
         changes["billing_status"] = {"before": ws.billing_status, "after": "PAID"}
         ws.billing_status = "PAID"

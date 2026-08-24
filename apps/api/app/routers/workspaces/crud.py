@@ -51,9 +51,16 @@ from ._shared import (
 
 @router.get("/whoami", response_model=WorkspaceOut)
 def extension_whoami(
+    db: Session = Depends(get_session),
     workspace: Workspace = Depends(require_extension_workspace),
 ) -> Workspace:
-    """Extension dùng để verify X-API-KEY hợp lệ + lấy thông tin workspace tương ứng."""
+    """Extension dùng để verify X-API-KEY hợp lệ + lấy thông tin workspace tương ứng.
+
+    `seat_used` tính LẠI như dashboard (`_apply_effective_seat_used`) chứ không
+    trả cột thô: popup extension in "Seat: x/y" nên phải khớp với con số admin
+    đang nhìn trên dashboard, không được là số scrape cũ của lần sync nào đó.
+    """
+    _apply_effective_seat_used(db, [workspace])
     return workspace
 
 

@@ -18,6 +18,7 @@ import {
 import { reportProgress } from "../../progress";
 import { SELECTORS, TEXT_FALLBACKS } from "../../selectors";
 import { querySelectorFirst } from "../../human";
+import { normalizeForMatch } from "../purchase-seat/modal2/money";
 import { clickAddMoreIfNeeded } from "./click-add-more";
 import {
   findVerifiedDomainWarning,
@@ -32,6 +33,32 @@ import {
 import { findInviteOpenButton } from "./finders/find-invite-open-button";
 import { findInviteSubmitButton } from "./finders/find-submit-button";
 import { setRole } from "./set-role";
+
+/**
+ * Nhãn nút "MUA suất và gửi lời mời" — nút CUỐI của hộp "Xem lại giao dịch mua"
+ * mà ChatGPT bật lên khi mời trong lúc THIẾU suất: mua ghế VÀ gửi lời mời trong
+ * MỘT cú bấm, trừ tiền thẻ ngay, không hỏi lại.
+ *
+ * Nhãn đó CHỨA "gửi lời mời" nên khớp luôn `TEXT_FALLBACKS.inviteSubmitButton`,
+ * và cũng khớp `[role="dialog"] button.btn-primary` — tức `findInviteSubmitButton`
+ * trả về đúng nó mà không hay biết.
+ *
+ * `ensure-seats.ts` giữ nguyên tắc "làm cho hộp đó KHÔNG BAO GIỜ xuất hiện"
+ * (đếm/mua đủ suất trước khi mời). Đây là lớp chặn CUỐI cho ca nguyên tắc đó
+ * hụt: số suất dashboard gửi kèm (`seatHint`) cao hơn thực tế nên luồng mời đi
+ * đường tắt, bỏ qua bước đếm tận nơi. Thà task chết còn hơn tiêu tiền workspace
+ * bằng một cú bấm không ai duyệt.
+ */
+const BUY_AND_INVITE_RE = /mua\s*suat|purchase\s*seat|buy\s*seat|购买席位/i;
+
+/** Tách khỏi phần DOM để test được bằng chuỗi thuần. */
+export function isBuyAndInviteLabel(text: string): boolean {
+  return BUY_AND_INVITE_RE.test(normalizeForMatch(text));
+}
+
+function isBuyAndInviteButton(el: HTMLElement): boolean {
+  return isBuyAndInviteLabel(el.textContent ?? "");
+}
 
 /**
  * Nút bị VÔ HIỆU HOÁ? ChatGPT disable "Gửi lời mời" khi còn banner "ngoài miền"
@@ -371,6 +398,28 @@ export async function executeInviteInner(
         "setting 'mời ngoài tên miền' chưa có hiệu lực server-side. Đã huỷ submit để tránh lời mời ảo.",
     };
   }
+  // ⚠️ CHẶN CUỐI: nút này có phải "Mua suất người dùng và gửi lời mời" không?
+  // Nếu đúng thì workspace đang THIẾU suất và cú bấm sẽ mua ghế bằng tiền thật
+  // (số suất + số tiền do ChatGPT tự quyết). Dừng hẳn — xem `isBuyAndInviteButton`.
+  if (isBuyAndInviteButton(enabledBtn)) {
+    const label = (enabledBtn.textContent ?? "").trim().slice(0, 80);
+    console.warn(
+      `[autogpt-invite] HUỶ submit: nút là "${label}" — mua suất kèm gửi lời mời.`,
+    );
+    return {
+      ok: false,
+      // Đúng nghĩa của `NOT_ENOUGH_SEATS`: workspace thiếu suất và extension
+      // KHÔNG mua bù — ở đây là không mua theo đường ChatGPT tự quyết số tiền.
+      error_code: "NOT_ENOUGH_SEATS",
+      error_message:
+        `Đã dừng TRƯỚC khi bấm: nút gửi của ChatGPT là "${label}" — bấm vào là MUA ` +
+        "suất bằng tiền thật rồi mới gửi lời mời. Nghĩa là workspace đang thiếu suất " +
+        "(số suất dashboard đang hiển thị cao hơn thực tế). Mua suất trên ChatGPT " +
+        "hoặc chạy Đồng bộ để cập nhật số suất, rồi chạy lại lệnh mời.",
+      data: { seat_check: "buy_and_invite_button", submit_clicked: false },
+    };
+  }
+
   await humanClick(enabledBtn);
   console.log("[autogpt-invite] submit clicked, verifying...");
 

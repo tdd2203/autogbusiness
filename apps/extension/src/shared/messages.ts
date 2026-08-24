@@ -42,6 +42,15 @@ export type ExecuteActionRequest =
        * luồng "mua kèm gửi lời mời" mà extension không kiểm soát được).
        */
       newSeatCount?: number;
+      /**
+       * Số suất dashboard đang biết (backend `_seat_hint`): `total` = seat_total
+       * đã scrape từ trang thanh toán (CÓ THỂ CŨ), `occupied` = member chưa bị gỡ
+       * (active + pending — lời mời đang chờ VẪN giữ suất).
+       *
+       * Dùng để BỎ QUA hẳn bước mở hộp "Quản lý suất" khi thấy chắc chắn còn thừa
+       * chỗ. Thiếu/không đủ dư → mở hộp đếm tận nơi như cũ.
+       */
+      seatHint?: { total: number | null; occupied: number };
     }
   | { kind: "REMOVE_MEMBER"; taskId: string; email: string }
   | {

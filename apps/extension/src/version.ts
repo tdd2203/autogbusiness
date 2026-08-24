@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.13.2";
+export const VERSION = "0.13.4";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,35 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.13.4",
+    date: "2026-08-24",
+    kind: "feature",
+    summary:
+      "Bớt phải mở hộp 'Quản lý suất' — đã chắc còn thừa chỗ thì mời thẳng. Và extension chỉ dùng tối đa 2 tab của riêng nó, chạy được 2 lệnh cùng lúc.",
+    details: [
+      "Sáng 24/8 có 8 lệnh mời chết liên tiếp mà không lệnh nào tới được bước mời — tất cả kẹt ở khâu đếm suất, trong khi workspace vẫn thừa suất: 4 lần hộp 'Quản lý suất' bấm rồi không mở, 4 lần bộ đếm (150) và dòng tỉ lệ (151) nói hai số khác nhau.",
+      "Đường tắt: số thành viên đã in sẵn trên trang ('146 thành viên'), dashboard thì biết tổng suất và số lời mời đang chờ. Hai số đó nói còn dư chỗ (dư hơn số cần ít nhất 1 suất) thì mời thẳng, không đụng vào hộp.",
+      "Bộ đếm lệch dòng tỉ lệ không còn giết cả lệnh mời: lấy số THẤP HƠN rồi đi tiếp — đủ suất thì cứ mời, vì mời không tiêu tiền. Chỉ cấm MUA theo số chưa chắc.",
+      "Bấm 'Quản lý số suất' mà hộp không mở thì bấm lại một lần nữa rồi mới bỏ cuộc. Mua bù xong cũng không mở lại hộp để đếm nữa — bộ đếm của chính hộp mua đã nói tổng mới.",
+      "Tab: extension đánh dấu tab của mình, tối đa 2 tab nên 2 lệnh chạy được cùng lúc. Tab admin bạn tự mở KHÔNG còn bị extension F5 hay đóng ngang. Tab đã mở sẵn thì F5 làm mới trước khi chạy; tab vừa mở thì thôi.",
+      "Riêng lệnh mời và mua suất vẫn chạy lần lượt: hai lệnh mời chồng nhau cùng thấy 'còn 1 suất trống' sẽ làm ChatGPT bật hộp 'Mua suất người dùng và gửi lời mời' — mua và mời trong một cú bấm, không biết trước hết bao nhiêu tiền.",
+    ],
+  },
+  {
+    version: "0.13.3",
+    date: "2026-08-24",
+    kind: "fix",
+    summary:
+      "Tổng suất trên dashboard ôm số cũ 11 ngày (148 trong khi ChatGPT đang có 151). Nay mỗi lần 'Đồng bộ từ ChatGPT' là đọc luôn hộp 'Quản lý suất' và ghi số thật về.",
+    details: [
+      "Gốc rễ nằm ở dashboard: dán lại hoá đơn cũ (để đủ báo cáo tài chính) kéo tổng suất về số ghế của kỳ hoá đơn đó — ngày 13/8 ba lần dán liên tiếp đẩy GPT1 từ 151 xuống 2, rồi 102, rồi 148 và đứng đó. Từ nay hoá đơn chỉ nói chuyện tiền, không được sửa số suất.",
+      "Lệnh 'Đồng bộ từ ChatGPT' giờ đọc thêm hộp 'Quản lý suất' ngay khi vừa quét xong tab Người dùng (đang đứng sẵn ở đó). Đọc không được thì thôi, giữ số cũ — không bao giờ vì việc này mà báo sync hỏng.",
+      "Số gửi về dashboard lấy theo DÒNG TỈ LỆ ('147/151 đã gán' → 151), tức số suất workspace ĐANG giữ. Bộ đếm '[−] 150 [+]' thấp hơn khi có lượt gỡ hẹn hiệu lực kỳ sau — số đó vẫn dùng để quyết định mua thêm (thà thiếu hơn thừa), nhưng hiển thị lên dashboard thì thành sai thực tế.",
+      "Lần mời đi ĐƯỜNG TẮT (không mở hộp vì đã chắc còn thừa chỗ) không còn được tính là 'đã đọc số': số nó gửi về chính là số dashboard vừa gửi xuống, ghi lại là vòng tròn — số cũ tự xác nhận chính nó và không bao giờ tươi lại.",
+      "Popup extension in 'Seat: x/y' theo cùng cách tính với dashboard: đã dùng = người dùng + lời mời đang chờ (lời mời chờ vẫn đang giữ suất).",
+    ],
+  },
   {
     version: "0.13.2",
     date: "2026-08-24",

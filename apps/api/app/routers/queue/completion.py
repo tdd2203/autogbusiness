@@ -440,6 +440,54 @@ def _flag_refund_debt(
         )
 
 
+def _absorb_seat_reading(workspace: Workspace, result: object) -> bool:
+    """Ghi lại số suất mà extension vừa ĐỌC TẬN NƠI trên ChatGPT vào workspace.
+
+    Task mời mở hộp "Quản lý suất" để đếm suất trước khi mời, và kèm số đọc được
+    vào `result` (`seat_total`/`seat_assigned`, hoặc `*_after` khi có mua bù).
+    Trước đây con số đó chỉ nằm trong result rồi thôi — `workspace.seat_total` chỉ
+    đổi khi chạy SYNC_BILLING, nên dashboard toàn ôm số cũ (24/8/2026: DB ghi 148
+    suất trong khi ChatGPT đã 150–151).
+
+    Ghi lại để LẦN MỜI SAU được BỎ QUA việc mở hộp: `_seat_hint` (members/invite.py)
+    gửi cặp số này xuống, extension thấy còn thừa chỗ thì mời thẳng. Đọc được lần
+    nào thì hint tươi lần đó — không đọc được cũng không sao, chỉ là mở hộp như cũ.
+
+    CHỈ nhận số ĐỌC TẬN NƠI. Khi extension đi đường tắt (`seat_check` =
+    "skipped_headroom") thì `seat_total` trong result CHÍNH LÀ hint ta vừa gửi
+    xuống — ghi lại là vòng tròn: số cũ tự xác nhận chính nó và mãi mãi không bao
+    giờ tươi lại. Bỏ qua scope đó.
+
+    Trả True nếu có cập nhật (caller commit chung).
+    """
+    if not isinstance(result, dict):
+        return False
+    # Task FAILED gắn seatData ở gốc `result`; task COMPLETED gộp vào `result.data`.
+    for scope in (result, result.get("data")):
+        if not isinstance(scope, dict):
+            continue
+        if scope.get("seat_check") == "skipped_headroom":
+            continue
+        # Số SAU khi mua bù mới là số cuối cùng — ưu tiên nó.
+        total = scope.get("seat_total_after")
+        assigned = scope.get("seat_assigned_after")
+        if not isinstance(total, int):
+            total = scope.get("seat_total")
+            assigned = scope.get("seat_assigned")
+        if not isinstance(total, int) or total <= 0:
+            continue
+        changed = False
+        if workspace.seat_total != total:
+            workspace.seat_total = total
+            changed = True
+        if isinstance(assigned, int) and 0 <= assigned <= total:
+            if workspace.seat_used != assigned:
+                workspace.seat_used = assigned
+                changed = True
+        return changed
+    return False
+
+
 @router.patch("/{item_id}", response_model=QueueOut)
 def update_task(
     item_id: UUID,
@@ -500,6 +548,12 @@ def update_task(
         db.commit()
         db.refresh(item)
         return item
+
+    # Số suất extension vừa đọc tận nơi → ghi vào workspace để lần mời sau khỏi
+    # phải mở lại hộp "Quản lý suất". Chạy cho CẢ COMPLETED lẫn FAILED: task chết
+    # ở bước sau vẫn có thể đã đếm suất xong. Xem `_absorb_seat_reading`.
+    if _absorb_seat_reading(workspace, body.result):
+        db.add(workspace)
 
     reconcile_note: str | None = None
     effective_status = body.status

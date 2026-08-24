@@ -193,6 +193,9 @@ def perform_invite_core(
         payload["new_seat_count"] = _count_new_invite_seats(
             db, workspace_id, invite_emails
         )
+        # Số suất dashboard đang biết → extension dùng để BỎ QUA bước mở hộp
+        # "Quản lý suất" khi thấy chắc chắn còn thừa chỗ. Xem `_seat_hint`.
+        payload["seat_hint"] = _seat_hint(db, workspace)
         if single and len(invite_entries) == 1:
             payload["email"] = invite_emails[0]
         else:
@@ -402,6 +405,30 @@ def _charge_renewals(
         )
         if fee > 0:
             wallet_service.charge_renew(db, user, m.id, fee, email=m.email)
+
+
+def _seat_hint(db: Session, workspace: Workspace) -> dict:
+    """Số suất dashboard đang biết về workspace, gửi kèm task mời.
+
+    Extension dùng cặp số này để quyết định có được BỎ QUA bước mở hộp "Quản lý
+    suất" hay không (user 2026-08-24: mở hộp đó liên tục vừa chậm vừa hay hỏng —
+    hộp không mở sau 15s, hoặc bộ đếm lệch dòng tỉ lệ → chết cả task mời).
+
+    - `total` = `seat_total` scrape từ trang thanh toán (SYNC_BILLING). Có thể CŨ.
+    - `occupied` = member CHƯA bị gỡ = active + pending. Lời mời ĐANG CHỜ vẫn giữ
+      suất trên ChatGPT nên PHẢI tính vào, không được chỉ đếm active.
+
+    Cả hai đều là gợi ý, không phải chân lý: extension chỉ bỏ qua hộp khi khoảng
+    thừa tính từ đây còn dư so với số suất cần, còn lại vẫn mở hộp đọc tận nơi.
+    """
+    occupied = int(
+        db.execute(
+            select(func.count())
+            .select_from(Member)
+            .where(Member.workspace_id == workspace.id, Member.status != "removed")
+        ).scalar_one()
+    )
+    return {"total": workspace.seat_total, "occupied": occupied}
 
 
 def _count_new_invite_seats(

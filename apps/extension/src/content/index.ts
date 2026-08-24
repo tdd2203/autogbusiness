@@ -92,6 +92,7 @@ async function dispatch(
         msg.externalReady ?? false,
         msg.reinvite ?? false,
         msg.newSeatCount,
+        msg.seatHint,
       );
     case "VERIFY_PENDING_INVITE":
       return executeVerifyPendingInvite(msg.taskId, msg.emails, msg.role);

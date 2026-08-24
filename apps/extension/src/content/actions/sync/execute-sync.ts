@@ -12,6 +12,7 @@ import {
 import { reportProgress } from "../../progress";
 import { getChatGPTUserInfo } from "../../scrapers/user";
 import { TEXT_FALLBACKS } from "../../selectors";
+import { checkSeatAvailability } from "../purchase-seat/check-seat-availability";
 import { clickTabAndWait, findTabButton } from "./click-tab-and-wait";
 import { MAX_SYNC_MS, scrapeCurrentTab } from "./scrape-current-tab";
 
@@ -236,6 +237,38 @@ export async function executeSync(
     };
   }
 
+  // ── Đọc số suất từ hộp "Quản lý suất" (CHỈ-ĐỌC, không bắt buộc) ─────────
+  // Tổng suất trên dashboard trước đây chỉ đổi khi chạy SYNC_BILLING hoặc khi có
+  // lệnh mời — nên nó ôm số cũ hàng tuần (24/8/2026: dashboard ghi 148 trong khi
+  // ChatGPT đang có 151). Nút "Đồng bộ từ ChatGPT" là thứ admin bấm thường xuyên
+  // nhất, và lúc này ta đang đứng sẵn ở tab "Người dùng" — nơi có nút "Quản lý số
+  // suất". Đọc thêm một nhịp ở đây là cách rẻ nhất để con số luôn khớp thực tế.
+  //
+  // HỎNG CŨNG KHÔNG SAO: đây là phần THÊM của sync, không phải mục đích của nó.
+  // Không đọc được thì bỏ trống, backend giữ nguyên số cũ. TUYỆT ĐỐI không để
+  // nhánh này làm task sync FAILED — nên nó nằm SAU mọi chốt lỗi (0 row, quá giờ)
+  // và sau khi `elapsedMs` đã chốt: đọc suất mất tới ~28s, tính vào đồng hồ sync
+  // thì một mẻ sync đang thành công có thể bị đẩy quá `MAX_SYNC_MS`.
+  let seatTotal: number | null = null;
+  let seatAssigned: number | null = null;
+  if (scrapeActive) {
+    try {
+      const seat = await checkSeatAvailability();
+      // `ratioTotal` = tổng của dòng "147/151 đã gán" = số suất workspace ĐANG
+      // giữ. Xem `check-seat-availability.ts` vì sao không lấy `availability.total`.
+      seatTotal = seat.ratioTotal;
+      seatAssigned = seat.availability?.assigned ?? null;
+      console.log(
+        `[autogpt-sync] suất đọc từ hộp 'Quản lý suất': ${seatAssigned ?? "?"}/${seatTotal ?? "?"}` +
+          (seat.error ? ` (lỗi: ${seat.error})` : ""),
+      );
+    } catch (e) {
+      console.warn(
+        `[autogpt-sync] không đọc được số suất (bỏ qua): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
   const userInfo = getChatGPTUserInfo();
   console.log(
     `[autogpt-sync] DONE: ${members.length} members (active+pending) in ${elapsedMs}ms, user=${userInfo.email}`,
@@ -255,6 +288,11 @@ export async function executeSync(
       // (bỏ qua reconcile kẻo xoá oan).
       invites_tab_ok: invitesTabFound,
       active_tab_ok: tab1Found,
+      // Số suất đọc tận nơi ở hộp "Quản lý suất" (null = không đọc được, backend
+      // giữ nguyên số cũ). Runner forward vào task.result → backend ghi vào
+      // workspace (`_absorb_seat_reading`).
+      seat_total: seatTotal,
+      seat_assigned: seatAssigned,
     },
   };
 }

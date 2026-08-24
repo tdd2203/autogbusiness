@@ -22,8 +22,26 @@ import {
 } from "../purchase-seat/constants";
 import { executePurchaseSeat } from "../purchase-seat/execute-purchase-seat";
 import { navigateTo } from "../external-invites/navigate";
+import { readMemberCountFromPage } from "./read-member-count";
 
 const LOG = "[autogpt-invite-seats]";
+
+/**
+ * Số suất dashboard đang biết, gửi kèm task (backend `_seat_hint`).
+ * `total` = seat_total (có thể CŨ), `occupied` = member chưa bị gỡ (active + pending).
+ */
+export type SeatHint = { total: number | null; occupied: number };
+
+/**
+ * Đòi dư thêm bằng này suất so với số cần thì mới dám bỏ qua hộp "Quản lý suất".
+ *
+ * `seat_total` của dashboard scrape từ trang thanh toán nên có thể CŨ. Cũ theo
+ * chiều THẤP thì vô hại (chỉ mở hộp thừa). Cũ theo chiều CAO mới nguy: workspace
+ * hạ số suất hẹn hiệu lực kỳ sau, tới kỳ thì tổng tụt xuống mà DB chưa biết. Dư
+ * 1 suất đủ nuốt trọn ca đó — và mọi ca lệch lớn hơn thì hết dư, tự khắc quay về
+ * mở hộp đếm tận nơi.
+ */
+const SEAT_HINT_SPARE = 1;
 const MEMBERS_PATH = "/admin/members";
 const BILLING_PATH = "/admin/billing";
 
@@ -37,6 +55,11 @@ export type EnsureSeatsResult = {
   /** Số liệu gắn vào result của task mời để dashboard ghi nhận. */
   data: Record<string, unknown>;
 };
+
+/** Số nguyên đọc từ payload result của luồng mua; mọi thứ khác → null. */
+function asInt(v: unknown): number | null {
+  return typeof v === "number" && Number.isInteger(v) ? v : null;
+}
 
 /** Trang phải ở tab "Người dùng" — hàng nút "Quản lý số suất" nằm trong tab đó. */
 function membersListReady(): boolean {
@@ -65,11 +88,35 @@ async function softReloadMembersPage(): Promise<void> {
 }
 
 /**
+ * Chắc chắn còn thừa chỗ chưa? Chỉ dựa vào những gì ĐỌC ĐƯỢC MÀ KHÔNG mở hộp:
+ * số thành viên in trên trang + cặp số dashboard gửi kèm.
+ *
+ * Số suất ĐANG BỊ CHIẾM lấy theo bên LỚN HƠN giữa hai nguồn:
+ *  - trang chỉ đếm người ĐÃ tham gia, bỏ sót lời mời đang chờ (vẫn giữ suất);
+ *  - DB có cả pending nhưng lại thiếu người vào ChatGPT bằng đường khác.
+ * Lấy max là cận trên của cả hai chiều sót.
+ */
+function headroomWithoutModal(
+  need: number,
+  hint: SeatHint | undefined,
+  pageMembers: number | null,
+): { enough: boolean; total: number | null; occupied: number | null; free: number | null } {
+  const total = hint?.total ?? null;
+  if (total === null) return { enough: false, total, occupied: null, free: null };
+  const occupied = Math.max(hint?.occupied ?? 0, pageMembers ?? 0);
+  if (occupied <= 0) return { enough: false, total, occupied: null, free: null };
+  const free = total - occupied;
+  return { enough: free >= need + SEAT_HINT_SPARE, total, occupied, free };
+}
+
+/**
  * @param need số suất MỚI mà lần mời này cần (số email sắp mời).
+ * @param seatHint cặp số dashboard đang biết — có thì thử bỏ qua hộp "Quản lý suất".
  */
 export async function ensureSeatsForInvite(
   taskId: string,
   need: number,
+  seatHint?: SeatHint,
 ): Promise<EnsureSeatsResult> {
   // Hàng nút "Quản lý số suất" thuộc tab "Người dùng". Tiền tố "Mời lại" trước
   // đó có thể đã chuyển sang tab "Lời mời đang chờ" (?tab=invites) — kiểm tra ở
@@ -80,6 +127,38 @@ export async function ensureSeatsForInvite(
     history.pushState({}, "", MEMBERS_PATH);
     window.dispatchEvent(new PopStateEvent("popstate"));
     await sleep(1200);
+  }
+
+  // ── ĐƯỜNG TẮT: thừa chỗ rõ ràng thì mời thẳng, KHÔNG mở hộp ─────────────
+  // Mở hộp "Quản lý suất" trước mỗi lần mời là chỗ hỏng nhiều nhất của luồng mời
+  // (24/8/2026: 8 task chết liên tiếp — 4 ca hộp không mở sau 15s, 4 ca bộ đếm
+  // lệch dòng tỉ lệ — trong khi workspace thừa suất). Trang đã in sẵn "146 thành
+  // viên"; dashboard gửi kèm tổng suất + số member chưa bị gỡ. Hai số đó nói còn
+  // dư thì không có lý do gì đụng vào hộp.
+  //
+  // Không đủ dư (hoặc dashboard chưa biết tổng suất) → rơi về đếm tận nơi như cũ.
+  const pageMembers = readMemberCountFromPage();
+  const room = headroomWithoutModal(need, seatHint, pageMembers);
+  if (room.enough) {
+    console.log(
+      `${LOG} bỏ qua hộp 'Quản lý suất': tổng ${room.total} suất, đang chiếm ` +
+        `${room.occupied} (trang ${pageMembers ?? "?"}, dashboard ${seatHint?.occupied ?? "?"}) ` +
+        `→ trống ${room.free}, cần ${need}. Mời thẳng.`,
+    );
+    return {
+      ok: true,
+      skipped: false,
+      data: {
+        seat_check: "skipped_headroom",
+        seat_total: room.total,
+        seat_assigned: room.occupied,
+        seat_free: room.free,
+        seat_needed: need,
+        seat_page_members: pageMembers,
+        seat_hint_occupied: seatHint?.occupied ?? null,
+        seat_purchased: 0,
+      },
+    };
   }
 
   const check = await checkSeatAvailability();
@@ -125,23 +204,54 @@ export async function ensureSeatsForInvite(
 
   const before = check.availability;
   const baseData: Record<string, unknown> = {
-    seat_check: "ok",
-    seat_total: before.total,
+    seat_check: check.uncertain ? "ok_uncertain" : "ok",
+    // `seat_total` là con số DASHBOARD hiển thị → lấy DÒNG TỈ LỆ ("147/151 đã
+    // gán" → 151), tức số suất workspace ĐANG giữ. Không lấy `before.total`: khi
+    // hai nguồn lệch thì đó là số đã bị hạ theo bộ đếm (workspace có lượt gỡ hẹn
+    // kỳ sau → bộ đếm 150 trong khi đang có 151) — dè dặt như vậy đúng cho việc
+    // quyết định mua, nhưng hiển thị lên dashboard thì thành sai thực tế.
+    seat_total: check.ratioTotal ?? before.total,
     seat_assigned: before.assigned,
+    // Tổng DÈ DẶT đã dùng để quyết định còn chỗ / mua thêm (khác `seat_total`
+    // đúng khi `seat_uncertain`). `seat_free` tính theo số này.
+    seat_total_safe: before.total,
     seat_free: before.free,
     seat_needed: need,
+    seat_uncertain: check.uncertain,
   };
   console.log(
-    `${LOG} cần ${need} suất, đang trống ${before.free}/${before.total} (đã gán ${before.assigned})`,
+    `${LOG} cần ${need} suất, đang trống ${before.free}/${before.total} (đã gán ${before.assigned})` +
+      (check.uncertain
+        ? ` — hai nguồn lệch, quyết định theo tổng thấp hơn (${before.total}), dashboard nhận ${check.ratioTotal ?? before.total}`
+        : ""),
   );
 
   // ── Đủ suất → mời luôn ──────────────────────────────────────────────────
+  // Kể cả khi bộ đếm lệch dòng tỉ lệ: `before.total` khi đó đã là tổng THẤP HƠN
+  // trong hai số, thấy vẫn còn trống nghĩa là còn trống thật. Mời không tiêu tiền
+  // nên số chưa chắc cũng không hại — chỉ cấm MUA theo nó (nhánh dưới).
   if (before.free >= need) {
     return { ok: true, skipped: false, data: { ...baseData, seat_purchased: 0 } };
   }
 
   // ── Thiếu → mua bù ──────────────────────────────────────────────────────
   const shortfall = need - before.free;
+
+  // Số chưa chắc thì TUYỆT ĐỐI không mua: bộ đếm và dòng tỉ lệ đang nói hai tổng
+  // khác nhau, mua theo số sai là mất tiền thật (mà tiền đã trừ thì không đòi lại
+  // được). Dừng, báo rõ để admin mở ChatGPT xem rồi mua tay.
+  if (check.uncertain) {
+    return {
+      ok: false,
+      skipped: false,
+      error_code: "SEAT_CHECK_FAILED",
+      error_message:
+        `Thiếu ${shortfall} suất (cần ${need}) nhưng số suất hiển thị KHÔNG KHỚP ` +
+        `(bộ đếm ${check.stepperTotal ?? "?"}, dòng tỉ lệ khác) — không dám mua theo số ` +
+        "chưa chắc. Mở ChatGPT kiểm tra rồi mua suất thủ công, sau đó chạy lại task.",
+      data: { ...baseData, seat_shortfall: shortfall, seat_purchased: 0 },
+    };
+  }
 
   // Cap 20/task là chốt cứng mirror backend. Mua 20 khi cần 25 thì vẫn không
   // mời đủ — tiền mất mà việc không xong, nên dừng hẳn thay vì mua một phần.
@@ -186,10 +296,61 @@ export async function ensureSeatsForInvite(
     };
   }
 
-  // ── Mua xong: ĐỌC LẠI ĐÚNG MỘT LẦN ──────────────────────────────────────
-  // Luồng mua báo ok nghĩa là "đã bấm Xác nhận mua và hộp đóng" — chưa chắc
-  // ChatGPT đã cộng suất xong, nên vẫn phải xác nhận bằng mắt. Nhưng CHỈ đọc
-  // MỘT lần: mở/đóng hộp nhiều lượt vừa chậm vừa thêm cơ hội hộp kẹt.
+  // ── Mua xong: SUY RA số suất mới từ chính bộ đếm của hộp mua ────────────
+  // Bộ đếm `[−] n [+]` trong hộp "Quản lý suất" CHÍNH LÀ tổng suất: `initial_seat`
+  // là tổng trước khi bấm +, `target_seat` là tổng sau khi bấm — và số đó đã được
+  // đối chiếu với thẻ tóm tắt của hộp "Xem lại giao dịch mua" rồi mới bấm "Xác
+  // nhận mua". Ta chưa mời ai nên số suất ĐANG GÁN không đổi → tổng mới lớn hơn
+  // số đang gán đúng bằng số suất trống mới.
+  //
+  // Biết chắc rồi thì KHÔNG mở lại hộp "Quản lý suất" nữa (user 2026-08-24): mỗi
+  // lượt mở/đóng vừa chậm vừa thêm một cơ hội hộp kẹt — mà hộp kẹt là lớp phủ
+  // chặn luôn cả bước mời phía sau.
+  const initialSeat = asInt(purchaseData.initial_seat);
+  const targetSeat = asInt(purchaseData.target_seat);
+
+  // Chỉ dám tin con số suy ra khi CẢ BA khớp: hộp xác nhận đã đóng (giao dịch đã
+  // đi qua), bộ đếm khởi điểm đúng bằng tổng vừa đọc được, và điểm đến đúng bằng
+  // tổng + số mua. Lệch bất kỳ chỗ nào = một trong hai bên đọc sai, hoặc admin
+  // khác vừa đổi suất giữa chừng → quay về đường đọc lại tận nơi.
+  const derived =
+    purchaseData.charge_modal_dismissed === true &&
+    initialSeat === before.total &&
+    targetSeat === before.total + shortfall;
+
+  if (derived) {
+    // free mới = before.free + shortfall = need → đủ đúng số cần, khỏi so lại.
+    const totalAfter = before.total + shortfall;
+    console.log(
+      `${LOG} mua xong ${shortfall} suất (bộ đếm ${before.total} → ${totalAfter}), ` +
+        `đã gán ${before.assigned} → đủ ${need} suất trống. Mời tiếp, KHÔNG mở lại hộp suất.`,
+    );
+    return {
+      ok: true,
+      skipped: false,
+      data: {
+        ...baseData,
+        seat_shortfall: shortfall,
+        seat_purchased: shortfall,
+        seat_purchase: purchaseData,
+        seat_total_after: totalAfter,
+        seat_assigned_after: before.assigned,
+        seat_free_after: totalAfter - before.assigned,
+        seat_after_source: "purchase_counter",
+        seat_reloaded_once: false,
+      },
+    };
+  }
+
+  // ── Số không khớp → ĐỌC LẠI ĐÚNG MỘT LẦN ────────────────────────────────
+  // Tới đây là bộ đếm của hộp mua không nói được tổng mới (hộp chưa đóng, hoặc
+  // lệch so với số đã đọc). Phải xác nhận bằng mắt. Nhưng CHỈ đọc MỘT lần:
+  // mở/đóng hộp nhiều lượt vừa chậm vừa thêm cơ hội hộp kẹt.
+  console.log(
+    `${LOG} không suy ra được tổng suất mới từ hộp mua ` +
+      `(bộ đếm ${initialSeat ?? "?"} → ${targetSeat ?? "?"}, đã đọc tổng ${before.total}, ` +
+      `hộp đóng=${purchaseData.charge_modal_dismissed === true}) → mở lại hộp đọc kiểm.`,
+  );
   await sleep(SEAT_SETTLE_AFTER_PURCHASE_MS);
   let recheck = await checkSeatAvailability();
   let after =
@@ -212,9 +373,12 @@ export async function ensureSeatsForInvite(
     seat_shortfall: shortfall,
     seat_purchased: shortfall,
     seat_purchase: purchaseData,
-    seat_total_after: after?.total ?? null,
+    // Như `seat_total` ở trên: dashboard nhận tổng của DÒNG TỈ LỆ, không nhận số
+    // đã bị hạ theo bộ đếm.
+    seat_total_after: after ? recheck.ratioTotal ?? after.total : null,
     seat_assigned_after: after?.assigned ?? null,
     seat_free_after: after?.free ?? null,
+    seat_after_source: "recheck",
     seat_reloaded_once: reloadedOnce,
   };
 
