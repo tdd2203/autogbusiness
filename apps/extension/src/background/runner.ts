@@ -18,7 +18,17 @@ import { getConfig } from "../shared/storage";
 import type { ExtensionConfig, QueueItem } from "../shared/types";
 import { runPaymentChain, scrapeInvoiceDetailInTab } from "./payment-chain";
 import { markAdminActivity, setRunnerBusy } from "./idle-close";
+import {
+  acquireSlot,
+  getSlotTabId,
+  releaseSlot,
+  replaceSlotTab,
+  setSlotTabId,
+  TAB_SLOTS,
+  type TabSlot,
+} from "./tab-pool";
 import { decideInviteOutcome, type SubmitEvidence } from "./invite-outcome";
+import { waitForFreshContent } from "./content-ready";
 import { shouldSalvageInvite } from "./invite-salvage";
 
 const RATE_LIMIT = {
@@ -51,7 +61,6 @@ type SyncMismatch = {
   unresolved_count: number;
 };
 
-const CHATGPT_TAB_MATCH = "https://chatgpt.com/admin/*";
 const CHATGPT_ADMIN_URL = "https://chatgpt.com/admin/members";
 // Trang "Ghi đè mỗi người dùng" — SET_USAGE_LIMIT thao tác ở đây (KHÁC /admin/members).
 const CHATGPT_USAGE_LIMIT_URL =
@@ -59,21 +68,21 @@ const CHATGPT_USAGE_LIMIT_URL =
 const TAB_LOAD_TIMEOUT_MS = 30_000;
 
 /**
- * Quy tắc quản lý tab chatgpt.com/admin (yêu cầu user 2026-06-19, REVISED
- * 2026-06-22, REVISED 2026-06-23 — TÁI DÙNG mặc định):
- *   - TÁI DÙNG tab MỚI NHẤT cho MỌI action khi đã có ≥1 tab admin. Trước khi dùng
- *     thì F5 (reload nếu đang ở `/admin/members`, hoặc nav về `/admin/members`
- *     nếu ở sub-page khác) để lấy DOM/server-state sạch + re-inject content script.
- *     KHÔNG mở tab mới, KHÔNG đóng tab.
- *   - Chỉ mở tab MỚI khi KHÔNG còn tab admin nào (0 tab).
- *   - Backstop chống phình: > ADMIN_TAB_HARD_MAX (≥4 tab — user chủ động mở quá
- *     nhiều) → tự đóng các tab CŨ nhất cho còn ADMIN_TAB_HARD_MAX (=3), rồi tái
- *     dùng tab mới nhất (F5).
- *   Lý do bỏ "≤2 tab → mở tab mới mỗi action" (v0.8.13–v0.8.20): batch nhiều lệnh
- *   GIỐNG NHAU (vd 30+ REMOVE_MEMBER) khiến mỗi task mở+đóng 1 tab → spam tab liên
- *   tục, vô ích. F5 tab cũ cho kết quả sạch tương đương tab mới mà không spam tab.
+ * Quy tắc quản lý tab chatgpt.com/admin — user chốt lại 2026-08-24 (thay quy tắc
+ * "tái dùng tab MỚI NHẤT" 2026-06-23):
+ *
+ *   - Extension ĐÁNH DẤU tab của mình: mỗi tab tự mở được ghi vào một Ô
+ *     (`tab-pool.ts`). Tối đa **2 ô** ⇒ tối đa 2 tab ⇒ **2 lệnh chạy đồng thời**.
+ *   - Tab admin do USER tự mở KHÔNG bị đụng tới: không F5, không điều hướng,
+ *     không đóng. (Trước đây runner tóm bất kỳ tab admin nào đang mở rồi F5 —
+ *     kể cả tab user đang thao tác dở — và idle-close đóng sạch mọi tab admin.)
+ *   - Ô đã có tab → **F5 làm mới dữ liệu trước khi chạy**. Ô trống → mở tab mới
+ *     (đã là dữ liệu mới, không F5 thêm).
+ *   - Action nào TỰ điều hướng/F5 ngay đầu luồng (SET_USAGE_LIMIT, PURCHASE_SEAT
+ *     skip-mode) → bỏ qua lần F5 này, khỏi load thừa.
+ *   - Task tiêu/mua suất (INVITE_MEMBER, PURCHASE_SEAT) vẫn chạy LẦN LƯỢT dù có
+ *     2 ô — xem `SEAT_EXCLUSIVE_TYPES`.
  */
-const ADMIN_TAB_HARD_MAX = 3;
 
 /**
  * Hard-cap cho vòng VERIFY_PENDING_INVITE (Phase 2 sau F5). Verify scrape có thể
@@ -341,44 +350,6 @@ async function selfHealIfStale(): Promise<boolean> {
 }
 
 /**
- * Lấy tất cả tab chatgpt.com/admin/* đang mở, sắp xếp CŨ → MỚI.
- * Dùng tab.id làm proxy "mới nhất" (Chrome cấp id tăng dần theo thời điểm tạo).
- */
-async function queryAdminTabs(): Promise<chrome.tabs.Tab[]> {
-  const tabs = await chrome.tabs.query({ url: CHATGPT_TAB_MATCH });
-  return tabs
-    .filter((t) => t.id !== undefined)
-    .sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
-}
-
-/**
- * Đóng bớt các tab admin CŨ nhất sao cho chỉ còn tối đa `keep` tab. Dùng trước
- * khi mở tab mới để giữ tổng số tab trong giới hạn. Không throw nếu đóng lỗi
- * (tab có thể đã đóng). Trả về danh sách tab còn lại (đã query lại).
- */
-async function pruneStaleAdminTabs(
-  tabs: chrome.tabs.Tab[],
-  keep: number,
-): Promise<chrome.tabs.Tab[]> {
-  if (tabs.length <= keep) return tabs;
-  const stale = tabs.slice(0, tabs.length - keep);
-  const staleIds = stale
-    .map((t) => t.id)
-    .filter((id): id is number => id !== undefined);
-  console.log(
-    `[autogpt-runner] ${tabs.length} admin tab — tự đóng ${staleIds.length} tab cũ (giữ ${keep}): ${staleIds.join(",")}`,
-  );
-  try {
-    await chrome.tabs.remove(staleIds);
-  } catch (e) {
-    console.warn(
-      `[autogpt-runner] đóng tab cũ lỗi (bỏ qua): ${e instanceof Error ? e.message : String(e)}`,
-    );
-  }
-  return queryAdminTabs();
-}
-
-/**
  * Đợi tab load xong (status='complete') hoặc timeout.
  * Cần thiết sau khi tabs.create / tabs.update để content script kịp inject
  * và DOM admin page render.
@@ -414,76 +385,92 @@ function waitForTabComplete(
 }
 
 /**
- * Đảm bảo có tab chatgpt.com/admin/members sạch cho action, theo quy tắc tab của
- * user (2026-06-19, REVISED 2026-06-23 — TÁI DÙNG mặc định, chỉ mở mới khi 0 tab):
- *   1. Đếm tab admin đang mở (sắp xếp cũ → mới).
- *   2. > ADMIN_TAB_HARD_MAX (≥4 tab) → đóng các tab CŨ nhất cho còn 3 (backstop
- *      chống phình khi user chủ động mở quá nhiều). ≤3 → KHÔNG đóng gì.
- *   3. Còn ≥1 tab → TÁI DÙNG tab MỚI NHẤT + F5 (reload nếu đang ở /admin/members,
- *      hoặc nav về /admin/members nếu ở sub-page khác), đợi load, verify /admin.
- *      KHÔNG mở tab mới, KHÔNG đóng tab. Đây là đường đi mặc định cho mọi action
- *      → batch nhiều lệnh giống nhau (vd 30+ REMOVE) KHÔNG còn spam mở/đóng tab.
- *   4. 0 tab → mở tab MỚI tới /admin/members.
- *   5. Tab dùng cho action verify URL vẫn ở /admin (redirect tới login = chưa
- *      đăng nhập ChatGPT) → trả null.
+ * Đảm bảo Ô `slot` có một tab chatgpt.com/admin/members dùng được cho action.
  *
- * Trả về tab dùng được hoặc null nếu user chưa đăng nhập ChatGPT.
+ * Quy tắc tab của user (2026-08-24 — thay quy tắc "tái dùng tab MỚI NHẤT" cũ):
+ *   1. Ô đã có tab (extension mở từ lần trước, tab vẫn sống):
+ *      - `preReload` → F5 làm mới dữ liệu TRƯỚC khi chạy. Đang ở /admin/members
+ *        SẠCH thì reload tại chỗ; ở trang/sub-tab khác thì điều hướng về URL
+ *        sạch — cũng là một lần load mới, mà lại rớt đúng tab "Người dùng"
+ *        (reload nguyên URL sẽ giữ `?tab=invites` do action trước để lại).
+ *      - `preReload=false` → dùng luôn. Dành cho action TỰ điều hướng/F5 ngay
+ *        đầu luồng: F5 ở đây chỉ là một lần load thừa.
+ *   2. Ô trống → mở tab MỚI. Tab mới nạp thẳng từ server nên đã là dữ liệu mới,
+ *      KHÔNG F5 thêm.
+ *   3. Tab bị redirect khỏi /admin (chưa đăng nhập ChatGPT) → trả null.
+ *
+ * TUYỆT ĐỐI không đụng tab admin do USER tự mở: chỉ tab nằm trong ô mới bị F5/
+ * điều hướng/đóng. Trước đây runner tóm bất kỳ tab admin nào đang mở rồi F5 —
+ * kể cả tab user đang thao tác dở.
  */
-async function ensureAdminTab(): Promise<chrome.tabs.Tab | null> {
-  let tabs = await queryAdminTabs();
+async function ensureAdminTab(
+  slot: TabSlot,
+  opts: { preReload: boolean },
+): Promise<chrome.tabs.Tab | null> {
+  const existingId = await getSlotTabId(slot);
 
-  // (2) Backstop chống phình: chỉ tự đóng khi VƯỢT hard-max (≥4) → còn 3.
-  if (tabs.length > ADMIN_TAB_HARD_MAX) {
-    tabs = await pruneStaleAdminTabs(tabs, ADMIN_TAB_HARD_MAX);
-  }
+  if (existingId !== null) {
+    let current: chrome.tabs.Tab | null = null;
+    try {
+      current = await chrome.tabs.get(existingId);
+    } catch {
+      current = null;
+    }
+    if (current) {
+      const url = current.url ?? "";
+      // URL "sạch" = đúng /admin/members, không mang ?tab=invites/requests và
+      // không phải sub-page. Chỉ khi đó F5 tại chỗ mới ra đúng tab Người dùng.
+      const onCleanMembers =
+        url.startsWith(CHATGPT_ADMIN_URL) &&
+        url.length === CHATGPT_ADMIN_URL.length;
 
-  // (3) Có ≥1 tab → tái dùng tab MỚI NHẤT + F5 (không mở mới, không đóng). Đây là
-  // hành vi MẶC ĐỊNH: tránh spam mở/đóng tab khi chạy batch nhiều lệnh giống nhau.
-  if (tabs.length >= 1) {
-    const newest = tabs[tabs.length - 1];
-    if (newest?.id !== undefined) {
-      const reusedId = newest.id;
-      const onMembers = newest.url?.includes("/admin/members") ?? false;
+      if (!opts.preReload && url.includes("/admin")) {
+        console.log(
+          `[autogpt-runner] ô ${slot}: dùng lại tab ${existingId} KHÔNG F5 (action tự làm mới trang)`,
+        );
+        return current;
+      }
+
       console.log(
-        `[autogpt-runner] ${tabs.length} tab admin — tái dùng tab mới nhất ${reusedId} + F5 (onMembers=${onMembers}), KHÔNG mở tab mới`,
+        `[autogpt-runner] ô ${slot}: tab ${existingId} — ${
+          onCleanMembers ? "F5 tại chỗ" : `điều hướng về ${CHATGPT_ADMIN_URL}`
+        } để làm mới dữ liệu`,
       );
-      if (onMembers) {
-        // Đang đúng trang → F5 thật để lấy DOM/server-state sạch.
-        await chrome.tabs.reload(reusedId);
+      if (onCleanMembers) {
+        await chrome.tabs.reload(existingId);
       } else {
-        // Ở sub-page khác → nav về /admin/members (chính là 1 lần load mới).
-        await chrome.tabs.update(reusedId, {
+        await chrome.tabs.update(existingId, {
           url: CHATGPT_ADMIN_URL,
           active: false,
         });
       }
-      const loaded = await waitForTabComplete(reusedId, TAB_LOAD_TIMEOUT_MS);
+      const loaded = await waitForTabComplete(existingId, TAB_LOAD_TIMEOUT_MS);
       if (!loaded || !loaded.url) {
-        console.warn("[autogpt-runner] tab tái dùng không load được sau F5");
+        console.warn(`[autogpt-runner] ô ${slot}: tab không load được sau F5`);
         return null;
       }
       if (!loaded.url.includes("/admin")) {
         console.warn(
-          `[autogpt-runner] tab tái dùng bị redirect khỏi /admin: ${loaded.url} — user chưa login ChatGPT`,
+          `[autogpt-runner] ô ${slot}: tab bị redirect khỏi /admin (${loaded.url}) — user chưa login ChatGPT`,
         );
         return null;
       }
-      console.log(
-        `[autogpt-runner] admin tab tái dùng OK: tab ${reusedId} ${loaded.url}`,
-      );
+      console.log(`[autogpt-runner] ô ${slot}: tab ${existingId} sẵn sàng ${loaded.url}`);
       return loaded;
     }
+    // Tab trong sổ đã bị đóng (user đóng / Chrome dọn) → xoá sổ, mở tab mới.
+    await setSlotTabId(slot, null);
   }
 
-  // (4) 0 tab admin → mở tab MỚI cho action này
   console.log(
-    `[autogpt-runner] mở tab admin MỚI ${CHATGPT_ADMIN_URL} (background) cho action`,
+    `[autogpt-runner] ô ${slot}: mở tab admin MỚI ${CHATGPT_ADMIN_URL} (nền) — dữ liệu đã mới, không F5`,
   );
   const created = await chrome.tabs.create({
     url: CHATGPT_ADMIN_URL,
     active: false,
   });
   if (created.id === undefined) return null;
+  await setSlotTabId(slot, created.id);
 
   const loaded = await waitForTabComplete(created.id, TAB_LOAD_TIMEOUT_MS);
   if (!loaded || !loaded.url) {
@@ -498,18 +485,100 @@ async function ensureAdminTab(): Promise<chrome.tabs.Tab | null> {
     return null;
   }
   console.log(
-    `[autogpt-runner] admin tab mới tạo OK: tab ${created.id} ${loaded.url}`,
+    `[autogpt-runner] ô ${slot}: tab mới ${created.id} sẵn sàng ${loaded.url}`,
   );
   return loaded;
 }
 
+/**
+ * Task có thể TIÊU hoặc MUA suất. Hai task loại này KHÔNG được chạy song song
+ * dù có 2 ô tab (user 2026-08-24 cho phép 2 lệnh đồng thời):
+ *
+ * Cả hai đều "đọc số suất trống → quyết định mua/mời" trên CÙNG một workspace.
+ * Chạy chồng nhau thì cả hai cùng đọc "còn 1 suất trống", cả hai cùng kết luận
+ * đủ, rồi lệnh sau mời vào chỗ đã bị lệnh trước lấy mất → ChatGPT bật hộp "Mua
+ * suất người dùng và gửi lời mời" (mua + mời trong một cú bấm, không biết trước
+ * hết bao nhiêu tiền) — đúng cái hộp mà cả thiết kế đếm-suất-trước sinh ra để
+ * tránh. Mọi loại task khác vẫn chạy song song bình thường.
+ */
+const SEAT_EXCLUSIVE_TYPES = new Set(["INVITE_MEMBER", "PURCHASE_SEAT"]);
+
+/** Ai đang giữ khoá suất (null = đang rảnh). */
+let seatGate: Promise<void> | null = null;
+
+/** Giữ khoá suất; trả về hàm nhả. Phải nhả trong `finally`. */
+async function lockSeatGate(): Promise<() => void> {
+  while (seatGate) await seatGate;
+  let release = (): void => {};
+  seatGate = new Promise<void>((resolve) => {
+    release = () => {
+      seatGate = null;
+      resolve();
+    };
+  });
+  return release;
+}
+
 async function pingContent(tabId: number): Promise<boolean> {
+  return (await readContentLoadId(tabId)) !== null;
+}
+
+/**
+ * `loadId` của content script đang trả lời trên tab, hoặc null nếu không ai trả
+ * lời. Content script cũ (extension chưa reload sau khi build) không gửi `loadId`
+ * → coi như chuỗi rỗng: vẫn "có người trả lời", chỉ mất khả năng phân biệt
+ * instance — đúng hành vi cũ, không tệ hơn.
+ */
+async function readContentLoadId(tabId: number): Promise<string | null> {
   try {
     const resp = await chrome.tabs.sendMessage(tabId, { kind: "PING" });
-    return Boolean(resp?.ok);
+    if (!resp?.ok) return null;
+    const loadId = (resp.data as { loadId?: unknown } | undefined)?.loadId;
+    return typeof loadId === "string" ? loadId : "";
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * Sau một lần runner ĐIỀU HƯỚNG tab: chờ tới khi content script TRẢ LỜI LÀ
+ * INSTANCE MỚI rồi mới cho gửi lệnh. Xem `content-ready.ts` để biết vì sao
+ * `waitForTabComplete` một mình là chưa đủ (trang cũ vẫn trả lời PING trong khe
+ * giữa "ra lệnh điều hướng" và "navigation commit", nhận lệnh xong mới tụt vào
+ * bfcache → kênh đứt giữa chừng).
+ *
+ * Hết giờ mà vẫn chỉ có instance CŨ trả lời → inject lại bằng `executeScript`
+ * (tạo instance mới, `loadId` mới) rồi thử lần cuối. Vẫn không được thì trả false
+ * — caller PHẢI dừng, tuyệt đối không gửi lệnh vào instance cũ.
+ */
+async function ensureFreshContentAfterNav(
+  tabId: number,
+  prevLoadId: string | null,
+  timeoutMs = 12_000,
+): Promise<boolean> {
+  const deps = {
+    ping: () => readContentLoadId(tabId),
+    now: () => Date.now(),
+    sleep,
+  };
+  let r = await waitForFreshContent(prevLoadId, timeoutMs, deps);
+  if (r.fresh) return true;
+  console.warn(
+    `[autogpt-runner] sau điều hướng, content script tab ${tabId} vẫn là instance CŨ ` +
+      `(${r.reason}, loadId=${r.loadId ?? "?"}) → inject lại rồi thử lần cuối`,
+  );
+  const ready = await ensureContentInjected(tabId);
+  if (!ready.ok) return false;
+  r = await waitForFreshContent(prevLoadId, 3_000, {
+    ...deps,
+    ping: () => readContentLoadId(ready.tabId),
+  });
+  if (!r.fresh) {
+    console.warn(
+      `[autogpt-runner] vẫn instance CŨ (${r.reason}) — DỪNG, không gửi lệnh vào trang sắp bị đóng băng`,
+    );
+  }
+  return r.fresh;
 }
 
 /**
@@ -668,6 +737,9 @@ async function ensureContentInjected(
       return { ok: false, tabId, diag };
     }
     newTabId = created.id;
+    // Ô đang trỏ tab vừa bị đóng → trỏ sang tab mới. Thiếu bước này thì ô giữ
+    // một tabId chết còn tab mới thành mồ côi (idle-close không dọn được).
+    await replaceSlotTab(tabId, newTabId);
     log(`Step 3 created tab ${newTabId}, đợi load...`);
     const recreated = await waitForTabComplete(newTabId, 20_000);
     log(`Step 3 wait load done, url=${recreated?.url ?? "?"} status=${recreated?.status ?? "?"}`);
@@ -790,6 +862,17 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
         typeof rawSeatCount === "number" && Number.isFinite(rawSeatCount) && rawSeatCount >= 0
           ? rawSeatCount
           : undefined;
+      // Gợi ý số suất (backend `_seat_hint`) → content bỏ qua bước mở hộp
+      // "Quản lý suất" khi thừa chỗ. Backend cũ chưa gửi → undefined.
+      const rawHint = p.seat_hint;
+      let seatHint: { total: number | null; occupied: number } | undefined;
+      if (rawHint && typeof rawHint === "object") {
+        const h = rawHint as Record<string, unknown>;
+        const total = typeof h.total === "number" && h.total > 0 ? h.total : null;
+        const occupied =
+          typeof h.occupied === "number" && h.occupied >= 0 ? h.occupied : null;
+        if (occupied !== null) seatHint = { total, occupied };
+      }
       return {
         kind: "INVITE_MEMBER",
         taskId: task.id,
@@ -797,6 +880,7 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
         role: (p.role as "owner" | "admin" | "member") ?? "member",
         verifiedDomain,
         newSeatCount,
+        seatHint,
         // Action "Mời lại": chạy tiền tố tìm-thu-hồi trước khi mời (payload.reinvite).
         reinvite: p.reinvite === true,
       };
@@ -1237,6 +1321,8 @@ async function reportToBackend(
             expected_total?: number | null;
             invites_tab_ok?: boolean;
             active_tab_ok?: boolean;
+            seat_total?: number | null;
+            seat_assigned?: number | null;
           }
         | undefined;
       const members = (data?.members ?? []) as Array<{
@@ -1403,6 +1489,12 @@ async function reportToBackend(
           // Đích danh email biến động sau sync → banner liệt kê thay đổi.
           created_emails: createdEmailsAggregated,
           removed_emails: removedEmailsAggregated,
+          // Số suất vừa đọc ở hộp "Quản lý suất" (null = không đọc được). Backend
+          // ghi vào workspace nên tổng suất trên dashboard tươi lại sau mỗi lần
+          // bấm "Đồng bộ từ ChatGPT" — xem `_absorb_seat_reading` (queue/completion.py).
+          seat_total: typeof data?.seat_total === "number" ? data.seat_total : null,
+          seat_assigned:
+            typeof data?.seat_assigned === "number" ? data.seat_assigned : null,
         },
       });
       return;
@@ -1689,24 +1781,47 @@ async function doRunUntilIdle(): Promise<{
     return { processed: 0, lastStatus: "self-heal-reloading" };
   }
 
+  // HAI luồng chạy song song, mỗi luồng giữ một ô tab (user 2026-08-24: "cho phép
+  // mở tối đa 2 tab để thực hiện lệnh, tức là có thể có 2 lệnh được thực hiện
+  // đồng thời"). `acquireSlot` là chốt chặn thật: có 2 ô nên nhiều nhất 2 task
+  // chạy cùng lúc, luồng thứ 3 (nếu sau này thêm) sẽ phải đợi.
+  //
+  // An toàn khi pick song song: `/api/v1/queue/next` chọn task bằng
+  // `SELECT ... FOR UPDATE SKIP LOCKED` nên hai luồng KHÔNG bao giờ nhận trùng
+  // một task. Riêng task tiêu/mua suất vẫn bị `SEAT_EXCLUSIVE_TYPES` ép chạy lần
+  // lượt — xem chú thích ở đó.
+  const MAX_TASKS_PER_DRAIN = 50;
   let processed = 0;
-  for (let i = 0; i < 50; i++) {
-    const r = await runOnce();
-    if (r.status === "idle") {
-      return { processed, lastStatus: r.status, lastDetail: r.detail };
+  let stopped = false;
+  let lastStatus = "idle";
+  let lastDetail: string | undefined;
+
+  const worker = async (): Promise<void> => {
+    while (!stopped && processed < MAX_TASKS_PER_DRAIN) {
+      const r = await runOnce();
+      lastStatus = r.status;
+      lastDetail = r.detail;
+      if (
+        r.status === "idle" ||
+        r.status === "no-config" ||
+        r.status === "unauthorized" ||
+        r.status === "network-error" ||
+        r.status === "no-admin-tab"
+      ) {
+        // Hết task, hoặc lỗi setup → dừng CẢ HAI luồng (luồng kia chạy nốt task
+        // đang dở rồi thoát, không nhận thêm).
+        stopped = true;
+        return;
+      }
+      processed += 1;
     }
-    if (
-      r.status === "no-config" ||
-      r.status === "unauthorized" ||
-      r.status === "network-error" ||
-      r.status === "no-admin-tab"
-    ) {
-      // Lỗi setup → dừng, không cố thử tiếp
-      return { processed, lastStatus: r.status, lastDetail: r.detail };
-    }
-    processed += 1;
+  };
+
+  await Promise.all(TAB_SLOTS.map(() => worker()));
+  if (!stopped && processed >= MAX_TASKS_PER_DRAIN) {
+    return { processed, lastStatus: "max-iterations" };
   }
-  return { processed, lastStatus: "max-iterations" };
+  return { processed, lastStatus, lastDetail };
 }
 
 /**
@@ -1718,6 +1833,7 @@ async function doRunUntilIdle(): Promise<{
 async function handlePurchaseSeatSkipMode(
   config: ExtensionConfig,
   task: QueueItem,
+  slot: TabSlot,
 ): Promise<{ status: string; detail?: string }> {
   const taskId = task.id;
   const reportPhase = async (phase: string, message: string) => {
@@ -1728,7 +1844,9 @@ async function handlePurchaseSeatSkipMode(
 
   await reportPhase("opening_tab", "Đang mở tab chatgpt.com/admin/billing?tab=invoices...");
 
-  const tab = await ensureAdminTab();
+  // Việc đầu tiên của skip-mode là điều hướng tab sang /admin/billing?tab=invoices
+  // — một lần load mới hoàn toàn. F5 /admin/members trước đó là load thừa.
+  const tab = await ensureAdminTab(slot, { preReload: false });
   if (!tab || tab.id === undefined) {
     await updateTask(config, taskId, {
       status: "FAILED",
@@ -1879,8 +1997,34 @@ const DRY_RUN_BLOCKED_TYPES = new Set<string>([
   "DELETE_MEMBER_DATA",
 ]);
 
+/**
+ * Chạy MỘT task: giữ một ô tab (tối đa 2 ô = 2 lệnh song song), chạy, rồi trả ô.
+ *
+ * Ô luôn được trả trong `finally` — kẹt ô là runner đứng im vĩnh viễn. Khoá suất
+ * (nếu task thuộc `SEAT_EXCLUSIVE_TYPES`) cũng nhả ở đây.
+ */
 export async function runOnce(): Promise<{ status: string; detail?: string }> {
-  console.log("[autogpt-runner] runOnce: starting");
+  const slot = await acquireSlot();
+  // Bọc trong object để TypeScript không thu hẹp kiểu về `never` (biến chỉ được
+  // gán bên trong closure nên nó tưởng không bao giờ có giá trị).
+  const seat: { release: (() => void) | null } = { release: null };
+  try {
+    return await runOnceOnSlot(slot, async (type: string) => {
+      if (SEAT_EXCLUSIVE_TYPES.has(type)) {
+        seat.release = await lockSeatGate();
+      }
+    });
+  } finally {
+    seat.release?.();
+    releaseSlot(slot);
+  }
+}
+
+async function runOnceOnSlot(
+  slot: TabSlot,
+  onTaskPicked: (type: string) => Promise<void>,
+): Promise<{ status: string; detail?: string }> {
+  console.log(`[autogpt-runner] runOnce: starting (ô ${slot})`);
   const config = await getConfig();
   if (!config) {
     console.warn("[autogpt-runner] runOnce: no-config (chưa save API key trong popup)");
@@ -1903,7 +2047,9 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
     return { status: "idle" };
   }
 
-  console.log(`[autogpt-runner] picked task ${task.type} ${task.id}`);
+  console.log(`[autogpt-runner] picked task ${task.type} ${task.id} (ô ${slot})`);
+  // Task tiêu/mua suất phải xếp hàng sau task cùng loại đang chạy ở ô kia.
+  await onTaskPicked(task.type);
 
   // ─── SHORT-CIRCUIT: DRY-RUN (workspace.dry_run_mode) ───────────────────
   // Backend đính `dry_run:true` vào payload khi workspace bật dry-run. Với task
@@ -1933,7 +2079,7 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
     task.type === "PURCHASE_SEAT" &&
     (task.payload?.skip_to_payment as boolean | undefined) === true
   ) {
-    return await handlePurchaseSeatSkipMode(config, task);
+    return await handlePurchaseSeatSkipMode(config, task, slot);
   }
 
   // Long-op task: báo progress lifecycle ngay từ background để dashboard biết
@@ -1968,7 +2114,11 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
       total: task.type === "HARVEST_LABELS" ? 18 : 100,
     });
   }
-  const tab = await ensureAdminTab();
+  // F5 tab đang mở để lấy dữ liệu mới trước khi chạy — TRỪ action tự điều hướng
+  // sang trang khác ngay sau đây (F5 /admin/members rồi bỏ đi là load thừa).
+  // Tab vừa mở mới thì `ensureAdminTab` cũng tự bỏ qua F5.
+  const selfNavigates = task.type === "SET_USAGE_LIMIT";
+  const tab = await ensureAdminTab(slot, { preReload: !selfNavigates });
   if (!tab || tab.id === undefined) {
     console.warn(
       "[autogpt-runner] NOT_LOGGED_IN_CHATGPT — không mở được admin tab (chưa login ChatGPT trong browser này)",
@@ -2128,6 +2278,10 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
         "Đã bật 'mời ngoài tên miền' — tải lại trang admin để setting có hiệu lực trước khi mời...",
     });
     try {
+      // `loadId` của instance ĐANG chạy — đọc TRƯỚC khi ra lệnh điều hướng để
+      // bên dưới nhận ra "trang mới" bằng cách so instance, không phải bằng cách
+      // tin vào status=complete. Xem `ensureFreshContentAfterNav`.
+      const prevLoadId = await readContentLoadId(tab.id);
       await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: false });
       const reloaded = await waitForTabComplete(tab.id, 20_000);
       if (!reloaded?.url?.includes("/admin")) {
@@ -2136,6 +2290,19 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
           error_code: "EXTERNAL_TOGGLE_FAILED",
           error_message:
             `Sau khi bật 'mời ngoài tên miền', tải lại /admin/members thì tab bị redirect khỏi /admin (url=${reloaded?.url ?? "?"}) — có thể đã logout ChatGPT. Huỷ mời để tránh phantom.`,
+        };
+      } else if (!(await ensureFreshContentAfterNav(tab.id, prevLoadId))) {
+        // Chưa chắc trang mới đã tiếp quản → KHÔNG gửi lệnh mời. Gửi vào trang
+        // sắp bị đóng băng là đúng chuỗi tai nạn 31/7 (mời đi thật rồi mất kênh
+        // → hoàn 340k oan). Dừng ở đây thì chưa ai được mời, hoàn phí là ĐÚNG.
+        response = {
+          ok: false,
+          error_code: "EXTERNAL_TOGGLE_FAILED",
+          error_message:
+            "Sau khi bật 'mời ngoài tên miền' và tải lại trang admin, extension không xác nhận được " +
+            "trang MỚI đã tiếp quản (trang cũ vẫn đang giữ kênh liên lạc, sắp bị Chrome đóng băng). " +
+            "Đã huỷ TRƯỚC khi mời để không mời trong lúc mất kênh — chưa email nào được mời. " +
+            "Chạy lại lệnh; nếu lặp lại, F5 tab ChatGPT rồi thử lần nữa.",
         };
       } else {
         const reinvite: ExecuteActionRequest = { ...request, externalReady: true };
@@ -2255,6 +2422,7 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
             : `Còn email chưa thấy — F5 lại (lần ${round}) để ChatGPT load tiếp...`,
       });
       try {
+        const prevLoadId = await readContentLoadId(tab.id);
         await chrome.tabs.reload(tab.id);
         const reloaded = await waitForTabComplete(tab.id, 15_000);
         if (!reloaded?.url?.includes("/admin")) {
@@ -2268,6 +2436,18 @@ export async function runOnce(): Promise<{ status: string; detail?: string }> {
         const ready = await ensureContentInjected(tab.id);
         if (!ready.ok) {
           console.warn(`[autogpt-runner] sau F5 (lần ${round}): content inject failed → verify skipped`);
+          response = scrapeFailedFallback;
+          break;
+        }
+        // …và phải là instance của trang VỪA LOAD. Trang cũ cũng trả lời PING
+        // trong khe trước lúc navigation commit; verify trên DOM cũ = đọc danh
+        // sách Lời mời CHƯA có email vừa mời → kết luận "không thấy" → báo hỏng
+        // oan đúng lúc lời mời đã đi thật. Không chắc thì bỏ vòng verify này,
+        // để `scrapeFailedFallback` nói thẳng là chưa xác minh được.
+        if (!(await ensureFreshContentAfterNav(ready.tabId, prevLoadId))) {
+          console.warn(
+            `[autogpt-runner] sau F5 (lần ${round}): chưa chắc trang mới đã tiếp quản → verify skipped`,
+          );
           response = scrapeFailedFallback;
           break;
         }

@@ -21,6 +21,8 @@
  *   5. idle = now - lastActivity ≥ threshold → đóng HẾT tab admin, xoá state.
  */
 
+import { clearPool, poolTabIds } from "./tab-pool";
+
 const IDLE_CLOSE_ALARM = "autogpt-idle-close";
 const STATE_KEY = "autogpt.adminIdle";
 
@@ -91,9 +93,18 @@ export function isIdleCloseAlarm(name: string): boolean {
  * Không throw ra ngoài (best-effort) — lỗi query/close chỉ log.
  */
 export async function handleIdleCloseTick(): Promise<void> {
+  // CHỈ xét tab do EXTENSION mở (nằm trong bể ô — xem tab-pool.ts). Tab admin do
+  // USER tự mở không phải của mình: trước đây tick này đóng sạch mọi tab
+  // chatgpt.com/admin, kể cả tab user đang để dở.
   let tabs: chrome.tabs.Tab[];
   try {
-    tabs = await chrome.tabs.query({ url: CHATGPT_TAB_MATCH });
+    const ownIds = await poolTabIds();
+    if (ownIds.length === 0) {
+      await clearState();
+      return;
+    }
+    const all = await chrome.tabs.query({ url: CHATGPT_TAB_MATCH });
+    tabs = all.filter((t) => t.id !== undefined && ownIds.includes(t.id));
   } catch (e) {
     console.warn("[autogpt-idle] query tab admin lỗi (bỏ qua)", e);
     return;
@@ -143,5 +154,7 @@ export async function handleIdleCloseTick(): Promise<void> {
   } catch (e) {
     console.warn("[autogpt-idle] đóng tab admin lỗi (bỏ qua)", e);
   }
+  // Đóng tab rồi thì sổ ô phải trống theo, kẻo lần chạy sau còn trỏ vào tab chết.
+  await clearPool();
   await clearState();
 }
