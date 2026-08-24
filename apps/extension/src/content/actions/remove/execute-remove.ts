@@ -88,15 +88,24 @@ async function escapeDialog(): Promise<void> {
   await sleep(400);
 }
 
-/** Nút xác nhận xoá trong dialog — quét cả `[role="dialog"]`/`[role="alertdialog"]`. */
+/**
+ * Nút xác nhận xoá — chỉ tìm TRONG dialog đang mở khi có dialog.
+ *
+ * Trước đây danh sách nút gồm cả `button` toàn trang, mà danh sách nhãn có nhãn
+ * LỎNG ("Gỡ", "Remove") khớp kiểu `startsWith` → một nút bất kỳ ngoài dialog
+ * (sidebar admin, banner "Bật tự động nạp tiền", …) đứng trước dialog trong DOM
+ * là bị bấm thay. Dialog xác nhận LUÔN chứa nút cần bấm, nên khi nó đang mở thì
+ * quét ngoài nó là thừa và nguy hiểm. Không có dialog mới quét cả trang (giữ
+ * nguyên đường lui cũ cho luồng UI không dùng dialog).
+ */
 function findConfirmRemoveButton(texts: readonly string[]): HTMLElement | null {
-  const sel = querySelectorFirst<HTMLElement>(SELECTORS.confirmRemoveButton);
-  if (sel) return sel;
-  const btns = Array.from(
-    document.querySelectorAll<HTMLElement>(
-      '[role="dialog"] button, [role="alertdialog"] button, button',
-    ),
+  const dialog = document.querySelector<HTMLElement>(
+    '[role="alertdialog"], [role="dialog"]',
   );
+  const root: ParentNode = dialog ?? document;
+  const sel = querySelectorFirst<HTMLElement>(SELECTORS.confirmRemoveButton, root);
+  if (sel) return sel;
+  const btns = Array.from(root.querySelectorAll<HTMLElement>("button"));
   for (const t of texts) {
     const needle = normalizeMatchText(t);
     if (!needle) continue;

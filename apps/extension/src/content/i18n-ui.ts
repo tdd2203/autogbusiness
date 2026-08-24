@@ -68,6 +68,13 @@ export const TEXT_FALLBACKS = {
     // UI 2026 vi: item menu là "Loại bỏ thành viên" (không phải "Xoá ...").
     "Loại bỏ thành viên",
     "Loại bỏ",
+    // UI 2026-08-24 (ảnh user): ChatGPT chuyển sang động từ "Gỡ bỏ" ở dialog xác
+    // nhận. Item menu hôm nay VẪN là "Loại bỏ thành viên", nhưng chữ này đã đổi
+    // 2 lần (v0.4.4, v0.7.14) nên liệt kê sẵn biến thể "Gỡ bỏ" cho khỏi vỡ.
+    "Gỡ bỏ khỏi không gian làm việc",
+    "Gỡ bỏ thành viên",
+    "Gỡ bỏ khỏi workspace",
+    "Gỡ bỏ",
     "Xoá khỏi workspace",
     "Xóa khỏi workspace",
     "Gỡ khỏi workspace",
@@ -118,6 +125,18 @@ export const TEXT_FALLBACKS = {
     "更改席位类型",
   ],
   confirmRemoveButton: [
+    // Nhãn ĐẦY ĐỦ xếp TRƯỚC nhãn ngắn: `findConfirmRemoveButton` dò theo đúng
+    // thứ tự này và chấp cả `startsWith`, nên nhãn ngắn đứng trước dễ vơ nhầm
+    // nút khác trong cùng dialog.
+    //
+    // UI 2026-08-24 (ảnh user): dialog đổi thành "Gỡ bỏ <tên> khỏi <workspace>?"
+    // với nút đỏ "Gỡ bỏ khỏi không gian làm việc" (nút huỷ vẫn "Hủy bỏ"). Bản
+    // cũ chỉ khớp nhờ nhãn LỎNG "Gỡ" nằm cuối danh sách — ChatGPT đổi thêm một
+    // chữ nữa là trượt. Ghi hẳn nhãn thật lên đầu.
+    "Gỡ bỏ khỏi không gian làm việc",
+    "Gỡ bỏ khỏi workspace",
+    "Remove from workspace",
+    "Remove member",
     "Remove",
     "Confirm",
     "Delete",
@@ -126,7 +145,10 @@ export const TEXT_FALLBACKS = {
     "Xoá",
     "Xóa",
     "Xác nhận",
+    "Gỡ bỏ",
     "Gỡ",
+    "从工作区移除",
+    "移除成员",
     "移除",
     "确认",
     "删除",

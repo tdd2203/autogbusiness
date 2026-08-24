@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.13.7";
+export const VERSION = "0.13.9";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,32 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.13.9",
+    date: "2026-08-24",
+    kind: "fix",
+    summary:
+      "Mua suất xong phải đợi hộp giao dịch tắt HẲN rồi mới mời; thao tác trong hộp \"Quản lý suất\" cũng chậm lại, không vội.",
+    details: [
+      "Ca thật 24/8 — lệnh mời wallet_tester: bấm \"Xác nhận mua\" xong ChatGPT còn quay vòng xử lý giao dịch, bản cũ chỉ chờ 10 giây rồi đi mời tiếp. Hộp giao dịch là một lớp phủ che cả trang nên cú mời bấm vào lớp phủ chứ không tới nút thật — lệnh hỏng, user phải chạy lệnh thứ hai mới mời được.",
+      "Nay chờ hộp đóng tới 2 phút, và phải thấy đóng ba nhịp liên tiếp mới tin (hộp có nhịp animation, đọc đúng một lần dễ bắt trúng khung hình chuyển tiếp). Máy nhanh không mất thêm giây nào: hộp đóng là đi tiếp ngay.",
+      "Hộp đóng rồi vẫn đợi nốt LỚP PHỦ rời trang; lớp phủ còn nằm lại thì tải lại trang cho sạch trước khi mời — và chỉ tải lại tối đa một lần sau khi tiền đã trừ.",
+      "Chờ lâu thì báo tiến độ mỗi 10 giây kèm số giây đã trôi, để dashboard không tưởng task treo. Kết quả ghi thêm: hộp có đóng không, lớp phủ có sạch không, chờ hết bao lâu.",
+      "Thao tác trong hộp \"Quản lý suất\" chậm lại theo yêu cầu: nghỉ sau khi hộp vừa mở, nghỉ giữa hai cú bấm +/−, nghỉ trước \"Tiếp tục\" và trước cú bấm trừ tiền. Bấm chồng lên lúc giao diện còn dựng lại dễ trúng nút đã bị thay — cú bấm rơi vào khoảng không.",
+    ],
+  },
+  {
+    version: "0.13.8",
+    date: "2026-08-24",
+    kind: "fix",
+    summary:
+      "Bám theo hộp xác nhận xoá thành viên kiểu mới của ChatGPT: nút đỏ nay là \"Gỡ bỏ khỏi không gian làm việc\".",
+    details: [
+      "ChatGPT đổi chữ trong hộp xác nhận: trước là \"Loại bỏ thành viên\" + nút đỏ \"Xóa\", nay là \"Gỡ bỏ <tên> khỏi <workspace>?\" + nút đỏ \"Gỡ bỏ khỏi không gian làm việc\". Số bước không đổi — vẫn bấm mục trong menu \"...\" rồi bấm nút đỏ.",
+      "Bản cũ vẫn bấm trúng, nhưng chỉ nhờ nhãn dự phòng cụt \"Gỡ\" nằm cuối danh sách dò. ChatGPT thêm một chữ nữa là trượt và mọi lệnh xoá đứng lại ở \"không tìm thấy nút xác nhận\". Nay ghi hẳn nhãn thật lên đầu danh sách, kèm biến thể tiếng Anh và tiếng Trung.",
+      "Siết luôn phạm vi tìm nút: chỉ dò trong hộp thoại đang mở. Trước đó danh sách nút gồm cả nút ngoài trang, mà nhãn cụt \"Gỡ\"/\"Remove\" khớp theo kiểu bắt-đầu-bằng nên một nút ngoài hộp đứng trước trong trang là bị bấm thay.",
+    ],
+  },
   {
     version: "0.13.7",
     date: "2026-08-24",
