@@ -2214,11 +2214,23 @@ async function runOnceOnSlot(
     console.log(
       `[autogpt-runner] ${task.type}: tab đang ở "${tab.url}" (không phải sub-tab Người dùng) → navigate về ${CHATGPT_ADMIN_URL}`,
     );
+    const prevLoadId = await readContentLoadId(tab.id);
     await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: false });
     const navigated = await waitForTabComplete(tab.id, 20_000);
     if (navigated?.url && !navigated.url.includes("/admin")) {
       console.warn(
         `[autogpt-runner] sau navigate, tab bị redirect khỏi /admin (${navigated.url}) — có thể đã logout ChatGPT`,
+      );
+    }
+    // Chốt instance MỚI trước khi gửi lệnh — `status=complete` một mình không đủ,
+    // trang cũ vẫn trả lời PING trong khe trước lúc navigation commit rồi mới tụt
+    // vào bfcache (xem `content-ready.ts`). Ở đây không có tiền như nhánh mời,
+    // nhưng gửi lệnh vào trang cũ nghĩa là thao tác trên DANH SÁCH CŨ: REMOVE lọc
+    // nhầm, CHANGE_ROLE bấm nhầm dòng. Không chốt được thì vẫn đi tiếp (giữ hành
+    // vi cũ) — chỉ cảnh báo, vì lệnh sau còn tự kiểm tra trang/element.
+    if (!(await ensureFreshContentAfterNav(tab.id, prevLoadId))) {
+      console.warn(
+        `[autogpt-runner] ${task.type}: chưa chốt được trang mới sau navigate — đi tiếp, lệnh sẽ tự kiểm tra element`,
       );
     }
     await sleep(1500); // chờ list member render xong trước khi locate
@@ -2236,6 +2248,7 @@ async function runOnceOnSlot(
     console.log(
       `[autogpt-runner] SET_USAGE_LIMIT: tab đang ở "${tab.url}" → navigate tới ${CHATGPT_USAGE_LIMIT_URL}`,
     );
+    const prevLoadId = await readContentLoadId(tab.id);
     await chrome.tabs.update(tab.id, {
       url: CHATGPT_USAGE_LIMIT_URL,
       active: false,
@@ -2244,6 +2257,13 @@ async function runOnceOnSlot(
     if (navigated?.url && !navigated.url.includes("/admin")) {
       console.warn(
         `[autogpt-runner] sau navigate usage-limit, tab bị redirect khỏi /admin (${navigated.url}) — có thể đã logout ChatGPT`,
+      );
+    }
+    // Như nhánh trên: chốt instance mới rồi mới gửi lệnh (xem `content-ready.ts`).
+    // Gửi vào trang cũ ở đây = đặt giới hạn tín dụng theo danh sách CŨ.
+    if (!(await ensureFreshContentAfterNav(tab.id, prevLoadId))) {
+      console.warn(
+        "[autogpt-runner] SET_USAGE_LIMIT: chưa chốt được trang mới sau navigate — đi tiếp, lệnh sẽ tự kiểm tra trang",
       );
     }
     await sleep(1500); // chờ list + ô lọc render xong trước khi locate
