@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.13.7";
+export const VERSION = "0.13.6";
 
 export type ChangelogEntry = {
   version: string;
@@ -35,31 +35,17 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
-    version: "0.13.7",
-    date: "2026-08-24",
-    kind: "feature",
-    summary:
-      "Thiếu suất cho lời mời đang chờ thì hệ thống TỰ MUA BÙ sau mỗi lần đồng bộ, không đợi tới lúc có lệnh mời.",
-    details: [
-      "Lời mời đang treo không chiếm suất trên ChatGPT, nhưng người ta bấm nhận là ChatGPT buộc phải cấp suất và vẫn tính tiền. Mua trước là trả sớm khoản đằng nào cũng tới, đổi lại tránh được hộp 'Mua suất người dùng và gửi lời mời' — hộp đó ChatGPT tự quyết số tiền.",
-      "Ca thật CHATGPT PRO 24/8: 60 suất, 60 người đang dùng, 1 lời mời chờ ⇒ đang nợ 1 suất mà không chỗ nào báo.",
-      "SÁU rào chắn, vì đây là đường DUY NHẤT hệ thống tự tiêu tiền khi không có ai bấm: chỉ chạy khi mẻ đồng bộ vừa quét tab 'Lời mời đang chờ' VÀ việc đối chiếu không bị từ chối; chỉ khi số suất đọc được rõ ràng; bỏ qua lời mời treo quá 7 ngày hoặc đã hết hạn thuê bao; tối đa 5 suất mỗi lần; không mua khi đang có lệnh mua chờ/chạy; và cách lần mua trước ít nhất 6 tiếng.",
-      "Bấm 'Mời lại' làm lời mời tươi lại — tính theo lần mời gần nhất, nên lời mời cũ được mời lại vẫn đủ điều kiện mua bù.",
-      "Mọi ca THIẾU SUẤT MÀ KHÔNG MUA đều ghi nhật ký kèm lý do và đích danh email, để admin biết mà xử tay thay vì im lặng bỏ qua.",
-    ],
-  },
-  {
     version: "0.13.6",
     date: "2026-08-24",
     kind: "fix",
     summary:
       "Lệnh mời không còn chết oan vì 'thiếu suất' khi workspace vẫn còn chỗ: đếm lời mời đang chờ ngay trên ChatGPT, và không hạ tổng suất xuống theo bộ đếm nữa.",
     details: [
-      "Ca thật GPT1: maitran.hy hết hạn, đã gỡ sạch khỏi ChatGPT lúc 14:31, gia hạn xong mời lại lúc 16:20 và 16:28 — cả hai lần chết y hệt nhau ở bước chốt suất ('Thiếu 1 suất... bộ đếm 150, dòng tỉ lệ khác'), trong khi màn hình ChatGPT nói còn trống 1 suất. Chạy lại bao nhiêu lần cũng ra đúng như vậy.",
-      "Sự thật: 151 suất, 148 đã gán, 2 lời mời đang chờ → còn trống ĐÚNG 1. Bản cũ tính ra 0 vì sai cả hai chiều, mỗi chiều mất đúng 1 suất.",
+      "Ca thật GPT1: một khách hết hạn, đã gỡ sạch khỏi ChatGPT, gia hạn xong mời lại hai lần cách nhau 8 phút — cả hai lần chết y hệt nhau ở bước chốt suất ('Thiếu 1 suất... bộ đếm 150, dòng tỉ lệ khác'). Lệch đó lặp lại mọi lần chạy nên chạy lại bao nhiêu lần cũng vô ích: workspace không có đường nào tự đi tiếp, phải mua suất tay.",
+      "Hai chiều đếm sai độc lập, mỗi chiều ăn mất một suất trong phép tính. Sửa cả hai không làm workspace có thêm suất — workspace đầy thật thì vẫn đầy — nhưng workspace CÒN chỗ thì không còn bị báo nhầm là hết.",
       "Sai chiều thứ nhất — tổng suất: bộ đếm của hộp 'Quản lý suất' nói 150, dòng tỉ lệ nói 151 (workspace này có lượt hạ suất hẹn hiệu lực KỲ SAU nên hai chỗ nói hai kỳ khác nhau, lệch vĩnh viễn). Bản cũ lấy số thấp hơn cho mọi quyết định. Nay tổng LUÔN theo dòng tỉ lệ — đó mới là số suất đang giữ HÔM NAY. Mua thì vẫn cấm khi hai số lệch.",
       "An toàn của việc đó: nếu dòng tỉ lệ mới là số sai thì chặn cuối vẫn đỡ — trước khi bấm nút gửi, extension đọc nhãn nút, thấy 'Mua suất người dùng và gửi lời mời' là dừng. Sai về phía rộng chỉ tốn một lệnh hỏng, không tiêu tiền.",
-      "Sai chiều thứ hai — nợ suất của lời mời đang chờ: bản cũ lấy con số này từ dashboard, đếm 3, trong khi ChatGPT chỉ còn 2. Chênh đúng một bản ghi ma: lucrativoa2 mời 28/7, gần một tháng không ai bấm nhận, lời mời trên ChatGPT đã chết mà dashboard vẫn để 'Chờ tham gia'. Mỗi bản ghi ma như vậy ăn oan một suất và giết mọi lệnh mời sau đó.",
+      "Sai chiều thứ hai — nợ suất của lời mời đang chờ: bản cũ lấy con số này từ dashboard, mà dashboard có một chiều lệch không tự lành: bản ghi 'Chờ tham gia' của lời mời đã chết trên ChatGPT nằm lại mãi, vì đồng bộ scope 'người dùng' không được phép xoá lời mời chờ. Sát trần suất thì mỗi bản ghi thừa là chênh lệch giữa mời được và báo thiếu suất rồi dừng.",
       "Nay bước chốt suất tự sang tab 'Lời mời đang chờ' ĐẾM TẬN NƠI. Chỉ khi không vào được tab, hoặc danh sách nhiều hơn 1 trang (quét DOM không thấy hết), mới quay về con số của dashboard — số đó đếm thừa, mà thừa thì cùng lắm là mua dư, còn thiếu là mời mù vào chỗ không có.",
       "Đường rơi về dashboard cũng hết đếm thừa: người vừa BẤM NHẬN lời mời đã nằm trong ô 'đã gán' của ChatGPT trong khi hệ thống còn để 'Chờ tham gia' tới lần đồng bộ sau, cộng thẳng là đếm họ hai lần. Nay đối chiếu với tổng số email hệ thống đã phát ra — mọi email đều vào bằng lệnh của dashboard nên số người ChatGPT giữ không bao giờ vượt quá đó — và trừ phần chênh ra.",
       "Kết quả task ghi rõ nợ suất lấy từ đâu (seat_pending_source: tab ChatGPT hay dashboard) để lần sau truy ngược được.",
@@ -203,7 +189,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     summary:
       "Thu hồi lời mời: hết bấm nhầm nút 'Hủy' của hộp thoại xác nhận — lời mời còn nguyên mà dashboard báo lỗi lạc đề.",
     details: [
-      "Ca vaominh11@gmail.com 21/8/2026: task báo FAILED 'đã click revoke nhưng row vẫn còn', trong khi tab 'Lời mời đang chờ xử lý' trên ChatGPT KHÔNG còn email đó → DB kẹt 1 lời mời ma.",
+      "Ca vaominh11 21/8/2026: task báo FAILED 'đã click revoke nhưng row vẫn còn', trong khi tab 'Lời mời đang chờ xử lý' trên ChatGPT KHÔNG còn email đó → DB kẹt 1 lời mời ma.",
       "Gốc rễ: danh sách chữ nút XÁC NHẬN có lẫn sẵn 'Hủy'/'Cancel'/'取消', mà code duyệt theo THỨ TỰ và khớp kiểu CHỨA CHUỖI. ChatGPT chỉ cần đổi chữ nút xác nhận là mấy chữ đầu trượt hết, rơi xuống 'Hủy' → khớp đúng nút HUỶ → bấm huỷ → lời mời còn nguyên.",
       "Tách DIALOG_DISMISS_TEXTS (Hủy/Đóng/Quay lại/Cancel/Close/取消/关闭…) khỏi REVOKE_CONFIRM_TEXTS; nút huỷ/đóng bị loại bằng so khớp BẰNG NHAU nên 'Hủy lời mời' (hành động thật) vẫn được nhận.",
       "Không chữ nào khớp (ChatGPT đổi nhãn) → lấy NÚT CUỐI có chữ mà không phải huỷ/đóng, vì hộp thoại luôn đặt nút hành động ở cuối — thà bấm đúng nút hành động còn hơn đứng im rồi để lời mời còn nguyên.",
@@ -635,7 +621,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     summary:
       "THU HỒI lời mời hết cảnh 'đã thu hồi nhưng thực tế chưa': khi extension KHÔNG thu hồi được (vd menu ChatGPT không có mục 'Thu hồi lời mời') thì báo FAILED thay vì COMPLETED giả → dashboard KHÔNG mark 'removed' oan. Ngoài ra, tab Người dùng / Lời mời chỉ 1 TRANG thì quét vị trí trực tiếp, KHÔNG dùng ô search.",
     details: [
-      "USER REPORT 2026-07-13: hellowda2@gmail.com hiện 'đã thu hồi' trên dashboard nhưng ChatGPT vẫn còn lời mời pending. Result task: {revoked:0, failed:1, reason:'Menu mở nhưng không có item \"Thu hồi lời mời\"'} — nhưng vẫn COMPLETED.",
+      "USER REPORT 2026-07-13: hellowda2 hiện 'đã thu hồi' trên dashboard nhưng ChatGPT vẫn còn lời mời pending. Result task: {revoked:0, failed:1, reason:'Menu mở nhưng không có item \"Thu hồi lời mời\"'} — nhưng vẫn COMPLETED.",
       "GỐC RỄ: execute-revoke-batch LUÔN trả ok:true miễn vào được tab Lời mời (kể cả revoked=0, failed>0). Backend completion khi thấy REVOKE_INVITES COMPLETED mark MÙ toàn bộ email trong payload = removed, không đọc result.data.results.",
       "FIX extension (execute-revoke-batch.ts): revoked+removed==0 && failed>0 → trả ok:false FAILED_UI_CHANGED (kèm lý do từng email) để lỗi hiện lên cho admin.",
       "FIX backend (completion.py): REVOKE_INVITES COMPLETED chỉ mark removed những email THỰC SỰ ok=true trong result.data.results (+ audit MEMBER_INVITE_REVOKED + Invite→revoked); email fail giữ pending + log MEMBER_INVITE_REVOKE_FAILED. Extension cũ không trả results → không mark (an toàn).",
@@ -651,7 +637,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     summary:
       "XOÁ thành viên hết báo VERIFY_FAILED OAN khi xoá THẬT SỰ đã thành công: đổi tín hiệu verify cuối từ 'row biến mất khỏi list' (không tin cậy — backend ChatGPT eventual-consistent, list vẫn trả member vừa xoá vài chục giây) sang 'dialog xác nhận ĐÓNG = ChatGPT đã nhận lệnh destructive' (giống verify của INVITE).",
     details: [
-      "USER REPORT 2026-07-12 (kèm ảnh): task 'Xoá thành viên' nhathuy.france@gmail.com lần đầu (19:32:32) → FAILED 'VERIFY_FAILED: Member vẫn còn trong danh sách sau khi confirm Remove' — nhưng thực tế ChatGPT ĐÃ xoá thành công; retry 34s sau (19:33:06) lọc không thấy → MEMBER_NOT_IN_WORKSPACE → COMPLETED (mark removed).",
+      "USER REPORT 2026-07-12 (kèm ảnh): task 'Xoá thành viên' nhathuy.france lần đầu (19:32:32) → FAILED 'VERIFY_FAILED: Member vẫn còn trong danh sách sau khi confirm Remove' — nhưng thực tế ChatGPT ĐÃ xoá thành công; retry 34s sau (19:33:06) lọc không thấy → MEMBER_NOT_IN_WORKSPACE → COMPLETED (mark removed).",
       "GỐC RỄ: bản vá v0.9.2 (reverifyRemovedViaFilter) giả định lọc lại từ SERVER là nguồn sự thật không trễ — SAI. Sau DELETE, chính backend ChatGPT eventual-consistent: query lọc server-side MỚI VẪN trả member vừa xoá trong vài chục giây → waitFor thấy row 'tái xuất' trong 5s → kết luận nhầm chưa xoá. Đọc lại list KHÔNG BAO GIỜ phân biệt được 'xoá lỗi, member còn' với 'xoá xong nhưng list trễ'.",
       "FIX (execute-remove.ts): bỏ hẳn verify theo list (waitFor row biến mất + reverifyRemovedViaFilter). Verify mới = chờ dialog xác nhận ĐÓNG (confirmDialogOpen()=false) hoặc toast thành công trong 15s → COMPLETED; chỉ VERIFY_FAILED khi dialog VẪN mở sau 15s (OTP/2FA/lỗi thật sự chặn xoá), kèm text dialog để debug. Tín hiệu tại THỜI ĐIỂM thao tác, không dính độ trễ backend.",
       "File: content/actions/remove/execute-remove.ts, version.ts.",
@@ -689,7 +675,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     summary:
       "SYNC_MEMBER (Đồng bộ 1 tài khoản) không còn báo nhầm 'pending' cho member đã active. Trước khi quét mỗi tab giờ CHỜ list ổn định (tránh đọc row còn sót của tab trước); list 1 trang → quét trực tiếp, nhiều trang → dùng ô search — áp cho cả tab Lời mời lẫn Người dùng.",
     details: [
-      "USER REPORT 2026-07-10: nguyenthuhientho@gmail.com nằm ở tab Người dùng (đã chấp nhận lời mời) nhưng SYNC_MEMBER trả found_in='pending' 3 lần liên tiếp → member kẹt trạng thái pending trên dashboard.",
+      "USER REPORT 2026-07-10: nguyenthuhientho nằm ở tab Người dùng (đã chấp nhận lời mời) nhưng SYNC_MEMBER trả found_in='pending' 3 lần liên tiếp → member kẹt trạng thái pending trên dashboard.",
       "GỐC RỄ: Bước 1 quét tab Lời mời bằng scrollScanForRow NGAY sau khi đổi tab; React chưa unmount kịp row của tab Người dùng → findMemberRow (match substring) trúng row active còn sót → return 'pending' sai.",
       "FIX: thêm locateInCurrentTab() — (0) waitForCountStable chờ list render & ổn định trước khi đọc; (1) list gọn 1 trang → scrollScanForRow trực tiếp KHÔNG dùng search; (2) nhiều trang → ô search (pending: locatePendingRow, active: locateMemberRow). Dùng cho CẢ 2 tab.",
       "File: content/actions/sync-member/execute-sync-member.ts.",
@@ -812,7 +798,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     summary:
       "XOÁ thành viên hết lỗi tìm nhầm ở tab 'Lời mời' rồi đánh dấu removed OAN: khi tab admin còn ?tab=invites do action trước để lại, REMOVE/CHANGE_ROLE/CHANGE_LICENSE_TYPE bị reload thẳng vào tab Lời mời → lọc không thấy member active. Nay background ép tab về /admin/members sạch (tab Người dùng) trước khi chạy, + REMOVE từ chối kết luận 'đã rời business' khi URL còn ?tab=invites/requests.",
     details: [
-      "USER REPORT 2026-06-29 (kèm ảnh): task 'Xoá thành viên' nguyenthuhientho@gmail.com COMPLETED nhưng ghi chú 'Ô lọc ChatGPT không thấy email trong tab Người dùng → coi như đã rời business, đánh dấu removed' — thực tế member đang active, action lại tìm ở tab 'Lời mời' chứ không phải 'Người dùng'.",
+      "USER REPORT 2026-06-29 (kèm ảnh): task 'Xoá thành viên' nguyenthuhientho COMPLETED nhưng ghi chú 'Ô lọc ChatGPT không thấy email trong tab Người dùng → coi như đã rời business, đánh dấu removed' — thực tế member đang active, action lại tìm ở tab 'Lời mời' chứ không phải 'Người dùng'.",
       "ROOT CAUSE: v0.8.21 ensureAdminTab TÁI DÙNG tab admin + chrome.tabs.reload() reload NGUYÊN URL. Nếu action trước (SYNC_MEMBER tìm thấy ở pending / REVOKE / SYNC invites) để tab ở chatgpt.com/admin/members?tab=invites thì REMOVE reuse lại reload thẳng vào tab Lời mội. Guard MEMBER_LIST_TASKS trong runOnce chỉ ép navigate khi URL KHÔNG chứa '/admin/members' — nhưng '...?tab=invites' VẪN chứa chuỗi đó nên guard không kích hoạt. REMOVE dùng ô lọc làm nguồn sự thật (pageThrough:false): lọc tab Lời mời không thấy member active → trả MEMBER_NOT_IN_WORKSPACE → backend mark removed OAN.",
       "FIX 1 (runner.ts MEMBER_LIST_TASKS guard): ép navigate về CHATGPT_ADMIN_URL sạch khi (a) tab không ở /admin/members HOẶC (b) URL còn ?tab=invites/?tab=requests (regex). Navigate URL sạch luôn rớt về sub-tab Người dùng → 3 action REMOVE/CHANGE_ROLE/CHANGE_LICENSE_TYPE luôn bắt đầu đúng tab.",
       "FIX 2 (execute-remove.ts — chống mark-removed oan, 2 lớp): (a) clickTabAndWait('Người dùng') thêm waitForButtonMs=12000 (render-wait thanh tab như sync-member/revoke) để click về Người dùng đáng tin; (b) TRƯỚC khi trả MEMBER_NOT_IN_WORKSPACE, nếu location.search còn ?tab=invites/requests thì trả UI_ELEMENT_NOT_FOUND (FAILED, member CÒN) thay vì mark removed — URL là nguồn sự thật của tab đang xem.",
@@ -995,7 +981,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     summary:
       "Bật toggle 'Cho phép lời mời ngoài tên miền' đáng tin hơn khi mời email ngoài domain: poll chờ ChatGPT lưu thay vì sleep cứng, double-check khi tưởng đã ON, retry click, không đoán bừa state. Mục tiêu user: toggle LUÔN OFF, chỉ bật khi mời email ngoài rồi tắt lại — và lúc bật phải chắc ăn (không mời khi toggle thật vẫn OFF).",
     details: [
-      "USER REPORT 2026-06-19: 'nhiều khi bật chế độ cho phép mời ngoài bị lỗi ... nhiều khi tôi thấy nó vẫn bị tắt mà vẫn đi mời thành viên ngoài vào' (vd avkpoint@outlook.com bị mời theo lệnh lỗi).",
+      "USER REPORT 2026-06-19: 'nhiều khi bật chế độ cho phép mời ngoài bị lỗi ... nhiều khi tôi thấy nó vẫn bị tắt mà vẫn đi mời thành viên ngoài vào' (vd avkpoint bị mời theo lệnh lỗi).",
       "LÀM RÕ: việc toggle LUÔN hiện OFF sau khi mời là CỐ Ý (spec bảo mật v0.6.6 — force OFF sau mỗi invite). Email ngoài domain được mời vì extension tự bật ON tích tắc rồi tắt. Hệ thống KHÔNG có policy cấm mời ngoài; mọi email ngoài verified_domain đều được auto-bật-toggle. User xác nhận hành vi đúng = 'luôn tắt, khi mời ngoài thì bật lên' → giữ thiết kế, chỉ làm khâu BẬT đáng tin.",
       "ROOT CAUSE khâu bật không ổn định (set-toggle.ts): (a) click 1 lần + sleep(800) cứng + đọc state 1 lần → mạng/PATCH chậm thì verify đọc state cũ → confirmed=false oan → EXTERNAL_TOGGLE_FAILED (mời ngoài fail vô cớ). (b) getToggleState fallback trả false thầm lặng khi không đọc được aria → quyết định sai. (c) early-return khi prev===target tin tưởng 1 lần đọc DOM (có thể bắt nhầm switch / transient) → bỏ qua click → mời khi toggle thật OFF.",
       "FIX (set-toggle.ts): getToggleState trả boolean|null (không đoán bừa); khi prev===target thì đọc lại lần 2 (double-check) mới SKIP; khi click thì POLL state tới khi == target (tối đa 4s) thay vì sleep cứng; retry click tối đa 2 lần. Confirmed chỉ true khi state CUỐI thực sự == target → execute-invite.ts vẫn chặn submit nếu !confirmed (không phantom).",
@@ -1023,7 +1009,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     summary:
       "Thu hồi lời mời (REVOKE) tìm email bằng ô 'Search for invites' trên tab Lời mời thay vì cuộn list (dễ miss). Trước đây revoke miss row → kết luận nhầm 'không có trên tab Lời mời' → fallback nhầm sang tab Người dùng (REMOVE) → fail dù email đang là pending invite.",
     details: [
-      "USER REPORT + bằng chứng queue (2026-06-17): INVITE_MEMBER oewi@gmail.com COMPLETED lúc 18:07:38; REVOKE_INVITES cùng email 27s sau (18:08:05) trả 'Không có trên tab Lời mời; xoá khỏi tab Người dùng cũng thất bại: Không tìm thấy ... sau khi duyệt hết mọi trang'. Email rõ ràng đang là pending invite nhưng revoke không thấy.",
+      "USER REPORT + bằng chứng queue (2026-06-17): INVITE_MEMBER oewi COMPLETED lúc 18:07:38; REVOKE_INVITES cùng email 27s sau (18:08:05) trả 'Không có trên tab Lời mời; xoá khỏi tab Người dùng cũng thất bại: Không tìm thấy ... sau khi duyệt hết mọi trang'. Email rõ ràng đang là pending invite nhưng revoke không thấy.",
       "ROOT CAUSE: revokeInvite dùng scrollScanForRow (cuộn list virtualized) để định vị row trên tab Lời mời. List virtualized / phân trang → row ngoài viewport chưa render → miss → trả notInPending=true → executeRevokeInvites fallback sang executeRemove (tab Người dùng) → không có ở đó (vì đang pending) → fail.",
       "FIX: thêm locatePendingRow(email) — gõ email vào ô 'Search for invites' (SELECTORS.pendingSearchInput, thêm ở v0.8.7) → list rút còn 0-1 row → findMemberRow đọc ngay. Đây mới là cách đúng & chính xác. Chỉ fallback scroll-scan khi UI KHÔNG có ô search.",
       "Giữ nguyên fallback REMOVE sang tab Người dùng cho case THẬT (người đã chấp nhận lời mời → thành active member) — chỉ kích hoạt khi ô search xác nhận email không còn trong pending.",
@@ -1079,7 +1065,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     summary:
       "Mời thành viên (và mọi task) không còn kẹt IN_PROGRESS tới khi auto-cleanup: thêm hard-timeout cho PHASE 1 (gửi lệnh tới content script). Trước đây chỉ Phase 2 (verify sau F5) có timeout; Phase 1 thì KHÔNG → khi tab ChatGPT bị reload/redirect giữa chừng (vd mời email NGOÀI tên miền phải navigate qua /admin/identity bật toggle) làm chết context content script, background chờ vô hạn → task kẹt 3-5 phút rồi báo TIMEOUT.",
     details: [
-      "USER REPORT (2026-06-18): mời 'hil@gmail.com' (ngoài domain xác minh 'ndaigroup.org') → task IN_PROGRESS 343s rồi auto-cleanup TIMEOUT 'extension không trả kết quả'.",
+      "USER REPORT (2026-06-18): mời 'hil' (ngoài domain xác minh 'ndaigroup.org') → task IN_PROGRESS 343s rồi auto-cleanup TIMEOUT 'extension không trả kết quả'.",
       "ROOT CAUSE: runOnce gọi `await sendToContent(tab.id, request)` (Phase 1) KHÔNG bọc timeout. chrome.tabs.sendMessage không có timeout sẵn. Email ngoài domain đi nhánh setExternalInvites → navigateTo('/admin/identity') ↔ '/admin/members' nhiều lần; nếu ChatGPT hard-reload / redirect auth ở giữa, content script context bị huỷ TRƯỚC khi executeInvite return → onMessage listener không bao giờ gọi sendResponse → background await treo vĩnh viễn → task kẹt tới backend lazy-cleanup (STUCK_THRESHOLDS invite=3 phút; hiện 343s do cleanup chạy lazy lúc pick task kế).",
       "Phase 2 (VERIFY_PENDING_INVITE) đã được bọc withTimeout từ v0.7.12, nhưng Phase 1 bị bỏ sót — đây là lỗ hổng còn lại của cùng class bug.",
       "FIX (runner.ts): bọc Phase 1 sendToContent trong withTimeout theo từng loại task (CONTENT_TIMEOUTS): UI ops (invite/remove/role/license/revoke) 150s, sync_member/billing 210s, sync_data/harvest 330s, purchase 450s, default 270s. Mỗi cap LỚN hơn thời gian chạy hợp lệ tối đa của content nhưng NHỎ hơn ngưỡng treo backend ~30s → extension tự fail TRƯỚC, báo error_code mới CONTENT_TIMEOUT rõ ràng + giải phóng service worker + task kế chạy ngay.",
@@ -1160,7 +1146,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     summary:
       "XOÁ thành viên hết fail 'Menu mở nhưng không có item Remove': bổ sung nhãn tiếng Việt thật của ChatGPT — item menu là 'Loại bỏ thành viên' (không phải 'Xoá ...'). Thêm 'Loại bỏ thành viên' / 'Loại bỏ' vào TEXT_FALLBACKS.removeMenuItem + confirmRemoveButton.",
     details: [
-      "USER REPORT: task REMOVE_MEMBER (saptv2019@gmail.com) FAILED 'UI_ELEMENT_NOT_FOUND: Menu mở nhưng không có item Remove.' User chỉ rõ: nếu UI tiếng Việt thì text là 'Loại bỏ thành viên'.",
+      "USER REPORT: task REMOVE_MEMBER (saptv2019) FAILED 'UI_ELEMENT_NOT_FOUND: Menu mở nhưng không có item Remove.' User chỉ rõ: nếu UI tiếng Việt thì text là 'Loại bỏ thành viên'.",
       "ROOT CAUSE: TEXT_FALLBACKS.removeMenuItem CHỈ có 'Remove'/'Remove member'/'Xoá'/'Xóa'/'Xoá khỏi workspace' — KHÔNG có 'Loại bỏ thành viên'. queryByText match theo substring sau normalize; không nhãn nào là substring của 'loại bỏ thành viên' → waitFor 5s không thấy item → fail. (README cũ đã liệt kê 'Loại bỏ thành viên' nhưng code thực tế chưa từng có chuỗi này — doc lệch code.)",
       "FIX: thêm 'Loại bỏ thành viên' + 'Loại bỏ' vào TEXT_FALLBACKS.removeMenuItem (đặt trước các biến thể 'Xoá').",
       "Dialog xác nhận: tiêu đề là 'Loại bỏ thành viên' nhưng nút đỏ xác nhận là 'Xóa' (nút huỷ 'Hủy bỏ') → confirmRemoveButton KHÔNG cần đổi, 'Xóa'/'Xoá' đã phủ sẵn (queryByText chỉ quét <button> nên tiêu đề dialog không match nhầm).",
@@ -1812,7 +1798,7 @@ export const CHANGELOG: ChangelogEntry[] = [
     kind: "fix",
     summary: "Sync scraper lenient hơn (EMAIL_EXTRACT_RE fallback) + giảm 70% delay",
     details: [
-      "Scraper sync.ts: thêm fallback EMAIL_EXTRACT_RE_G — extract email từ text node chứa email cùng tên/avatar (vd 'B b yaakovajax0054@outlook.com'). Trước v0.4.7 chỉ dùng EMAIL_FULL_RE (text node phải EXACT email) — miss khi ChatGPT 2026 concat avatar+name+email vào 1 text node.",
+      "Scraper sync.ts: thêm fallback EMAIL_EXTRACT_RE_G — extract email từ text node chứa email cùng tên/avatar (vd 'B b yaakovajax0054'). Trước v0.4.7 chỉ dùng EMAIL_FULL_RE (text node phải EXACT email) — miss khi ChatGPT 2026 concat avatar+name+email vào 1 text node.",
       "Diagnostic logging: scrape log tổng text nodes scanned + full-match count + extract-match count + final unique rows → debug dễ hơn khi sync trả 0 row.",
       "Delay -70% toàn bộ (human.ts DELAY_MULTIPLIER = 0.30): randomDelay default 1500-4000ms → 450-1200ms; microDelay 60-140ms → 18-42ms; per-char typing 40-120ms → 12-36ms. Theo yêu cầu user 'extension cứ xoay mãi' = chậm. Tradeoff: anti-detection nhẹ hơn nhưng vẫn realistic.",
       "⚠ Backend pair: sau khi update API code (vd thêm subscription_months column trong v0.4.4-0.4.6), MUST chạy `alembic upgrade head`. Auto-migration giờ chạy on startup (apps/api/app/main.py lifespan) — chỉ cần restart backend, không cần lệnh thủ công.",

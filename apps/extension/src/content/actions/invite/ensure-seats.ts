@@ -225,9 +225,9 @@ export async function ensureSeatsForInvite(
   // ── NỢ SUẤT: đếm TẬN NƠI, đừng tin DB ──────────────────────────────────
   // Tới đây là đã phải mở hộp "Quản lý suất" rồi — chậm sẵn, nên thêm một cú
   // click sang tab "Lời mời đang chờ" để đếm cho ĐÚNG là đáng. Dashboard có thể
-  // đang giữ bản ghi "Chờ tham gia" mà lời mời trên ChatGPT đã chết từ lâu; mỗi
-  // bản ghi ma như vậy ăn oan một suất và giết mọi lệnh mời sau đó
-  // (ca lucrativoa2 — xem `count-pending-invites.ts`).
+  // đang giữ bản ghi "Chờ tham gia" mà lời mời trên ChatGPT đã chết — chiều lệch
+  // đó không tự lành nếu đồng bộ chỉ chạy scope 'members'. Mỗi bản ghi thừa ăn
+  // một suất trong phép tính (xem `count-pending-invites.ts`).
   //
   // Đọc không được thì rơi về số của DB: nó đếm THỪA, mà thừa thì cùng lắm là
   // mở hộp / mua dư một suất, còn thiếu là mời mù vào chỗ không có.
@@ -292,14 +292,14 @@ export async function ensureSeatsForInvite(
   //
   // NGUỒN của con số này: ưu tiên bản ĐẾM TẬN NƠI ở tab "Lời mời đang chờ"
   // (`countPendingInvites` phía trên) — đó là sự thật. Chỉ khi không đọc được
-  // mới rơi về `seatHint.pending` của dashboard, vốn có thể còn giữ bản ghi ma
-  // của lời mời đã chết (ca GPT1 24/8/2026: DB 3, ChatGPT 2 ⇒ tính hụt đúng 1
-  // suất ⇒ mọi lệnh mời chết bằng "thiếu 1 suất").
+  // mới rơi về `seatHint.pending` của dashboard, vốn có thể còn giữ bản ghi của
+  // lời mời đã chết trên ChatGPT. Sát trần suất thì mỗi bản ghi thừa là chênh
+  // lệch giữa "mời được" và "báo thiếu suất rồi dừng".
   //
   // Cả hai nguồn đều đã LOẠI email của chính lệnh mời này nên không đếm hai lần
   // với `need`. Backend cũ chưa gửi `pending` → 0, hành vi y như trước.
   //
-  // Số của DB còn một kiểu đếm thừa NỮA, ngược chiều với bản ghi ma: người vừa
+  // Số của DB còn một kiểu đếm thừa NỮA: người vừa
   // bấm nhận lời mời đã nằm trong "đã gán" của ChatGPT trong khi DB còn để
   // 'pending' tới lần đồng bộ sau ⇒ cộng thẳng là đếm họ HAI lần. Đối chiếu với
   // `seatHint.occupied` để trừ ra — xem `dashboardPendingDebt`.

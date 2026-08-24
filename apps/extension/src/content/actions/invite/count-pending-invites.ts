@@ -1,21 +1,23 @@
 /**
  * ĐẾM lời mời đang chờ THẬT trên ChatGPT — dùng cho bước chốt suất của luồng mời.
  *
- * VÌ SAO KHÔNG TIN DB (ca thật GPT1, 24/8/2026): bước chốt suất trừ "nợ suất" =
- * số lời mời đang chờ, và con số đó vốn lấy từ dashboard (`seatHint.pending`).
- * Dashboard đếm 3, ChatGPT chỉ còn 2 — chênh đúng `lucrativoa2`, mời
- * 28/7, gần một tháng không ai bấm nhận, lời mời trên ChatGPT đã chết từ lâu mà
- * bản ghi trong DB vẫn nằm ở "Chờ tham gia".
+ * VÌ SAO KHÔNG TIN DB: bước chốt suất trừ "nợ suất" = số lời mời đang chờ, và
+ * con số đó vốn lấy từ dashboard (`seatHint.pending`). Dashboard chỉ là bản sao,
+ * và bản sao đó có đúng MỘT chiều không tự lành được: một bản ghi "Chờ tham gia"
+ * mà lời mời trên ChatGPT đã chết (bị thu hồi, hoặc treo tới mức ChatGPT bỏ) sẽ
+ * nằm lại mãi. Đồng bộ scope 'members' CỐ Ý không được phép xoá pending — một
+ * pending rời tab "Lời mời" có hai nguyên nhân không phân biệt được nếu chỉ nhìn
+ * một tab (xem `reconcile.py`). Chỉ scope 'both' mới dọn được.
  *
- * Không đường nào tự dọn bản ghi đó: đồng bộ định kỳ chạy scope 'members', mà
- * scope ấy CỐ Ý không được phép xoá pending (một pending rời tab "Lời mời" có hai
- * nguyên nhân không phân biệt được — xem `reconcile.py`). Nên nó ăn một suất
- * VĨNH VIỄN, và mỗi suất ăn oan là một lệnh mời chết vì "thiếu suất".
+ * Nợ suất đếm thừa không vô hại: mỗi bản ghi thừa ăn một suất trong phép tính,
+ * và workspace sát trần thì đó là chênh lệch giữa "mời được" và "báo thiếu suất
+ * rồi dừng". Bước chốt suất không có lý do gì phải chờ lượt đồng bộ kế tiếp: nó
+ * đang đứng ngay trên /admin/members, tab "Lời mời đang chờ" cách một cú click.
+ * Đọc thẳng ở đó là SỰ THẬT tại đúng thời điểm quyết định.
  *
- * Sửa tận gốc thì thuộc về đồng bộ (scope 'both' dọn được lời mời chết). Nhưng
- * bước chốt suất không có lý do gì phải chờ: nó đang đứng ngay trên trang
- * /admin/members, tab "Lời mời đang chờ" cách một cú click. Đọc thẳng ở đó là
- * SỰ THẬT, DB chỉ là bản sao có thể cũ.
+ * ⚠️ Đây là LƯỚI ĐỠ ở bước chốt suất, KHÔNG phải sửa tận gốc — gốc nằm ở đồng bộ
+ * (scope 'both', commit 2e39bf4). Và nó chỉ sửa chiều đếm THỪA: đọc ra con số
+ * đúng không làm workspace có thêm suất nào. Workspace đầy thật thì vẫn đầy.
  *
  * Sai số về phía nào cũng phải an toàn: đọc không được / danh sách nhiều trang
  * (không thấy hết) ⇒ trả `authoritative:false` để caller quay về con số của DB.
