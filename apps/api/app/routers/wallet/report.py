@@ -174,6 +174,73 @@ def _invoice_cost(inv: dict) -> int:
     return int(base or 0) + int(fee)
 
 
+def _unit_price_lookup(paid: list[dict]) -> tuple[dict, list]:
+    """Bảng tra ĐƠN GIÁ/ghế/tháng của workspace, dựng từ hoá đơn gia hạn.
+
+    Trả về (theo period_end, danh sách (ngày, đơn giá) tăng dần). Hoá đơn mua thêm
+    suất giữa kỳ KHÔNG có `unit_price_vnd` nên phải mượn đơn giá của kỳ nó thuộc về.
+    """
+    by_period_end: dict = {}
+    dated: list = []
+    for inv in paid:
+        u = inv.get("unit_price_vnd")
+        if not u:
+            continue
+        u = int(u)
+        pe = _parse_inv_date(inv, "period_end")
+        if pe is not None:
+            by_period_end.setdefault(pe, u)
+        d = _parse_inv_date(inv, "date")
+        if d is not None:
+            dated.append((d, u))
+    dated.sort()
+    return by_period_end, dated
+
+
+def _cycle_unit_price(inv: dict, by_period_end: dict, dated: list) -> int | None:
+    """Đơn giá/ghế/THÁNG áp dụng cho hoá đơn này: của chính nó → của kỳ cùng
+    period_end (hoá đơn proration mượn giá kỳ gia hạn) → đơn giá gần nhất trước đó."""
+    u = inv.get("unit_price_vnd")
+    if u:
+        return int(u)
+    pe = _parse_inv_date(inv, "period_end")
+    if pe is not None and pe in by_period_end:
+        return by_period_end[pe]
+    d = _parse_inv_date(inv, "date")
+    before = [u for dd, u in dated if d is None or dd <= d]
+    if before:
+        return before[-1]
+    return dated[0][1] if dated else None
+
+
+def _seat_months_billed(inv: dict, unit_price: int | None) -> float | None:
+    """Số ghế·tháng mà hoá đơn này THỰC SỰ trả tiền (mẫu số của "phí seat thực tế").
+
+    1 KỲ = 1 THÁNG (chốt user 2026-08-25): thuê bao ChatGPT thu đúng 1 tháng tiền
+    dù kỳ dài 28/30/31 ngày, nên KHÔNG quy đổi span ÷ 30 nữa — quy đổi làm mỗi kỳ
+    31 ngày "rẻ đi" 3,2% so với giá thật.
+
+    Vì vậy ghế·tháng = subtotal ÷ đơn giá/ghế/tháng. Cách này còn tự xử lý hoá đơn
+    mua thêm suất giữa kỳ, thứ mà `quantity` KHÔNG nói được: Stripe ghi `quantity`
+    = TỔNG suất SAU khi mua (vd 60) nhưng chỉ thu phần chênh mấy suất vừa thêm (vd
+    6 suất × 3 ngày). Lấy thẳng quantity thổi mẫu số lên ~9% và kéo "phí seat thực
+    tế" xuống dưới cả giá gốc chưa VAT (ca thật tháng 8/2026: 254.106 đ).
+
+    Thiếu đơn giá/subtotal → rơi về `quantity × số tháng của kỳ`. None = không đủ
+    dữ liệu, bỏ hoá đơn khỏi CẢ tử lẫn mẫu để hai bên cùng một tập hoá đơn.
+    """
+    sub = inv.get("subtotal_vnd")
+    if unit_price and unit_price > 0 and sub:
+        return int(sub) / unit_price
+    qty = int(inv.get("quantity") or 0)
+    if qty <= 0:
+        return None
+    ps = _parse_inv_date(inv, "period_start")
+    pe = _parse_inv_date(inv, "period_end")
+    span = (pe - ps).days if ps and pe and pe > ps else _DAYS_PER_MONTH
+    return qty * max(1, round(span / _DAYS_PER_MONTH))
+
+
 def _months_between(start: datetime, end: datetime) -> int:
     """Số tháng (30 ngày) giữa 2 mốc, tối thiểu 1. Dùng suy months cho member có hạn
     nhưng chưa có chu kỳ (mời trước bảng cycles / vô thời hạn cũ)."""
@@ -359,8 +426,8 @@ def financial_report(
     cost_missing = 0
     # Hoá đơn trong kỳ nhưng CHƯA có chi tiết (period_*) → không tính, đếm để cảnh báo.
     cost_skipped = 0
-    # Phí seat thực tế = seat_cost_basis ÷ billed_seat_months. Chỉ cộng hoá đơn CÓ ghi
-    # số ghế, để tử/mẫu cùng một tập hoá đơn.
+    # Phí seat thực tế = seat_cost_basis ÷ billed_seat_months. Chỉ cộng hoá đơn suy
+    # được số ghế·tháng (xem _seat_months_billed), để tử/mẫu cùng một tập hoá đơn.
     billed_seat_months = 0.0
     seat_cost_basis = 0
     for ws_invoices, ws_finance_start_at, ws_created_at in db.execute(ws_stmt):
@@ -373,6 +440,8 @@ def financial_report(
         # chưa set → fallback created_at (workspace mới tính từ khi onboard).
         anchor = ws_finance_start_at or ws_created_at
         fstart = anchor.astimezone(timezone.utc).date() if anchor is not None else None
+        # Đơn giá/ghế/tháng theo kỳ — hoá đơn proration mượn giá của kỳ nó thuộc về.
+        price_by_end, price_dated = _unit_price_lookup(paid)
         for inv in paid:
             d = _parse_inv_date(inv, "date")
             if d is None:
@@ -397,15 +466,13 @@ def financial_report(
             mk = _month_key(d)
             if mk in cost_by_month:
                 cost_by_month[mk] += amt
-            # Mẫu số cho PHÍ SEAT THỰC TẾ: số ghế × độ dài chu kỳ quy về tháng 30 ngày
-            # (hoá đơn ChatGPT thường 31 ngày, giá bán lại tính tháng 30 ngày — không
-            # quy đổi thì hai con số lệch ~3% và không so trực tiếp được).
-            qty = int(inv.get("quantity") or 0)
-            if qty > 0:
-                ps = _parse_inv_date(inv, "period_start")
-                pe = _parse_inv_date(inv, "period_end")
-                span = (pe - ps).days if ps and pe and pe > ps else _DAYS_PER_MONTH
-                billed_seat_months += qty * span / _DAYS_PER_MONTH
+            # Mẫu số cho PHÍ SEAT THỰC TẾ: ghế·tháng hoá đơn này THỰC SỰ trả tiền,
+            # 1 kỳ = 1 tháng (không quy span ÷ 30). Xem _seat_months_billed.
+            sm = _seat_months_billed(
+                inv, _cycle_unit_price(inv, price_by_end, price_dated)
+            )
+            if sm is not None and sm > 0:
+                billed_seat_months += sm
                 seat_cost_basis += amt
 
     profit = revenue - cost
@@ -419,7 +486,7 @@ def financial_report(
     # Giá vốn/ghế đọc ở bảng "theo chu kỳ thanh toán" (cột lấp đầy).
     avg_price_per_seat = round(revenue / seat_months) if seat_months > 0 else None
 
-    # PHÍ SEAT THỰC TẾ = tiền hoá đơn ÷ số ghế·tháng ChatGPT thu tiền (quy 30 ngày).
+    # PHÍ SEAT THỰC TẾ = tiền hoá đơn ÷ số ghế·tháng ChatGPT thu tiền (1 kỳ = 1 tháng).
     # Đây là giá ChatGPT lấy trên MỖI GHẾ, so trực tiếp được với avg_price_per_seat.
     # KHÁC "lợi nhuận ròng" của kỳ: kỳ có thể lỗ dù mỗi ghế vẫn lãi, khi tiền vào và
     # hoá đơn không rơi cùng tháng, hoặc khi còn ghế chưa bán được.

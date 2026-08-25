@@ -1427,10 +1427,10 @@ class FinancialReportOut(BaseModel):
     seat_months: float = 0
     # Giá BÁN TB mỗi seat/tháng = revenue ÷ seat_months (None khi seat_months = 0).
     avg_price_per_seat: int | None = None
-    # Ghế·tháng ChatGPT thu tiền trong kỳ = Σ (số ghế hoá đơn × độ dài chu kỳ ÷ 30).
+    # Ghế·tháng ChatGPT thu tiền trong kỳ = Σ (subtotal hoá đơn ÷ đơn giá/ghế/tháng).
     billed_seat_months: float = 0
     # PHÍ SEAT THỰC TẾ mỗi ghế/tháng = tiền hoá đơn ÷ billed_seat_months. So trực tiếp
-    # được với avg_price_per_seat vì cùng quy về tháng 30 ngày.
+    # được với avg_price_per_seat vì cả hai đều tính 1 kỳ = 1 tháng.
     avg_seat_cost: int | None = None
 
 

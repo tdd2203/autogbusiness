@@ -395,12 +395,22 @@ def test_financial_report_cycles(client: TestClient, auth_header: dict):
 
 
 def test_financial_report_seat_cost(client: TestClient, auth_header: dict):
-    """Phí seat thực tế = tiền hoá đơn ÷ ghế·tháng ChatGPT thu tiền, QUY VỀ 30 NGÀY.
+    """Phí seat thực tế = tiền hoá đơn ÷ ghế·tháng ChatGPT thu tiền, 1 KỲ = 1 THÁNG.
 
-    Hoá đơn ChatGPT thường dài 31 ngày còn gói bán cho khách tính tháng 30 ngày —
-    không quy đổi thì hai con số lệch ~3% và không so thẳng được với giá bán.
+    Hai cái bẫy được chốt ngày 2026-08-25, cả hai đều kéo con số xuống DƯỚI giá gốc:
+
+    1. Kỳ ChatGPT dài 31 ngày nhưng vẫn thu đúng 1 tháng tiền. Quy span ÷ 30 làm
+       mỗi kỳ "rẻ đi" 3,2%.
+    2. Hoá đơn mua thêm suất giữa kỳ ghi `quantity` = TỔNG suất SAU khi mua (16),
+       nhưng chỉ thu tiền phần chênh (6 suất × 3 ngày). Lấy thẳng quantity thổi
+       mẫu số lên và làm phí seat tụt thêm ~9%.
+
+    Cả hai kỳ ở đây đều đúng đơn giá 260.500 đ + VAT 10% = 286.550 đ/ghế·tháng, nên
+    phí seat thực tế phải ra ĐÚNG 286.550 đ dù có hoá đơn proration chen vào.
     """
-    inv_date = _now - timedelta(days=20)
+    renew_date = _now - timedelta(days=25)
+    addon_date = _now - timedelta(days=5)
+    period_end = (renew_date + timedelta(days=31)).date().isoformat()
     db = SessionLocal()
     try:
         s = db.get(PaymentSettings, 1)
@@ -410,16 +420,31 @@ def test_financial_report_seat_cost(client: TestClient, auth_header: dict):
             Workspace(
                 name="WS_SEATCOST",
                 extension_api_key="k-seatcost",
-                finance_start_at=inv_date - timedelta(days=1),
+                finance_start_at=renew_date - timedelta(days=1),
                 billing_invoices=[
+                    # Hoá đơn GIA HẠN: 10 ghế trọn kỳ 31 ngày.
                     {
-                        "date": inv_date.date().isoformat(),
-                        "total_vnd": 3_100_000,
+                        "date": renew_date.date().isoformat(),
                         "status": "paid",
                         "quantity": 10,
-                        "period_start": inv_date.date().isoformat(),
-                        "period_end": (inv_date + timedelta(days=31)).date().isoformat(),
-                    }
+                        "unit_price_vnd": 260_500,
+                        "subtotal_vnd": 2_605_000,
+                        "total_vnd": 2_865_500,
+                        "period_start": renew_date.date().isoformat(),
+                        "period_end": period_end,
+                    },
+                    # Hoá đơn MUA THÊM giữa kỳ: quantity = 16 (tổng suất sau khi mua)
+                    # nhưng tiền chỉ là 0,6 ghế·tháng, và KHÔNG có đơn giá riêng →
+                    # phải mượn đơn giá của kỳ cùng period_end.
+                    {
+                        "date": addon_date.date().isoformat(),
+                        "status": "paid",
+                        "quantity": 16,
+                        "subtotal_vnd": 156_300,
+                        "total_vnd": 171_930,
+                        "period_start": addon_date.date().isoformat(),
+                        "period_end": period_end,
+                    },
                 ],
             )
         )
@@ -430,13 +455,13 @@ def test_financial_report_seat_cost(client: TestClient, auth_header: dict):
     d = client.get(
         f"/api/v1/wallet/admin/report?from={FROM_Q}&to={TO_Q}", headers=auth_header
     ).json()
-    # 10 ghế × 31 ngày ÷ 30 = 10.3333… ghế·tháng (làm tròn 2 số khi trả ra = 10.33).
-    # Phí seat = 3.100.000 × 30 ÷ (10 × 31) = 300.000 đ/ghế·tháng chẵn — chia bằng mẫu
-    # số CHƯA làm tròn, nên không lệch như khi lấy 10.33.
-    assert d["billed_seat_months"] == 10.33
-    assert d["avg_seat_cost"] == 300_000
-    # Không quy 30 ngày thì sẽ ra 310.000 — sai lệch ~3% so với giá bán tính tháng 30.
-    assert d["avg_seat_cost"] != round(3_100_000 / 10)
+    # 10 ghế trọn kỳ + 156.300 ÷ 260.500 = 0,6 ghế·tháng của hoá đơn mua thêm.
+    assert d["billed_seat_months"] == 10.6
+    assert d["avg_seat_cost"] == 286_550
+    # Công thức CŨ (quantity × span ÷ 30) cho mẫu số 11,93 → 254.533 đ, thấp hơn cả
+    # giá gốc chưa VAT. Đây chính là ca thật 254.106 đ của tháng 8/2026.
+    old_denom = 10 * 31 / 30 + 16 * 3 / 30
+    assert d["avg_seat_cost"] != round((2_865_500 + 171_930) / old_denom)
 
 
 def test_financial_report_requires_invoice_detail(client: TestClient, auth_header: dict):

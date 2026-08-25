@@ -916,7 +916,9 @@ function PnlStatement({ data, rangeLabel }: { data: FinancialReport; rangeLabel:
           )}
           <div style={{ fontSize: 11, color: "var(--ink-3)", marginTop: 8, lineHeight: 1.5 }}>
             Phí seat thực tế = tiền hoá đơn ChatGPT ÷ {data.billed_seat_months.toFixed(1)} ghế·tháng ChatGPT
-            thu tiền, đã quy về tháng 30 ngày để so thẳng với giá bán. <strong style={{ color: "var(--ink-2)" }}>
+            thu tiền. Một chu kỳ hoá đơn tính TRỌN 1 tháng (kỳ 28/30/31 ngày đều thu như nhau), và hoá đơn
+            mua thêm suất giữa kỳ chỉ tính phần suất·ngày thực sự trả tiền chứ không lấy tổng suất ghi trên
+            hoá đơn. <strong style={{ color: "var(--ink-2)" }}>
             Lãi mỗi ghế dương mà lợi nhuận ròng vẫn âm là bình thường</strong>: kỳ của khách và hoá đơn
             ChatGPT neo vào hai mốc khác nhau nên không rơi cùng tháng, và ghế chưa bán được vẫn phải trả
             tiền. Xem bảng theo chu kỳ thanh toán bên dưới để biết tỷ lệ lấp đầy.
