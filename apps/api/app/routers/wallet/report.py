@@ -153,6 +153,10 @@ def _default_from(today: date) -> date:
     return date(y, m, 1)
 
 
+# 1 dòng chu kỳ đã gộp: (period_start, period_end, cost, seats_start, seats_end)
+_CycleRow = tuple[date, date, int, "int | None", "int | None"]
+
+
 def _parse_inv_date(inv: dict, key: str) -> date | None:
     """Đọc 1 field ngày ISO của hoá đơn ('date' / 'period_start' / 'period_end')."""
     raw = inv.get(key)
@@ -574,8 +578,8 @@ def financial_report_cycles(
     }
 
     # ── Dựng danh sách chu kỳ từ hoá đơn (mới nhất trước, tối đa `limit` mỗi ws) ──
-    # cycles: workspace_id → list[(period_start, period_end, cost, seats)]
-    cycles: dict[UUID, list[tuple[date, date, int, int | None]]] = {}
+    # cycles: workspace_id → list[(period_start, period_end, cost, seats_start, seats)]
+    cycles: dict[UUID, list[_CycleRow]] = {}
     ws_names: dict[UUID, str] = {}
     for wid, name, invs, fs, created in db.execute(
         select(
@@ -589,7 +593,13 @@ def financial_report_cycles(
         ws_names[wid] = name
         anchor = fs or created
         fstart = anchor.astimezone(timezone.utc).date() if anchor is not None else None
-        rows: list[tuple[date, date, int, int | None]] = []
+        # GỘP HOÁ ĐƠN THEO `period_end` = 1 chu kỳ (sửa 2026-08-25). Hoá đơn mua thêm
+        # suất giữa kỳ (proration) có period = [ngày mua → ngày gia hạn] nên TRÙNG
+        # period_end với kỳ đang chạy. Trước đây mỗi hoá đơn thành một dòng, hậu quả
+        # thật ở CHATGPT PRO kỳ 25/07→25/08: 5 dòng ma "22/08→25/08", chi của kỳ thật
+        # thiếu 369.767 đ tiền mua thêm ghế, còn THU của 3 ngày cuối bị đếm lại 4 lần
+        # (mỗi dòng ma khoe "+2,7 triệu lãi"), và `limit` bị hoá đơn ma ăn hết chỗ.
+        acc: dict[date, list] = {}  # period_end → [ps, cost, seats_start, seats_max]
         for inv in invs or []:
             if inv.get("status") != "paid":
                 continue
@@ -603,7 +613,21 @@ def financial_report_cycles(
                 # dụng cho những kỳ gần đây khi paste chi tiết hoá đơn vào thôi").
                 # Hoá đơn cũ chưa dán chi tiết thì không lên bảng này; dán vào là có.
                 continue
-            rows.append((ps, pe, _invoice_cost(inv), int(inv.get("quantity") or 0) or None))
+            qty = int(inv.get("quantity") or 0) or None
+            cur = acc.get(pe)
+            if cur is None:
+                acc[pe] = [ps, _invoice_cost(inv), qty, qty]
+                continue
+            cur[1] += _invoice_cost(inv)
+            if ps < cur[0]:
+                # Hoá đơn mở kỳ (gia hạn) → nó mới là mốc đầu kỳ và số ghế ĐẦU kỳ.
+                cur[0], cur[2] = ps, qty
+            if qty is not None and (cur[3] is None or qty > cur[3]):
+                # Stripe ghi `quantity` = TỔNG suất SAU khi mua → max = ghế CUỐI kỳ.
+                cur[3] = qty
+        rows: list[_CycleRow] = [
+            (ps, pe, cost, s_start, s_end) for pe, (ps, cost, s_start, s_end) in acc.items()
+        ]
         rows.sort(key=lambda r: r[0], reverse=True)
         if rows:
             cycles[wid] = rows[:limit]
@@ -632,7 +656,7 @@ def financial_report_cycles(
             for _iv, n_months, start_dt, end_dt in _member_revenue_events(m, now):
                 start_d = start_dt.astimezone(timezone.utc).date()
                 end_d = end_dt.astimezone(timezone.utc).date()
-                for i, (ps, pe, _c, _q) in enumerate(ws_cycles):
+                for i, (ps, pe, _c, _q0, _q) in enumerate(ws_cycles):
                     amt, days = _accrue(
                         per_month * n_months,
                         start_d,
@@ -650,7 +674,7 @@ def financial_report_cycles(
 
     out: list[FinancialReportCycle] = []
     for wid, rows in cycles.items():
-        for i, (ps, pe, c, qty) in enumerate(rows):
+        for i, (ps, pe, c, qty_start, qty) in enumerate(rows):
             r = rev.get((wid, i), 0)
             total_days = (pe - ps).days
             elapsed = min(total_days, max(0, (today - ps).days))
@@ -663,9 +687,13 @@ def financial_report_cycles(
                     days_elapsed=elapsed,
                     in_progress=elapsed < total_days,
                     seats=qty,
+                    seats_start=qty_start,
                     cost=c,
                     revenue=r,
                     profit=r - c,
+                    # CÔNG SUẤT lấy GHẾ CUỐI KỲ × số ngày (chốt user 2026-08-25):
+                    # ghế mua thêm giữa kỳ cũng phải bán được thì mới hoà, nên đưa
+                    # hết vào mẫu số dù chúng chỉ tồn tại vài ngày cuối kỳ.
                     capacity_seat_months=(
                         round(qty * total_days / _DAYS_PER_MONTH, 2) if qty else None
                     ),

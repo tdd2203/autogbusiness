@@ -200,13 +200,16 @@ export type FinancialReport = {
   seat_months: number;
   /** Giá BÁN TB mỗi seat/tháng = revenue ÷ seat_months. null khi chưa bán được kỳ nào. */
   avg_price_per_seat: number | null;
-  /** Ghế·tháng ChatGPT thu tiền = Σ (ghế trên hoá đơn × độ dài chu kỳ ÷ 30). */
+  /** Ghế·tháng ChatGPT thu tiền = Σ (subtotal hoá đơn ÷ đơn giá/ghế/tháng), 1 kỳ = 1 tháng. */
   billed_seat_months: number;
   /** Phí seat thực tế mỗi ghế/tháng = tiền hoá đơn ÷ billed_seat_months (đã quy 30 ngày). */
   avg_seat_cost: number | null;
 };
 
-/** 1 chu kỳ thanh toán ChatGPT (= 1 hoá đơn). CHI là TRỌN tiền hoá đơn, không chia ngày. */
+/**
+ * 1 chu kỳ thanh toán ChatGPT — gộp MỌI hoá đơn cùng `period_end`: hoá đơn gia hạn mở
+ * kỳ + các hoá đơn mua thêm suất giữa kỳ. CHI là TRỌN tiền đã trả, không chia ngày.
+ */
 export type FinancialCycle = {
   workspace: string;
   period_start: string;
@@ -214,11 +217,14 @@ export type FinancialCycle = {
   days: number;
   days_elapsed: number;
   in_progress: boolean;
+  /** Ghế CUỐI kỳ (quantity lớn nhất trong các hoá đơn của kỳ). */
   seats: number | null;
+  /** Ghế ĐẦU kỳ (quantity của hoá đơn gia hạn). Khác `seats` = kỳ có mua thêm ghế. */
+  seats_start: number | null;
   cost: number;
   revenue: number;
   profit: number;
-  /** Công suất đã trả tiền = ghế × ngày ÷ 30. So với seat_months ra tỷ lệ lấp đầy. */
+  /** Công suất đã trả tiền = ghế CUỐI kỳ × ngày ÷ 30. So seat_months ra tỷ lệ lấp đầy. */
   capacity_seat_months: number | null;
   /** Đã BÁN được (Σ seat-ngày có thu ÷ 30). */
   seat_months: number;

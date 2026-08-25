@@ -403,7 +403,7 @@ function CycleTable() {
               fill === null ? "var(--ink-3)" : fill >= 95 ? GAIN : fill >= 70 ? COST_TEXT : "var(--danger)";
             return (
               <div
-                key={`${c.workspace}-${c.period_start}`}
+                key={`${c.workspace}-${c.period_end}`}
                 style={{
                   display: "grid",
                   gridTemplateColumns: "1fr 0.95fr 60px 1.05fr 1fr 1fr 1.05fr",
@@ -424,7 +424,12 @@ function CycleTable() {
                   </div>
                 </div>
                 <div style={{ fontSize: 13, fontFamily: "var(--font-mono)", textAlign: "right", color: "var(--ink-2)" }}>
-                  {c.seats ?? "—"}
+                  {/* Kỳ có mua thêm ghế giữa chừng thì hiện "đầu kỳ→cuối kỳ" (vd 46→62). */}
+                  {c.seats === null
+                    ? "—"
+                    : c.seats_start !== null && c.seats_start !== c.seats
+                      ? `${c.seats_start}→${c.seats}`
+                      : c.seats}
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontSize: 13.5, fontWeight: 700, fontFamily: "var(--font-mono)", color: fillColor }}>
@@ -462,7 +467,9 @@ function CycleTable() {
             trả tiền cho ChatGPT (ghế × ngày ÷ 30). Hoá đơn trả trọn kỳ nên khách nghỉ giữa chừng mà không
             bù được người vào là mất luôn số ngày đó — lãi/lỗ của kỳ đi theo cột này chứ không theo số ngày
             đã trôi qua. Kỳ <strong style={{ color: COST_TEXT }}>đang chạy</strong> còn bán tiếp được, chỉ
-            chốt lãi/lỗ khi đã đóng.
+            chốt lãi/lỗ khi đã đóng. Cột ghế dạng <strong style={{ color: "var(--ink-2)" }}>46→62</strong> là
+            kỳ có mua thêm ghế giữa chừng: tiền mua thêm đã cộng vào chi phí của chính kỳ đó, không tách
+            thành dòng riêng.
           </div>
         </>
       )}

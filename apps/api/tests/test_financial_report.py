@@ -356,7 +356,17 @@ def test_financial_report_cycles(client: TestClient, auth_header: dict):
                     "quantity": 3,
                     "period_start": cyc_start.date().isoformat(),
                     "period_end": cyc_end.date().isoformat(),
-                }
+                },
+                # Mua thêm ghế GIỮA KỲ: period = [ngày mua → ngày gia hạn], trùng
+                # period_end với kỳ trên. Đây KHÔNG phải chu kỳ mới.
+                {
+                    "date": (cyc_end - timedelta(days=3)).date().isoformat(),
+                    "total_vnd": 50_000,
+                    "status": "paid",
+                    "quantity": 5,
+                    "period_start": (cyc_end - timedelta(days=3)).date().isoformat(),
+                    "period_end": cyc_end.date().isoformat(),
+                },
             ],
         )
         db.add(ws)
@@ -375,21 +385,24 @@ def test_financial_report_cycles(client: TestClient, auth_header: dict):
     r = client.get("/api/v1/wallet/admin/report/cycles", headers=auth_header)
     assert r.status_code == 200, r.text
     rows = [c for c in r.json()["cycles"] if c["workspace"] == "WS_CYCLE"]
+    # Hoá đơn mua thêm ghế giữa kỳ KHÔNG đẻ ra dòng riêng — gộp vào kỳ cùng period_end.
     assert len(rows) == 1
     c = rows[0]
-    assert c["cost"] == 1_000_000  # TRỌN hoá đơn
-    assert c["seats"] == 3
+    assert c["period_start"] == cyc_start.date().isoformat()
+    assert c["cost"] == 1_050_000  # TRỌN hoá đơn gia hạn + tiền mua thêm ghế
+    assert c["seats_start"] == 3  # ghế đầu kỳ (hoá đơn gia hạn)
+    assert c["seats"] == 5  # ghế cuối kỳ (quantity sau khi mua thêm)
     assert c["days"] == 30
     assert c["in_progress"] is False
-    # Công suất = 3 ghế × 30 ngày ÷ 30 = 3 seat·tháng; mới bán 1 ghế nên chưa lấp đầy.
-    assert c["capacity_seat_months"] == 3.0
+    # Công suất = 5 ghế CUỐI KỲ × 30 ngày ÷ 30 = 5 seat·tháng; mới bán 1 ghế.
+    assert c["capacity_seat_months"] == 5.0
     assert c["seat_months"] < c["capacity_seat_months"]
     # Doanh thu kỳ vẫn CẮT MỐC SePay (khác bảng tháng) — tính theo số ngày sau mốc.
     from app.routers.wallet.report import _SEPAY_LIVE_DATE
 
     paid_days = (cyc_end.date() - max(cyc_start.date(), _SEPAY_LIVE_DATE)).days
     assert abs(c["revenue"] - round(AGENT_FEE * paid_days / 30)) <= 1
-    assert c["profit"] == c["revenue"] - 1_000_000
+    assert c["profit"] == c["revenue"] - 1_050_000
     # Member của workspace khác cùng chủ KHÔNG lẫn vào; WS_OTHER không có hoá đơn.
     assert not [x for x in r.json()["cycles"] if x["workspace"] == "WS_OTHER"]
 

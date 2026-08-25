@@ -1435,11 +1435,15 @@ class FinancialReportOut(BaseModel):
 
 
 class FinancialReportCycle(BaseModel):
-    """1 CHU KỲ THANH TOÁN ChatGPT của 1 workspace (= 1 hoá đơn có period).
+    """1 CHU KỲ THANH TOÁN ChatGPT của 1 workspace (gộp mọi hoá đơn cùng period_end).
 
     Khác báo cáo theo tháng lịch: ở đây kỳ được cắt đúng bằng chu kỳ hoá đơn nên CHI
     là TRỌN số tiền hoá đơn (không chia ngày), còn THU là phần doanh thu của member
     thuộc workspace đó rơi vào đúng những ngày ấy.
+
+    MỘT KỲ CÓ THỂ GỒM NHIỀU HOÁ ĐƠN: hoá đơn gia hạn mở kỳ, cộng các hoá đơn mua thêm
+    suất giữa kỳ (proration) — chúng có period = [ngày mua → ngày gia hạn] nên trùng
+    period_end với kỳ đang chạy. Tất cả dồn vào `cost` của kỳ, không tách dòng riêng.
     """
 
     workspace: str
@@ -1448,11 +1452,12 @@ class FinancialReportCycle(BaseModel):
     days: int
     days_elapsed: int  # số ngày đã trôi qua tính tới hôm nay (= days khi đã xong)
     in_progress: bool
-    seats: int | None  # số ghế trên hoá đơn (None nếu hoá đơn không ghi)
+    seats: int | None        # ghế CUỐI kỳ = quantity lớn nhất trong các hoá đơn của kỳ
+    seats_start: int | None  # ghế ĐẦU kỳ = quantity của hoá đơn gia hạn mở kỳ
     cost: int          # TRỌN tiền hoá đơn (gồm VAT + phí ngân hàng)
     revenue: int
     profit: int
-    # CÔNG SUẤT đã trả tiền = seats × days ÷ 30. So với seat_months (đã bán được) ra
+    # CÔNG SUẤT đã trả tiền = seats CUỐI KỲ × days ÷ 30. So seat_months (đã bán được) ra
     # tỷ lệ lấp đầy. Ghế trống giữa chu kỳ không bù người vào được là mất luôn, vì
     # hoá đơn đã trả trọn kỳ — đây là số để nhìn ra điều đó.
     capacity_seat_months: float | None
