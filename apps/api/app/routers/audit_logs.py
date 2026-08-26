@@ -87,11 +87,33 @@ def _queue_item_id_of(log: AuditLog) -> str | None:
     return None
 
 
+def _own_queue_item_ids(db: Session, user_id: UUID, logs: list[AuditLog]) -> set[str]:
+    """queue_item.id (str) mà CHÍNH user này tạo, trong số task được nhắc ở `logs`."""
+    ids: set[UUID] = set()
+    for log in logs:
+        qid = _queue_item_id_of(log)
+        if not qid:
+            continue
+        try:
+            ids.add(UUID(qid))
+        except ValueError:
+            continue
+    if not ids:
+        return set()
+    rows = db.execute(
+        select(QueueItem.id).where(
+            QueueItem.id.in_(ids), QueueItem.created_by_id == user_id
+        )
+    ).all()
+    return {str(r[0]) for r in rows}
+
+
 def _audit_log_visible(
     log: AuditLog,
     user: User,
     owned_ids: set[str],
     owned_emails: set[str],
+    own_queue_ids: set[str],
 ) -> bool:
     """Sub-admin chỉ thấy nhật ký về email họ sở hữu + thao tác/thông tin của họ."""
     uid = user.id
@@ -99,6 +121,22 @@ def _audit_log_visible(
     data = log.data or {}
     emails_in_log = _emails_in_log_data(data)
     member_ids = _member_ids_in_log_data(data)
+
+    # Sự kiện CẤP HÀNG ĐỢI của task do CHÍNH họ tạo (`QUEUE_PICKED`, `QUEUE_TIMEOUT`,
+    # `QUEUE_UPDATED`…): `actor_id` NULL (extension/hệ thống ghi) và data không mang
+    # email nào, nên MỌI luật bên dưới đều trượt → trước đây sub-admin không bao giờ
+    # thấy chúng.
+    #
+    # ⚠️ CA THẬT 26/8/2026 (task 3bc11c7b): cùng một lệnh mời, super-admin đọc ra
+    # "Thất bại" (thấy `QUEUE_TIMEOUT`) còn sub-admin đọc ra "Thành công" (không
+    # thấy) — hai người nhìn hai sự thật khác nhau về việc của chính sub-admin.
+    #
+    # CHỈ mở cho log KHÔNG mang email/member: log có email vẫn phải qua luật sở hữu
+    # bên dưới, vì email của một task có thể đã đổi chủ sang sub-admin khác.
+    if not emails_in_log and not member_ids:
+        qid = _queue_item_id_of(log)
+        if qid is not None and qid in own_queue_ids:
+            return True
 
     if log.actor_id == uid:
         if emails_in_log and not emails_in_log.issubset(owned_emails):
@@ -157,10 +195,11 @@ def list_audit_logs(
     else:
         owned_ids, owned_emails = _owned_member_sets(db, user.id)
         raw = list(db.execute(stmt.limit(_SUB_ADMIN_AUDIT_SCAN)).scalars())
+        own_queue_ids = _own_queue_item_ids(db, user.id, raw)
         rows = [
             r
             for r in raw
-            if _audit_log_visible(r, user, owned_ids, owned_emails)
+            if _audit_log_visible(r, user, owned_ids, owned_emails, own_queue_ids)
         ][:limit]
 
     # Suy tên workspace cho các log gắn workspace (mời/xoá thành viên, workspace…).

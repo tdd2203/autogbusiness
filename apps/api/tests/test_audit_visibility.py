@@ -128,3 +128,73 @@ def test_sub_admin_without_audit_permission_cannot_list(
     token = _bearer(_login_token(client, "noaudit", "SubPassword123!"))
     resp = client.get("/api/v1/audit-logs", headers=token)
     assert resp.status_code == 403, resp.text
+
+
+def test_sub_admin_thay_su_kien_hang_doi_cua_lenh_minh_tao(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Sự kiện CẤP HÀNG ĐỢI (`QUEUE_PICKED`, `QUEUE_TIMEOUT`…) của task do chính
+    sub-admin tạo phải hiện cho họ.
+
+    Ca thật 26/8/2026 (task 3bc11c7b): các log này có `actor_id` NULL và data không
+    mang email nào nên mọi luật sở hữu đều trượt → sub-admin không thấy. Hậu quả:
+    cùng một lệnh mời, super-admin đọc ra "Thất bại" (thấy `QUEUE_TIMEOUT`) còn
+    sub-admin đọc ra "Thành công" — hai người nhìn hai sự thật khác nhau về việc của
+    chính sub-admin.
+
+    Ranh giới: task của NGƯỜI KHÁC thì vẫn không được thấy.
+    """
+    ws = client.post(
+        "/api/v1/workspaces",
+        json={"name": "Queue Audit WS"},
+        headers=auth_header,
+    ).json()
+    key = {"X-API-KEY": ws["extension_api_key"]}
+
+    sub = _create_sub_admin(
+        client,
+        auth_header,
+        email="queueaudit@example.com",
+        username="queueaudit",
+        permissions=["AUDIT_LOG_VIEW", "MEMBER_INVITE", "MEMBER_VIEW"],
+    )
+    assign = client.post(
+        f"/api/v1/workspaces/{ws['id']}/assignments",
+        json={"user_id": sub["id"]},
+        headers=auth_header,
+    )
+    assert assign.status_code == 201, assign.text
+    token = _bearer(_login_token(client, "queueaudit", "SubPassword123!"))
+
+    # Lệnh của CHÍNH sub-admin → extension nhận task (sinh QUEUE_PICKED).
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "queue-mine@example.com", "role": "member"},
+        headers=token,
+    )
+    assert r.status_code == 201, r.text
+    mine = client.get("/api/v1/queue/next", headers=key).json()
+    assert mine is not None
+
+    # Lệnh của super-admin → cũng có QUEUE_PICKED, nhưng không phải việc của họ.
+    r2 = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "queue-theirs@example.com", "role": "member"},
+        headers=auth_header,
+    )
+    assert r2.status_code == 201, r2.text
+    theirs = client.get("/api/v1/queue/next", headers=key).json()
+    assert theirs is not None and theirs["id"] != mine["id"]
+
+    logs = client.get("/api/v1/audit-logs?limit=200", headers=token).json()
+    queue_targets = {
+        lg["target_id"]
+        for lg in logs
+        if lg["action"].startswith("QUEUE_") and lg.get("target_id")
+    }
+    assert mine["id"] in queue_targets, (
+        "sự kiện hàng đợi của lệnh do chính sub-admin tạo phải hiện cho họ"
+    )
+    assert theirs["id"] not in queue_targets, (
+        "lệnh của người khác thì vẫn không được thấy"
+    )
