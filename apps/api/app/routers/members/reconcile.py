@@ -44,6 +44,12 @@ logger = logging.getLogger(__name__)
 # lâu rồi mà nay quay lại thường là ĐƯỢC MỜI LẠI, không phải xoá hỏng.
 FAKE_REMOVE_LOOKBACK = timedelta(days=30)
 
+# VÙNG BẢO VỆ LỜI MỜI TƯƠI: ChatGPT index lời mời vừa gửi vào tab "Lời mời đang
+# chờ xử lý" TRỄ 1-30s (mẻ nhiều email còn lâu hơn — server gửi tuần tự). Mọi
+# khối "không thấy email ⇒ kết luận xấu" trong file này phải chừa khoảng này ra,
+# nếu không sẽ xoá oan lời mời ĐÃ ĐI THẬT. Xem `reconcile.md` §4.
+FRESH_INVITE_GUARD = timedelta(minutes=10)
+
 
 def _flag_fake_removals(
     db: Session,
@@ -392,7 +398,7 @@ def bulk_upsert_members(
         # case index chậm + tránh false-positive khi user invite nhiều email gần
         # nhau (vd a12 lúc 08:34, g12 lúc 08:37 + verify g12 08:38). Sự kiện
         # đáng chú ý — log audit_logs nếu skip nhiều.
-        reconcile_cutoff = now - timedelta(minutes=10)
+        reconcile_cutoff = now - FRESH_INVITE_GUARD
         # Dùng COALESCE(last_invited_at, created_at): member RE-INVITE có
         # created_at cũ (lần đầu) nhưng last_invited_at = lúc re-invite → vẫn
         # được vùng-bảo-vệ 10 phút che, không bị mark removed oan khi ChatGPT
@@ -488,7 +494,7 @@ def bulk_upsert_members(
     ):
         # Vùng bảo vệ 10 phút như khối mark-removed: ChatGPT index lời mời mới vào
         # tab "Lời mời" trễ 1-30s → email vừa mời chưa hiện KHÔNG phải "đã tham gia".
-        fresh_invite_cutoff = now - timedelta(minutes=10)
+        fresh_invite_cutoff = now - FRESH_INVITE_GUARD
         conds = [
             Member.workspace_id == workspace_id,
             Member.status == "pending",
@@ -599,7 +605,7 @@ def bulk_upsert_members(
         if raw_extra:
             # Loại member vừa mời lại trong 10' (ChatGPT chưa kịp hiện ở tab active
             # lúc scrape) — cùng vùng bảo vệ như khối mark-removed, tránh báo nhầm.
-            protect_cutoff = now - timedelta(minutes=10)
+            protect_cutoff = now - FRESH_INVITE_GUARD
             protected = {
                 e.lower()
                 for (e,) in db.execute(
@@ -732,6 +738,29 @@ def reconcile_after_invite(
     dashboard không hiển thị email chưa thực sự được ChatGPT nhận. CHỈ đụng row
     đang `pending` — KHÔNG đụng `active` (member re-invite vẫn còn trong team).
 
+    ⚠️ VÙNG BẢO VỆ 10 PHÚT (fix 2026-08-26 — ca thật `mhlober`, task `8a2b9e4b`):
+    endpoint này chạy NGAY sau cú bấm mời, đúng lúc ChatGPT còn đang index. Mẻ 9
+    email hôm đó verify thấy 8, thiếu 1 → email thứ 9 bị chốt `removed` +
+    `invite_failed` chỉ 75 GIÂY sau khi mời, trong khi lời mời đã đi thật và
+    người được mời sau đó vào team. Guard 10 phút của `queue/completion.py` (ghi
+    `MEMBER_INVITE_CLEANUP_DEFERRED` + `MEMBER_INVITE_PENDING_VERIFY`) viết ra
+    đúng để chặn ca này, nhưng nó chạy 0,1 giây SAU nên không cứu kịp — đường này
+    xoá trước và thắng. Nay hai đường dùng CHUNG một luật: email còn trong
+    `FRESH_INVITE_GUARD` thì HOÃN phán xử, giữ `pending`, nhường kết luận cho
+    - `completion.py` (ghi `MEMBER_INVITE_PENDING_VERIFY` khi task báo COMPLETED),
+    - SYNC_DATA/`SYNC_MEMBERS_BATCH` (promote `pending → active` khi thấy email), và
+    - resolver nền `main.py::_resolve_stale_pending_invites_once` (quá 20′ vẫn
+      không có xác minh nào ⇒ chốt FAILED + hoàn phí + xoá phantom).
+
+    Nghĩa là hoãn KHÔNG phải bỏ qua: lời mời hỏng THẬT vẫn bị chốt và hoàn tiền,
+    chỉ chậm hơn vài chục phút. Đổi lại, lời mời trót lọt không còn bị xoá oan —
+    thiệt hại lệch hẳn một bậc (xem `reconcile.md` §4).
+
+    ⚠️ Email hoãn KHÔNG được chạm `last_synced_at`: resolver nền coi
+    `last_synced_at` mới hơn mốc hoãn là BẰNG CHỨNG DƯƠNG "đồng bộ đã nhìn thấy
+    email" → đóng dấu ở đây = tự tay dựng bằng chứng giả, lời mời hỏng thật sẽ
+    được tha bổng và không ai hoàn phí.
+
     Nếu `verify_scrape_failed=True` → giữ nguyên (không scrape được pending list,
     tránh xoá oan; SYNC_DATA sau này sẽ reconcile chuẩn).
     """
@@ -748,6 +777,7 @@ def reconcile_after_invite(
         return {"removed": 0, "skipped": False}
 
     now = datetime.now(timezone.utc)
+    fresh_cutoff = now - FRESH_INVITE_GUARD
     rows = (
         db.execute(
             select(Member).where(
@@ -760,12 +790,39 @@ def reconcile_after_invite(
         .all()
     )
     removed_emails: list[str] = []
+    deferred_emails: list[str] = []
     for m in rows:
+        # Mốc neo = lần mời GẦN NHẤT (member re-invite giữ created_at cũ — cùng
+        # lý do đã buộc khối reconcile ở trên dùng COALESCE, fix 2026-06-17).
+        anchor = m.last_invited_at or m.created_at
+        if anchor is not None and anchor > fresh_cutoff:
+            deferred_emails.append(m.email)
+            continue
         m.status = "removed"
         m.removed_at = now
         m.removed_reason = REMOVED_REASON_INVITE_FAILED
         m.last_synced_at = now
         removed_emails.append(m.email)
+
+    if deferred_emails:
+        # Cùng action + reason với guard bên `queue/completion.py` → nhật ký của
+        # hai đường đọc như một, admin không phải học thêm sự kiện mới.
+        log_event(
+            db,
+            actor_type="SYSTEM",
+            actor_label="system:phantom-cleanup-guard",
+            action="MEMBER_INVITE_CLEANUP_DEFERRED",
+            result="OK",
+            target_type="WORKSPACE",
+            target_id=str(workspace_id),
+            data={
+                "workspace_id": str(workspace_id),
+                "deferred_emails": deferred_emails,
+                "reason": "fresh_invite_within_10min_defer_to_sync",
+                "source": "reconcile_after_invite",
+            },
+            commit=False,
+        )
 
     # Đánh dấu Invite row tương ứng 'failed' để audit/lịch sử khớp.
     if removed_emails:
@@ -795,9 +852,22 @@ def reconcile_after_invite(
                 "removed": len(removed_emails),
                 "removed_emails": removed_emails,
                 "verified_count": len(body.verified_emails),
+                "deferred_emails": deferred_emails,
             },
             commit=False,
         )
+
+    # MỘT commit cho cả lượt: member removed + Invite failed + audit của cả hai
+    # nhánh nằm chung transaction (nửa vời = trạng thái lệch, như ca 26/8/2026
+    # khi member bị chốt removed xong mới có ai đó ghi log hoãn).
+    if removed_emails or deferred_emails:
         db.commit()
 
-    return {"removed": len(removed_emails), "skipped": False}
+    return {
+        "removed": len(removed_emails),
+        "skipped": False,
+        # Email được HOÃN phán xử vì còn trong vùng bảo vệ 10 phút (đã giữ
+        # 'pending'). Extension chỉ log; có mặt ở đây để trace ca xoá oan.
+        "deferred": len(deferred_emails),
+        "deferred_emails": deferred_emails,
+    }
