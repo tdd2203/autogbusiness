@@ -36,6 +36,12 @@ function openDialogs(): HTMLElement[] {
  * không mang tiêu đề "Xem lại giao dịch mua". Nên điều kiện nhận dạng là
  * "có nút xác nhận" VÀ ("đúng tiêu đề" HOẶC "đọc được tổng phải trả hôm nay").
  *
+ * UI 2026-08-26 (ảnh user): ChatGPT còn một biến thể tên "Xem lại thay đổi người
+ * dùng", nút cuối "Xác nhận thay đổi", và KHÔNG in dòng "Tổng phải trả hôm nay"
+ * (chỉ có "+260.500 đ/tháng" + hoá đơn hằng tháng trước/sau) — thay đổi có hiệu
+ * lực vào kỳ gia hạn. Nên tiêu đề của biến thể này được nhận ở đây, và nhãn nút
+ * nằm trong `billingAddUserButton`. Mọi chốt số suất phía sau giữ nguyên.
+ *
  * Bản cũ nhận dạng bằng heuristic lỏng (có cụm tiền bất kỳ + có nút xác nhận +
  * không có input số). Với UI mới, modal "Quản lý suất" cũng in tiền
  * ("649.000 đ/tháng") và có thể không dùng <input> cho bộ đếm → heuristic đó có
@@ -56,7 +62,7 @@ export function findPurchaseReviewModal(): HTMLElement | null {
     const norm = normalizeForMatch(text);
 
     const hasTitle =
-      /xem\s*lai\s*giao\s*dich\s*mua|review\s*(?:your\s*)?purchase|review\s*order|quan\s*ly\s*cho\s*ngoi|查看购买|确认购买/i.test(
+      /xem\s*lai\s*giao\s*dich\s*mua|xem\s*lai\s*thay\s*doi\s*(?:nguoi\s*dung)?|review\s*(?:your\s*)?purchase|review\s*(?:user\s*)?changes|review\s*order|quan\s*ly\s*cho\s*ngoi|查看购买|确认购买|查看用户更改/i.test(
         norm,
       );
     const hasTodayTotal = extractChargeAmountFromModal(text) !== null;

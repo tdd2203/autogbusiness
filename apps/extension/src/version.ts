@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.13.9";
+export const VERSION = "0.13.17";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,118 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.13.17",
+    date: "2026-08-26",
+    kind: "fix",
+    summary:
+      "ChatGPT báo 'Đã xảy ra sự cố' lúc mua suất: tải lại trang đọc lại số suất để biết đã mua được chưa, chưa mua thì mua lại đúng một lần.",
+    details: [
+      "Ca user chụp màn hình 26/8/2026: bấm nút cuối xong, hộp in băng-rôn đỏ 'Đã xảy ra sự cố khi cập nhật gói đăng ký của bạn' rồi treo nguyên. Trước đây extension nằm chờ hộp đóng đủ 2 phút rồi trả lời chung chung 'giao dịch CÓ THỂ đã đi qua'.",
+      "Nay đọc được câu báo hỏng đó (tiếng Việt/Anh/Trung) thì thôi chờ sau khoảng 4 giây, rồi background TẢI LẠI trang admin và đọc lại số suất in trên trang — hộp còn che thì không đọc được, tải lại là đường duy nhất.",
+      "Suất đã lên đủ ⇒ giao dịch đã đi qua, lệnh xong, không bấm thêm gì. Suất y nguyên ⇒ đọc lại tối đa 3 lượt (ChatGPT cập nhật chậm) rồi mới chạy lại lệnh mua ĐÚNG MỘT LẦN. Nhập nhằng ⇒ dừng, báo admin — thà để người quyết còn hơn mua đúp.",
+      "Chốt chặn mua đúp: hộp nào nói 'Có hiệu lực vào 25 tháng 9, 2026' (thay đổi tính từ kỳ gia hạn sau) thì số suất hôm nay đúng ra không nhích — ca đó CẤM mua lại, dù đọc thấy suất y nguyên.",
+      "Nhận thêm hộp 'Xem lại thay đổi người dùng' với nút 'Xác nhận thay đổi' — biến thể UI mới của ChatGPT, trước đây extension không bám được. Mọi chốt về số suất giữ nguyên.",
+    ],
+  },
+  {
+    version: "0.13.16",
+    date: "2026-08-26",
+    kind: "fix",
+    summary:
+      "Mua suất xong nhìn thẳng số 'Suất Tiêu chuẩn' in trên trang để biết đã mua được — khỏi mở lại hộp 'Quản lý số suất'.",
+    details: [
+      "Trang Thành viên in sẵn 'Suất Tiêu chuẩn 66', mà mọi thành viên đều dùng suất Tiêu chuẩn. User chốt 26/8/2026: số đó tăng lên so với trước khi mua là mua thành công.",
+      "Nay mua xong chờ đúng số đó nhích lên (tối đa 15 giây) rồi mời tiếp. Không mở lại hộp 'Quản lý số suất' để đếm nữa — mỗi lần mở là một lần hộp có thể kẹt, mà hộp kẹt thì lớp phủ chặn luôn bước mời.",
+      "Ca hộp giao dịch không chịu đóng: trước chỉ báo 'CÓ THỂ đã mua' rồi bắt admin tự vào ChatGPT xem. Nay số suất trên trang đã lên thì chốt luôn là mua xong, chỉ tải lại trang cho sạch lớp phủ rồi mời.",
+      "Chốt an toàn giữ nguyên: chỉ so suất TIÊU CHUẨN (không cộng Cao cấp), và số mới phải tăng đủ số suất cần mua mới dám mời; thiếu thì vẫn quay về đếm như cũ. Bước này nằm sau lúc tiền đã trừ nên không đụng tới các chốt tiền.",
+    ],
+  },
+  {
+    version: "0.13.15",
+    date: "2026-08-26",
+    kind: "fix",
+    summary:
+      "Mua suất xong không tự tải lại trang nữa — giao cho background, hết cảnh mời đi thật mà lệnh báo 'quá thời gian chờ'.",
+    details: [
+      "Ca thật 26/8/2026: ba lệnh mời phải mua suất (fdeeadc5 11:25, cd03d5ff 11:50, 3bc11c7b 12:10) đều dừng ở mốc 'seat-purchased' rồi im tới khi backend chốt timeout 8 phút. Lời mời ĐÃ đi thật — mẻ đồng bộ ngay sau đó thấy đủ email — nhưng dashboard hiện 'Thất bại'.",
+      "Nguyên nhân: cả lệnh mời-kèm-mua chạy trong MỘT lượt gọi content dài 4–5 phút (riêng hộp 'Xác nhận mua' chờ 180–200 giây) → Chrome khai tử service worker giữa chừng, mang theo cả kênh chờ trả lời lẫn đồng hồ 450 giây, nên extension cũng không báo lỗi được. Lệnh mời không phải mua suất xong dưới 2 phút nên không dính.",
+      "Bước dọn trang cũ còn cắt kênh theo kiểu thứ hai: content tự điều hướng SPA, nhánh dự phòng của nó click <a> — trên ChatGPT cú click có thể là điều hướng THẬT, đẩy trang đang giữ kênh vào back/forward cache. Đúng chuỗi đã làm hoàn oan 340.000đ ngày 31/7.",
+      "Nay content chỉ TRẢ CỜ 'cần tải lại trang' kèm số suất đã mua; BACKGROUND hard-reload tab rồi gọi lại lệnh mời trong LƯỢT MỚI — cùng cơ chế đã dùng cho toggle 'mời ngoài tên miền'. Hai lượt ngắn thay một lượt dài, không lượt nào chạm ngưỡng tuổi thọ service worker.",
+      "Chốt tiền: lượt gọi lại KHÔNG BAO GIỜ mua lần hai. Chốt được tổng suất mới → mời ngay; không chốt được → chỉ ĐỌC KIỂM, thiếu thì dừng và báo rõ số. Reload hỏng → SEAT_RELOAD_FAILED: chưa mời ai, backend hoàn phí, suất đã mua vẫn còn trong workspace.",
+    ],
+  },
+  {
+    version: "0.13.14",
+    date: "2026-08-26",
+    kind: "fix",
+    summary:
+      "Ngày gia hạn: lấy đúng năm ChatGPT in trên trang, không tự đẩy sang năm sau.",
+    details: [
+      "Trang thanh toán in 'Chu kỳ hiện tại: 25 thg 7 - 25 thg 8, 2026' nhưng extension chỉ đọc ngày/tháng, bỏ qua năm in sẵn rồi tự suy theo luật 'ngày đã qua thì cộng 1 năm'.",
+      "Hậu quả: đọc ngày 26/8 khi chu kỳ khép lại 25/8 thì ngày gia hạn thành 25/8 NĂM SAU — lệch một năm, kéo giá theo kỳ trên dashboard sai theo.",
+      "Nay năm in trên trang luôn thắng; trang KHÔNG in năm mới suy như cũ. Bản tiếng Trung không mượn năm của vế đầu cho vế sau.",
+    ],
+  },
+  {
+    version: "0.13.13",
+    date: "2026-08-26",
+    kind: "feature",
+    summary:
+      "Lệnh mời: còn dư suất thì chạy 2 lệnh song song, phải mua suất thì mỗi lần 1 lệnh.",
+    details: [
+      "Trước đây mọi lệnh mời đều xếp hàng chạy lần lượt, kể cả khi workspace còn thừa cả chục suất — hai tab mà chỉ một tab làm việc.",
+      "Nay extension nhìn số suất dashboard gửi kèm lệnh: dư ít nhất 1 suất so với số cần thì hai lệnh mời chạy cùng lúc, mời nhanh gấp đôi.",
+      "Thiếu suất — tức có thể phải MUA — thì vẫn một workspace một lệnh. Hai lệnh cùng đọc 'còn 1 suất trống' rồi cùng đi mua là mất tiền thật, hoặc đâm vào hộp 'Mua suất người dùng và gửi lời mời' (số tiền do ChatGPT tự quyết).",
+      "Chạy song song thì tự giữ chỗ cho nhau: còn 2 suất trống mà mỗi lệnh cần 1 thì lệnh sau vẫn đợi, vì chỗ trống nhìn thấy đã trừ phần lệnh trước giữ.",
+      "Đang chạy song song mà đếm tận nơi mới lộ ra thiếu suất thì KHÔNG tự mua: dừng ngay trước khi mở hộp mời, chờ lệnh kia xong rồi chạy lại một mình. Chưa bấm gì nên không mất gì.",
+      "Lệnh mua suất (PURCHASE_SEAT) vẫn luôn chạy một mình.",
+    ],
+  },
+  {
+    version: "0.13.12",
+    date: "2026-08-26",
+    kind: "fix",
+    summary:
+      "Đồng bộ hàng loạt: mỗi email chỉ gõ vào ô tìm kiếm MỘT lần, không nhập lại lần hai.",
+    details: [
+      "Lệnh 'Đồng bộ (kiểm tra đã tham gia)' trước đây không thấy email trong tab Người dùng là xoá ô tìm kiếm rồi gõ lại chính email đó cho chắc. Mà mẻ này gần như email nào cũng không thấy (đang chờ tham gia), nên lần gõ thứ hai chỉ ra kết quả cũ và tốn thêm ~4 giây mỗi email — 20 email là gõ 40 lần, phí hơn một phút.",
+      "Nay gõ 1 lần rồi ĐỌC BẰNG CHỨNG: danh sách có render lại theo từ khoá hay không. Có render lại mà không ra dòng nào ⇒ chốt 'chưa tham gia'.",
+      "Lần gõ thứ hai vốn để cứu ca danh sách đứng im (tab chạy nền, Chrome bóp nhịp) — ca đó vẫn gõ lại như cũ. Từ email thứ hai trở đi không cần nữa: ô tìm kiếm đã tự chứng minh còn sống ở email trước.",
+      "Email nào ô tìm kiếm hỏng cả hai lần thì bỏ qua khỏi kết quả chứ không báo 'chưa tham gia' — người đã tham gia thật không bị giữ trạng thái chờ vì một cú tìm kiếm hỏng. Cả mẻ không kiểm được email nào thì lệnh báo lỗi rõ ràng.",
+      "Các lệnh khác (xoá thành viên, đổi vai trò, đổi loại ghế, xác minh sau khi mời) giữ nguyên.",
+    ],
+  },
+  {
+    version: "0.13.11",
+    date: "2026-08-26",
+    kind: "feature",
+    summary:
+      "ChatGPT đổi giao diện: số suất in sẵn ở tab Thành viên — đọc thẳng ở đó, cộng cả Tiêu chuẩn lẫn Cao cấp.",
+    details: [
+      "Tab 'Người dùng' nay in sẵn hai ô: 'Suất Tiêu chuẩn — Đã gán 60/62' và 'Suất Cao cấp — Đã gán 0/0'. Số lớn là suất ĐÃ MUA, 'Đã gán' là số đang phân bổ cho người dùng.",
+      "TỔNG SUẤT ĐÃ MUA = CỘNG cả hai loại. Đọc mỗi ô Tiêu chuẩn là thiếu phần Cao cấp — dashboard báo hụt suất rồi đi mua thừa.",
+      "Nhờ vậy trước khi mời không còn phải mở hộp 'Quản lý suất' để đếm. Hộp đó là chỗ hỏng nhiều nhất: có hôm 8 lệnh chết liên tiếp vì hộp không mở, bộ đếm lệch, hoặc lớp phủ kẹt chặn luôn bước mời. Nút 'Đồng bộ từ ChatGPT' cũng lấy số suất theo đường này.",
+      "⚠️ Hộp 'Quản lý suất' nay có HAI bộ đếm (Tiêu chuẩn 260.500 đ/tháng, Cao cấp 3.245.000 đ/tháng — đắt gấp 12 lần). Extension GHIM đúng hàng 'Tiêu chuẩn' để bấm; không ghim chắc được thì KHÔNG bấm gì, task dừng với thông báo rõ.",
+      "Thêm một chốt ngay trước nút trừ tiền: hộp nói 'Thêm 1 suất Tiêu chuẩn VÀ 1 suất Cao cấp' thì DỪNG. Chốt cũ chỉ đọc cụm đầu nên đọc ra '1 suất' và cho qua — hoá đơn gánh thêm một suất Cao cấp.",
+      "AN TOÀN TIỀN: workspace có TỪ HAI loại suất cùng khác 0 thì extension KHÔNG tự mua bù, chỉ báo rõ để bạn mua đúng loại. Extension chỉ tự mua suất Tiêu chuẩn; cần suất Cao cấp thì mua thủ công trên ChatGPT.",
+      "Workspace nào ChatGPT chưa bật giao diện mới thì vẫn mở hộp 'Quản lý suất' để đếm như cũ.",
+      "SỬA LỖI 'mua thêm suất mà tổng suất trên dashboard không tăng' (GPT1 26/8: ChatGPT lên 152 mà dashboard đứng 151): lệnh mời email NGOÀI TÊN MIỀN chạy hai pha, kết quả pha 2 ghi đè pha 1 nên cuốn theo cả số suất. GPT1 mời toàn email ngoài tên miền nên chưa lệnh mời nào từng gửi số suất về server. Nay số suất pha 1 được gắp sang kết quả cuối, kể cả khi lệnh mời hỏng — đã mua là tiền đã trừ, phải ghi lại bằng được.",
+    ],
+  },
+  {
+    version: "0.13.10",
+    date: "2026-08-24",
+    kind: "chore",
+    summary:
+      "Tab ChatGPT do extension mở mà để không 30 phút thì tự đóng — tính riêng từng tab.",
+    details: [
+      "Extension được phép mở 2 tab để chạy hai lệnh song song. Nay tab nào không được dùng tới trong 30 phút thì tự đóng; tab còn lại đang có việc vẫn giữ nguyên.",
+      "Bản cũ dùng MỘT đồng hồ chung cho cả hai tab và reset mỗi khi có bất kỳ lệnh nào chạy — nên tab thứ hai, vốn chỉ mở trong một đợt chạy song song rồi nằm không, gần như không bao giờ được đóng.",
+      "Ngưỡng cũ là số ngẫu nhiên 10–60 phút; nay chốt cứng 30 phút theo yêu cầu. Đóng tab là việc của trình duyệt, không phải thao tác gửi tới ChatGPT, nên nhịp đều không lộ gì ra máy chủ.",
+      "Giữ nguyên hai chốt an toàn: tab admin do CHÍNH BẠN mở không bao giờ bị đụng, và đang chạy lệnh thì không đóng tab nào dù đã quá hạn. User đang mở xem tab cũng tính là đang dùng.",
+    ],
+  },
   {
     version: "0.13.9",
     date: "2026-08-24",

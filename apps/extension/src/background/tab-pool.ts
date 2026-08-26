@@ -116,6 +116,39 @@ export async function poolTabIds(): Promise<number[]> {
   return ids;
 }
 
+/** Cặp (ô, tab) đang giữ — idle-close cần biết ô nào để xoá đúng ô khi đóng tab. */
+export async function poolEntries(): Promise<Array<{ slot: TabSlot; tabId: number }>> {
+  const pool = await readPool();
+  const out: Array<{ slot: TabSlot; tabId: number }> = [];
+  for (const slot of TAB_SLOTS) {
+    const id = pool[slot];
+    if (typeof id === "number") out.push({ slot, tabId: id });
+  }
+  return out;
+}
+
+/**
+ * Xoá MỘT tab khỏi sổ ô (tab vừa bị đóng vì để không). Khác `clearPool`: ô còn
+ * lại vẫn giữ nguyên tab của nó — đóng tab để không thì không được đụng tới tab
+ * đang có việc.
+ */
+export async function forgetTab(tabId: number): Promise<void> {
+  const pool = await readPool();
+  for (const slot of TAB_SLOTS) {
+    if (pool[slot] === tabId) {
+      delete pool[slot];
+      await writePool(pool);
+      console.log(`${LOG} ô ${slot}: bỏ tab ${tabId} khỏi sổ (tab đã đóng)`);
+      return;
+    }
+  }
+}
+
+/**
+ * Xoá sạch sổ ô. Không còn chỗ nào gọi từ khi idle-close chuyển sang đóng RIÊNG
+ * từng tab (`forgetTab`) — giữ lại vì đây là API đối xứng của bể tab và là thứ
+ * cần tới nếu về sau phải dọn sạch một lượt (vd đổi tài khoản ChatGPT).
+ */
 export async function clearPool(): Promise<void> {
   await writePool({});
 }

@@ -17,7 +17,12 @@ import {
 import { getConfig } from "../shared/storage";
 import type { ExtensionConfig, QueueItem } from "../shared/types";
 import { runPaymentChain, scrapeInvoiceDetailInTab } from "./payment-chain";
-import { markAdminActivity, setRunnerBusy } from "./idle-close";
+import { pickSeatFields, withExtraData } from "./invite-seat-fields";
+import {
+  judgeSeatsAfterReload,
+  type SeatReadout,
+} from "./seat-reload-verify";
+import { markAdminActivity, markAdminTabActivity, setRunnerBusy } from "./idle-close";
 import {
   acquireSlot,
   getSlotTabId,
@@ -27,6 +32,11 @@ import {
   TAB_SLOTS,
   type TabSlot,
 } from "./tab-pool";
+import {
+  acquireSeatLease,
+  seatDemandForTask,
+  type SeatLease,
+} from "./seat-gate";
 import { decideInviteOutcome, type SubmitEvidence } from "./invite-outcome";
 import { waitForFreshContent } from "./content-ready";
 import { shouldSalvageInvite } from "./invite-salvage";
@@ -80,8 +90,9 @@ const TAB_LOAD_TIMEOUT_MS = 30_000;
  *     (đã là dữ liệu mới, không F5 thêm).
  *   - Action nào TỰ điều hướng/F5 ngay đầu luồng (SET_USAGE_LIMIT, PURCHASE_SEAT
  *     skip-mode) → bỏ qua lần F5 này, khỏi load thừa.
- *   - Task tiêu/mua suất (INVITE_MEMBER, PURCHASE_SEAT) vẫn chạy LẦN LƯỢT dù có
- *     2 ô — xem `SEAT_EXCLUSIVE_TYPES`.
+ *   - Task tiêu/mua suất (INVITE_MEMBER, PURCHASE_SEAT) đi qua KHOÁ SUẤT
+ *     (`seat-gate.ts`): dư suất thì hai lệnh mời vẫn chạy song song, thiếu suất
+ *     (phải mua) thì chạy LẦN LƯỢT dù có 2 ô.
  */
 
 /**
@@ -417,6 +428,9 @@ async function ensureAdminTab(
       current = null;
     }
     if (current) {
+      // Đồng hồ "để không" của RIÊNG tab này bắt đầu lại từ đây: tab đang được
+      // đem ra chạy lệnh. Tab của ô kia không bị ảnh hưởng — xem `idle-close.ts`.
+      await markAdminTabActivity(existingId);
       const url = current.url ?? "";
       // URL "sạch" = đúng /admin/members, không mang ?tab=invites/requests và
       // không phải sub-page. Chỉ khi đó F5 tại chỗ mới ra đúng tab Người dùng.
@@ -471,6 +485,7 @@ async function ensureAdminTab(
   });
   if (created.id === undefined) return null;
   await setSlotTabId(slot, created.id);
+  await markAdminTabActivity(created.id);
 
   const loaded = await waitForTabComplete(created.id, TAB_LOAD_TIMEOUT_MS);
   if (!loaded || !loaded.url) {
@@ -491,33 +506,23 @@ async function ensureAdminTab(
 }
 
 /**
- * Task có thể TIÊU hoặc MUA suất. Hai task loại này KHÔNG được chạy song song
- * dù có 2 ô tab (user 2026-08-24 cho phép 2 lệnh đồng thời):
+ * Task TIÊU hoặc MUA suất đi qua KHOÁ SUẤT (`seat-gate.ts`) trước khi chạy —
+ * luật do user chốt 2026-08-26:
  *
- * Cả hai đều "đọc số suất trống → quyết định mua/mời" trên CÙNG một workspace.
- * Chạy chồng nhau thì cả hai cùng đọc "còn 1 suất trống", cả hai cùng kết luận
- * đủ, rồi lệnh sau mời vào chỗ đã bị lệnh trước lấy mất → ChatGPT bật hộp "Mua
- * suất người dùng và gửi lời mời" (mua + mời trong một cú bấm, không biết trước
- * hết bao nhiêu tiền) — đúng cái hộp mà cả thiết kế đếm-suất-trước sinh ra để
- * tránh. Mọi loại task khác vẫn chạy song song bình thường.
+ *   - Còn dư suất sẵn (không phải mua) → hai lệnh mời chạy SONG SONG trong 2 ô tab.
+ *   - Thiếu suất (phải mua) hoặc không biết còn bao nhiêu → 1 workspace chỉ chạy
+ *     MỘT lệnh tại một thời điểm. Hai lệnh cùng đọc "còn 1 suất trống", cùng kết
+ *     luận đủ, lệnh sau mời vào chỗ lệnh trước vừa lấy → ChatGPT bật hộp "Mua suất
+ *     người dùng và gửi lời mời" (mua + mời trong MỘT cú bấm, không biết trước hết
+ *     bao nhiêu tiền) — đúng cái hộp mà cả thiết kế đếm-suất-trước sinh ra để tránh.
+ *
+ * PURCHASE_SEAT luôn chạy một mình. Mọi loại task khác không đụng tới khoá này.
+ *
+ * Lease CHIA SẺ đi kèm một ràng buộc gửi xuống content: `noSeatPurchase` — đang
+ * chạy song song thì TUYỆT ĐỐI không được mua suất. Content đếm lại tận nơi thấy
+ * không đủ → trả `SEAT_LOCK_REQUIRED`, runner nâng khoá lên độc quyền rồi chạy
+ * lại y hệt (xem chỗ gọi `seatLease.upgrade()`).
  */
-const SEAT_EXCLUSIVE_TYPES = new Set(["INVITE_MEMBER", "PURCHASE_SEAT"]);
-
-/** Ai đang giữ khoá suất (null = đang rảnh). */
-let seatGate: Promise<void> | null = null;
-
-/** Giữ khoá suất; trả về hàm nhả. Phải nhả trong `finally`. */
-async function lockSeatGate(): Promise<() => void> {
-  while (seatGate) await seatGate;
-  let release = (): void => {};
-  seatGate = new Promise<void>((resolve) => {
-    release = () => {
-      seatGate = null;
-      resolve();
-    };
-  });
-  return release;
-}
 
 async function pingContent(tabId: number): Promise<boolean> {
   return (await readContentLoadId(tabId)) !== null;
@@ -1861,8 +1866,8 @@ async function doRunUntilIdle(): Promise<{
   //
   // An toàn khi pick song song: `/api/v1/queue/next` chọn task bằng
   // `SELECT ... FOR UPDATE SKIP LOCKED` nên hai luồng KHÔNG bao giờ nhận trùng
-  // một task. Riêng task tiêu/mua suất vẫn bị `SEAT_EXCLUSIVE_TYPES` ép chạy lần
-  // lượt — xem chú thích ở đó.
+  // một task. Riêng task tiêu/mua suất còn phải qua KHOÁ SUẤT (`seat-gate.ts`):
+  // dư suất thì vẫn song song, thiếu suất thì lần lượt — xem chú thích ở đó.
   const MAX_TASKS_PER_DRAIN = 50;
   let processed = 0;
   let stopped = false;
@@ -2073,29 +2078,36 @@ const DRY_RUN_BLOCKED_TYPES = new Set<string>([
 /**
  * Chạy MỘT task: giữ một ô tab (tối đa 2 ô = 2 lệnh song song), chạy, rồi trả ô.
  *
- * Ô luôn được trả trong `finally` — kẹt ô là runner đứng im vĩnh viễn. Khoá suất
- * (nếu task thuộc `SEAT_EXCLUSIVE_TYPES`) cũng nhả ở đây.
+ * Ô luôn được trả trong `finally` — kẹt ô là runner đứng im vĩnh viễn. Lease của
+ * KHOÁ SUẤT (task mời/mua suất) cũng nhả ở đây, kể cả khi task ném lỗi.
  */
 export async function runOnce(): Promise<{ status: string; detail?: string }> {
   const slot = await acquireSlot();
   // Bọc trong object để TypeScript không thu hẹp kiểu về `never` (biến chỉ được
   // gán bên trong closure nên nó tưởng không bao giờ có giá trị).
-  const seat: { release: (() => void) | null } = { release: null };
+  const seat: { lease: SeatLease | null } = { lease: null };
   try {
-    return await runOnceOnSlot(slot, async (type: string) => {
-      if (SEAT_EXCLUSIVE_TYPES.has(type)) {
-        seat.release = await lockSeatGate();
-      }
+    return await runOnceOnSlot(slot, async (task: QueueItem) => {
+      const demand = seatDemandForTask(task);
+      if (!demand) return null;
+      const lease = await acquireSeatLease(demand);
+      seat.lease = lease;
+      console.log(
+        `[autogpt-runner] khoá suất ${task.type}: ` +
+          `${lease.shared ? "CHIA SẺ — chạy song song được" : "ĐỘC QUYỀN — chạy một mình"} ` +
+          `(dashboard báo trống ${demand.free ?? "?"}, lệnh này cần ${demand.need})`,
+      );
+      return lease;
     });
   } finally {
-    seat.release?.();
+    seat.lease?.release();
     releaseSlot(slot);
   }
 }
 
 async function runOnceOnSlot(
   slot: TabSlot,
-  onTaskPicked: (type: string) => Promise<void>,
+  onTaskPicked: (task: QueueItem) => Promise<SeatLease | null>,
 ): Promise<{ status: string; detail?: string }> {
   console.log(`[autogpt-runner] runOnce: starting (ô ${slot})`);
   const config = await getConfig();
@@ -2122,7 +2134,7 @@ async function runOnceOnSlot(
 
   console.log(`[autogpt-runner] picked task ${task.type} ${task.id} (ô ${slot})`);
   // Task tiêu/mua suất phải xếp hàng sau task cùng loại đang chạy ở ô kia.
-  await onTaskPicked(task.type);
+  const seatLease = await onTaskPicked(task);
 
   // ─── SHORT-CIRCUIT: DRY-RUN (workspace.dry_run_mode) ───────────────────
   // Backend đính `dry_run:true` vào payload khi workspace bật dry-run. Với task
@@ -2177,6 +2189,13 @@ async function runOnceOnSlot(
       error_message: `Loại task chưa support: ${task.type}`,
     });
     return { status: "task-not-supported", detail: task.type };
+  }
+  // Lease CHIA SẺ = đang (hoặc sắp) chạy song song với lệnh khác ⇒ content KHÔNG
+  // được mua suất: hai luồng cùng mua theo cùng một con số là mua đúp bằng tiền
+  // thật. Đếm lại tận nơi mà thiếu thì content dừng với `SEAT_LOCK_REQUIRED`,
+  // runner nâng khoá lên độc quyền rồi chạy lại (ngay dưới, sau Phase 1).
+  if (request.kind === "INVITE_MEMBER") {
+    request.noSeatPurchase = seatLease?.shared === true;
   }
 
   if (isLongOp) {
@@ -2308,7 +2327,6 @@ async function runOnceOnSlot(
     });
   }
   await applyRateLimit();
-  console.log(`[autogpt-runner] sending ${request.kind} to content script...`);
   // PHASE 1 với hard-cap timeout (v0.7.17): nếu content không trả kết quả trong
   // ngưỡng của loại task (vd context bị huỷ khi navigate /admin/identity lúc mời
   // email ngoài domain) → fail sớm `CONTENT_TIMEOUT` thay vì treo tới backend
@@ -2316,29 +2334,58 @@ async function runOnceOnSlot(
   // (content có thể submit trước khi context chết) → để FAILED → backend phantom
   // cleanup (completion.py Case 1) hoặc SYNC_DATA định kỳ tự reconcile.
   const phase1Timeout = CONTENT_TIMEOUTS[task.type] ?? DEFAULT_CONTENT_TIMEOUT_MS;
-  let response: ExecuteActionResponse;
-  try {
-    response = await withTimeout(
-      sendToContent(tab.id, request),
-      phase1Timeout,
-      `content-${request.kind}`,
+  const phase1TabId = tab.id;
+  const dispatchPhase1 = async (): Promise<ExecuteActionResponse> => {
+    console.log(`[autogpt-runner] sending ${request.kind} to content script...`);
+    try {
+      return await withTimeout(
+        sendToContent(phase1TabId, request),
+        phase1Timeout,
+        `content-${request.kind}`,
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(
+        `[autogpt-runner] Phase 1 ${request.kind} TIMEOUT/throw sau ${phase1Timeout}ms: ${msg}`,
+      );
+      return {
+        ok: false,
+        error_code: "CONTENT_TIMEOUT",
+        error_message:
+          `Content script không trả kết quả cho ${request.kind} trong ` +
+          `${Math.round(phase1Timeout / 1000)}s. Có thể tab ChatGPT bị reload/redirect ` +
+          `giữa chừng (mất context content script) hoặc thao tác treo. Task được fail ` +
+          `sớm để giải phóng hàng đợi thay vì kẹt tới auto-cleanup. ` +
+          SESSION_RECOVERY_HINT +
+          ` Lỗi gốc: ${msg}`,
+      };
+    }
+  };
+  let response = await dispatchPhase1();
+
+  // ─── Mời song song mà tới nơi mới lộ ra THIẾU SUẤT ────────────────────────
+  // Số suất dashboard gửi kèm task chỉ là gợi ý (có thể CŨ). Content đếm lại
+  // bằng số THẬT trên trang; thiếu mà lease đang là CHIA SẺ thì nó KHÔNG tự mua
+  // (đang chạy song song — hai luồng cùng mua là mua đúp bằng tiền thật) mà dừng
+  // ngay với `SEAT_LOCK_REQUIRED`, TRƯỚC khi mở dialog mời.
+  //
+  // Ở đây nâng khoá lên ĐỘC QUYỀN (chờ lệnh kia chạy xong) rồi gửi lại y hệt.
+  // Chạy lại an toàn vì bước suất là bước ĐẦU TIÊN của luồng mời: chưa bấm gì,
+  // chưa bật toggle nào, tiền chưa suy suyển. Lần hai `noSeatPurchase=false` nên
+  // content được phép mua bù như luồng cũ, và không thể lặp lần ba.
+  if (
+    !response.ok &&
+    response.error_code === "SEAT_LOCK_REQUIRED" &&
+    request.kind === "INVITE_MEMBER"
+  ) {
+    console.log(
+      "[autogpt-runner] mời song song nhưng đếm tận nơi thấy thiếu suất → " +
+        "nâng khoá suất lên ĐỘC QUYỀN rồi chạy lại lệnh mời",
     );
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    console.warn(
-      `[autogpt-runner] Phase 1 ${request.kind} TIMEOUT/throw sau ${phase1Timeout}ms: ${msg}`,
-    );
-    response = {
-      ok: false,
-      error_code: "CONTENT_TIMEOUT",
-      error_message:
-        `Content script không trả kết quả cho ${request.kind} trong ` +
-        `${Math.round(phase1Timeout / 1000)}s. Có thể tab ChatGPT bị reload/redirect ` +
-        `giữa chừng (mất context content script) hoặc thao tác treo. Task được fail ` +
-        `sớm để giải phóng hàng đợi thay vì kẹt tới auto-cleanup. ` +
-        SESSION_RECOVERY_HINT +
-        ` Lỗi gốc: ${msg}`,
-    };
+    await seatLease?.upgrade();
+    request.noSeatPurchase = false;
+    await applyRateLimit();
+    response = await dispatchPhase1();
   }
   console.log(
     `[autogpt-runner] content script response: ok=${response.ok}`,
@@ -2346,6 +2393,418 @@ async function runOnceOnSlot(
   );
   state.lastTaskAt = Date.now();
   state.tasksInBatch += 1;
+
+  // ─── PRE-RELOAD sau khi MUA SUẤT (26/8/2026) ─────────────────────────────
+  // Content đã mua bù suất (TIỀN ĐÃ TRỪ) nhưng hộp mua để lại lớp phủ trên trang
+  // → mọi cú bấm của bước mời sẽ rơi vào lớp phủ.
+  //
+  // VÌ SAO PHẢI CẮT LƯỢT GỌI Ở ĐÂY: ba lệnh mời ngày 26/8 (fdeeadc5 11:25,
+  // cd03d5ff 11:50, 3bc11c7b 12:10) chết im từ mốc `seat-purchased` tới khi
+  // backend dọn ở mốc 8′, dù lời mời ĐÃ đi thật. `CONTENT_TIMEOUT` 450s cũng
+  // không nổ — vì service worker giữ đồng hồ đó đã bị Chrome khai tử: cả lệnh
+  // chạy trong MỘT lượt gọi content 4–5 phút (riêng hộp "Xác nhận mua" chờ
+  // 180–200s). Dấu vết: một kết nối `/queue/stream` mới nằm giữa mốc tiến độ cuối
+  // và lúc dọn = SW vừa khởi động lại. Lệnh mời không mua suất xong dưới 2 phút
+  // nên không dính. Content tự điều hướng dọn trang cũng cắt kênh theo kiểu khác
+  // (nhánh click `<a>` = điều hướng thật → back/forward cache, tai nạn 31/7).
+  //
+  // Nay content chỉ TRẢ CỜ, background dọn: hard-reload tab rồi gọi lại lệnh mời
+  // trong LƯỢT MỚI — hai lượt ngắn thay cho một lượt dài.
+  //   `seat_recheck_needed=false` → suất đã chốt bằng bộ đếm hộp mua → gọi lại với
+  //                                `seatsReady` (bỏ hẳn bước suất) và mời ngay.
+  //   `seat_recheck_needed=true`  → bộ đếm không chốt được tổng → gọi lại với
+  //                                `seatsPurchasedAlready` để ĐỌC KIỂM, cấm mua lần hai.
+  if (
+    response.ok &&
+    task.type === "INVITE_MEMBER" &&
+    request.kind === "INVITE_MEMBER" &&
+    (response.data as { awaiting_seat_reload?: boolean } | undefined)
+      ?.awaiting_seat_reload === true
+  ) {
+    const seatFieldsFromPurchase = pickSeatFields(
+      (response as { data?: Record<string, unknown> }).data,
+    );
+    const recheckNeeded =
+      (response.data as { seat_recheck_needed?: boolean } | undefined)
+        ?.seat_recheck_needed === true;
+    const purchased = Number(seatFieldsFromPurchase.seat_purchased ?? 0);
+    console.log(
+      `[autogpt-runner] INVITE suất: đã mua ${purchased} suất, trang còn lớp phủ → ` +
+        `HARD-RELOAD ${CHATGPT_ADMIN_URL} (tab ${tab.id}) rồi ` +
+        `${recheckNeeded ? "ĐỌC KIỂM lại số suất" : "mời ngay"}.`,
+    );
+    await reportRunnerProgress(config, task.id, {
+      phase: "seat-reload",
+      message: recheckNeeded
+        ? `Đã mua ${purchased} suất (tiền đã trừ) — tải lại trang admin để đọc lại số suất rồi mời...`
+        : `Đã mua ${purchased} suất (tiền đã trừ) — tải lại trang admin cho sạch rồi mời...`,
+    });
+
+    try {
+      const prevLoadId = await readContentLoadId(tab.id);
+      await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: false });
+      const reloaded = await waitForTabComplete(tab.id, 20_000);
+      if (!reloaded?.url?.includes("/admin")) {
+        response = {
+          ok: false,
+          error_code: "SEAT_RELOAD_FAILED",
+          error_message:
+            `ĐÃ MUA ${purchased} suất (tiền đã trừ trên ChatGPT) nhưng khi tải lại ` +
+            `/admin/members thì tab bị redirect khỏi /admin (url=${reloaded?.url ?? "?"}) — ` +
+            "có thể đã logout ChatGPT. CHƯA mời ai; suất đã mua vẫn còn đó, chạy lại lệnh mời.",
+        };
+      } else if (!(await ensureFreshContentAfterNav(tab.id, prevLoadId))) {
+        // Trang MỚI chưa chắc đã tiếp quản → KHÔNG gửi lệnh mời vào trang sắp bị
+        // đóng băng (đúng chuỗi tai nạn 31/7 đã làm hoàn 340k oan). Dừng ở đây thì
+        // chưa ai được mời — suất đã mua vẫn nằm trong workspace, lần chạy sau
+        // thấy đủ suất và không mua nữa.
+        response = {
+          ok: false,
+          error_code: "SEAT_RELOAD_FAILED",
+          error_message:
+            `ĐÃ MUA ${purchased} suất (tiền đã trừ trên ChatGPT). Sau khi tải lại trang admin, ` +
+            "extension không xác nhận được trang MỚI đã tiếp quản (trang cũ vẫn giữ kênh liên lạc). " +
+            "Đã dừng TRƯỚC khi mời — chưa email nào được mời. Chạy lại lệnh mời; suất đã mua vẫn còn.",
+        };
+      } else {
+        const retry: ExecuteActionRequest = recheckNeeded
+          ? { ...request, seatsPurchasedAlready: purchased }
+          : { ...request, seatsReady: true };
+        response = await withTimeout(
+          sendToContent(tab.id, retry),
+          phase1Timeout,
+          `content-${retry.kind}-seatsReady`,
+        );
+        console.log(
+          `[autogpt-runner] INVITE sau reload suất: ok=${response.ok}`,
+          response.ok
+            ? ""
+            : `err=${(response as { error_code?: string }).error_code}`,
+        );
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[autogpt-runner] INVITE sau reload suất TIMEOUT/throw: ${msg}`);
+      response = {
+        ok: false,
+        error_code: "CONTENT_TIMEOUT",
+        error_message:
+          `ĐÃ MUA ${purchased} suất (tiền đã trừ trên ChatGPT). Sau khi tải lại trang, ` +
+          `content không trả kết quả mời trong ${Math.round(phase1Timeout / 1000)}s. ` +
+          SESSION_RECOVERY_HINT +
+          ` Lỗi gốc: ${msg}`,
+      };
+    }
+
+    // Số liệu suất chỉ tồn tại ở lượt MUA — lượt sau bỏ qua bước suất (hoặc chỉ
+    // đọc kiểm) nên phải gắp sang kết quả cuối, kể cả khi lượt sau hỏng: "đã tiêu
+    // tiền mua N suất" là thông tin quan trọng nhất của một task hỏng.
+    if (Object.keys(seatFieldsFromPurchase).length > 0) {
+      response = withExtraData(response, seatFieldsFromPurchase);
+    }
+  }
+
+  // ─── F5 KIỂM CHỨNG khi mua suất kết thúc trong mập mờ (26/8/2026) ────────
+  //
+  // Ca user gửi ảnh 26/8: bấm nút cuối xong ChatGPT in băng-rôn đỏ "Đã xảy ra sự
+  // cố khi cập nhật gói đăng ký của bạn" rồi TREO nguyên hộp. Băng-rôn đó không
+  // nói được tiền đã trừ hay chưa, mà hộp còn che thì content cũng không đọc nổi
+  // thẻ số suất trên trang. Vậy: background F5 trang admin → gọi lại content ở
+  // chế độ CHỈ ĐỌC số suất → so với mốc trước khi mua:
+  //   suất đã lên đủ  → giao dịch ĐÃ đi qua, task xong (không bấm thêm gì);
+  //   suất y nguyên   → đọc lại vài lượt cho chắc (ChatGPT cập nhật chậm), vẫn
+  //                     y nguyên thì chạy lại luồng mua ĐÚNG MỘT LẦN (user chốt);
+  //   nhập nhằng      → DỪNG, báo admin — thà để người quyết còn hơn mua đúp.
+  if (
+    response.ok &&
+    task.type === "PURCHASE_SEAT" &&
+    request.kind === "PURCHASE_SEAT" &&
+    (response.data as { needs_seat_reload_verify?: boolean } | undefined)
+      ?.needs_seat_reload_verify === true
+  ) {
+    const buyData = ((response as { data?: Record<string, unknown> }).data ??
+      {}) as Record<string, unknown>;
+    const asNum = (v: unknown): number | null =>
+      typeof v === "number" && Number.isFinite(v) ? v : null;
+    const qty = request.quantity;
+    const banner =
+      typeof buyData.charge_error_banner === "string"
+        ? buyData.charge_error_banner
+        : null;
+    /**
+     * Hộp xác nhận có nói "thay đổi có hiệu lực từ kỳ gia hạn sau" không. Có thì
+     * số suất hôm nay KHÔNG phải bằng chứng gì cả — cấm đường mua lại.
+     */
+    const effectiveLaterText =
+      typeof buyData.charge_effective_later_text === "string"
+        ? buyData.charge_effective_later_text
+        : null;
+    /** Số suất trang in ra TRƯỚC khi bấm mua — mốc so chuẩn nhất (cùng nguồn). */
+    const pageBefore: SeatReadout | null =
+      buyData.seat_page_standard_before != null ||
+      buyData.seat_page_total_before != null
+        ? {
+            standard: asNum(buyData.seat_page_standard_before),
+            total: asNum(buyData.seat_page_total_before),
+          }
+        : null;
+
+    console.log(
+      `[autogpt-runner] PURCHASE_SEAT kết thúc mập mờ (banner=${banner ?? "không có"}) → ` +
+        `HARD-RELOAD ${CHATGPT_ADMIN_URL} (tab ${tab.id}) rồi đọc lại số suất.`,
+    );
+    await reportRunnerProgress(config, task.id, {
+      phase: "seat-reload-verify",
+      message: banner
+        ? `ChatGPT báo "${banner}" — tải lại trang để xem số suất đã lên chưa...`
+        : "Chưa xác nhận được số suất — tải lại trang để đọc lại...",
+    });
+
+    /** Tải lại tab admin cho sạch. Trả null nếu xong, ngược lại là lý do hỏng. */
+    const hardReloadAdmin = async (): Promise<string | null> => {
+      const prevLoadId = await readContentLoadId(phase1TabId);
+      await chrome.tabs.update(phase1TabId, {
+        url: CHATGPT_ADMIN_URL,
+        active: false,
+      });
+      const reloaded = await waitForTabComplete(phase1TabId, 20_000);
+      if (!reloaded?.url?.includes("/admin")) {
+        return (
+          `tải lại /admin/members thì tab bị đẩy khỏi /admin (url=${reloaded?.url ?? "?"}) — ` +
+          "có thể đã logout ChatGPT"
+        );
+      }
+      if (!(await ensureFreshContentAfterNav(phase1TabId, prevLoadId))) {
+        return (
+          "sau khi tải lại, extension không xác nhận được trang MỚI đã tiếp quản nên " +
+          "KHÔNG dám đọc số suất (đọc trúng trang cũ là số cũ)"
+        );
+      }
+      return null;
+    };
+
+    try {
+      // ChatGPT cập nhật gói đăng ký BẤT ĐỒNG BỘ: trang tải lại ngay sau giao dịch
+      // có thể còn in số suất CŨ. Đọc đúng một lần rồi kết luận "chưa mua" là đủ
+      // để mua đúp bằng tiền thật — nên chỉ dám nói "chưa mua" sau khi tải lại và
+      // đọc lại ngần này lượt mà con số vẫn y nguyên. Phán quyết khác (đã mua /
+      // không rõ) thì chốt ngay từ lượt đầu, không chờ thêm.
+      const READ_ROUNDS = 3;
+      const ROUND_GAP_MS = 6_000;
+      let reloadErr: string | null = null;
+      let verdict: ReturnType<typeof judgeSeatsAfterReload> | null = null;
+      let after: SeatReadout = { total: null, standard: null };
+      let assignedAfter: number | null = null;
+
+      for (let round = 1; round <= READ_ROUNDS; round++) {
+        if (round > 1) {
+          await reportRunnerProgress(config, task.id, {
+            phase: "seat-reload-verify",
+            message:
+              `Số suất chưa đổi (lượt ${round - 1}/${READ_ROUNDS}) — chờ ChatGPT cập nhật ` +
+              "rồi tải lại đọc lần nữa trước khi quyết định...",
+          });
+          await sleep(ROUND_GAP_MS);
+        }
+        reloadErr = await hardReloadAdmin();
+        if (reloadErr) break;
+
+        const readReq: ExecuteActionRequest = { ...request, readSeatsOnly: true };
+        const readResp = await withTimeout(
+          sendToContent(tab.id, readReq),
+          phase1Timeout,
+          "content-PURCHASE_SEAT-readSeatsOnly",
+        );
+        const readData = ((readResp as { data?: Record<string, unknown> }).data ??
+          {}) as Record<string, unknown>;
+        after = {
+          total: asNum(readData.seat_page_total),
+          standard: asNum(readData.seat_page_standard),
+        };
+        assignedAfter = asNum(readData.seat_page_assigned);
+        verdict = readResp.ok
+          ? judgeSeatsAfterReload({
+              qty,
+              counterBefore: asNum(buyData.initial_seat),
+              pageBefore,
+              after,
+              // Hộp nói "có hiệu lực vào kỳ sau" ⇒ cấm kết luận "chưa mua".
+              effectiveLaterText,
+            })
+          : {
+              kind: "unclear",
+              reason:
+                "đọc lại số suất sau khi tải trang cũng hỏng: " +
+                `${(readResp as { error_code?: string }).error_code} — ` +
+                `${(readResp as { error_message?: string }).error_message ?? "?"}`,
+            };
+        console.log(
+          `[autogpt-runner] PURCHASE_SEAT lượt đọc ${round}/${READ_ROUNDS}: ${verdict.kind}`,
+        );
+        // Chỉ "chưa mua" mới đáng đọc lại — nó là phán quyết dẫn tới TIÊU TIỀN.
+        if (verdict.kind !== "not_purchased") break;
+      }
+
+      if (reloadErr) {
+        response = {
+          ok: false,
+          error_code: "SEAT_RELOAD_FAILED",
+          error_message:
+            `Đã bấm 'Xác nhận mua' ${qty} suất nhưng ChatGPT không xác nhận` +
+            (banner ? ` (báo: "${banner}")` : "") +
+            `. Không kiểm chứng được vì ${reloadErr}. ` +
+            "CHƯA rõ tiền đã trừ hay chưa: admin mở ChatGPT xem số suất trước khi tạo task mua mới.",
+          data: buyData,
+        };
+      } else if (!verdict) {
+        response = {
+          ok: false,
+          error_code: "VERIFY_FAILED",
+          error_message:
+            `Đã bấm 'Xác nhận mua' ${qty} suất nhưng không chạy nổi lượt đọc lại nào ` +
+            "sau khi tải lại trang. CHƯA rõ tiền đã trừ hay chưa — admin mở ChatGPT xem số suất.",
+          data: buyData,
+        };
+      } else {
+
+        const verifyFields: Record<string, unknown> = {
+          seat_reload_verified: true,
+          seat_reload_verdict: verdict.kind,
+          seat_reload_basis: verdict.kind === "unclear" ? null : verdict.basis,
+          seat_reload_before: verdict.kind === "unclear" ? null : verdict.before,
+          seat_reload_after: verdict.kind === "unclear" ? null : verdict.after,
+          seat_reload_delta: verdict.kind === "unclear" ? null : verdict.delta,
+          seat_reload_reason: verdict.kind === "unclear" ? verdict.reason : null,
+          seat_page_total_after_reload: after.total,
+          seat_page_standard_after_reload: after.standard,
+          seat_effective_later_text: effectiveLaterText,
+        };
+        // Số đọc trên trang VỪA TẢI LẠI là số tươi nhất ta có → gửi cho backend
+        // cập nhật `workspace.seat_total` (xem `_absorb_seat_reading`). KHÔNG gửi
+        // ở nhánh mua lại: lượt hai sẽ đổi số ngay sau đó, gửi số cũ là ghi đè lùi.
+        const freshSeatFields: Record<string, unknown> =
+          after.total != null && after.total > 0
+            ? {
+                seat_total_after: after.total,
+                ...(assignedAfter != null ? { seat_assigned_after: assignedAfter } : {}),
+              }
+            : {};
+        console.log(
+          `[autogpt-runner] PURCHASE_SEAT sau F5: ${verdict.kind}` +
+            (verdict.kind === "unclear"
+              ? ` (${verdict.reason})`
+              : ` (${verdict.before} → ${verdict.after}, mốc ${verdict.basis})`),
+        );
+
+        if (verdict.kind === "purchased") {
+          // Giao dịch ĐÃ đi qua, chỉ có màn hình ChatGPT hỏng. Không bấm gì thêm.
+          response = {
+            ok: true,
+            data: {
+              ...buyData,
+              ...verifyFields,
+              ...freshSeatFields,
+              needs_seat_reload_verify: false,
+              note:
+                `✓ Đã mua ${qty} suất.` +
+                (banner ? ` ChatGPT có báo "${banner}" nhưng` : " Hộp không đóng nhưng") +
+                ` tải lại trang thì số suất đã lên ${verdict.before} → ${verdict.after} ` +
+                "⇒ giao dịch đã đi qua, tiền đã trừ. Không mua lại.",
+            },
+          };
+        } else if (verdict.kind === "not_purchased") {
+          // Suất y nguyên sau khi tải lại ⇒ ChatGPT không ghi nhận gì. User chốt
+          // 26/8: chạy lại luồng mua ĐÚNG MỘT LẦN. Lượt hai KHÔNG được vào lại
+          // nhánh này (mua lại lần nữa là mua đúp) — kết quả của nó là kết quả
+          // cuối, dù có mập mờ tiếp.
+          console.log(
+            `[autogpt-runner] PURCHASE_SEAT: suất vẫn ${verdict.after} sau F5 → mua lại ĐÚNG 1 lần`,
+          );
+          await reportRunnerProgress(config, task.id, {
+            phase: "seat-repurchase",
+            message:
+              `Tải lại trang thấy số suất vẫn ${verdict.after} (chưa trừ tiền) — ` +
+              "chạy lại lệnh mua đúng một lần...",
+          });
+          const retryResp = await withTimeout(
+            sendToContent(phase1TabId, request),
+            phase1Timeout,
+            "content-PURCHASE_SEAT-retry-after-reload",
+          );
+          const retryData = ((retryResp as { data?: Record<string, unknown> })
+            .data ?? {}) as Record<string, unknown>;
+          const retryFields: Record<string, unknown> = {
+            ...verifyFields,
+            seat_repurchase_attempted: true,
+            seat_first_attempt_error_banner: banner,
+            // Lượt hai đã là lượt cuối: tắt cờ để không ai F5-kiểm-chứng thêm vòng nữa.
+            needs_seat_reload_verify: false,
+          };
+          const retryAlsoUnclear =
+            retryResp.ok && retryData.needs_seat_reload_verify === true;
+          const retryIntro =
+            `Lượt đầu ChatGPT báo hỏng${banner ? ` ("${banner}")` : ""} và tải lại trang xác nhận ` +
+            `số suất chưa đổi (${verdict.before} → ${verdict.after}) nên đã mua lại. `;
+          if (retryResp.ok && !retryAlsoUnclear) {
+            response = {
+              ok: true,
+              data: {
+                ...retryData,
+                ...retryFields,
+                note: retryIntro + `Kết quả lượt hai: ${String(retryData.note ?? "(không có ghi chú)")}`,
+              },
+            };
+          } else if (retryAlsoUnclear) {
+            // Lượt hai lại kết thúc mập mờ. KHÔNG kiểm chứng/mua thêm vòng nào
+            // nữa — báo hỏng để admin cầm số thật mà quyết, còn hơn báo COMPLETED
+            // cho một giao dịch không ai biết đã đi qua chưa.
+            response = {
+              ok: false,
+              error_code: "VERIFY_FAILED",
+              error_message:
+                retryIntro +
+                "Lượt hai CŨNG không xác nhận được: " +
+                `${String(retryData.note ?? "(không có ghi chú)")} ` +
+                "DỪNG tại đây, KHÔNG mua thêm lần nào — admin mở ChatGPT xem số suất thật " +
+                "(có thể đã trừ tiền 1 hoặc 2 lần) rồi quyết.",
+              data: { ...retryData, ...retryFields },
+            };
+          } else {
+            response = withExtraData(retryResp, retryFields);
+          }
+        } else {
+          // Không đủ căn cứ ⇒ DỪNG. Mua lại ở đây là canh bạc bằng tiền thật.
+          response = {
+            ok: false,
+            error_code: "VERIFY_FAILED",
+            error_message:
+              `Đã bấm 'Xác nhận mua' ${qty} suất, ChatGPT không xác nhận` +
+              (banner ? ` (báo: "${banner}")` : "") +
+              `. Đã tải lại trang đọc lại số suất nhưng vẫn không kết luận được: ${verdict.reason}. ` +
+              "KHÔNG mua lại để tránh mua đúp bằng tiền thật — admin mở ChatGPT xem số suất thật " +
+              "rồi tạo task mua mới nếu còn thiếu.",
+            data: { ...buyData, ...verifyFields, ...freshSeatFields },
+          };
+        }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[autogpt-runner] PURCHASE_SEAT F5 kiểm chứng TIMEOUT/throw: ${msg}`);
+      response = {
+        ok: false,
+        error_code: "CONTENT_TIMEOUT",
+        error_message:
+          `Đã bấm 'Xác nhận mua' ${qty} suất nhưng ChatGPT không xác nhận` +
+          (banner ? ` (báo: "${banner}")` : "") +
+          `. Vòng tải lại trang để đọc lại số suất cũng không xong trong ` +
+          `${Math.round(phase1Timeout / 1000)}s. CHƯA rõ tiền đã trừ hay chưa — ` +
+          "admin mở ChatGPT xem số suất trước khi tạo task mua mới. " +
+          SESSION_RECOVERY_HINT +
+          ` Lỗi gốc: ${msg}`,
+        data: buyData,
+      };
+    }
+  }
 
   // ─── PRE-RELOAD cho INVITE email NGOÀI domain (v0.8.14) ───────────────────
   // Phase A (content) đã bật toggle 'mời ngoài tên miền' = ON và trả
@@ -2370,6 +2829,19 @@ async function runOnceOnSlot(
       message:
         "Đã bật 'mời ngoài tên miền' — tải lại trang admin để setting có hiệu lực trước khi mời...",
     });
+    // Số liệu SUẤT (đọc tận nơi + mua bù) chỉ tồn tại ở Phase A: lần gọi thứ hai
+    // (externalReady) BỎ QUA hẳn bước suất. Mọi nhánh bên dưới đều GHI ĐÈ
+    // `response`, nên phải chụp lại ngay đây rồi gắp sang kết quả cuối.
+    //
+    // Ca thật 26/8/2026 — GPT1: lệnh mời mua bù 1 suất, ChatGPT lên 152 mà
+    // dashboard vẫn 151. Nguyên nhân: mọi lệnh mời email NGOÀI TÊN MIỀN đều đi
+    // đường hai pha này, kết quả về backend TRẮNG mọi trường `seat_*` nên
+    // `_absorb_seat_reading` không có gì để ghi — `workspace.seat_total` đứng yên
+    // vô thời hạn, kể cả khi extension vừa tiêu tiền thật để mua suất.
+    const seatFieldsFromPhaseA = pickSeatFields(
+      (response as { data?: Record<string, unknown> }).data,
+    );
+
     try {
       // `loadId` của instance ĐANG chạy — đọc TRƯỚC khi ra lệnh điều hướng để
       // bên dưới nhận ra "trang mới" bằng cách so instance, không phải bằng cách
@@ -2426,6 +2898,24 @@ async function runOnceOnSlot(
           ` Lỗi gốc: ${msg}`,
       };
     }
+
+    // Gắp số liệu suất của Phase A sang kết quả cuối (mọi nhánh trên đều đã ghi
+    // đè `response`). Chỉ lấy các khoá `seat_*` — KHÔNG mang theo
+    // `awaiting_external_reload`, nó là cờ điều phối của riêng Phase A. Khoá do
+    // Phase A' tự sinh được ưu tiên giữ.
+    //
+    // Gắp cả khi Phase A' HỎNG là cố ý: nếu suất đã mua (tiền đã trừ) thì đó là
+    // thông tin quan trọng nhất của cả task hỏng đó.
+    if (Object.keys(seatFieldsFromPhaseA).length > 0) {
+      response = withExtraData(response, seatFieldsFromPhaseA);
+      console.log(
+        `[autogpt-runner] INVITE external: gắp ${Object.keys(seatFieldsFromPhaseA).length} ` +
+          `trường số liệu suất từ Phase A sang kết quả cuối ` +
+          `(tổng=${String(seatFieldsFromPhaseA.seat_total ?? "?")}, ` +
+          `mua thêm=${String(seatFieldsFromPhaseA.seat_purchased ?? 0)})`,
+      );
+    }
+
     // ─── TẮT LẠI TOGGLE (spec bảo mật) — LÀM Ở ĐÂY, KHÔNG PHẢI TRONG LẦN MỜI ──
     // Bước tắt phải điều hướng sang /admin/identity. Trước đây content tự làm
     // trong `finally` của chính lần mời, nên trang đang giữ kênh message bị Chrome

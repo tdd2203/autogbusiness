@@ -196,3 +196,30 @@ export const SEAT_SETTLE_AFTER_PURCHASE_MS = 3_000;
 
 /** Hard cap quantity per task (mirror backend `PURCHASE_SEAT_MAX_PER_TASK`). */
 export const MAX_QUANTITY = 20;
+
+/**
+ * Đợi hàng thẻ suất ("Suất Tiêu chuẩn · Đã gán 60/62") hiện trên trang Thành
+ * viên trước khi kết luận workspace này chưa có UI mới và quay về mở hộp.
+ *
+ * Ngắn hơn `MANAGE_SEATS_BUTTON_WAIT_MS` vì thẻ nằm ngay trong phần đầu trang,
+ * render cùng lúc với danh sách; chờ lâu chỉ làm chậm những workspace CHƯA có
+ * thẻ — mà những workspace đó còn phải chờ tiếp nút "Quản lý số suất".
+ */
+export const SEAT_CARDS_WAIT_MS = 4_000;
+
+/** Nhịp dò lại hàng thẻ suất trong lúc chờ. */
+export const SEAT_CARDS_POLL_MS = 300;
+
+/**
+ * Sau khi bấm "Xác nhận mua": chờ con số suất IN SẴN trên trang Thành viên nhích
+ * lên đúng số vừa mua. Số tăng = ChatGPT đã ghi nhận giao dịch — không cần mở
+ * lại hộp "Quản lý suất" để đọc kiểm nữa (user 2026-08-26).
+ *
+ * Dài hơn các mốc chờ UI khác vì đây là chờ SERVER: ChatGPT trừ tiền xong mới
+ * đẩy số suất mới xuống, và hàng thẻ chỉ vẽ lại sau lượt refetch đó. Chờ hụt thì
+ * mất đường xác nhận rẻ nhất và phải quay về đường mở hộp/tải lại trang.
+ */
+export const SEAT_CARDS_VERIFY_TIMEOUT_MS = 15_000;
+
+/** Nhịp dò lại hàng thẻ trong lúc chờ số suất mới. */
+export const SEAT_CARDS_VERIFY_POLL_MS = 700;

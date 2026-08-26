@@ -270,16 +270,25 @@ export const TEXT_FALLBACKS = {
   billingAddUserButton: [
     "Xác nhận mua",
     "Xác nhận mua hàng",
+    // UI 2026-08-26 (ảnh user): hộp cuối đổi tên thành "Xem lại thay đổi người
+    // dùng" và nút là "Xác nhận thay đổi" — cùng vai trò TRỪ TIỀN. Khớp theo
+    // `includes` nên cụm dài này KHÔNG đụng nút "Thay đổi" (đổi thẻ thanh toán).
+    "Xác nhận thay đổi",
+    "Xác nhận các thay đổi",
     "Thêm người dùng",
     "Thêm thành viên",
     "Xác nhận thanh toán",
     "Confirm purchase",
+    "Confirm changes",
+    "Confirm change",
     "Add user",
     "Add users",
     "Add member",
     "Confirm payment",
     "Confirm and pay",
     "确认购买",
+    "确认更改",
+    "确认变更",
     "添加用户",
     "添加成员",
     "确认付款",

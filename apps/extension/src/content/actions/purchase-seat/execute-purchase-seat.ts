@@ -46,6 +46,8 @@ import {
   PRE_CONTINUE_PAUSE_MS,
   REVIEW_MONEY_GRACE_MS,
   REVIEW_READY_TIMEOUT_MS,
+  SEAT_CARDS_VERIFY_POLL_MS,
+  SEAT_CARDS_VERIFY_TIMEOUT_MS,
   SEAT_MODAL_SETTLE_MS,
   SEAT_PREVIEW_TIMEOUT_MS,
   SEAT_RETRY_GAP_MS,
@@ -58,11 +60,23 @@ import { executePaymentChainOnly } from "./execute-payment-chain-only";
 import { closeSeatModal } from "./modal1/close-seat-modal";
 import { findContinueButton } from "./modal1/find-continue-button";
 import { findSeatStepper, type SeatStepper } from "./modal1/find-seat-stepper";
-import { extractAdditionalSeatCountFromModal } from "./modal2/extract-seat-count";
+import {
+  detectMixedSeatTypes,
+  extractAdditionalSeatCountFromModal,
+} from "./modal2/extract-seat-count";
+import { detectEffectiveLater } from "./modal2/detect-effective-later";
 import { findConfirmPurchaseButton } from "./modal2/find-confirm-purchase-button";
 import { findPurchaseReviewModal } from "./modal2/find-review-modal";
 import { readPurchaseReview, type PurchaseReview } from "./modal2/read-review";
 import { waitForChargeModalDismiss } from "./modal2/wait-dismiss";
+import {
+  readSeatCardsFromPage,
+  readSeatTotalsFromPage,
+  seatIncrease,
+  seatTotalsOf,
+  type SeatCardsReading,
+  type SeatTotals,
+} from "./read-seat-cards";
 
 const LOG = "[autogpt-purchase-seat]";
 
@@ -112,16 +126,159 @@ function auditFields(review: PurchaseReview): Record<string, unknown> {
   };
 }
 
+/** Kết quả lượt xác nhận "số suất trên trang đã nhích lên chưa". */
+type SeatVerifyOutcome = {
+  /** Trang đã in số suất mới, tăng ĐỦ `qty` so với trước khi mua. */
+  verified: boolean;
+  before: SeatTotals | null;
+  after: SeatTotals | null;
+  /** Số suất tăng thêm đọc được (có thể âm/0 khi trang chưa cập nhật). */
+  delta: number | null;
+  basis: "standard" | "total" | null;
+  waitedMs: number;
+  /** Vì sao KHÔNG xác nhận được — null khi verified. */
+  reason: string | null;
+};
+
+/**
+ * Chốt "đã mua xong" bằng con số suất IN SẴN trên trang Thành viên.
+ *
+ * Quy trình user chốt 2026-08-26: tab "Người dùng" luôn hiện thẻ "Suất Tiêu
+ * chuẩn · 66", mà mọi thành viên đều dùng suất Tiêu chuẩn — số đó nhích lên so
+ * với trước khi bấm mua tức là ChatGPT đã ghi nhận giao dịch. Không phải mở lại
+ * hộp "Quản lý suất" để đọc kiểm nữa: mỗi lượt mở hộp vừa chậm vừa thêm một cơ
+ * hội hộp kẹt, mà lớp phủ của hộp kẹt chặn luôn bước mời phía sau.
+ *
+ * ⚠️ KHÔNG dùng làm chốt chặn tiền: tới đây tiền ĐÃ trừ rồi. Đọc không ra chỉ
+ * làm mất đường xác nhận rẻ, caller quay về đường cũ (tải lại trang / đọc kiểm).
+ */
+async function waitForSeatCardsIncrease(
+  before: SeatTotals | null,
+  qty: number,
+  onTick?: (elapsed: number) => Promise<void>,
+): Promise<SeatVerifyOutcome> {
+  const started = Date.now();
+  if (!before) {
+    return {
+      verified: false,
+      before: null,
+      after: readSeatTotalsFromPage(),
+      delta: null,
+      basis: null,
+      waitedMs: 0,
+      reason: "không đọc được số suất trên trang TRƯỚC khi mua nên không có gì để so",
+    };
+  }
+
+  let after: SeatTotals | null = null;
+  let last: { delta: number; basis: "standard" | "total" } | null = null;
+  let ticked = 0;
+  while (Date.now() - started < SEAT_CARDS_VERIFY_TIMEOUT_MS) {
+    // Hộp thanh toán còn mở thì `readSeatTotalsFromPage` trả null (nó từ chối
+    // đọc khi có hộp in lại chính mấy con số này) — cứ dò tiếp, hộp đóng xong là
+    // đọc được.
+    const now = readSeatTotalsFromPage();
+    if (now) {
+      after = now;
+      last = seatIncrease(before, now);
+      if (last.delta >= qty) {
+        return {
+          verified: true,
+          before,
+          after,
+          delta: last.delta,
+          basis: last.basis,
+          waitedMs: Date.now() - started,
+          reason: null,
+        };
+      }
+    }
+    const elapsed = Date.now() - started;
+    if (onTick && elapsed - ticked >= 3_000) {
+      ticked = elapsed;
+      await onTick(elapsed);
+    }
+    await sleep(SEAT_CARDS_VERIFY_POLL_MS);
+  }
+
+  return {
+    verified: false,
+    before,
+    after,
+    delta: last?.delta ?? null,
+    basis: last?.basis ?? null,
+    waitedMs: Date.now() - started,
+    reason: after
+      ? `số suất trên trang mới nhích ${last?.delta ?? 0}/${qty} sau ` +
+        `${Math.round(SEAT_CARDS_VERIFY_TIMEOUT_MS / 1000)}s`
+      : `không đọc được số suất trên trang sau ${Math.round(SEAT_CARDS_VERIFY_TIMEOUT_MS / 1000)}s`,
+  };
+}
+
 /** Kết quả một lượt "mở hộp → bấm + → Tiếp tục". */
 type SetupOutcome =
   | { kind: "continued"; initialSeat: number; finalSeat: number }
   | { kind: "retry"; reason: string }
   | { kind: "fail"; response: ExecuteActionResponse };
 
+/**
+ * Đọc số suất in sẵn trên trang rồi trả về NGAY — không bấm gì hết.
+ *
+ * Dùng cho lượt gọi SAU KHI background hard-reload tab: cú mua trước đó kết thúc
+ * trong mập mờ (ChatGPT in băng-rôn "Đã xảy ra sự cố" rồi treo hộp), và con số
+ * trên trang vừa tải lại là câu trả lời rẻ nhất cho "tiền đã trừ hay chưa".
+ * Trang mới tinh nên không có hộp nào che, đọc là ra.
+ */
+async function readSeatsOnlyResponse(taskId: string): Promise<ExecuteActionResponse> {
+  await reportProgress(
+    taskId,
+    { phase: "verify_seats", message: "Đọc lại số suất trên trang vừa tải lại..." },
+    true,
+  );
+
+  // Trang vừa tải lại: hàng thẻ suất điền số sau vài nhịp render, nên chờ hẳn
+  // như vòng xác nhận sau khi mua (15s) chứ không phải nhịp xem-trước 3s.
+  let cards: SeatCardsReading | null = null;
+  try {
+    cards = await waitFor(
+      () => readSeatCardsFromPage(),
+      SEAT_CARDS_VERIFY_TIMEOUT_MS,
+      SEAT_CARDS_VERIFY_POLL_MS,
+    );
+  } catch {
+    cards = readSeatCardsFromPage();
+  }
+  const totals: SeatTotals | null = cards ? seatTotalsOf(cards) : null;
+
+  if (!totals) {
+    return fail(
+      "UI_ELEMENT_NOT_FOUND",
+      "Đã tải lại /admin/members nhưng KHÔNG đọc được thẻ số suất trên trang " +
+        `(url=${location.href}). Admin mở ChatGPT xem số suất thật rồi quyết.`,
+    );
+  }
+
+  console.log(
+    `${LOG} đọc lại sau tải trang: tổng=${totals.total}, Tiêu chuẩn=${totals.standard ?? "?"}`,
+  );
+  return {
+    ok: true,
+    data: {
+      seat_read_only: true,
+      seat_page_total: totals.total,
+      seat_page_standard: totals.standard,
+      // Số suất ĐANG GÁN — background gắp sang `seat_assigned_after` để dashboard
+      // khỏi phải chờ lần đồng bộ sau mới biết.
+      seat_page_assigned: cards?.assigned ?? null,
+    },
+  };
+}
+
 export async function executePurchaseSeat(
   taskId: string,
   quantity: number,
   skipToPayment = false,
+  readSeatsOnly = false,
 ): Promise<ExecuteActionResponse> {
   if (!location.pathname.startsWith("/admin")) {
     return {
@@ -130,6 +287,8 @@ export async function executePurchaseSeat(
       error_message: `Trang hiện tại không phải admin (${location.pathname}). Mở chatgpt.com/admin/members trước.`,
     };
   }
+
+  if (readSeatsOnly) return readSeatsOnlyResponse(taskId);
 
   const qty = Math.max(1, Math.min(MAX_QUANTITY, Math.floor(quantity || 1)));
   if (qty !== quantity) {
@@ -163,6 +322,22 @@ export async function executePurchaseSeat(
     await sleep(POST_NAV_RENDER_MS);
   } else {
     await sleep(800);
+  }
+
+  // Chụp số suất IN SẴN trên trang TRƯỚC khi đụng vào hộp. Sau khi trừ tiền,
+  // chính con số này nhích lên là bằng chứng "đã mua xong" — khỏi mở lại hộp
+  // "Quản lý suất" để đọc kiểm (user 2026-08-26). Đọc không ra thì thôi, luồng
+  // mua không phụ thuộc vào nó.
+  const cardsBefore = readSeatTotalsFromPage();
+  if (cardsBefore) {
+    console.log(
+      `${LOG} số suất trên trang trước khi mua: Tiêu chuẩn ` +
+        `${cardsBefore.standard ?? "?"}, tổng ${cardsBefore.total}`,
+    );
+  } else {
+    console.log(
+      `${LOG} chưa đọc được hàng thẻ suất trên trang — sẽ không có đường xác nhận nhanh sau khi mua`,
+    );
   }
 
   /**
@@ -210,8 +385,10 @@ export async function executePurchaseSeat(
         kind: "fail",
         response: fail(
           "UI_ELEMENT_NOT_FOUND",
-          `Đã bấm 'Quản lý số suất' nhưng không thấy bộ đếm số suất sau ` +
-            `${MODAL_OPEN_TIMEOUT_MS / 1000}s. Có thể ChatGPT đổi UI hộp 'Quản lý suất'.`,
+          `Đã bấm 'Quản lý số suất' nhưng không thấy bộ đếm số suất của hàng ` +
+            `"Tiêu chuẩn" sau ${MODAL_OPEN_TIMEOUT_MS / 1000}s. Hộp nay có MỘT bộ đếm cho ` +
+            `MỖI loại suất (Tiêu chuẩn / Cao cấp) — không ghim chắc được hàng Tiêu chuẩn thì ` +
+            `KHÔNG bấm, vì suất Cao cấp đắt hơn 12 lần. Có thể ChatGPT lại đổi UI hộp 'Quản lý suất'.`,
         ),
       };
     }
@@ -232,7 +409,8 @@ export async function executePurchaseSeat(
     }
     const targetSeat = initialSeat + qty;
     console.log(
-      `${LOG} lượt ${attempt}: initial=${initialSeat}, target=${targetSeat} (+${qty}), stepper=${stepper.source}`,
+      `${LOG} lượt ${attempt}: initial=${initialSeat}, target=${targetSeat} (+${qty}), ` +
+        `stepper=${stepper.source}, hàng=${stepper.scope}`,
     );
 
     // ── Bước 4: đưa bộ đếm về đúng targetSeat ─────────────────────────────
@@ -368,7 +546,17 @@ export async function executePurchaseSeat(
           reason: `thẻ tóm tắt nói 'Thêm ${preview} suất' nhưng cần ${qty}`,
         };
       }
-      console.log(`${LOG} thẻ tóm tắt xác nhận thêm ${preview ?? "?"} suất`);
+      // CHỐT LOẠI SUẤT: thẻ chỉ được nói về suất Tiêu chuẩn. "Thêm 1 suất Tiêu
+      // chuẩn VÀ 1 suất Cao cấp" vẫn cho `preview = 1` nên chốt trên bỏ lọt —
+      // mà suất Cao cấp đắt hơn 12 lần. Mở lại hộp để bộ đếm về số thật.
+      const mixed = detectMixedSeatTypes(seatModal.textContent ?? "");
+      if (mixed) {
+        return {
+          kind: "retry",
+          reason: `thẻ tóm tắt dính loại suất khác Tiêu chuẩn — ${mixed}`,
+        };
+      }
+      console.log(`${LOG} thẻ tóm tắt xác nhận thêm ${preview ?? "?"} suất Tiêu chuẩn`);
     }
 
     // ChatGPT khoá "Tiếp tục" tới khi số suất thực sự đổi. Còn khoá SAU khi bộ
@@ -504,12 +692,35 @@ export async function executePurchaseSeat(
       `hôm nay=${review.todayText}, hằng tháng tăng ${monthly.deltaVnd} đ (TRƯỚC thuế)`,
   );
 
+  // Hộp có nói thay đổi CHỈ có hiệu lực từ kỳ gia hạn sau không? Ghi lại NGAY,
+  // trước cú bấm — sau khi bấm, hộp có thể đổi nội dung hoặc biến mất. Con số này
+  // quyết định chuyện hệ trọng ở cuối luồng: hộp kiểu đó thì số suất trên trang
+  // ĐÚNG RA không nhích hôm nay, nên KHÔNG được lấy "suất chưa tăng" làm bằng
+  // chứng "chưa mua" rồi mua lại (= mua đúp bằng tiền thật).
+  const effectiveLater = detectEffectiveLater(review.rawText);
+  if (effectiveLater) {
+    console.log(`${LOG} hộp nói thay đổi có hiệu lực sau: "${effectiveLater}"`);
+  }
+
   // CHỐT #1: số suất hộp khai phải khớp task.
   if (review.seatCount !== null && review.seatCount !== qty) {
     return fail(
       "VERIFY_FAILED",
       `Hộp xác nhận nói thêm ${review.seatCount} suất nhưng task yêu cầu ${qty}. ` +
         "Có thể số suất trên ChatGPT đã đổi giữa chừng — DỪNG để tránh mua sai.",
+    );
+  }
+
+  // CHỐT #1b: hộp không được nói tới loại suất nào khác "Tiêu chuẩn". Chốt #1
+  // đọc cụm ĐẦU ("Thêm 1 suất Tiêu chuẩn và 1 suất Cao cấp" → 1) nên tự nó cho
+  // qua ca mua kèm loại đắt gấp 12 lần. Cú bấm ngay sau đây TRỪ TIỀN THẬT.
+  const mixedTypes = detectMixedSeatTypes(review.rawText);
+  if (mixedTypes) {
+    return fail(
+      "VERIFY_FAILED",
+      `Hộp xác nhận đang mua KÈM loại suất khác Tiêu chuẩn: ${mixedTypes}. ` +
+        "DỪNG, KHÔNG bấm xác nhận — extension chỉ được phép mua suất Tiêu chuẩn. " +
+        "Nếu thật sự cần suất Cao cấp thì mua thủ công trên ChatGPT.",
     );
   }
 
@@ -598,6 +809,72 @@ export async function executePurchaseSeat(
   // caller (luồng mời) đụng vào trang.
   if (dismissed) await sleep(POST_PURCHASE_SETTLE_MS);
 
+  // ── Bước 9: XÁC NHẬN bằng con số suất in sẵn trên trang ──────────────────
+  //
+  // Thẻ "Suất Tiêu chuẩn" trên tab "Người dùng" nhích lên đúng số vừa mua =
+  // ChatGPT đã ghi nhận giao dịch. Đây là chốt xác nhận DUY NHẤT không tốn cú
+  // bấm nào — thay hẳn việc mở lại hộp "Quản lý suất" để đọc kiểm.
+  //
+  // Chạy CẢ KHI hộp thanh toán chưa đóng: đúng ca "không biết mua được chưa" thì
+  // con số này trả lời thẳng. Hộp còn treo vẫn là chuyện riêng (lớp phủ chặn
+  // bước mời) → caller vẫn tải lại trang theo `charge_overlay_cleared`.
+  await progress("verify_seats", "Đọc lại số suất trên trang để xác nhận...", qty + 4);
+  const verify = await waitForSeatCardsIncrease(cardsBefore, qty, async (elapsed) => {
+    await progress(
+      "verify_seats",
+      `Đang chờ trang cập nhật số suất mới (${Math.round(elapsed / 1000)}s)...`,
+      qty + 4,
+    );
+  });
+  if (verify.verified) {
+    console.log(
+      `${LOG} XÁC NHẬN trên trang: suất ${verify.basis === "standard" ? "Tiêu chuẩn" : "tổng"} ` +
+        `${(verify.basis === "standard" ? verify.before?.standard : verify.before?.total) ?? "?"} → ` +
+        `${(verify.basis === "standard" ? verify.after?.standard : verify.after?.total) ?? "?"} ` +
+        `(+${verify.delta}) sau ${Math.round(verify.waitedMs / 1000)}s — KHÔNG mở lại hộp 'Quản lý suất'`,
+    );
+  } else {
+    console.warn(`${LOG} chưa xác nhận được qua số suất trên trang: ${verify.reason}`);
+  }
+
+  const verifyFields: Record<string, unknown> = {
+    // Số suất trang in TRƯỚC/SAU khi mua — dashboard ghi để truy ngược, và
+    // `ensure-seats` dùng để khỏi phải đọc kiểm lần nữa.
+    seat_page_verified: verify.verified,
+    seat_page_basis: verify.basis,
+    seat_page_delta: verify.delta,
+    seat_page_standard_before: verify.before?.standard ?? null,
+    seat_page_standard_after: verify.after?.standard ?? null,
+    seat_page_total_before: verify.before?.total ?? null,
+    seat_page_total_after: verify.after?.total ?? null,
+    seat_page_wait_ms: verify.waitedMs,
+    seat_page_reason: verify.reason,
+  };
+
+  // ChatGPT trả lời thẳng là HỎNG ("Đã xảy ra sự cố khi cập nhật gói đăng ký của
+  // bạn" — ảnh user 2026-08-26). KHÔNG suy ra "chưa trừ tiền": ChatGPT vẫn có
+  // thể đã ghi nhận giao dịch rồi mới hỏng khâu dựng lại màn hình. Mà hộp thì
+  // còn treo, nên `readSeatTotalsFromPage` ở trên từ chối đọc → chỉ còn một
+  // đường: nhờ BACKGROUND tải lại trang rồi đọc số suất trên trang sạch.
+  if (charge.errorBanner) {
+    console.warn(
+      `${LOG} ChatGPT báo hỏng trong hộp: "${charge.errorBanner}" — ` +
+        (verify.verified
+          ? "nhưng số suất trên trang ĐÃ lên, coi như giao dịch đã đi qua"
+          : "cần tải lại trang để đọc lại số suất"),
+    );
+  }
+  // Chưa xác nhận được bằng con số nào → background tải lại trang rồi đọc lại
+  // (`readSeatsOnly`). Xác nhận được rồi thì thôi, khỏi tốn một vòng tải trang.
+  const needsReloadVerify = !verify.verified;
+
+  const seatMovedText =
+    verify.verified && verify.before && verify.after
+      ? verify.basis === "standard"
+        ? `suất Tiêu chuẩn trên trang ${verify.before.standard} → ${verify.after.standard}`
+        : `tổng suất trên trang ${verify.before.total} → ${verify.after.total}`
+      : null;
+
   // KHÔNG còn Phase 3 (tab Hoá đơn) + Phase 4 (Stripe → Link) như bản cũ: UI mới
   // trừ tiền ngay tại đây. Giữ lại 2 phase đó còn TAI HẠI: sau khi đã trừ tiền,
   // luồng cũ sẽ đi tìm "hoá đơn chưa thanh toán đầu tiên" rồi tự thanh toán nó —
@@ -615,14 +892,36 @@ export async function executePurchaseSeat(
       charge_overlay_cleared: charge.overlayCleared,
       charge_wait_ms: charge.waitedMs,
       setup_retries: retryReasons.length,
+      // Câu ChatGPT in ra khi hỏng — null nếu không có. Dashboard hiện nguyên văn
+      // để admin đối chiếu với màn hình ChatGPT.
+      charge_error_banner: charge.errorBanner,
+      // Hộp nói thay đổi chỉ có hiệu lực từ kỳ gia hạn sau ("Có hiệu lực vào 25
+      // tháng 9, 2026") → số suất hôm nay KHÔNG phản ánh giao dịch này. Background
+      // đọc cờ này để CẤM đường mua lại tự động.
+      charge_effective_later_text: effectiveLater,
+      // Background đọc cờ này để tải lại trang + đọc lại số suất (và mua lại một
+      // lần nếu suất chưa nhích) — xem `runner.ts`, nhánh PURCHASE_SEAT.
+      needs_seat_reload_verify: needsReloadVerify,
       ...auditFields(review),
-      note: dismissed
-        ? `✓ Đã mua ${qty} suất (bộ đếm ${initialSeat} → ${finalSeat}). Trừ ngay ${review.todayText ?? "?"}` +
-          (monthly.deltaVnd !== null
-            ? `; hoá đơn hằng tháng ${monthly.currentText} → ${monthly.newText} (+${monthly.deltaVnd.toLocaleString("vi-VN")} đ TRƯỚC thuế).`
-            : ".")
-        : `Đã bấm 'Xác nhận mua' nhưng hộp chưa đóng sau ${Math.round(charge.waitedMs / 1000)}s chờ. ` +
-          "Giao dịch CÓ THỂ đã đi qua — kiểm tra lại số suất trên ChatGPT trước khi tạo task mua mới.",
+      ...verifyFields,
+      note:
+        dismissed || verify.verified
+          ? `✓ Đã mua ${qty} suất (bộ đếm ${initialSeat} → ${finalSeat}` +
+            (seatMovedText ? `; ${seatMovedText}` : "") +
+            `). Trừ ngay ${review.todayText ?? "?"}` +
+            (monthly.deltaVnd !== null
+              ? `; hoá đơn hằng tháng ${monthly.currentText} → ${monthly.newText} (+${monthly.deltaVnd.toLocaleString("vi-VN")} đ TRƯỚC thuế).`
+              : ".") +
+            (dismissed
+              ? ""
+              : ` ⚠️ Hộp thanh toán chưa đóng sau ${Math.round(charge.waitedMs / 1000)}s — số suất đã lên nên giao dịch ĐÃ đi qua, chỉ cần tải lại trang.`)
+          : charge.errorBanner
+            ? `Đã bấm 'Xác nhận mua' nhưng ChatGPT báo: "${charge.errorBanner}". ` +
+              `Số suất trên trang chưa xác nhận được (${verify.reason ?? "?"}) vì hộp còn che trang. ` +
+              "Đang tải lại trang để đọc lại số suất — chưa kết luận đã trừ tiền hay chưa."
+            : `Đã bấm 'Xác nhận mua' nhưng hộp chưa đóng sau ${Math.round(charge.waitedMs / 1000)}s chờ, ` +
+              `số suất trên trang cũng chưa xác nhận (${verify.reason ?? "?"}). ` +
+              "Giao dịch CÓ THỂ đã đi qua — kiểm tra lại số suất trên ChatGPT trước khi tạo task mua mới.",
     },
   };
 }

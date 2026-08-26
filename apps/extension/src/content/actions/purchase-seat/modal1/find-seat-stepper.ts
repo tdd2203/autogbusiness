@@ -10,7 +10,29 @@ import { findUserCountInput } from "./find-user-count-input";
  * ChatGPT bỏ `<input>` thì bản cũ không đọc được số nào, fail ngay ở bước đầu.
  * Ở đây thử `<input>` trước (UI cũ + trường hợp ChatGPT giữ input ẩn), không
  * có thì đọc text giữa 2 nút.
+ *
+ * ⚠️⚠️ HỘP NAY CÓ HAI BỘ ĐẾM (user 2026-08-26) ⚠️⚠️
+ *
+ *   Tiêu chuẩn  260.500 đ/tháng     [−] 152 [+]
+ *   Cao cấp   3.245.000 đ/tháng     [−]   0 [+]
+ *
+ * Suất Cao cấp đắt hơn suất Tiêu chuẩn **12 lần**. Bấm nhầm bộ đếm dưới là mua
+ * nhầm loại suất bằng TIỀN THẬT. Bản trước lấy "cặp nút hợp lệ ĐẦU TIÊN tìm
+ * thấy trong hộp" — đúng hàng Tiêu chuẩn hay không hoàn toàn phụ thuộc thứ tự
+ * DOM và phép dò container, không có gì bảo đảm.
+ *
+ * Nay:
+ *   1. GHIM vào hàng "Tiêu chuẩn" — tìm nhãn loại suất, lấy khung của riêng
+ *      hàng đó (khung nào chứa cả nhãn loại khác thì KHÔNG nhận), rồi chỉ dò
+ *      nút trong khung ấy;
+ *   2. Ghim không được mà hộp lại có NHIỀU bộ đếm (đọc ra nhiều con số khác
+ *      nhau) ⇒ trả null, KHÔNG bấm gì cả. Task dừng với thông báo rõ còn hơn
+ *      bấm mù vào một hàng không biết là hàng nào.
+ * Hộp chỉ có MỘT loại suất (workspace UI cũ) thì hành vi y như trước.
  */
+/** Bộ đếm đang đứng ở hàng loại suất nào. */
+export type SeatStepperScope = "standard_row" | "single";
+
 export type SeatStepper = {
   /** Đọc số suất hiện tại. Null nếu không còn đọc được. */
   read: () => number | null;
@@ -23,6 +45,11 @@ export type SeatStepper = {
   getDecrementButton: () => HTMLElement | null;
   /** Nguồn con số — ghi vào log để debug khi ChatGPT đổi UI. */
   source: "input" | "text";
+  /**
+   * `standard_row` = đã ghim đúng hàng "Tiêu chuẩn" trong hộp nhiều loại suất;
+   * `single` = hộp chỉ có một bộ đếm (không có gì để nhầm).
+   */
+  scope: SeatStepperScope;
 };
 
 /** Cặp element đã định vị được trong một lần quét. */
@@ -33,6 +60,7 @@ type Located = {
   /** Nút "−". Null khi chỉ nhận ra được nút "+". */
   decEl: HTMLElement | null;
   source: "input" | "text";
+  scope: SeatStepperScope;
 };
 
 function isVisible(el: HTMLElement): boolean {
@@ -143,12 +171,17 @@ function readoutBetween(
   return inDomOrder[0] ?? null;
 }
 
-/** Bộ đếm dạng text: `[−] 47 [+]`, con số KHÔNG nằm trong <input>. */
-function findTextStepper(dialog: HTMLElement): Located | null {
+/**
+ * MỌI bộ đếm dạng text `[−] 47 [+]` trong `root` (con số KHÔNG nằm trong
+ * <input>). Trả về danh sách chứ không phải cái đầu tiên: đếm được BAO NHIÊU
+ * bộ đếm mới biết có đang đứng trước hộp nhiều loại suất hay không.
+ */
+function collectTextSteppers(root: HTMLElement): Located[] {
+  const found: Located[] = [];
   const buttons = Array.from(
-    dialog.querySelectorAll<HTMLButtonElement>("button"),
+    root.querySelectorAll<HTMLButtonElement>("button"),
   ).filter((b) => isVisible(b) && !isActionButton(b));
-  if (buttons.length < 2) return null;
+  if (buttons.length < 2) return found;
 
   // Ưu tiên cặp nhận diện được bằng nhãn; không có nhãn thì xét mọi cặp liền kề
   // trong cùng container (icon-only button không có aria-label).
@@ -192,9 +225,88 @@ function findTextStepper(dialog: HTMLElement): Located | null {
 
     // Nút còn lại của cặp chính là "−".
     const dec = inc === a ? b : a;
-    return { readEl: readout, incEl: inc, decEl: dec, source: "text" };
+    // Cùng một con số có thể lọt vào nhiều cặp nút (vd nút "−" hàng trên ghép
+    // với nút "+" hàng dưới). Giữ MỘT bản cho mỗi con số — số lượng con số khác
+    // nhau mới là thứ nói lên hộp có mấy bộ đếm.
+    if (!found.some((f) => f.readEl === readout)) {
+      found.push({ readEl: readout, incEl: inc, decEl: dec, source: "text", scope: "single" });
+    }
+  }
+  return found;
+}
+
+/**
+ * Nhãn của một hàng loại suất trong hộp "Quản lý suất".
+ *
+ * Khớp theo ĐẦU CHUỖI chứ không bắt bằng đúng: ChatGPT có thể gộp nhãn với giá
+ * vào một node ("Tiêu chuẩn 260.500 đ/tháng"). Đòi bằng đúng mà trượt thì không
+ * ghim được hàng nào ⇒ luồng mua dừng hẳn dù UI vẫn bình thường.
+ */
+const SEAT_ROW_LABELS: Array<{ standard: boolean; re: RegExp }> = [
+  { standard: true, re: /^(tieu chuan|standard|标准)\b/ },
+  { standard: false, re: /^(cao cap|premium|高级)\b/ },
+];
+
+type RowLabel = { standard: boolean; el: HTMLElement };
+
+/** Các nhãn loại suất (leaf) có trong hộp. */
+function findRowLabels(dialog: HTMLElement): RowLabel[] {
+  const out: RowLabel[] = [];
+  for (const el of Array.from(dialog.querySelectorAll<HTMLElement>("*"))) {
+    if (el.children.length !== 0) continue;
+    const text = normalizeMatchText(el.textContent ?? "");
+    if (!text || text.length > 40) continue;
+    const hit = SEAT_ROW_LABELS.find((l) => l.re.test(text));
+    if (hit) out.push({ standard: hit.standard, el });
+  }
+  return out;
+}
+
+/**
+ * Khung CỦA RIÊNG hàng chứa `label`: leo lên tới khi khung có đủ 2 nút (bộ đếm).
+ * Trả null nếu khung ấy nuốt luôn nhãn của loại suất khác — nghĩa là không tách
+ * được hàng, và tách không được thì TUYỆT ĐỐI không bấm.
+ */
+function rowContainerFor(
+  label: HTMLElement,
+  others: HTMLElement[],
+): HTMLElement | null {
+  let node: HTMLElement | null = label.parentElement;
+  for (let i = 0; i < 6 && node; i++) {
+    if (others.some((o) => node!.contains(o))) return null;
+    if (node.querySelectorAll("button").length >= 2) return node;
+    node = node.parentElement;
   }
   return null;
+}
+
+/**
+ * Bộ đếm cần bấm trong `dialog`.
+ *
+ * @returns `Located` khi chắc chắn đúng hàng; `null` khi không tìm thấy bộ đếm
+ *   nào HOẶC khi hộp có nhiều bộ đếm mà không ghim được hàng "Tiêu chuẩn".
+ */
+function locateInDialog(dialog: HTMLElement): Located | null {
+  const labels = findRowLabels(dialog);
+  const standard = labels.find((l) => l.standard);
+  const others = labels.filter((l) => !l.standard).map((l) => l.el);
+
+  // Có nhãn của loại suất KHÁC ⇒ hộp nhiều loại ⇒ BẮT BUỘC ghim hàng Tiêu chuẩn.
+  if (others.length > 0) {
+    if (!standard) return null;
+    const row = rowContainerFor(standard.el, others);
+    if (!row) return null;
+    const inRow = collectTextSteppers(row);
+    if (inRow.length !== 1) return null;
+    return { ...inRow[0], scope: "standard_row" };
+  }
+
+  const all = collectTextSteppers(dialog);
+  if (all.length === 0) return null;
+  // Nhiều con số khác nhau mà không có nhãn nào để ghim (ChatGPT đổi chữ?) →
+  // không đoán bừa hàng nào là hàng Tiêu chuẩn.
+  if (all.length > 1) return null;
+  return all[0];
 }
 
 function locate(): Located | null {
@@ -209,7 +321,13 @@ function locate(): Located | null {
   const inputInDialog = input?.closest<HTMLElement>(
     '[role="dialog"], [role="alertdialog"], [aria-modal="true"], [data-state="open"]',
   );
-  if (input && inputInDialog) {
+  // Hộp có từ 2 loại suất trở lên → KHÔNG dùng đường <input>: nó không biết
+  // input thuộc hàng nào. Đi thẳng xuống đường ghim-theo-hàng bên dưới.
+  const multiType =
+    inputInDialog !== undefined &&
+    inputInDialog !== null &&
+    findRowLabels(inputInDialog).filter((l) => !l.standard).length > 0;
+  if (input && inputInDialog && !multiType) {
     const inc = findIncrementButton(input);
     if (inc) {
       // "−" là nút anh em còn lại trong cùng khung bộ đếm (không phải "+",
@@ -224,13 +342,14 @@ function locate(): Located | null {
             !isActionButton(b) &&
             !isIncrementLabelled(b),
         ) ?? null;
-      return { readEl: input, incEl: inc, decEl: dec, source: "input" };
+      return { readEl: input, incEl: inc, decEl: dec, source: "input", scope: "single" };
     }
   }
 
-  // Chiến lược 2: con số là text giữa 2 nút (UI 2026-08-22).
+  // Chiến lược 2: con số là text giữa 2 nút (UI 2026-08-22 — và từ 26/8/2026 là
+  // MỘT bộ đếm cho MỖI loại suất).
   for (const dialog of openDialogs()) {
-    const located = findTextStepper(dialog);
+    const located = locateInDialog(dialog);
     if (located) return located;
   }
   return null;
@@ -270,5 +389,6 @@ export function findSeatStepper(): SeatStepper | null {
     getIncrementButton: () => fresh()?.incEl ?? null,
     getDecrementButton: () => fresh()?.decEl ?? null,
     source: cached.source,
+    scope: cached.scope,
   };
 }

@@ -16,8 +16,10 @@ import { describe, expect, it } from "vitest";
 import {
   canDeriveTotalAfterPurchase,
   headroomWithoutModal,
+  totalFromPageCardsAfterPurchase,
   type SeatHint,
 } from "./ensure-seats";
+import { parseSeatCards } from "../purchase-seat/read-seat-cards";
 
 /** GPT1 lúc 04:44 24/8/2026: 151 suất, 148 active + 1 chờ = 149 chưa bị gỡ. */
 const GPT1: SeatHint = { total: 151, occupied: 149 };
@@ -87,6 +89,44 @@ describe("headroomWithoutModal — có dám bỏ qua hộp 'Quản lý suất' k
   });
 });
 
+describe("headroomWithoutModal — khi trang IN SẴN số suất (UI mới 26/8/2026)", () => {
+  /** "Suất Tiêu chuẩn · Đã gán 148/151" — số THẬT ChatGPT đang hiển thị. */
+  const CARDS_151 = parseSeatCards("Suất Tiêu chuẩn Đã gán 148/151 151");
+
+  it("tổng lấy theo THẺ TRÊN TRANG, không lấy số DB đang cũ", () => {
+    // DB còn ghi 148 suất (cũ) trong khi ChatGPT đã 151 → đường tắt cũ thấy
+    // 148 − 149 < 0 nên bỏ lỡ, phải mở hộp. Có thẻ thì thấy đúng 151.
+    const stale: SeatHint = { total: 148, occupied: 149 };
+    expect(headroomWithoutModal(1, stale, 148).enough).toBe(false);
+    const r = headroomWithoutModal(1, stale, 148, CARDS_151);
+    expect(r.enough).toBe(true);
+    expect(r.total).toBe(151);
+    expect(r.source).toBe("page_cards");
+  });
+
+  it("số đang chiếm vẫn lấy bên LỚN NHẤT — kể cả 'đã gán' của thẻ", () => {
+    // Thẻ nói đã gán 148, DB mới biết 140 → phải tin 148.
+    const r = headroomWithoutModal(1, { total: 151, occupied: 140 }, null, CARDS_151);
+    expect(r.occupied).toBe(148);
+    expect(r.free).toBe(3);
+  });
+
+  it("KHÔNG có hint thì vẫn đi đường đầy đủ, dù đọc được thẻ", () => {
+    // `hint.occupied` là nguồn duy nhất ở đường tắt biết tới LỜI MỜI ĐANG CHỜ —
+    // thẻ chỉ đếm người đã tham gia. Thiếu nó thì phải đi đếm tận nơi.
+    const r = headroomWithoutModal(1, undefined, 148, CARDS_151);
+    expect(r.enough).toBe(false);
+    expect(r.source).toBeNull();
+  });
+
+  it("hết suất theo thẻ → không đường tắt nào cả", () => {
+    const full = parseSeatCards("Suất Tiêu chuẩn Đã gán 60/60 60");
+    const r = headroomWithoutModal(1, { total: 62, occupied: 60 }, 60, full);
+    expect(r.enough).toBe(false);
+    expect(r.free).toBe(0);
+  });
+});
+
 describe("canDeriveTotalAfterPurchase — có dám tin bộ đếm hộp mua không", () => {
   /** Ca chuẩn: đang có 150 suất, mua bù 1, hộp xác nhận đã đóng. */
   const OK = {
@@ -150,5 +190,68 @@ describe("canDeriveTotalAfterPurchase — có dám tin bộ đếm hộp mua kh�
 
   it("payload rỗng → đọc lại", () => {
     expect(canDeriveTotalAfterPurchase({}, 150, 1)).toBe(false);
+  });
+});
+
+/**
+ * Đường xác nhận MỚI (user 2026-08-26): luồng mua tự chờ thẻ "Suất Tiêu chuẩn"
+ * trên trang nhích lên rồi mới trả về. Có nó thì luồng mời không phải mở lại hộp
+ * "Quản lý suất" — kể cả khi hộp thanh toán chưa đóng sạch.
+ */
+describe("totalFromPageCardsAfterPurchase — tin số suất in trên trang", () => {
+  /** Ảnh user 26/8: đang 66 suất, mua bù 2, trang hiện 68. */
+  const OK = { seat_page_verified: true, seat_page_total_after: 68 };
+
+  it("trang xác nhận đủ → lấy luôn số của trang", () => {
+    expect(totalFromPageCardsAfterPurchase(OK, 66, 2)).toBe(68);
+  });
+
+  it("hộp thanh toán chưa đóng vẫn nhận — số suất đã lên là giao dịch đã đi qua", () => {
+    expect(
+      totalFromPageCardsAfterPurchase(
+        { ...OK, charge_modal_dismissed: false },
+        66,
+        2,
+      ),
+    ).toBe(68);
+  });
+
+  it("admin khác vừa mua thêm → tổng cao hơn vẫn nhận, lấy đúng số thật", () => {
+    expect(
+      totalFromPageCardsAfterPurchase({ ...OK, seat_page_total_after: 70 }, 66, 2),
+    ).toBe(70);
+  });
+
+  it("trang chưa xác nhận → null, quay về đường đọc kiểm", () => {
+    expect(totalFromPageCardsAfterPurchase({ seat_page_total_after: 68 }, 66, 2)).toBeNull();
+    expect(
+      totalFromPageCardsAfterPurchase(
+        { ...OK, seat_page_verified: false },
+        66,
+        2,
+      ),
+    ).toBeNull();
+    expect(
+      totalFromPageCardsAfterPurchase({ ...OK, seat_page_verified: "true" }, 66, 2),
+    ).toBeNull();
+  });
+
+  it("tổng mới THIẾU so với số cần mua → null, không mời liều", () => {
+    expect(
+      totalFromPageCardsAfterPurchase({ ...OK, seat_page_total_after: 67 }, 66, 2),
+    ).toBeNull();
+  });
+
+  it("không có số sau khi mua → null", () => {
+    expect(
+      totalFromPageCardsAfterPurchase({ seat_page_verified: true }, 66, 2),
+    ).toBeNull();
+    expect(
+      totalFromPageCardsAfterPurchase(
+        { ...OK, seat_page_total_after: "68" },
+        66,
+        2,
+      ),
+    ).toBeNull();
   });
 });

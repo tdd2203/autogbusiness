@@ -109,11 +109,16 @@ function parseBillingStatus(text: string): "PAID" | "UNPAID" | "UNKNOWN" | null 
 }
 
 // Match cụm "11 thg 5 - 11 thg 6", "11 月 5 日 - 11 月 6 日", "May 11 - Jun 11"
+//
+// Năm ở CUỐI ("25 thg 7 - 25 thg 8, 2026") là năm của ngày KẾT THÚC — bắt lại
+// (nhóm 5) chứ đừng bỏ: trang in sẵn năm mà vẫn đi SUY năm thì đúng ngày gia hạn
+// (26/8, khi chu kỳ vừa kết thúc hôm qua) sẽ bị đẩy vọt sang năm sau.
 const VI_MONTH_RE =
-  /(\d{1,2})\s*(?:thg|th\.|tháng)\s*(\d{1,2})\s*[-–—~]\s*(\d{1,2})\s*(?:thg|th\.|tháng)\s*(\d{1,2})/i;
+  /(\d{1,2})\s*(?:thg|th\.|tháng)\s*(\d{1,2})\s*[-–—~]\s*(\d{1,2})\s*(?:thg|th\.|tháng)\s*(\d{1,2})(?:\s*,?\s*(?:năm\s*)?(\d{4}))?/i;
 // Chinese: "2026年5月11日 - 2026年6月11日" or "5月11日 - 6月11日"
+// Nhóm 1 = năm vế ĐẦU, nhóm 4 = năm vế SAU (cùng lý do như VI_MONTH_RE).
 const ZH_MONTH_RE =
-  /(?:\d{4}\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?\s*[-–—~]\s*(?:\d{4}\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?/;
+  /(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?\s*[-–—~]\s*(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*日?/;
 // English (tab Kế hoạch tiếng Anh): "Current cycle: Jul 25 - Aug 25" /
 // "May 11 – Jun 11, 2026". Month-first, năm optional ở cuối. END = renewal.
 const EN_MONTH_RANGE_RE =
@@ -221,12 +226,23 @@ function parseRenewalDateVi(text: string): string | null {
   // 1) Dạng KHOẢNG "X - Y" → lấy ngày END (= renewal). ZH trước (đặc trưng hơn).
   const zh = text.match(ZH_MONTH_RE);
   if (zh) {
-    const iso = isoFromMonthDay(Number(zh[3]), Number(zh[4]));
+    // CHỈ nhận năm in ngay ở vế SAU. Mượn năm của vế ĐẦU là sai đúng ca vắt qua
+    // giao thừa ("2026年12月25日 - 1月25日" → 25/1/2026, lùi 11 tháng); thiếu năm
+    // thì để `isoFromMonthDay` suy như cũ (giống nhánh tiếng Anh).
+    const iso = isoFromMonthDay(
+      Number(zh[5]),
+      Number(zh[6]),
+      zh[4] ? Number(zh[4]) : undefined,
+    );
     if (iso) return iso;
   }
   const m = text.match(VI_MONTH_RE);
   if (m) {
-    const iso = isoFromMonthDay(Number(m[4]), Number(m[3]));
+    const iso = isoFromMonthDay(
+      Number(m[4]),
+      Number(m[3]),
+      m[5] ? Number(m[5]) : undefined,
+    );
     if (iso) return iso;
   }
   // EN range "Jul 25 - Aug 25[, 2026]" → END = renewal (m[3]=tháng, m[4]=ngày).

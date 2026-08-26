@@ -237,7 +237,10 @@ export async function executeSync(
     };
   }
 
-  // ── Đọc số suất từ hộp "Quản lý suất" (CHỈ-ĐỌC, không bắt buộc) ─────────
+  // ── Đọc số suất (CHỈ-ĐỌC, không bắt buộc) ───────────────────────────────
+  // Từ 26/8/2026 tab "Người dùng" in sẵn hàng thẻ "Suất Tiêu chuẩn · Đã gán
+  // 60/62" + "Suất Cao cấp · Đã gán 0/0" → `checkSeatAvailability` cộng các thẻ
+  // lại và KHÔNG mở hộp nào. Workspace chưa có thẻ thì vẫn mở hộp như trước.
   // Tổng suất trên dashboard trước đây chỉ đổi khi chạy SYNC_BILLING hoặc khi có
   // lệnh mời — nên nó ôm số cũ hàng tuần (24/8/2026: dashboard ghi 148 trong khi
   // ChatGPT đang có 151). Nút "Đồng bộ từ ChatGPT" là thứ admin bấm thường xuyên
@@ -270,10 +273,10 @@ export async function executeSync(
       seatStepperTotal = seat.stepperTotal;
       seatModalText = seat.modalText;
       console.log(
-        `[autogpt-sync] suất đọc từ hộp 'Quản lý suất': ${seatAssigned ?? "?"}/${seatTotal ?? "?"}` +
-          (seat.uncertain
-            ? ` (hai nguồn lệch — bộ đếm ${seat.stepperTotal ?? "?"}, dòng tỉ lệ ${seat.ratioTotal ?? "?"})`
-            : "") +
+        `[autogpt-sync] suất đọc từ ` +
+          `${seat.source === "page_cards" ? "hàng thẻ trên trang Thành viên" : "hộp 'Quản lý suất'"}` +
+          `: ${seatAssigned ?? "?"}/${seatTotal ?? "?"}` +
+          (seat.uncertain ? ` (số chưa chắc — ${seat.uncertainReason ?? "?"})` : "") +
           (seat.error ? ` (lỗi: ${seat.error})` : ""),
       );
     } catch (e) {

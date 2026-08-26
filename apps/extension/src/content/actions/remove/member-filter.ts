@@ -95,6 +95,157 @@ export async function filterAndFindRow(email: string): Promise<HTMLElement | nul
   return null;
 }
 
+/** Bắt chuỗi email đầu tiên trong text của 1 row. */
+const EMAIL_IN_ROW = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+
+/**
+ * Email đọc được từ các row ĐANG render (dedupe theo element).
+ *
+ * Dùng để biết ô lọc ĐÃ CHẠY hay chưa mà KHÔNG cần gõ lại: list còn nguyên row
+ * của người khác ⇒ query chưa áp dụng; list trống / chỉ còn row khớp ⇒ đã áp dụng.
+ */
+function renderedRowEmails(): string[] {
+  const seen = new Set<Element>();
+  const emails: string[] = [];
+  for (const sel of SELECTORS.memberRow) {
+    for (const row of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
+      if (seen.has(row)) continue;
+      seen.add(row);
+      const m = (row.textContent ?? "").match(EMAIL_IN_ROW);
+      if (m) emails.push(m[0].toLowerCase());
+    }
+  }
+  return emails;
+}
+
+/** "Ảnh chụp" trạng thái list — đổi chuỗi này ⇒ list đã render lại theo query. */
+function listSignature(): string {
+  return `${visibleRowCount()}|${renderedRowEmails().join(",")}`;
+}
+
+export type FilterLookup = {
+  /**
+   * found = có row khớp; absent = ô lọc đã chạy và KHÔNG có row khớp;
+   * inconclusive = không đủ căn cứ kết luận (caller đừng ghi gì).
+   */
+  outcome: "found" | "absent" | "inconclusive";
+  row?: HTMLElement;
+  /** Chỉ có khi outcome='inconclusive'. */
+  reason?: string;
+  /** List có PHẢN HỒI query lần này không (bằng chứng ô lọc còn sống). */
+  filterResponded: boolean;
+};
+
+/** Chờ ChatGPT debounce ô lọc trước khi soi row. */
+const LOOKUP_DEBOUNCE_MS = 600;
+/** Soi row khớp bấy nhiêu lâu sau debounce (lọc là server-side, row về trễ). */
+const LOOKUP_ROW_WAIT_MS = 4000;
+/** List đã render lại nhưng chưa thấy row → soi thêm bấy nhiêu, bắt row về trễ. */
+const LOOKUP_LATE_MS = 1500;
+const LOOKUP_POLL_MS = 200;
+
+/**
+ * Tra 1 email bằng ô "Lọc theo tên" — GÕ ĐÚNG MỘT LẦN (user 2026-08-26:
+ * *"đồng bộ hàng loạt thì chỉ cần tìm 1 lần, không cần nhập email vào ô tìm kiếm
+ * 2 lần"*).
+ *
+ * `filterAndFindRow` (v0.9.21) gõ lại lần hai MỖI KHI không thấy row. Với lệnh
+ * "Đồng bộ (kiểm tra đã tham gia)" thì gần như email nào cũng miss (đang chờ
+ * tham gia = không có ở tab Người dùng), nên lần gõ thứ hai luôn cho cùng kết
+ * quả mà tốn thêm ~4s/email — 20 email là ~80s gõ vô ích.
+ *
+ * Lần gõ thứ hai vốn sinh ra để cứu ca "event `input` bị Chrome throttle nuốt ở
+ * tab nền → fetch lọc chưa từng chạy → miss OAN". Ca đó KHÔNG cần gõ lại mới
+ * nhận ra: nếu query đã chạy thì LIST PHẢI RENDER LẠI (`listSignature` đổi).
+ * Nên ở đây gõ 1 lần rồi đọc bằng chứng:
+ *   · thấy row                    → found
+ *   · list đã render lại, không row → absent (kết luận ngay, KHÔNG gõ lại)
+ *   · list đứng im như tờ          → query chưa chạy → mới gõ lại lần hai
+ *
+ * `opts.assumeFilterAlive`: caller (vòng lặp hàng loạt) đã thấy ô lọc phản hồi ở
+ * email TRƯỚC ⇒ ô lọc còn sống. Khi ấy "list đứng im" là chuyện thường — list
+ * đang trống sẵn từ email trước, lọc email mới cũng trống thì có gì để đổi — nên
+ * kết luận absent luôn thay vì gõ lại.
+ */
+export async function filterLookupOnce(
+  email: string,
+  opts: { assumeFilterAlive?: boolean } = {},
+): Promise<FilterLookup> {
+  const target = email.trim().toLowerCase();
+  let input = findMemberFilterInput();
+  if (!input) {
+    try {
+      input = await waitFor(() => findMemberFilterInput(), 8000, 250);
+    } catch {
+      input = null;
+    }
+  }
+  if (!input) {
+    return { outcome: "inconclusive", reason: "no_filter_input", filterResponded: false };
+  }
+
+  const MAX_TYPES = 2;
+  for (let attempt = 1; attempt <= MAX_TYPES; attempt++) {
+    if (attempt > 1) {
+      // Chỉ tới đây khi lần gõ trước KHÔNG hề làm list nhúc nhích ⇒ query bị nuốt.
+      await clearMemberFilter();
+      await sleep(400);
+      input = findMemberFilterInput() ?? input;
+    }
+    const before = listSignature();
+    await humanType(input, target);
+    await sleep(LOOKUP_DEBOUNCE_MS);
+
+    let responded = listSignature() !== before;
+    const deadline = Date.now() + LOOKUP_ROW_WAIT_MS;
+    while (Date.now() < deadline) {
+      const row = findMemberRow(target);
+      if (row) {
+        console.log(`${LOG} ✓ thấy row "${target}" (gõ ${attempt} lần)`);
+        return { outcome: "found", row, filterResponded: true };
+      }
+      if (!responded && listSignature() !== before) responded = true;
+      await sleep(LOOKUP_POLL_MS);
+    }
+
+    if (responded) {
+      // List đã render lại theo query mà chưa có row: lọc server-side hay nháy
+      // trống trước rồi mới đổ row → soi nốt một nhịp ngắn cho chắc.
+      const lateDeadline = Date.now() + LOOKUP_LATE_MS;
+      while (Date.now() < lateDeadline) {
+        await sleep(LOOKUP_POLL_MS);
+        const late = findMemberRow(target);
+        if (late) {
+          console.log(`${LOG} ✓ row "${target}" hiện TRỄ`);
+          return { outcome: "found", row: late, filterResponded: true };
+        }
+      }
+      console.log(`${LOG} lọc "${target}" đã chạy, KHÔNG có row khớp → vắng mặt`);
+      return { outcome: "absent", filterResponded: true };
+    }
+
+    if (opts.assumeFilterAlive) {
+      // Ô lọc đã chứng minh còn sống ở email trước trong CÙNG mẻ này; list vốn
+      // đang trống nên không có gì để "đổi". Gõ lại cũng chỉ ra đúng thế.
+      console.log(
+        `${LOG} lọc "${target}": list vốn trống, ô lọc đã chứng minh còn sống → vắng mặt`,
+      );
+      return { outcome: "absent", filterResponded: false };
+    }
+
+    console.warn(
+      `${LOG} lọc "${target}" (lần ${attempt}): list KHÔNG hề đổi ⇒ query chưa chạy` +
+        (attempt < MAX_TYPES ? " → gõ lại" : ""),
+    );
+  }
+
+  return {
+    outcome: "inconclusive",
+    reason: "filter_never_applied",
+    filterResponded: false,
+  };
+}
+
 export type FilterResolution =
   /** Ô lọc trả về row khớp → member CÒN trong tab Người dùng. */
   | { outcome: "found"; row: HTMLElement }

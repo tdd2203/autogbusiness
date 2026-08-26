@@ -138,6 +138,9 @@ export async function executeInvite(
   reinvite = false,
   newSeatCount?: number,
   seatHint?: SeatHint,
+  noSeatPurchase = false,
+  seatsReady = false,
+  seatsPurchasedAlready?: number,
 ): Promise<ExecuteActionResponse> {
   console.log(
     `[autogpt-invite] START ${emails.length} email(s) role=${role} verifiedDomain=${verifiedDomain ?? "(chưa cấu hình)"} externalReady=${externalReady} reinvite=${reinvite} pathname=${location.pathname}`,
@@ -173,10 +176,14 @@ export async function executeInvite(
     }
   }
 
+  // Lượt gọi LẠI sau khi background tải lại trang vì hộp mua suất (`seatsReady` /
+  // `seatsPurchasedAlready`) — mọi bước CHỈ-CHẠY-MỘT-LẦN phải bỏ qua ở lượt này.
+  const afterSeatReload = seatsReady || seatsPurchasedAlready !== undefined;
+
   // Action "Mời lại": chạy TIỀN TỐ 1 lần (trước Phase A/toggle). !externalReady để
   // KHÔNG lặp lại ở lần gọi thứ 2 sau khi background hard-reload. Mời lại HÀNG LOẠT
   // (re-invite-batch) gửi cả bó trong 1 task → thu hồi lời mời cũ cho MỌI email.
-  if (reinvite && !externalReady) {
+  if (reinvite && !externalReady && !afterSeatReload) {
     await runReinvitePreSteps(emails.map((e) => e.trim().toLowerCase()));
   }
 
@@ -186,7 +193,10 @@ export async function executeInvite(
   // Chỉ chạy ở lần gọi THỨ NHẤT: lần 2 (externalReady) là quay lại sau khi
   // background hard-reload, suất đã được đảm bảo ở lần 1 rồi.
   let seatData: Record<string, unknown> = {};
-  if (!externalReady) {
+  // `seatsReady`: lượt gọi LẠI sau khi background tải lại trang vì hộp mua suất
+  // để lại lớp phủ. Tổng suất mới đã chốt bằng bộ đếm của hộp mua ở lượt trước →
+  // mở hộp lần nữa chỉ tốn thời gian và thêm một cơ hội hộp kẹt.
+  if (!externalReady && !seatsReady) {
     // `newSeatCount` do backend tính (`_count_new_invite_seats`): email đang là
     // thành viên ACTIVE đã giữ một suất rồi nên KHÔNG cần mua thêm. Đếm bừa theo
     // emails.length là đi mua thừa — mất tiền thật.
@@ -201,19 +211,56 @@ export async function executeInvite(
           `(${emails.length - need} email đang là thành viên, đã giữ suất sẵn)`,
       );
     }
-    const seats = await ensureSeatsForInvite(taskId, need, emails, seatHint);
+    const seats = await ensureSeatsForInvite(taskId, need, emails, seatHint, {
+      noPurchase: noSeatPurchase,
+      alreadyPurchased: seatsPurchasedAlready,
+    });
     seatData = seats.data;
+    // ── ĐÃ MUA SUẤT MÀ TRANG CÒN BẨN → NHỜ BACKGROUND TẢI LẠI ───────────────
+    // Tiền đã trừ. Trang còn lớp phủ của hộp mua nên mọi cú bấm của bước mời sẽ
+    // rơi vào lớp phủ. TRẢ QUYỀN VỀ BACKGROUND ngay tại đây, vì hai lẽ:
+    //   1. Cắt lượt gọi content cho ngắn. Mời-kèm-mua chạy 4–5′ trong một lượt →
+    //      service worker MV3 bị Chrome khai tử giữa chừng, mất cả kênh chờ trả
+    //      lời lẫn đồng hồ 450s ⇒ không còn ai báo lỗi (ca 26/8/2026: 3 lệnh mời
+    //      im lặng tới khi backend chốt timeout 8′ dù lời mời ĐÃ đi).
+    //   2. Content tự điều hướng để dọn trang là tự cắt kênh: `navigateTo` có
+    //      nhánh click <a>, điều hướng thật thì trang bị đẩy vào back/forward
+    //      cache (lớp tai nạn 31/7 — hoàn 340k oan).
+    // Cơ chế trả quyền y hệt `awaiting_external_reload`/`awaiting_reload_verify`.
+    if (seats.needsPageReload) {
+      console.log(
+        `[autogpt-invite] đã mua suất nhưng trang còn bẩn (${seats.needsPageReload}) → ` +
+          "yêu cầu background HARD-RELOAD /admin/members rồi gọi lại để mời.",
+      );
+      return {
+        ok: true,
+        data: {
+          awaiting_seat_reload: true,
+          seat_recheck_needed: seats.needsPageReload === "recheck_seats",
+          emails,
+          count: emails.length,
+          role,
+          ...seatData,
+        },
+      };
+    }
     if (!seats.ok) {
       console.warn(`[autogpt-invite] DỪNG trước khi mời: ${seats.error_message}`);
       // KHÔNG dùng VERIFY_FAILED ở đây: `invite-salvage.ts` chỉ cứu ca
       // VERIFY_FAILED có `submit_clicked=true` (đã bấm Gửi lời mời rồi mới lỗi).
       // Ta chưa hề mở dialog mời — dùng mã riêng để không lẫn vào đường cứu đó.
+      // `SEAT_LOCK_REQUIRED` KHÔNG phải lỗi: lệnh đang chạy song song mà chỗ
+      // trống không còn chắc chắn → background nâng khoá suất lên độc quyền rồi
+      // gọi lại lệnh này. Trả nguyên mã để runner nhận ra, đừng nhét vào
+      // NOT_ENOUGH_SEATS (mã đó đi thẳng về backend = task hỏng oan).
       return {
         ok: false,
         error_code:
-          seats.error_code === "SEAT_CHECK_FAILED"
-            ? "FAILED_UI_CHANGED"
-            : "NOT_ENOUGH_SEATS",
+          seats.error_code === "SEAT_LOCK_REQUIRED"
+            ? "SEAT_LOCK_REQUIRED"
+            : seats.error_code === "SEAT_CHECK_FAILED"
+              ? "FAILED_UI_CHANGED"
+              : "NOT_ENOUGH_SEATS",
         error_message: seats.error_message ?? "Không đủ suất để mời.",
         data: seatData,
       };

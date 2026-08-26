@@ -1,7 +1,7 @@
 import type { ExecuteActionResponse } from "../../../shared/messages";
 import { reportProgress } from "../../progress";
 import { TEXT_FALLBACKS } from "../../selectors";
-import { clearMemberFilter } from "../remove/member-filter";
+import { clearMemberFilter, filterLookupOnce } from "../remove/member-filter";
 import { locateMemberRow } from "../remove/locate-member";
 import { clickTabAndWait } from "../sync";
 
@@ -21,9 +21,22 @@ const BATCH_BUDGET_MS = 4 * 60 * 1000;
  *   - ĐÃ tham gia  → xuất hiện ở tab "Người dùng"  → found_in="active"
  *   - CHƯA tham gia → KHÔNG có ở tab "Người dùng"   → found_in="pending" (giữ nguyên)
  *
- * Luồng: vào tab "Người dùng" ĐÚNG 1 lần → tìm TỪNG email bằng ô search
- * (`locateMemberRow` pageThrough=false — ô search là nguồn sự thật, không lật hết
- * trang cho từng email). Thấy → active; không thấy → pending.
+ * Luồng: vào tab "Người dùng" ĐÚNG 1 lần → tìm TỪNG email bằng ô search, MỖI
+ * EMAIL GÕ ĐÚNG 1 LẦN (`filterLookupOnce`). Thấy → active; ô lọc chạy xong mà
+ * không có row → pending.
+ *
+ * GÕ 1 LẦN (user 2026-08-26): bản trước dùng `filterAndFindRow`, hễ miss là clear
+ * ô lọc rồi gõ lại email lần hai. Mẻ "kiểm tra đã tham gia" thì gần như email nào
+ * cũng miss (đang chờ tham gia = chưa có ở tab Người dùng) nên lần gõ thứ hai chỉ
+ * lặp lại đúng kết quả cũ, đốt thêm ~4s/email. `filterLookupOnce` thay "gõ lại
+ * cho chắc" bằng ĐỌC BẰNG CHỨNG: list có render lại theo query hay không. Chỉ khi
+ * list đứng im như tờ (query bị Chrome throttle nuốt ở tab nền) nó mới gõ lại —
+ * và từ email thứ hai trở đi, ô lọc đã tự chứng minh còn sống ở email trước
+ * (`filterProvenAlive`) nên không cần cả lần gõ đó.
+ *
+ * Email nào ô lọc KHÔNG kết luận được thì KHÔNG có mặt trong `results` — thà thiếu
+ * còn hơn báo "chưa tham gia" oan cho người đã tham gia. Backend chỉ reconcile
+ * đúng những email được trả về.
  *
  * Bỏ hẳn khái niệm "none" + mọi thao tác tab Lời mời (scrape đếm-số-lượng cũ hay
  * sót row khi list virtualized → báo sai). Đơn giản = tin cậy.
@@ -82,6 +95,13 @@ export async function executeSyncMembersBatch(
   }
 
   // ----- Tìm từng email bằng ô search của tab "Người dùng" -----
+  // Ô lọc đã PHẢN HỒI query ít nhất một lần trong mẻ này ⇒ nó còn sống ⇒ từ đây
+  // "gõ xong list vẫn trống" là kết quả thật, không phải query bị nuốt.
+  let filterProvenAlive = false;
+  // Tab Người dùng không có ô lọc → quay về đường quét cũ (scroll-scan) cho cả mẻ.
+  let noFilterBox = false;
+  const unresolved: string[] = [];
+
   for (let i = 0; i < targets.length; i++) {
     const email = targets[i];
     if (Date.now() - startedAt > BATCH_BUDGET_MS) {
@@ -93,14 +113,40 @@ export async function executeSyncMembersBatch(
       }
       break;
     }
-    const row = await locateMemberRow(email, {
-      pageThrough: false,
-      preferFilter: true,
-    });
-    results.set(email, row ? "active" : "pending");
-    console.log(
-      `${LOG} ${email} → ${row ? "active (đã tham gia)" : "pending (chưa tham gia)"}`,
-    );
+
+    let foundIn: FoundIn | null = null;
+    if (!noFilterBox) {
+      const lookup = await filterLookupOnce(email, {
+        assumeFilterAlive: filterProvenAlive,
+      });
+      if (lookup.filterResponded) filterProvenAlive = true;
+      if (lookup.outcome === "found") foundIn = "active";
+      else if (lookup.outcome === "absent") foundIn = "pending";
+      else if (lookup.reason === "no_filter_input") {
+        console.warn(`${LOG} tab Người dùng KHÔNG có ô lọc → quét vị trí như cũ`);
+        noFilterBox = true;
+      } else {
+        console.warn(
+          `${LOG} ${email}: ô lọc không kết luận được (${lookup.reason}) → BỎ QUA, không báo pending oan`,
+        );
+      }
+    }
+    if (foundIn === null && noFilterBox) {
+      const row = await locateMemberRow(email, {
+        pageThrough: false,
+        preferFilter: true,
+      });
+      foundIn = row ? "active" : "pending";
+    }
+
+    if (foundIn) {
+      results.set(email, foundIn);
+      console.log(
+        `${LOG} ${email} → ${foundIn === "active" ? "active (đã tham gia)" : "pending (chưa tham gia)"}`,
+      );
+    } else {
+      unresolved.push(email);
+    }
     await reportProgress(taskId, {
       phase: "searching",
       current: i + 1,
@@ -112,21 +158,37 @@ export async function executeSyncMembersBatch(
   // Trả ô "Lọc theo tên" về rỗng để không để tab ChatGPT kẹt ở kết quả lọc email cuối.
   await clearMemberFilter();
 
-  const resultsArr = targets.map((email) => ({
-    email,
-    found_in: results.get(email) ?? "pending",
-  }));
+  // CHỈ trả email đã kết luận được. Email "inconclusive" (ô lọc không chạy) mà
+  // trả 'pending' thì backend giữ nguyên trạng thái chờ cho người ĐÃ tham gia —
+  // đúng cái lỗi "đồng bộ mấy lần vẫn còn pending" trước đây.
+  const resultsArr = targets
+    .filter((email) => results.has(email))
+    .map((email) => ({ email, found_in: results.get(email) as FoundIn }));
   const activeCount = resultsArr.filter((r) => r.found_in === "active").length;
   const pendingCount = resultsArr.length - activeCount;
   console.log(
-    `${LOG} DONE: ${activeCount} đã tham gia, ${pendingCount} chưa tham gia (${Date.now() - startedAt}ms)`,
+    `${LOG} DONE: ${activeCount} đã tham gia, ${pendingCount} chưa tham gia` +
+      (unresolved.length ? `, ${unresolved.length} không kết luận được` : "") +
+      ` (${Date.now() - startedAt}ms)`,
   );
+
+  if (resultsArr.length === 0) {
+    return {
+      ok: false,
+      error_code: "UI_ELEMENT_NOT_FOUND",
+      error_message:
+        `Ô "Lọc theo tên" của tab Người dùng không phản hồi — không kiểm được email nào ` +
+        `trong ${targets.length} email. Mở chatgpt.com/admin/members và thử lại.`,
+    };
+  }
 
   await reportProgress(
     taskId,
     {
       phase: "verifying",
-      message: `Xong: ${activeCount} đã tham gia, ${pendingCount} chưa tham gia.`,
+      message:
+        `Xong: ${activeCount} đã tham gia, ${pendingCount} chưa tham gia` +
+        (unresolved.length ? `, ${unresolved.length} chưa kiểm được.` : "."),
       current: targets.length,
       total: targets.length,
     },

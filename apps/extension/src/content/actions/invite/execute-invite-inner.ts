@@ -33,6 +33,7 @@ import {
 import { findInviteOpenButton } from "./finders/find-invite-open-button";
 import { findInviteSubmitButton } from "./finders/find-submit-button";
 import { setRole } from "./set-role";
+import { inviteVerifyTimeoutMs } from "./verify-wait";
 
 /**
  * Nhãn nút "MUA suất và gửi lời mời" — nút CUỐI của hộp "Xem lại giao dịch mua"
@@ -62,7 +63,7 @@ function isBuyAndInviteButton(el: HTMLElement): boolean {
 
 /**
  * Nút bị VÔ HIỆU HOÁ? ChatGPT disable "Gửi lời mời" khi còn banner "ngoài miền"
- * (hoặc email chưa hợp lệ). Click nút disabled = no-op → verify 15s → VERIFY_FAILED.
+ * (hoặc email chưa hợp lệ). Click nút disabled = no-op → chờ hết trần verify → VERIFY_FAILED.
  * Kiểm 3 tín hiệu: thuộc tính `disabled`, `aria-disabled`, `data-disabled` (Radix).
  */
 function isControlDisabled(el: HTMLElement): boolean {
@@ -362,7 +363,7 @@ export async function executeInviteInner(
   // 6. Click Submit — CHỜ nút Send THỰC SỰ enable trước khi click.
   //   Banner-text không phải tín hiệu duy nhất: có lúc banner đã ẩn nhưng nút Send
   //   còn disabled 1 nhịp (React trễ), hoặc setting chưa hiệu lực làm Send disabled
-  //   dù không có banner text. Click nút disabled = no-op → verify 15s →
+  //   dù không có banner text. Click nút disabled = no-op → chờ hết trần verify →
   //   VERIFY_FAILED. → poll tới 6s cho nút enable; còn disabled → EXTERNAL_TOGGLE_FAILED
   //   (huỷ rõ ràng thay vì click chết → tạo lời mời ảo).
   await randomDelay();
@@ -421,11 +422,19 @@ export async function executeInviteInner(
   }
 
   await humanClick(enabledBtn);
-  console.log("[autogpt-invite] submit clicked, verifying...");
+  // Trần chờ CO GIÃN theo số email — 15s cố định là nguyên nhân ca 26/8/2026 báo
+  // hỏng oan cả một mẻ 5 email đã gửi được. Xem `verify-wait.ts`.
+  const verifyTimeoutMs = inviteVerifyTimeoutMs(emails.length);
+  console.log(
+    `[autogpt-invite] submit clicked, verifying (chờ tối đa ${Math.round(verifyTimeoutMs / 1000)}s cho ${emails.length} email)...`,
+  );
 
   await reportProgress(
     taskId,
-    { phase: "verifying", message: "Đợi xác nhận từ ChatGPT..." },
+    {
+      phase: "verifying",
+      message: `Đợi ChatGPT xác nhận ${emails.length} lời mời (tối đa ${Math.round(verifyTimeoutMs / 1000)}s)...`,
+    },
     true,
   );
 
@@ -450,7 +459,7 @@ export async function executeInviteInner(
       }
       const dialogClosed = !document.querySelector('[role="dialog"]');
       return dialogClosed ? document.body : null;
-    }, 15_000);
+    }, verifyTimeoutMs);
   } catch {
     // Check xem có error message trong dialog không (vd email đã tồn tại)
     const dialogText = document.querySelector('[role="dialog"]')?.textContent ?? "";
@@ -461,11 +470,11 @@ export async function executeInviteInner(
       error_code: "VERIFY_FAILED",
       error_message: matchedHint
         ? `ChatGPT báo lỗi trong dialog: "${matchedHint}". Có thể email đã được mời/tồn tại.`
-        : "Đã submit nhưng không thấy toast thành công và dialog không đóng sau 15s. " +
+        : `Đã submit nhưng không thấy toast thành công và dialog không đóng sau ${Math.round(verifyTimeoutMs / 1000)}s (${emails.length} email). ` +
           `Dialog text: "${dialogText.slice(0, 200)}"`,
       data: {
         // ⚠️ Cú click "Gửi lời mời" ĐÃ XẢY RA (ở trên) trước khi vào vòng chờ xác
-        // nhận này → hết 15s không đọc được toast/dialog-đóng KHÔNG chứng minh lời
+        // nhận này → hết trần chờ mà không đọc được toast/dialog-đóng KHÔNG chứng minh lời
         // mời chưa đi, chỉ chứng minh ta KHÔNG BIẾT. Background phải F5 + soi tab
         // Lời mời/Người dùng để phân xử (invite-salvage.ts), tuyệt đối không để
         // backend hiểu là "mời hỏng" → hoàn phí + void kỳ (CA 1 ngày 12/8/2026:

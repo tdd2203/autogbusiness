@@ -19,6 +19,8 @@ import {
   MANAGE_SEATS_BUTTON_POLL_MS,
   MANAGE_SEATS_BUTTON_WAIT_MS,
   MODAL_OPEN_TIMEOUT_MS,
+  SEAT_CARDS_POLL_MS,
+  SEAT_CARDS_WAIT_MS,
   SEAT_CROSSCHECK_POLL_MS,
   SEAT_CROSSCHECK_SETTLE_MS,
 } from "./constants";
@@ -29,6 +31,11 @@ import {
   type SeatAvailability,
 } from "./modal1/parse-seat-availability";
 import { settleSeatCrossCheck } from "./modal1/settle-seat-crosscheck";
+import {
+  describeSeatCards,
+  readSeatCardsFromPage,
+  type SeatCard,
+} from "./read-seat-cards";
 
 const LOG = "[autogpt-seat-check]";
 
@@ -63,10 +70,23 @@ export type SeatCheckResult = {
   /** Mô tả vì sao không đọc được (null nếu đọc được). */
   error: string | null;
   /**
-   * Bộ đếm và dòng tỉ lệ nói hai tổng KHÁC NHAU (đã chờ ổn định mà vẫn lệch).
+   * Số đọc từ đâu: `page_cards` = hàng thẻ in sẵn trên trang Thành viên (UI mới
+   * 26/8/2026, KHÔNG tốn cú bấm nào); `modal` = mở hộp "Quản lý suất" như trước;
+   * null = không đọc được.
+   */
+  source: "page_cards" | "modal" | null;
+  /**
+   * Từng thẻ suất một khi đọc theo `page_cards` — Tiêu chuẩn / Cao cấp riêng
+   * từng dòng. `availability.total` là TỔNG các thẻ (= suất đã mua).
+   */
+  cards: SeatCard[] | null;
+  /**
+   * Số đọc được KHÔNG đủ chắc để MUA theo. Xem `uncertainReason`.
    * KHÔNG được dùng để quyết định MUA: xem `ensure-seats.ts`.
    */
   uncertain: boolean;
+  /** Vì sao `uncertain` — đưa thẳng vào thông báo lỗi cho admin. null nếu chắc. */
+  uncertainReason: string | null;
   /**
    * Modal đã đóng lại hẳn chưa. Modal còn treo sẽ CHẶN mọi thao tác sau (mở
    * dialog mời, bấm "Quản lý số suất" lần nữa để mua) — caller PHẢI coi đây là
@@ -150,6 +170,62 @@ function findSeatModal(): HTMLElement | null {
  * Phải đang ở /admin/members và trang đã render xong (caller lo).
  */
 export async function checkSeatAvailability(): Promise<SeatCheckResult> {
+  // ── ĐƯỜNG NHANH: số suất IN SẴN trên trang (UI mới, user 2026-08-26) ─────
+  // Tab "Người dùng" nay có hàng thẻ "Suất Tiêu chuẩn · Đã gán 60/62" +
+  // "Suất Cao cấp · Đã gán 0/0" — cộng lại là suất đã mua, vế trái là suất đang
+  // phân bổ. Đọc được thì KHÔNG mở hộp "Quản lý suất" nữa: hộp đó là chỗ hỏng
+  // nhiều nhất của luồng mời (không mở sau 15s, bộ đếm lệch, lớp phủ kẹt chặn
+  // luôn bước mời phía sau), mà mọi con số nó cho thì trang đã in sẵn.
+  let cards = readSeatCardsFromPage();
+  if (!cards) {
+    try {
+      cards = await waitFor(
+        () => readSeatCardsFromPage(),
+        SEAT_CARDS_WAIT_MS,
+        SEAT_CARDS_POLL_MS,
+      );
+    } catch {
+      cards = null;
+    }
+  }
+  if (cards) {
+    // Nhiều loại suất cùng khác 0 ⇒ CẤM tự mua: bộ đếm trong hộp "Quản lý suất"
+    // chỉ lái MỘT loại, mua theo hiệu số của tổng gộp là mua sai số — mà tiền đã
+    // trừ thì không đòi lại được. Mời thì vẫn cho đi tiếp (mời không tiêu tiền,
+    // và `execute-invite-inner` còn chặn cuối ở nhãn nút trước khi bấm gửi).
+    const uncertainReason = cards.mixed
+      ? `workspace có ${cards.cards.filter((c) => c.total > 0).length} loại suất ` +
+        `(${describeSeatCards(cards)}) — bộ đếm của hộp "Quản lý suất" chỉ lái một loại ` +
+        `nên KHÔNG tự mua theo tổng gộp`
+      : null;
+    console.log(
+      `${LOG} đọc thẳng trên trang (không mở hộp): ${describeSeatCards(cards)}, ` +
+        `còn trống ${cards.free}` +
+        (uncertainReason ? " — nhiều loại suất, CẤM tự mua" : ""),
+    );
+    return {
+      supported: true,
+      availability: {
+        total: cards.total,
+        assigned: cards.assigned,
+        free: cards.free,
+      },
+      // Không mở hộp thì không có bộ đếm để đối chiếu — mà cũng không cần: thẻ
+      // trên trang nói thẳng cả hai vế.
+      stepperTotal: null,
+      ratioTotal: cards.total,
+      safeTotal: cards.total,
+      modalText: describeSeatCards(cards),
+      error: null,
+      source: "page_cards",
+      cards: cards.cards,
+      uncertain: uncertainReason !== null,
+      uncertainReason,
+      // Chưa mở hộp nào ⇒ không có gì chặn thao tác sau.
+      modalClosed: true,
+    };
+  }
+
   // Hỏi ĐÚNG MỘT LẦN ngay lúc vừa tới trang là quá sớm: hàng nút của tab "Người
   // dùng" là component React render SAU danh sách, mà `membersListReady` của
   // ensure-seats chỉ đòi "trang có >2 nút" nên đã cho đi tiếp từ trước đó.
@@ -198,7 +274,10 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
       safeTotal: null,
       modalText: null,
       error: null,
+      source: null,
+      cards: null,
       uncertain: false,
+      uncertainReason: null,
       modalClosed: true,
     };
   }
@@ -238,7 +317,10 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
       error:
         `Đã bấm 'Quản lý số suất' 2 lần nhưng modal không mở sau ` +
         `${(MODAL_OPEN_TIMEOUT_MS * 2) / 1000}s.`,
+      source: null,
+      cards: null,
       uncertain: false,
+      uncertainReason: null,
       modalClosed: true,
     };
   }
@@ -286,7 +368,10 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
       error:
         "Modal 'Quản lý suất' mở nhưng không đọc được dòng '<đã gán>/<tổng> đã gán'. " +
         "Có thể ChatGPT đổi cách hiển thị.",
+      source: null,
+      cards: null,
       uncertain: false,
+      uncertainReason: null,
       modalClosed: closed,
     };
   }
@@ -340,7 +425,13 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
     safeTotal,
     modalText,
     error: null,
+    source: "modal",
+    cards: null,
     uncertain,
+    uncertainReason: uncertain
+      ? `hộp "Quản lý suất" nói hai tổng khác nhau: bộ đếm ${stepperTotal ?? "?"}, ` +
+        `dòng tỉ lệ ${availability.assigned}/${ratioTotal}`
+      : null,
     modalClosed: closed,
   };
 }

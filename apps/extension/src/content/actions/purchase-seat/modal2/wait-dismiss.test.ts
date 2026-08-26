@@ -14,6 +14,9 @@ import { waitForChargeModalDismiss } from "./wait-dismiss";
 type FakeEl = {
   state: string | null;
   hidden: boolean;
+  /** Chữ đang in trong hộp — dùng để dựng ca ChatGPT in băng-rôn lỗi. */
+  textContent: string;
+  children: FakeEl[];
   getAttribute(name: string): string | null;
   getBoundingClientRect(): { width: number; height: number };
 };
@@ -21,10 +24,12 @@ type FakeEl = {
 /** Ép kiểu cho gọn: hàm chỉ đụng vào contains/getAttribute/getComputedStyle. */
 const asEl = (el: FakeEl): HTMLElement => el as unknown as HTMLElement;
 
-function makeEl(state: string | null = "open"): FakeEl {
+function makeEl(state: string | null = "open", text = ""): FakeEl {
   return {
     state,
     hidden: false,
+    textContent: text,
+    children: [],
     getAttribute(name: string) {
       return name === "data-state" ? this.state : null;
     },
@@ -134,6 +139,54 @@ describe("waitForChargeModalDismiss", () => {
 
     await vi.advanceTimersByTimeAsync(125_000);
     expect(done).toMatchObject({ dismissed: false, overlayCleared: false });
+  });
+
+  // ── Ca ChatGPT in băng-rôn đỏ trong hộp (ảnh user 2026-08-26) ───────────
+  it("ChatGPT báo 'Đã xảy ra sự cố' → thôi chờ ngay, không nằm đủ 120s", async () => {
+    const modal = makeEl();
+    setupDom([modal]);
+
+    let done: Awaited<ReturnType<typeof waitForChargeModalDismiss>> | null = null;
+    void waitForChargeModalDismiss(asEl(modal)).then((r) => {
+      done = r;
+    });
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    modal.textContent =
+      "Xem lại thay đổi người dùngĐã xảy ra sự cố khi cập nhật gói đăng ký của bạn";
+    modal.children = [
+      makeEl("open", "Đã xảy ra sự cố khi cập nhật gói đăng ký của bạn"),
+    ];
+
+    // Nán lại ~3s xem hộp có tự đóng không, rồi mới thôi chờ.
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    expect(done).toMatchObject({
+      dismissed: false,
+      overlayCleared: false,
+      errorBanner: "Đã xảy ra sự cố khi cập nhật gói đăng ký của bạn",
+    });
+    // Chốt cái đắt nhất: KHÔNG đốt hết 120s mới trả lời.
+    expect(done!.waitedMs).toBeLessThan(15_000);
+  });
+
+  it("lỗi chớp một nhịp rồi hộp đóng → vẫn tính là mua xong, không báo lỗi", async () => {
+    const modal = makeEl();
+    const dom = setupDom([modal]);
+
+    let done: Awaited<ReturnType<typeof waitForChargeModalDismiss>> | null = null;
+    void waitForChargeModalDismiss(asEl(modal)).then((r) => {
+      done = r;
+    });
+
+    modal.textContent = "Đã xảy ra sự cố khi cập nhật gói đăng ký của bạn";
+    await vi.advanceTimersByTimeAsync(1_000);
+    modal.textContent = ""; // ChatGPT tự dựng lại rồi đi tiếp
+    await vi.advanceTimersByTimeAsync(1_000);
+    dom.remove(modal);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(done).toMatchObject({ dismissed: true, errorBanner: null });
   });
 
   it("chờ lâu thì gọi onWait để báo tiến độ, không im lặng", async () => {

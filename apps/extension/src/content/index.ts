@@ -107,6 +107,9 @@ async function dispatch(
         msg.reinvite ?? false,
         msg.newSeatCount,
         msg.seatHint,
+        msg.noSeatPurchase ?? false,
+        msg.seatsReady ?? false,
+        msg.seatsPurchasedAlready,
       );
     case "SET_EXTERNAL_INVITES":
       return executeSetExternalInvites(msg.enabled);
@@ -152,7 +155,12 @@ async function dispatch(
     case "HARVEST_LABELS":
       return executeHarvestLabels(msg.taskId, msg.locale);
     case "PURCHASE_SEAT":
-      return executePurchaseSeat(msg.taskId, msg.quantity, msg.skipToPayment === true);
+      return executePurchaseSeat(
+        msg.taskId,
+        msg.quantity,
+        msg.skipToPayment === true,
+        msg.readSeatsOnly === true,
+      );
     case "STRIPE_CLICK_LINK":
     case "STRIPE_SCRAPE_INVOICE_DETAIL":
     case "LINK_CONFIRM_PAYMENT":

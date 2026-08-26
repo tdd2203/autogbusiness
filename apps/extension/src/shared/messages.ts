@@ -58,6 +58,33 @@ export type ExecuteActionRequest =
        * chỗ. Thiếu/không đủ dư → mở hộp đếm tận nơi như cũ.
        */
       seatHint?: { total: number | null; occupied: number; pending?: number };
+      /**
+       * true = lệnh này đang chạy SONG SONG với một lệnh khác (lease CHIA SẺ của
+       * `background/seat-gate.ts`) ⇒ TUYỆT ĐỐI không được mua suất.
+       *
+       * Hai luồng cùng đọc "còn 1 suất trống" rồi cùng đi mua là mua đúp bằng
+       * tiền thật. Nên khi đếm lại tận nơi mà thấy không đủ, content DỪNG NGAY
+       * (trước khi mở dialog mời) với `SEAT_LOCK_REQUIRED`; runner nâng khoá lên
+       * độc quyền rồi gửi lại lệnh này với `noSeatPurchase=false`.
+       */
+      noSeatPurchase?: boolean;
+      /**
+       * Lượt gọi LẠI sau khi background HARD-RELOAD trang admin vì hộp mua suất
+       * để lại lớp phủ (content trả `awaiting_seat_reload` — xem `ensure-seats.ts`).
+       *
+       * true = tổng suất mới ĐÃ CHỐT ở lượt trước bằng bộ đếm của hộp mua ⇒ lượt
+       * này BỎ QUA hẳn bước suất và mời ngay trên trang vừa tải lại sạch. Chạy lại
+       * bước suất ở đây là mở hộp lần nữa (chậm + dễ kẹt) cho một câu trả lời đã
+       * biết.
+       */
+      seatsReady?: boolean;
+      /**
+       * Số suất lượt trước ĐÃ MUA (tiền đã trừ) trong ca bộ đếm KHÔNG chốt được
+       * tổng mới ⇒ lượt này chỉ ĐỌC KIỂM trên trang vừa tải lại: đủ thì mời,
+       * thiếu thì dừng. TUYỆT ĐỐI không mua lần hai — tiền đã trừ rồi, mua nữa là
+       * mua đúp bằng tiền thật.
+       */
+      seatsPurchasedAlready?: number;
     }
   /**
    * Bật/tắt toggle "Cho phép lời mời ngoài tên miền" như một LỆNH RIÊNG.
@@ -146,6 +173,13 @@ export type ExecuteActionRequest =
        * chain. Dùng khi invoice 'Đến hạn' đã tồn tại từ trước (vd task v0.5.1
        * tạo invoice nhưng chưa thanh toán → retry thanh toán). */
       skipToPayment?: boolean;
+      /**
+       * CHỈ đọc số suất in sẵn trên /admin/members rồi trả về — KHÔNG bấm, KHÔNG
+       * mua. Background gửi cờ này SAU khi hard-reload tab để biết cú mua vừa rồi
+       * ChatGPT có ghi nhận hay không (ca ChatGPT in băng-rôn "Đã xảy ra sự cố"
+       * rồi treo hộp — xem `modal2/detect-error-banner.ts`).
+       */
+      readSeatsOnly?: boolean;
     }
   | {
       kind: "STRIPE_CLICK_LINK";
@@ -253,6 +287,20 @@ export type ExecuteActionResponse =
         // mời trong một cú bấm, extension không kiểm soát được số tiền).
         // `data` kèm seat_* để dashboard hiển thị còn/thiếu bao nhiêu.
         | "NOT_ENOUGH_SEATS"
+        // INVITE_MEMBER chạy SONG SONG (lease CHIA SẺ, `noSeatPurchase=true`) mà
+        // đếm tận nơi thấy chỗ trống không còn chắc chắn → DỪNG TRƯỚC khi mở
+        // dialog mời, KHÔNG tự mua (hai luồng cùng mua = mua đúp bằng tiền thật).
+        //
+        // Mã này KHÔNG BAO GIỜ về tới backend: runner nhận ra, nâng khoá suất lên
+        // độc quyền rồi gửi lại lệnh y hệt với `noSeatPurchase=false`. Chạy lại an
+        // toàn vì bước suất là bước ĐẦU TIÊN — chưa bấm gì, chưa bật toggle nào.
+        | "SEAT_LOCK_REQUIRED"
+        // INVITE_MEMBER: đã MUA suất (tiền đã trừ) nhưng background KHÔNG tải lại
+        // được trang admin sạch sẽ để mời tiếp (tab bị đẩy khỏi /admin, hoặc trang
+        // mới chưa tiếp quản kênh). DỪNG TRƯỚC khi mời — chưa email nào được mời,
+        // suất đã mua vẫn nằm trong workspace nên chạy lại lệnh là mời được ngay
+        // mà không mua lần nữa. Xem `awaiting_seat_reload` trong `runner.ts`.
+        | "SEAT_RELOAD_FAILED"
         | "UNKNOWN";
       error_message: string;
       /**

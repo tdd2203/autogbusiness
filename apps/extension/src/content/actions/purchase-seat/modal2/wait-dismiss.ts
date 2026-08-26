@@ -5,8 +5,17 @@ import {
   CHARGE_DISMISS_TIMEOUT_MS,
   OVERLAY_CLEAR_TIMEOUT_MS,
 } from "../constants";
+import { findModalErrorBanner } from "./detect-error-banner";
 
 const LOG = "[autogpt-purchase-seat]";
+
+/**
+ * Thấy băng-rôn lỗi rồi vẫn nán lại chừng này lượt đọc (≈3s) xem hộp có tự đóng
+ * không — ChatGPT có lúc in lỗi ở một khung hình rồi vẫn đi tiếp. Hết ngần ấy mà
+ * lỗi còn nguyên thì thôi chờ: ChatGPT ĐÃ trả lời (dù là trả lời hỏng), nằm thêm
+ * cho đủ 120s chỉ tổ đốt thời gian của task.
+ */
+const ERROR_BANNER_STABLE_POLLS = 6;
 
 export type ChargeDismissResult = {
   /** Hộp "Xem lại giao dịch mua" đã đóng hẳn. */
@@ -15,6 +24,15 @@ export type ChargeDismissResult = {
   overlayCleared: boolean;
   /** Tổng thời gian đã chờ (ms) — ghi audit để biết ChatGPT xử lý bao lâu. */
   waitedMs: number;
+  /**
+   * Câu báo hỏng ChatGPT in TRONG hộp ("Đã xảy ra sự cố khi cập nhật gói đăng ký
+   * của bạn" — ảnh user 2026-08-26). null = không có.
+   *
+   * ⚠️ Có câu này KHÔNG có nghĩa là chưa trừ tiền: ChatGPT vẫn có thể đã ghi nhận
+   * giao dịch rồi mới hỏng ở bước dựng lại màn hình. Caller phải TẢI LẠI TRANG và
+   * đọc lại SỐ SUẤT mới biết được, tuyệt đối không tự bấm mua lại khi chưa đọc.
+   */
+  errorBanner: string | null;
 };
 
 /** Hộp coi như đã đóng khi rời DOM, bị ẩn, hoặc Radix đánh dấu data-state=closed. */
@@ -70,16 +88,36 @@ export async function waitForChargeModalDismiss(
   let closedStreak = 0;
   let lastTick = started;
   let dismissed = false;
+  let errorBanner: string | null = null;
+  let errorStreak = 0;
 
   while (Date.now() < deadline) {
     if (isClosed(modal)) {
       closedStreak += 1;
       if (closedStreak >= CHARGE_DISMISS_STABLE_POLLS) {
         dismissed = true;
+        errorBanner = null; // hộp đóng được = lỗi thoáng qua, không phải ca hỏng
         break;
       }
     } else {
       closedStreak = 0;
+
+      // Hộp còn mở: ChatGPT đang xử lý, hay đã trả lời rằng hỏng?
+      const banner = findModalErrorBanner(modal);
+      if (banner) {
+        errorBanner = banner;
+        errorStreak += 1;
+        if (errorStreak >= ERROR_BANNER_STABLE_POLLS) {
+          console.warn(
+            `${LOG} ChatGPT báo hỏng ngay trong hộp: "${banner}" → thôi chờ, ` +
+              "caller phải tải lại trang đọc lại số suất mới biết đã trừ tiền hay chưa",
+          );
+          break;
+        }
+      } else {
+        errorBanner = null;
+        errorStreak = 0;
+      }
     }
 
     if (onWait && Date.now() - lastTick >= 10_000) {
@@ -90,10 +128,17 @@ export async function waitForChargeModalDismiss(
   }
 
   if (!dismissed) {
-    console.warn(
-      `${LOG} hộp xác nhận CHƯA đóng sau ${Math.round((Date.now() - started) / 1000)}s`,
-    );
-    return { dismissed: false, overlayCleared: false, waitedMs: Date.now() - started };
+    if (!errorBanner) {
+      console.warn(
+        `${LOG} hộp xác nhận CHƯA đóng sau ${Math.round((Date.now() - started) / 1000)}s`,
+      );
+    }
+    return {
+      dismissed: false,
+      overlayCleared: false,
+      waitedMs: Date.now() - started,
+      errorBanner,
+    };
   }
 
   // Hộp đóng rồi → đợi nốt lớp phủ, bằng không thao tác kế bấm vào khoảng không.
@@ -117,5 +162,5 @@ export async function waitForChargeModalDismiss(
     `${LOG} giao dịch xong sau ${Math.round(waitedMs / 1000)}s ` +
       `(hộp đóng, lớp phủ ${overlayCleared ? "đã rời trang" : "CÒN nằm lại"})`,
   );
-  return { dismissed: true, overlayCleared, waitedMs };
+  return { dismissed: true, overlayCleared, waitedMs, errorBanner: null };
 }
