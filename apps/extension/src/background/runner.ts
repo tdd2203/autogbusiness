@@ -19,6 +19,11 @@ import type { ExtensionConfig, QueueItem } from "../shared/types";
 import { runPaymentChain, scrapeInvoiceDetailInTab } from "./payment-chain";
 import { pickSeatFields, withExtraData } from "./invite-seat-fields";
 import {
+  planSeatReloadAfterPurchase,
+  seatReloadFailureResponse,
+  seatReloadRetryRequest,
+} from "./seat-reload-plan";
+import {
   judgeSeatsAfterReload,
   type SeatReadout,
 } from "./seat-reload-verify";
@@ -149,11 +154,21 @@ const MAX_VERIFY_RELOADS = 3;
  * backend auto-cleanup mơ hồ sau khi đã treo lâu.
  */
 const CONTENT_TIMEOUTS: Record<string, number> = {
-  // INVITE_MEMBER (2026-08-22): mời giờ có thể phải MUA SUẤT trước (kiểm tra số
-  // suất → thiếu thì mua bù → đọc lại → mới mời), tốn thêm gần bằng một
-  // PURCHASE_SEAT. Giữ 150s sẽ cắt task GIỮA LÚC thanh toán: tiền đã trừ mà task
-  // báo CONTENT_TIMEOUT. Nâng ngang PURCHASE_SEAT (backend 8' → 450s).
-  INVITE_MEMBER: 450_000,
+  // INVITE_MEMBER (2026-08-22): mời có thể phải MUA SUẤT trước nên tốn thêm gần
+  // bằng một PURCHASE_SEAT — 150s sẽ cắt task GIỮA LÚC thanh toán (tiền đã trừ
+  // mà task báo CONTENT_TIMEOUT), nên từng nâng lên 450s ngang backend (8').
+  //
+  // Hạ về 300s từ 26/8/2026, sau khi lượt gọi content bị CẮT LÀM HAI
+  // (`awaiting_seat_reload`): lượt dài nhất giờ là lượt MUA — navigate + hộp
+  // "Quản lý suất" + chờ giao dịch 120s + lớp phủ 20s ≈ 240s — rồi trả quyền về
+  // background. Không còn lượt nào cần tới 450s.
+  //
+  // Vì sao PHẢI hạ chứ không để dư cho chắc: 450s DÀI HƠN tuổi thọ service
+  // worker MV3, nên trong đúng ca nó sinh ra để bắt (SW bị Chrome khai tử giữa
+  // lượt gọi dài — ba lệnh mời 26/8) đồng hồ này chết theo SW trước khi kịp nổ,
+  // task im lặng tới lúc backend dọn ở 8'. Đặt dưới ngưỡng đó thì phần lớn ca
+  // treo được extension tự báo `CONTENT_TIMEOUT` kèm số suất đã mua.
+  INVITE_MEMBER: 300_000,
   // Backend 180s (3') → extension tự fail ở 150s.
   REMOVE_MEMBER: 150_000,
   CHANGE_ROLE: 150_000,
@@ -2414,20 +2429,15 @@ async function runOnceOnSlot(
   //                                `seatsReady` (bỏ hẳn bước suất) và mời ngay.
   //   `seat_recheck_needed=true`  → bộ đếm không chốt được tổng → gọi lại với
   //                                `seatsPurchasedAlready` để ĐỌC KIỂM, cấm mua lần hai.
-  if (
-    response.ok &&
-    task.type === "INVITE_MEMBER" &&
-    request.kind === "INVITE_MEMBER" &&
-    (response.data as { awaiting_seat_reload?: boolean } | undefined)
-      ?.awaiting_seat_reload === true
-  ) {
-    const seatFieldsFromPurchase = pickSeatFields(
-      (response as { data?: Record<string, unknown> }).data,
-    );
-    const recheckNeeded =
-      (response.data as { seat_recheck_needed?: boolean } | undefined)
-        ?.seat_recheck_needed === true;
-    const purchased = Number(seatFieldsFromPurchase.seat_purchased ?? 0);
+  // Ba mệnh đề dính tiền của khối này (không mua lần hai, giữ số `seat_*`, hỏng
+  // thì dừng trước khi mời) nằm trong `seat-reload-plan.ts` dạng hàm thuần để
+  // test khoá được — ở đây chỉ còn phần điều khiển tab.
+  const seatReloadPlan = planSeatReloadAfterPurchase(task.type, request.kind, response);
+  // `request.kind` đã nằm trong điều kiện của `planSeatReloadAfterPurchase`; lặp
+  // lại ở đây để TypeScript thu hẹp union về đúng nhánh lệnh MỜI.
+  if (seatReloadPlan.kind === "reload" && request.kind === "INVITE_MEMBER") {
+    const { purchased, recheck: recheckNeeded, seatFields: seatFieldsFromPurchase } =
+      seatReloadPlan;
     console.log(
       `[autogpt-runner] INVITE suất: đã mua ${purchased} suất, trang còn lớp phủ → ` +
         `HARD-RELOAD ${CHATGPT_ADMIN_URL} (tab ${tab.id}) rồi ` +
@@ -2445,31 +2455,18 @@ async function runOnceOnSlot(
       await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: false });
       const reloaded = await waitForTabComplete(tab.id, 20_000);
       if (!reloaded?.url?.includes("/admin")) {
-        response = {
-          ok: false,
-          error_code: "SEAT_RELOAD_FAILED",
-          error_message:
-            `ĐÃ MUA ${purchased} suất (tiền đã trừ trên ChatGPT) nhưng khi tải lại ` +
-            `/admin/members thì tab bị redirect khỏi /admin (url=${reloaded?.url ?? "?"}) — ` +
-            "có thể đã logout ChatGPT. CHƯA mời ai; suất đã mua vẫn còn đó, chạy lại lệnh mời.",
-        };
+        response = seatReloadFailureResponse(purchased, {
+          reason: "off_admin",
+          url: reloaded?.url ?? null,
+        });
       } else if (!(await ensureFreshContentAfterNav(tab.id, prevLoadId))) {
         // Trang MỚI chưa chắc đã tiếp quản → KHÔNG gửi lệnh mời vào trang sắp bị
         // đóng băng (đúng chuỗi tai nạn 31/7 đã làm hoàn 340k oan). Dừng ở đây thì
         // chưa ai được mời — suất đã mua vẫn nằm trong workspace, lần chạy sau
         // thấy đủ suất và không mua nữa.
-        response = {
-          ok: false,
-          error_code: "SEAT_RELOAD_FAILED",
-          error_message:
-            `ĐÃ MUA ${purchased} suất (tiền đã trừ trên ChatGPT). Sau khi tải lại trang admin, ` +
-            "extension không xác nhận được trang MỚI đã tiếp quản (trang cũ vẫn giữ kênh liên lạc). " +
-            "Đã dừng TRƯỚC khi mời — chưa email nào được mời. Chạy lại lệnh mời; suất đã mua vẫn còn.",
-        };
+        response = seatReloadFailureResponse(purchased, { reason: "stale_content" });
       } else {
-        const retry: ExecuteActionRequest = recheckNeeded
-          ? { ...request, seatsPurchasedAlready: purchased }
-          : { ...request, seatsReady: true };
+        const retry = seatReloadRetryRequest(request, seatReloadPlan);
         response = await withTimeout(
           sendToContent(tab.id, retry),
           phase1Timeout,

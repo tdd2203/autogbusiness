@@ -527,7 +527,11 @@ export async function ensureSeatsForInvite(
       data: {
         ...baseData,
         seat_shortfall: shortfall,
-        seat_purchased: 0,
+        // `alreadyPurchased`: lượt ĐỌC KIỂM sau khi lượt trước đã trừ tiền. Khai
+        // 0 ở đây là mất dấu khoản đó — `runner.ts` gắp `seat_*` của lượt mua
+        // sang kết quả cuối nhưng số của lượt SAU thắng (`withExtraData`), nên
+        // số 0 này đè mất số thật và dashboard tưởng lệnh không tiêu đồng nào.
+        seat_purchased: opts.alreadyPurchased ?? 0,
         seat_manual_target: target,
       },
     };
@@ -543,7 +547,12 @@ export async function ensureSeatsForInvite(
       error_message:
         `Thiếu ${shortfall} suất (cần ${need}, còn trống ${freeReal}) — vượt hạn mức ` +
         `${MAX_QUANTITY} suất/lần. KHÔNG mua một phần. Chia nhỏ danh sách mời, hoặc mua suất thủ công trước.`,
-      data: { ...baseData, seat_shortfall: shortfall, seat_purchased: 0 },
+      // Như nhánh "số chưa chắc" ở trên: lượt đọc kiểm phải giữ dấu suất đã mua.
+      data: {
+        ...baseData,
+        seat_shortfall: shortfall,
+        seat_purchased: opts.alreadyPurchased ?? 0,
+      },
     };
   }
 
