@@ -73,6 +73,95 @@ export type WalletDailySummary = {
   by_kind: WalletDailyKind[];
 };
 
+/* ── Đối soát ngân hàng (dữ liệu SePay báo về) ─────────────────────────────── */
+
+/**
+ * Kết luận của MỘT giao dịch ngân hàng trong sổ nhận tiền:
+ *   credited     — đã cộng vào ví
+ *   dup_invoice  — trả trùng hoá đơn, tiền cộng thẳng vào ví
+ *   duplicate    — webhook lặp của khoản đã cộng (không cộng lần 2)
+ *   declined     — khớp mã nhưng bị từ chối (lệch tiền, hoá đơn không tồn tại…)
+ *   unmatched    — nội dung CK không chứa mã nạp/hoá đơn nào
+ *   bank_only    — sao kê có, nhưng không thấy vết nào trong ví (webhook chưa từng tới)
+ *   ignored      — tiền ra / IPN test
+ *   unauthorized — request sai chữ ký (kẻ lạ, hoặc secret đang lệch)
+ *   error        — đã cộng ví nhưng bước thực thi lỗi
+ */
+export type SepayResult =
+  | "credited"
+  | "dup_invoice"
+  | "duplicate"
+  | "declined"
+  | "unmatched"
+  | "bank_only"
+  | "ignored"
+  | "unauthorized"
+  | "error";
+
+export type SepayEvent = {
+  id: string;
+  /** webhook = SePay bắn tới; userapi = mình kéo sao kê về. */
+  source: "webhook" | "userapi" | string;
+  provider_txn_id: string | null;
+  amount: number;
+  content: string | null;
+  transfer_type: "in" | "out" | string | null;
+  account_number: string | null;
+  bank: string | null;
+  flow: "topup" | "order" | string | null;
+  code: string | null;
+  result: SepayResult | string;
+  note: string | null;
+  /** Giờ ngân hàng ghi nhận; null thì lấy `received_at`. */
+  bank_time: string | null;
+  received_at: string;
+};
+
+export type SepayDay = {
+  date: string; // YYYY-MM-DD
+  /** Tiền VÀO theo ngân hàng — sự thật bên ngoài để đối chiếu. */
+  received_total: number;
+  /** Phần đã ghi nhận vào ví. */
+  credited_total: number;
+  /** Tiền vào ngân hàng nhưng CHƯA vào ví (sai nội dung, lệch tiền, webhook không tới). */
+  pending_total: number;
+  received_count: number;
+  credited_count: number;
+  pending_count: number;
+  /** Chưa có dòng nào trong sổ ngày này. */
+  empty: boolean;
+  /** Super-admin đang xem toàn bộ tiền vào (false = chỉ phần của mình). */
+  is_admin_view: boolean;
+  /** Server có token API SePay → nút kéo sao kê dùng được. */
+  can_sync: boolean;
+  events: SepayEvent[];
+};
+
+export type SepaySyncResult = {
+  date_from: string;
+  date_to: string;
+  fetched: number;
+  created: number;
+  updated: number;
+  /** Số dòng dựng lại được chủ nhân nhờ dò mã giao dịch trong sổ cái ví. */
+  matched_to_wallet: number;
+  /** Số khoản tiền vào KHÔNG tìm thấy vết trong ví — cần soi tay. */
+  bank_only: number;
+};
+
+/** Nhãn tiếng Việt cho từng kết luận (dùng chung modal đối soát + tooltip). */
+export const SEPAY_RESULT_LABEL: Record<string, string> = {
+  credited: "Đã vào ví",
+  dup_invoice: "Trả trùng hoá đơn → vào ví",
+  duplicate: "Webhook lặp",
+  declined: "Bị từ chối",
+  unmatched: "Không khớp mã nào",
+  bank_only: "Chỉ có ở ngân hàng",
+  ignored: "Bỏ qua",
+  unauthorized: "Sai xác thực",
+  error: "Vào ví nhưng thực thi lỗi",
+};
+
 export type TopupCreated = {
   id: string;
   ref_code: string;

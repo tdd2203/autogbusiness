@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     # Secret HMAC-SHA256 (whsec_...) — SePay ký body, gửi chữ ký ở header
     # X-Sepay-Signature; server verify bằng secret này. Chỉ dùng khi auth method=hmac.
     sepay_webhook_secret: str = Field("", alias="SEPAY_WEBHOOK_SECRET")
+    # Token API TÀI KHOẢN SePay (my.sepay.vn → Công ty → API Token). KHÁC hai key
+    # trên: hai key kia để XÁC THỰC webhook SePay bắn tới, token này để mình CHỦ ĐỘNG
+    # gọi sang SePay kéo sao kê ngân hàng về đối soát. Rỗng = tắt tính năng kéo sao kê
+    # (webhook vẫn chạy bình thường).
+    sepay_user_api_token: str = Field("", alias="SEPAY_USER_API_TOKEN")
+    sepay_user_api_base: str = Field("https://my.sepay.vn", alias="SEPAY_USER_API_BASE")
     # Phí mời mặc định (VND) khi seed payment_settings lần đầu. Sau đó super-admin
     # sửa runtime qua UI (đọc từ DB, không đọc lại env này).
     wallet_invite_fee_default: int = Field(380_000, alias="WALLET_INVITE_FEE_DEFAULT")

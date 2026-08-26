@@ -34,6 +34,7 @@ import type { DayGroup, RefundSource, RefundTrace, TxnChannel, TxnRow, VoidedPai
 import { ApiError } from "../lib/api";
 import { toast } from "../components/Toast";
 import TopupModal from "../components/TopupModal";
+import SepayReconcileModal from "../components/SepayReconcileModal";
 import { useAuth } from "../hooks/useAuth";
 
 /** Cấu hình rút tiền lưu cục bộ theo từng user (STK mặc định + số tiền gợi ý). */
@@ -93,17 +94,30 @@ const PAGE_ROWS = 25;
 
 export default function Wallet() {
   const { data: wallet, isLoading } = useWallet();
-  const { data: txns } = useWalletTransactions();
   const [topupAmount, setTopupAmount] = useState<number | null>(null);
+  const [reconcileOpen, setReconcileOpen] = useState(false);
 
   const today = vnToday();
   /** null = xem mọi ngày. Hai thẻ trên luôn chốt số của `day ?? hôm nay`. */
   const [day, setDay] = useState<string | null>(null);
+  // Ngày đang chọn được xin THẲNG ở server (không lọc trên trang đầu 100 dòng nữa) —
+  // nếu không thì ngày cũ nào nằm ngoài 100 bút toán gần nhất sẽ hiện rỗng như thể
+  // lịch sử đã mất (user 2026-08-26).
+  const {
+    data: txnPages,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useWalletTransactions(day);
+  const txns = useMemo(
+    () => ({ items: (txnPages?.pages ?? []).flatMap((p) => p.items) }),
+    [txnPages],
+  );
   const [channel, setChannel] = useState<TxnChannel | null>(null);
   const [showVoided, setShowVoided] = useState(false);
   const [limit, setLimit] = useState(PAGE_ROWS);
 
-  const rows = useMemo(() => buildTxnRows(txns?.items ?? []), [txns]);
+  const rows = useMemo(() => buildTxnRows(txns.items), [txns]);
   const voidedCount = useMemo(() => countVoidedInvites(rows), [rows]);
   // Lần nguồn gốc tiền: khoản hoàn nào đã bị lượt mời sau tiêu hết thì TRIỆT TIÊU
   // (ẩn cùng công tắc lượt hỏng), lượt mời tiêu nó thì mang chú thích "dùng tiền
@@ -150,6 +164,9 @@ export default function Wallet() {
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <button onClick={() => setReconcileOpen(true)} style={secondaryBtn}>
+            Đối soát ngân hàng
+          </button>
           <button onClick={exportCsv} disabled={groups.length === 0} style={{ ...secondaryBtn, opacity: groups.length === 0 ? 0.5 : 1 }}>
             Xuất báo cáo
           </button>
@@ -216,7 +233,22 @@ export default function Wallet() {
             </button>
           </div>
 
-          <TxnGroups groups={groups} limit={limit} onMore={() => setLimit((n) => n + PAGE_ROWS)} day={day} trace={trace} />
+          <TxnGroups
+            groups={groups}
+            limit={limit}
+            // Còn dòng đã tải mà chưa hiện → chỉ nới ô hiển thị. Hết sạch → xin server
+            // trang CŨ HƠN. Nhờ vậy nút "xem thêm" đi được tới tận bút toán đầu tiên,
+            // không dừng ở trang đầu như trước.
+            onMore={() => {
+              const loaded = groups.reduce((n, g) => n + g.rows.length, 0);
+              if (limit < loaded) setLimit((n) => n + PAGE_ROWS);
+              else if (hasNextPage) { setLimit((n) => n + PAGE_ROWS); void fetchNextPage(); }
+            }}
+            canMore={hasNextPage}
+            loadingMore={isFetchingNextPage}
+            day={day}
+            trace={trace}
+          />
         </div>
 
         <div style={{ flex: "1 1 318px", minWidth: 0, display: "flex", flexDirection: "column", gap: 14 }}>
@@ -233,6 +265,9 @@ export default function Wallet() {
 
       {topupAmount !== null && (
         <TopupModal initialAmount={topupAmount || undefined} onClose={() => setTopupAmount(null)} />
+      )}
+      {reconcileOpen && (
+        <SepayReconcileModal initialDate={day ?? today} onClose={() => setReconcileOpen(false)} />
       )}
     </div>
   );
@@ -360,7 +395,7 @@ function LegendDivider() {
 
 /* ── Lịch sử theo ngày ─────────────────────────────────────────────────────── */
 
-function TxnGroups({ groups, limit, onMore, day, trace }: { groups: DayGroup[]; limit: number; onMore: () => void; day: string | null; trace: RefundTrace }) {
+function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace }: { groups: DayGroup[]; limit: number; onMore: () => void; canMore: boolean; loadingMore: boolean; day: string | null; trace: RefundTrace }) {
   const today = vnToday();
   let budget = limit;
   const visible: DayGroup[] = [];
@@ -400,9 +435,11 @@ function TxnGroups({ groups, limit, onMore, day, trace }: { groups: DayGroup[]; 
           {g.rows.map((r) => <HistoryRow key={rowKey(r)} row={r} trace={trace} />)}
         </div>
       ))}
-      {total > limit && (
+      {(total > limit || canMore) && (
         <div style={{ padding: "14px 20px", display: "flex", justifyContent: "center" }}>
-          <button onClick={onMore} style={secondaryBtn}>Xem thêm giao dịch cũ hơn</button>
+          <button onClick={onMore} disabled={loadingMore} style={{ ...secondaryBtn, opacity: loadingMore ? 0.6 : 1 }}>
+            {loadingMore ? "Đang tải…" : "Xem thêm giao dịch cũ hơn"}
+          </button>
         </div>
       )}
     </>

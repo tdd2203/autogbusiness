@@ -944,6 +944,67 @@ class SepayIdem(Base):
     )
 
 
+class SepayWebhookEvent(Base):
+    """SỔ NHẬN TIỀN THÔ — mỗi giao dịch ngân hàng SePay báo về là 1 dòng, kể cả dòng
+    hệ thống TỪ CHỐI (sai nội dung CK, lệch tiền, sai chữ ký).
+
+    Vì sao cần (user 2026-08-26): `wallet_transactions` chỉ ghi tiền ĐÃ VÀO VÍ. Khoản
+    khách chuyển sai nội dung / lệch số tiền thì webhook trả "declined" rồi biến mất —
+    không có chỗ nào tra được "hôm nay ngân hàng nhận bao nhiêu, vào ví bao nhiêu,
+    lệch ở đâu". `sepay_idem` chỉ giữ mỗi cái key nên cũng không đối soát được.
+
+    Khoá trùng là `key` = idempotency key của SePay (`sepay:<txn id>`) — CÙNG khoá mà
+    `sepay_idem` dùng. Nhờ vậy sao kê kéo từ userapi (source='userapi') và webhook
+    (source='webhook') gộp về đúng một dòng cho mỗi giao dịch ngân hàng: giao dịch
+    nào chỉ có trong sao kê ⇒ webhook chưa từng tới (result='bank_only') — đúng thứ
+    cần soi khi tiền về mà ví không nhảy.
+
+    BẤT BIẾN theo tinh thần sổ cái: chỉ `result`/`note`/`source`/`user_id`… được nâng
+    cấp khi biết thêm (bank_only → credited), không xoá.
+    """
+
+    __tablename__ = "sepay_webhook_events"
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    #: Idempotency key SePay (`sepay:<provider_txn_id>` hoặc `sha:...`) — chống trùng.
+    key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    #: webhook (SePay bắn tới) | userapi (mình chủ động kéo sao kê về)
+    source: Mapped[str] = mapped_column(String(12), nullable=False, default="webhook")
+    provider_txn_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    #: Số tiền VND (dương = tiền vào). Ghi nguyên số ngân hàng báo, KHÔNG làm tròn lại.
+    amount: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    #: Nội dung chuyển khoản thô — chỗ chứa mã NAP…/ORDER…
+    content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: in | out
+    transfer_type: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    account_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    bank: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: sepay_bank_v1 | sepay_bank_v2 | sepay_pg_ipn | userapi
+    payload_format: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    #: Luồng khớp được: topup | order | null (không mã nào khớp)
+    flow: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    #: Mã tách khỏi nội dung CK (topup_code của user / ref_code hoá đơn).
+    code: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    #: User được ghi nhận tiền (NULL = chưa khớp ai → chỉ super-admin thấy dòng này).
+    user_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    #: credited | duplicate | dup_invoice | declined | unmatched | ignored |
+    #: unauthorized | bank_only | error
+    result: Mapped[str] = mapped_column(String(16), nullable=False, default="unmatched", index=True)
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    #: Giờ ngân hàng ghi nhận (SePay `transactionDate`). Đối soát theo NGÀY dùng cột
+    #: này khi có — `received_at` là giờ mình nhận webhook, lệch khi SePay retry muộn.
+    bank_time: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class PaymentSettings(Base):
     """Cấu hình thanh toán (singleton id=1). Phí mời + thông tin ngân hàng nhận
     (in lên QR). Secret webhook SePay KHÔNG ở đây — đọc từ env."""

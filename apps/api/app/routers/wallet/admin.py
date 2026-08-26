@@ -1,6 +1,7 @@
 """Ví — endpoint quản trị (super-admin only): cấu hình phí/bank, cờ beta per-user,
 xem ví mọi user, nạp demo (adjust), duyệt yêu cầu rút."""
 
+from datetime import date as date_type
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -27,7 +28,7 @@ from app.schemas import (
     WithdrawalOut,
     WithdrawalRejectIn,
 )
-from app.services import wallet_service
+from app.services import sepay_ledger, wallet_service
 
 from ._shared import get_payment_settings, router
 
@@ -220,18 +221,26 @@ def user_transactions(
     db: Session = Depends(get_session),
     _: User = Depends(require_super_admin),
     limit: int = Query(100, ge=1, le=500),
+    before_seq: int | None = Query(None, description="Con trỏ: chỉ lấy bút toán cũ hơn seq này."),
+    date: date_type | None = Query(None, description="Chỉ lấy bút toán trong NGÀY này (giờ VN)."),
 ) -> WalletTxnPage:
+    """Lịch sử ví của MỘT user (super-admin). Cùng luật phân trang với
+    `GET /wallet/transactions` — xem giải thích ở routers/wallet/balance.py."""
+    q = select(WalletTransaction).where(WalletTransaction.user_id == user_id)
+    if date is not None:
+        start, end = sepay_ledger.day_bounds(date)
+        q = q.where(WalletTransaction.created_at >= start, WalletTransaction.created_at < end)
+    if before_seq is not None:
+        q = q.where(WalletTransaction.seq < before_seq)
     rows = (
-        db.execute(
-            select(WalletTransaction)
-            .where(WalletTransaction.user_id == user_id)
-            .order_by(WalletTransaction.seq.desc())
-            .limit(limit)
-        )
-        .scalars()
-        .all()
+        db.execute(q.order_by(WalletTransaction.seq.desc()).limit(limit + 1)).scalars().all()
     )
-    return WalletTxnPage(items=[WalletTxnOut.model_validate(r) for r in rows], next_cursor=None)
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    return WalletTxnPage(
+        items=[WalletTxnOut.model_validate(r) for r in rows],
+        next_cursor=str(rows[-1].seq) if has_more and rows else None,
+    )
 
 
 @router.post("/admin/users/{user_id}/adjust", response_model=WalletTxnOut)

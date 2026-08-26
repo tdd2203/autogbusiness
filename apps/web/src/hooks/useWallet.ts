@@ -5,7 +5,12 @@
  * Mọi mutation invalidate ["wallet"] để UI đọc bản sống (không reload tay) —
  * theo memory `mutation-must-refresh-ui`.
  */
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useAuth } from "./useAuth";
 import type {
@@ -13,6 +18,8 @@ import type {
   FinancialReport,
   PaymentOrder,
   PaymentSettings,
+  SepayDay,
+  SepaySyncResult,
   Topup,
   TopupCreated,
   Wallet,
@@ -36,15 +43,60 @@ export function useWallet() {
   });
 }
 
-export function useWalletTransactions() {
+/** Số bút toán xin mỗi lượt gọi API (mới→cũ). */
+const TXN_PAGE = 100;
+
+/**
+ * Lịch sử ví, phân trang bằng CON TRỎ (`before_seq`) — không còn cắt cứng 100 dòng.
+ *
+ * `day` (YYYY-MM-DD) khác null ⇒ xin đúng ngày đó ở server. Trước đây FE xin cứng 100
+ * bút toán gần nhất rồi lọc ngày TẠI CHỖ, nên mọi ngày nằm ngoài 100 dòng ấy hiện ra
+ * rỗng — trông như mất sạch lịch sử cũ (user 2026-08-26).
+ *
+ * `fetchNextPage` nối thêm trang cũ hơn; `hasNextPage` = server còn dòng cũ hơn nữa.
+ */
+export function useWalletTransactions(day: string | null = null) {
   const { user } = useAuth();
   const enabled = !!user?.wallet_beta || !!user?.is_super_admin;
-  return useQuery({
-    queryKey: ["wallet", "transactions"],
-    queryFn: () =>
-      api<{ items: WalletTxn[] }>("/api/v1/wallet/transactions?limit=100"),
+  return useInfiniteQuery({
+    queryKey: ["wallet", "transactions", day],
+    initialPageParam: null as string | null,
+    queryFn: ({ pageParam }) => {
+      const qs = new URLSearchParams({ limit: String(TXN_PAGE) });
+      if (day) qs.set("date", day);
+      if (pageParam) qs.set("before_seq", pageParam);
+      return api<{ items: WalletTxn[]; next_cursor: string | null }>(
+        `/api/v1/wallet/transactions?${qs}`,
+      );
+    },
+    getNextPageParam: (last) => last.next_cursor,
     enabled,
     refetchOnWindowFocus: true,
+  });
+}
+
+/** Đối soát ngân hàng: dữ liệu SePay báo về trong NGÀY (giờ VN). */
+export function useSepayDay(date: string, enabled = true) {
+  const { user } = useAuth();
+  const allowed = !!user?.wallet_beta || !!user?.is_super_admin;
+  return useQuery({
+    queryKey: ["wallet", "sepay-events", date],
+    queryFn: () => api<SepayDay>(`/api/v1/wallet/sepay-events?date=${date}`),
+    enabled: enabled && allowed && !!date,
+    refetchOnWindowFocus: true,
+  });
+}
+
+/** Kéo sao kê ngân hàng từ API SePay về sổ đối soát (super-admin). */
+export function useSepaySync() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { date_from: string; date_to: string }) =>
+      api<SepaySyncResult>("/api/v1/wallet/admin/sepay/sync", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["wallet", "sepay-events"] }),
   });
 }
 

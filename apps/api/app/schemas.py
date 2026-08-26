@@ -1261,6 +1261,78 @@ class WalletDailySummaryOut(BaseModel):
     by_kind: list[WalletDailyKindOut] = Field(default_factory=list)
 
 
+class SepayEventOut(BaseModel):
+    """1 giao dịch ngân hàng SePay báo về (sổ `sepay_webhook_events`)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    #: webhook | userapi — mình biết giao dịch này qua đường nào.
+    source: str
+    provider_txn_id: str | None = None
+    amount: int
+    content: str | None = None
+    #: in = tiền vào, out = tiền ra.
+    transfer_type: str | None = None
+    account_number: str | None = None
+    bank: str | None = None
+    flow: str | None = None
+    code: str | None = None
+    #: credited | dup_invoice | duplicate | declined | unmatched | ignored |
+    #: unauthorized | bank_only | error — xem models.SepayWebhookEvent.
+    result: str
+    note: str | None = None
+    #: Giờ ngân hàng ghi nhận (None ⇒ dùng `received_at`).
+    bank_time: datetime | None = None
+    received_at: datetime
+
+
+class SepayDayOut(BaseModel):
+    """Đối soát 1 NGÀY (giờ VN): ngân hàng nhận bao nhiêu, vào ví bao nhiêu, lệch đâu.
+
+    `received_total` là TIỀN VÀO theo ngân hàng — nguồn sự thật bên ngoài. `credited_total`
+    là phần đã ghi nhận vào ví. Hai số bằng nhau ⇒ khớp sổ; chênh thì `pending_total` +
+    danh sách dòng chưa khớp chỉ đúng chỗ kẹt.
+    """
+
+    date: str
+    received_total: int
+    credited_total: int
+    #: Tiền vào ngân hàng NHƯNG chưa vào ví (sai nội dung CK, lệch tiền, webhook không tới).
+    pending_total: int
+    received_count: int
+    credited_count: int
+    pending_count: int
+    #: True ⇔ chưa từng có dòng nào trong sổ (bảng mới, hoặc ngày trước khi bật ghi sổ).
+    empty: bool = False
+    #: True ⇔ super-admin đang xem TOÀN BỘ tiền vào; False = chỉ phần của chính user.
+    is_admin_view: bool = False
+    #: True ⇔ server có SEPAY_USER_API_TOKEN → nút kéo sao kê dùng được.
+    can_sync: bool = False
+    events: list[SepayEventOut] = Field(default_factory=list)
+
+
+class SepaySyncIn(BaseModel):
+    """Khoảng ngày cần kéo sao kê về (giờ VN, bao gồm cả hai đầu)."""
+
+    date_from: str = Field(..., description="YYYY-MM-DD")
+    date_to: str = Field(..., description="YYYY-MM-DD")
+
+
+class SepaySyncOut(BaseModel):
+    """Kết quả kéo sao kê: lấy về bao nhiêu dòng, mới bao nhiêu, khớp lại được bao nhiêu."""
+
+    date_from: str
+    date_to: str
+    fetched: int
+    created: int
+    updated: int
+    #: Số dòng dựng lại được người nhận nhờ dò `provider_txn_id` trong sổ cái ví.
+    matched_to_wallet: int
+    #: Số dòng tiền vào ngân hàng mà KHÔNG tìm thấy vết trong ví — cần soi tay.
+    bank_only: int
+
+
 class TopupCreateIn(BaseModel):
     amount_vnd: int = Field(..., gt=0, description="Số tiền nạp (VND), > 0")
 

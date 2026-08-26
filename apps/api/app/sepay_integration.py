@@ -29,7 +29,7 @@ from app.sepay.payload import (
     extract_prefixed_code,
     normalize_sepay_payload,
 )
-from app.services import wallet_service
+from app.services import sepay_ledger, wallet_service
 
 logger = logging.getLogger("sepay_integration")
 
@@ -112,7 +112,48 @@ def _verify_auth(settings_row: PaymentSettings, headers: dict, raw_body: bytes) 
     return auth == f"Apikey {env.sepay_apikey}"
 
 
-def handle_topup(db: Session, code: str, event: SepayEvent, tolerance: int) -> bool:
+def _bank_time_of(body: dict) -> datetime | None:
+    """Giờ NGÂN HÀNG ghi nhận giao dịch, đọc từ payload thô (`transactionDate` của
+    SePay, dạng "YYYY-MM-DD HH:MM:SS" theo giờ VN — SePay không gửi offset).
+
+    Dùng làm mốc "tiền về ngày nào". `received_at` không thay được: SePay retry muộn
+    (hoặc mình kéo sao kê ngày cũ về hôm nay) thì giao dịch sẽ rơi nhầm sang ngày mình
+    nhận. Không đọc được → None, bên đọc tự lùi về `received_at`.
+    """
+    for field in ("transactionDate", "transaction_date", "transactionDateTime"):
+        value = body.get(field)
+        if not value:
+            continue
+        text_value = str(value).strip().replace("T", " ")[:19]
+        try:
+            naive = datetime.strptime(text_value, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            continue
+        return naive.replace(tzinfo=sepay_ledger.VN_TZ)
+    return None
+
+
+#: Trần số dòng `unauthorized` được ghi trong 1 giờ (chống bơm rác qua endpoint public).
+_UNAUTHORIZED_PER_HOUR = 50
+
+
+def _unauthorized_quota_left(db: Session) -> bool:
+    from datetime import timedelta
+
+    from app.models import SepayWebhookEvent
+
+    since = datetime.now(timezone.utc) - timedelta(hours=1)
+    n = db.execute(
+        select(func.count())
+        .select_from(SepayWebhookEvent)
+        .where(SepayWebhookEvent.result == "unauthorized", SepayWebhookEvent.received_at >= since)
+    ).scalar_one()
+    return int(n) < _UNAUTHORIZED_PER_HOUR
+
+
+def handle_topup(
+    db: Session, code: str, event: SepayEvent, tolerance: int, outcome: dict | None = None
+) -> bool:
     """Luồng NẠP (topup): khớp theo MÃ NẠP CỐ ĐỊNH của user (users.topup_code) → cộng
     ĐÚNG số tiền nhận được cho user (user 2026-07-14). QR nạp cố định theo user, không
     đổi → user chuyển bao nhiêu cộng bấy nhiêu, KHÔNG phụ thuộc "lệnh nạp" nào.
@@ -154,6 +195,8 @@ def handle_topup(db: Session, code: str, event: SepayEvent, tolerance: int) -> b
             order.transaction_id = txn.id
             db.add(order)
         db.flush()
+        if outcome is not None:
+            outcome.update(result="credited", user_id=user.id, note="nạp ví theo mã cố định")
         logger.info(
             "[sepay] topup(user-code) credited user=%s amount=%s order=%s",
             user.id, paid, order.id if order else "-",
@@ -166,16 +209,25 @@ def handle_topup(db: Session, code: str, event: SepayEvent, tolerance: int) -> b
     ).scalar_one_or_none()
     if order is None:
         logger.info("[sepay] topup: no user/order for code=%s", code)
+        if outcome is not None:
+            outcome.update(note=f"mã nạp {code} không thuộc tài khoản nào")
         return False
     if abs(paid - int(order.amount_vnd)) > tolerance:
         logger.warning("[sepay] topup(legacy): amount mismatch order=%s exp=%s got=%s",
                        order.id, order.amount_vnd, event.amount)
+        if outcome is not None:
+            outcome.update(
+                user_id=order.user_id,
+                note=f"lệch tiền: lệnh nạp {order.amount_vnd:,} ≠ nhận {paid:,}",
+            )
         return False
     updated = db.execute(
         text("UPDATE topup_orders SET status='paid' WHERE id = :id AND status = 'pending'"),
         {"id": str(order.id)},
     ).rowcount
     if not updated:
+        if outcome is not None:
+            outcome.update(result="duplicate", user_id=order.user_id, note="lệnh nạp đã paid trước đó")
         return True  # đã paid trước đó → idempotent, không cộng lần 2
     txn = wallet_service.credit_topup(
         db, order.user_id, paid, ref_id=str(order.id), provider_txn_id=event.provider_txn_id
@@ -186,6 +238,8 @@ def handle_topup(db: Session, code: str, event: SepayEvent, tolerance: int) -> b
     order.transaction_id = txn.id
     db.add(order)
     db.flush()
+    if outcome is not None:
+        outcome.update(result="credited", user_id=order.user_id, note="nạp ví theo mã lệnh nạp cũ")
     logger.info("[sepay] topup(legacy) credited order=%s amount=%s user=%s", order.id, paid, order.user_id)
     return True
 
@@ -307,7 +361,9 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
         raise ValueError(f"unknown order kind {order.kind!r}")
 
 
-def handle_order(db: Session, ref_code: str, event: SepayEvent, tolerance: int) -> bool:
+def handle_order(
+    db: Session, ref_code: str, event: SepayEvent, tolerance: int, outcome: dict | None = None
+) -> bool:
     """Luồng ORDER (hoá đơn mời/gia hạn): khớp PaymentOrder theo ref_code → nạp ví →
     thực thi intent. Trả True nếu đã xử lý (hoặc đã paid trước đó), False nếu KHÔNG
     khớp/lệch tiền (→ "nạp thất bại, không làm gì" — order giữ pending).
@@ -323,15 +379,25 @@ def handle_order(db: Session, ref_code: str, event: SepayEvent, tolerance: int) 
     ).scalar_one_or_none()
     if order is None:
         logger.info("[sepay] order: no order for code=%s", ref_code)
+        if outcome is not None:
+            outcome.update(note=f"mã hoá đơn {ref_code} không tồn tại")
         return False
     if order.user_id is None:
         logger.warning("[sepay] order=%s mồ côi (user_id NULL) → bỏ qua", order.id)
+        if outcome is not None:
+            outcome.update(note="hoá đơn mồ côi (tài khoản đã xoá)")
         return False
+    if outcome is not None:
+        outcome["user_id"] = order.user_id
     if abs(int(event.amount) - int(order.amount_vnd)) > tolerance:
         logger.warning(
             "[sepay] order amount mismatch order=%s exp=%s got=%s → nạp thất bại, không xử lý",
             order.id, order.amount_vnd, event.amount,
         )
+        if outcome is not None:
+            outcome["note"] = (
+                f"lệch tiền: hoá đơn {int(order.amount_vnd):,} ≠ nhận {int(event.amount):,}"
+            )
         return False  # KHÔNG credit, KHÔNG thực thi, order giữ pending
 
     paid = int(event.amount)
@@ -350,6 +416,8 @@ def handle_order(db: Session, ref_code: str, event: SepayEvent, tolerance: int) 
             and event.provider_txn_id == order.provider_txn_id
         )
         if same_txn:
+            if outcome is not None:
+                outcome.update(result="duplicate", note="webhook lặp của giao dịch đã cộng")
             return True  # cùng 1 giao dịch NH → đã credit rồi, không cộng lần 2
         wallet_service.credit_duplicate_invoice(
             db,
@@ -364,6 +432,8 @@ def handle_order(db: Session, ref_code: str, event: SepayEvent, tolerance: int) 
             "[sepay] order=%s đã paid — THANH TOÁN TRÙNG HOÁ ĐƠN, cộng ví %s (txn=%s)",
             order.id, paid, event.provider_txn_id,
         )
+        if outcome is not None:
+            outcome.update(result="dup_invoice", note="thanh toán trùng hoá đơn → cộng thẳng vào ví")
         return True
 
     # HẾT HẠN (>5 phút hoặc đã bị đánh dấu expired): mã QR không còn thực thi (user
@@ -387,6 +457,8 @@ def handle_order(db: Session, ref_code: str, event: SepayEvent, tolerance: int) 
         db.add(order)
         db.flush()
         logger.info("[sepay] order=%s HẾT HẠN → credit ví %s (không thực thi mã cũ)", order.id, paid)
+        if outcome is not None:
+            outcome.update(result="credited", note="hoá đơn hết hạn → tiền vào ví, không thực thi")
         return True
 
     # Chốt pending→paid nguyên tử (chống 2 webhook cùng lúc credit 2 lần).
@@ -395,6 +467,8 @@ def handle_order(db: Session, ref_code: str, event: SepayEvent, tolerance: int) 
         {"id": str(order.id)},
     ).rowcount
     if not updated:
+        if outcome is not None:
+            outcome.update(result="duplicate", note="hoá đơn vừa được webhook khác chốt")
         return True  # đã paid song song → idempotent
     db.refresh(order)
 
@@ -410,9 +484,13 @@ def handle_order(db: Session, ref_code: str, event: SepayEvent, tolerance: int) 
     # Bước 2 — thực thi mời/gia hạn + trừ phí. Lỗi → giữ tiền trong ví.
     try:
         _fulfill_order(db, order)
+        if outcome is not None:
+            outcome.update(result="credited", note=f"hoá đơn {order.kind} — đã nạp ví và thực thi")
     except Exception as e:  # noqa: BLE001 — webhook luôn trả 200; ghi lỗi vào order
         logger.exception("[sepay] order=%s đã nạp nhưng thực thi lỗi", order.id)
         order.fulfillment_error = str(e)[:500]
+        if outcome is not None:
+            outcome.update(result="error", note=f"đã nạp ví nhưng thực thi lỗi: {e}")
     db.add(order)
     db.flush()
     logger.info("[sepay] order handled order=%s kind=%s amount=%s user=%s",
@@ -425,26 +503,51 @@ def process_multiflow_webhook(db: Session, headers: dict, raw_body: bytes, body:
 
     Xác thực theo `settings_row.sepay_auth_method` (none/apikey/hmac). HMAC cần
     `raw_body` (bytes gốc) để tính chữ ký khớp byte-for-byte.
-    """
-    if not _verify_auth(settings_row, headers, raw_body):
-        logger.warning("[sepay] auth fail (method=%s)", settings_row.sepay_auth_method)
-        return {"success": False, "error": "Unauthorized"}
 
+    MỌI nhánh thoát đều ghi 1 dòng vào `sepay_webhook_events` (sổ nhận tiền thô) —
+    kể cả nhánh TỪ CHỐI. Đó là chỗ duy nhất trả lời được "tiền về ngân hàng mà ví
+    không nhảy thì kẹt ở đâu"; `wallet_transactions` chỉ có tiền đã vào ví.
+    """
     parsed = normalize_sepay_payload(body)
     amount = parsed.get("amount", 0.0)
     content = parsed.get("content", "")
+    idem = build_idempotency_key(body, parsed)
+    bank_time = _bank_time_of(body)
+
+    def log(result: str, note: str | None = None, **kw) -> None:
+        """Ghi sổ nhận tiền. Lỗi ghi sổ KHÔNG được làm hỏng việc cộng tiền."""
+        try:
+            sepay_ledger.record_event(
+                db, key=idem or "", source="webhook", parsed=parsed, raw=body,
+                result=result, note=note, bank_time=bank_time, **kw,
+            )
+        except Exception:  # noqa: BLE001 — sổ đối soát là phụ, tiền là chính
+            logger.exception("[sepay] ghi sổ nhận tiền lỗi (bỏ qua)")
+
+    if not _verify_auth(settings_row, headers, raw_body):
+        logger.warning("[sepay] auth fail (method=%s)", settings_row.sepay_auth_method)
+        # Endpoint webhook là public: ghi mọi request sai chữ ký thì ai cũng bơm rác
+        # vào bảng được. Vẫn ghi (sai secret = tiền về mà ví đứng im, phải thấy được)
+        # nhưng chặn trần theo giờ.
+        if _unauthorized_quota_left(db):
+            log("unauthorized", f"sai xác thực ({settings_row.sepay_auth_method})")
+        return {"success": False, "error": "Unauthorized"}
+
     if parsed.get("is_test"):
         return {"success": True, "note": "test ipn accepted"}
     if not parsed.get("is_incoming", True):
+        log("ignored", "giao dịch TIỀN RA, không liên quan ví")
         return {"success": True, "note": "ignored - outgoing transfer"}
     if amount <= 0:
+        log("ignored", "số tiền ≤ 0")
         return {"success": True, "note": "ignored - non-positive amount"}
     if "order_invoice_number" in body and body.get("status") not in (None, "SUCCESS"):
+        log("ignored", f"cổng thanh toán báo status={body.get('status')}")
         return {"success": True, "note": f"ignored pg status={body.get('status')}"}
 
     store = PgIdemStore(db)
-    idem = build_idempotency_key(body, parsed)
     if idem and store.seen(idem):
+        log("duplicate", "webhook lặp — giao dịch này đã xử lý trước đó")
         return {"success": True, "note": "duplicate"}
 
     tolerance = int(settings_row.amount_tolerance_vnd or 1000)
@@ -470,17 +573,28 @@ def process_multiflow_webhook(db: Session, headers: dict, raw_body: bytes, body:
             continue
         event.code = code
         key = flow.get("key")
+        # Handler điền kết luận vào đây (ai nhận tiền, cộng hay từ chối vì sao).
+        outcome: dict = {"result": "declined", "user_id": None, "note": None}
         if key == "topup":
-            ok = handle_topup(db, code, event, tolerance)
+            ok = handle_topup(db, code, event, tolerance, outcome)
         elif key == "order":
-            ok = handle_order(db, code, event, tolerance)
+            ok = handle_order(db, code, event, tolerance, outcome)
         else:
             logger.warning("[sepay] flow=%s prefix=%s matched code=%s nhưng CHƯA có consumer", key, prefix, code)
+            log("declined", f"luồng '{key}' nhận diện được nhưng chưa có xử lý", flow=key, code=code)
             return {"success": True, "note": f"flow '{key}' recognized but not handled"}
+        log(
+            outcome.get("result") or ("credited" if ok else "declined"),
+            outcome.get("note"),
+            flow=key,
+            code=code,
+            user_id=outcome.get("user_id"),
+        )
         if not ok:
             return {"success": True, "note": "handler declined"}
         if idem:
             store.mark(idem)
         return {"success": True}
 
+    log("unmatched", "nội dung CK không chứa mã nạp/mã hoá đơn nào")
     return {"success": True, "note": "no recognized code in content"}
