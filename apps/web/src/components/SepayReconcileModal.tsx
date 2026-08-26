@@ -140,15 +140,43 @@ export default function SepayReconcileModal({
         <div style={{ padding: "0 20px 20px" }}>
           {isLoading && <div style={emptyBox}>Đang tải…</div>}
 
-          {!isLoading && events.length === 0 && (
+          {!isLoading && events.length === 0 && data && (
             <div style={emptyBox}>
-              Không có giao dịch nào ngày {vnDateLabel(date)}.
-              {data?.can_sync && (
-                <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.5 }}>
-                  Sổ đối soát chỉ ghi từ 26/08/2026. Ngày trước đó bấm{" "}
-                  <b>Kéo sao kê SePay</b> để lấy lại từ ngân hàng.
-                </div>
-              )}
+              <div style={{ fontSize: 13.5, color: "var(--ink-2)" }}>
+                Không có giao dịch nào ngày {vnDateLabel(date)}.
+              </div>
+              {/* Trống vì SAO mới là thứ cần nói. Ba lý do khác hẳn nhau: ngày đó
+                  thật sự không ai chuyển tiền / ngày đó nằm TRƯỚC lúc sổ bắt đầu ghi /
+                  server chưa có token nên không kéo sao kê về được. Chỉ hiện một câu
+                  "không có giao dịch nào" thì trông y như hỏng (user 2026-08-27). */}
+              <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.55, maxWidth: 460, marginInline: "auto" }}>
+                {data.ledger_first_date === null ? (
+                  <>
+                    Sổ đối soát vừa bắt đầu ghi và <b>chưa nhận giao dịch nào</b> — nó chỉ ghi
+                    từ lúc bản cập nhật này chạy trở đi. Giao dịch trước đó phải kéo sao kê từ
+                    SePay về.
+                  </>
+                ) : date < data.ledger_first_date ? (
+                  <>
+                    Sổ mới ghi từ <b>{vnDateLabel(data.ledger_first_date)}</b>, nên ngày này trống
+                    là đúng — không phải mất dữ liệu.
+                  </>
+                ) : (
+                  <>Ngày này ngân hàng không nhận khoản nào.</>
+                )}
+                {data.sync_needs_token && (
+                  <div style={{ marginTop: 6, color: "var(--warning)" }}>
+                    Muốn lấy lại ngày cũ: đặt <code>SEPAY_USER_API_TOKEN</code> trong{" "}
+                    <code>.env</code> trên server rồi khởi động lại API — nút{" "}
+                    <b>Kéo sao kê SePay</b> sẽ hiện ra ở đây.
+                  </div>
+                )}
+                {data.can_sync && (
+                  <div style={{ marginTop: 6 }}>
+                    Bấm <b>Kéo sao kê SePay</b> ở trên để lấy lại từ ngân hàng.
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

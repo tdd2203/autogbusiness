@@ -19,7 +19,7 @@ from datetime import date as date_type
 from datetime import datetime, time, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import SepayWebhookEvent
@@ -106,6 +106,25 @@ def record_event(
     db.add(row)
     db.flush()
     return row
+
+
+def first_recorded_date(db: Session, *, user_id: UUID | None = None) -> str | None:
+    """Ngày SỚM NHẤT sổ có dữ liệu (YYYY-MM-DD, giờ VN), None = sổ hoàn toàn trống.
+
+    Để màn hình nói được "sổ mới ghi từ ngày X" — trước ngày đó trống là ĐÚNG chứ
+    không phải mất dữ liệu. Sổ này chỉ bắt đầu ghi từ khi bản 26/8/2026 chạy; muốn có
+    ngày cũ hơn thì phải kéo sao kê từ API SePay về.
+    """
+    stamp = func.coalesce(SepayWebhookEvent.bank_time, SepayWebhookEvent.received_at)
+    q = select(func.min(stamp))
+    if user_id is not None:
+        q = q.where(SepayWebhookEvent.user_id == user_id)
+    earliest = db.execute(q).scalar_one_or_none()
+    if earliest is None:
+        return None
+    if earliest.tzinfo is None:
+        earliest = earliest.replace(tzinfo=timezone.utc)
+    return earliest.astimezone(VN_TZ).date().isoformat()
 
 
 def events_for_day(

@@ -160,3 +160,40 @@ def test_bank_time_decides_the_day(client: TestClient, auth_header: dict) -> Non
     past = _events(client, sub["token"], yesterday)
     assert past["received_total"] == 90_000
     assert past["events"][0]["result"] == "credited"
+
+
+def test_empty_ledger_says_why(client: TestClient, auth_header: dict) -> None:
+    """Sổ trống phải nói được VÌ SAO trống, không im lặng như thể hỏng.
+
+    User mở "Đối soát ngân hàng" ngay sau khi deploy, thấy trắng trơn và tưởng tính
+    năng chết (2026-08-27). Thật ra sổ chỉ ghi từ lúc bản đó chạy — cần `ledger_first_date`
+    (sổ bắt đầu từ ngày nào) và `sync_needs_token` (thiếu token nên chưa kéo được ngày
+    cũ) để màn hình phân biệt "không ai chuyển tiền" với "chưa có dữ liệu ở đây".
+    """
+    admin_token = auth_header["Authorization"].split(" ", 1)[1]
+    day = _events(client, admin_token)
+    assert day["events"] == []
+    assert day["empty"] is True
+    assert day["ledger_first_date"] is None  # sổ chưa ghi gì
+    # Test chạy không có SEPAY_USER_API_TOKEN → phải chỉ ra là thiếu token.
+    assert day["can_sync"] is False
+    assert day["sync_needs_token"] is True
+
+
+def test_ledger_first_date_tracks_earliest_row(client: TestClient, auth_header: dict) -> None:
+    """Có dữ liệu rồi thì `ledger_first_date` = ngày sớm nhất sổ có, theo giờ VN."""
+    set_settings(client, auth_header)
+    sub = make_beta_sub(client, auth_header, username="soat7")
+    topup = client.post(
+        "/api/v1/wallet/topups", json={"amount_vnd": 80_000}, headers=bearer(sub["token"])
+    ).json()
+
+    yesterday = (datetime.now(VN_TZ).date() - timedelta(days=1)).isoformat()
+    body = _webhook_body(topup["note"], 80_000, "SP-SOAT-7")
+    body["transactionDate"] = f"{yesterday} 08:00:00"
+    client.post("/webhook/sepay", json=body)
+
+    # Hỏi ngày HÔM NAY (trống) nhưng vẫn biết sổ bắt đầu từ hôm qua.
+    day = _events(client, sub["token"])
+    assert day["events"] == []
+    assert day["ledger_first_date"] == yesterday

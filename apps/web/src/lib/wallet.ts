@@ -134,6 +134,10 @@ export type SepayDay = {
   is_admin_view: boolean;
   /** Server có token API SePay → nút kéo sao kê dùng được. */
   can_sync: boolean;
+  /** Super-admin nhưng server chưa có token → ngày cũ chưa kéo về được. */
+  sync_needs_token: boolean;
+  /** Ngày sớm nhất sổ có dữ liệu; null = sổ hoàn toàn trống. */
+  ledger_first_date: string | null;
   events: SepayEvent[];
 };
 

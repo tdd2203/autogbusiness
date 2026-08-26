@@ -1309,6 +1309,13 @@ class SepayDayOut(BaseModel):
     is_admin_view: bool = False
     #: True ⇔ server có SEPAY_USER_API_TOKEN → nút kéo sao kê dùng được.
     can_sync: bool = False
+    #: True ⇔ super-admin nhưng server CHƯA có token → ngày cũ không kéo về được.
+    #: Tách khỏi `can_sync` để màn hình nói đúng lý do thay vì im lặng bảo "không có
+    #: giao dịch nào" (user 2026-08-27: mở ra thấy trống, tưởng hỏng).
+    sync_needs_token: bool = False
+    #: Ngày SỚM NHẤT sổ có dữ liệu (YYYY-MM-DD), None = sổ hoàn toàn trống. Dùng để
+    #: nói rõ "sổ mới ghi từ ngày X" — trước ngày đó trống là đúng, không phải mất.
+    ledger_first_date: str | None = None
     events: list[SepayEventOut] = Field(default_factory=list)
 
 

@@ -40,6 +40,7 @@ def sepay_events(
     target = date or datetime.now(sepay_ledger.VN_TZ).date()
     is_admin = bool(user.is_super_admin)
     rows = sepay_ledger.events_for_day(db, target, user_id=None if is_admin else user.id)
+    has_token = bool(get_settings().sepay_user_api_token)
 
     incoming = [r for r in rows if (r.transfer_type or "in") == "in"]
     credited = [r for r in incoming if r.result in sepay_ledger.CREDITED_RESULTS]
@@ -61,7 +62,11 @@ def sepay_events(
         pending_count=len(pending),
         empty=not rows,
         is_admin_view=is_admin,
-        can_sync=bool(get_settings().sepay_user_api_token) and is_admin,
+        can_sync=has_token and is_admin,
+        sync_needs_token=is_admin and not has_token,
+        ledger_first_date=sepay_ledger.first_recorded_date(
+            db, user_id=None if is_admin else user.id
+        ),
         events=[SepayEventOut.model_validate(r) for r in rows],
     )
 
