@@ -240,8 +240,10 @@ export function TaskTimingCell({ task }: { task: QueueItem }) {
  * Thời lượng phase i = at(i+1) − at(i); phase cuối: tới `completed_at` (đã xong)
  * hoặc đếm live tới hiện tại (đang chạy). Tự tick mỗi giây khi task đang chạy.
  *
- * `compact` = bản gọn cho panel cột phải (font nhỏ, không tiêu đề); mặc định bản
- * đầy đủ cho popover bảng Queue (xem được cả task đã kết thúc → hậu kiểm tốc độ).
+ * `compact` = bản gọn cho panel Hàng đợi tác vụ (font nhỏ, không tiêu đề): mặc
+ * định CHỈ hiện phase đang chạy (dòng cuối) + "+N▾" cho số phase đã xong — bấm
+ * vào mới bung cả danh sách (bấm lần nữa để thu lại). Bản đầy đủ (không compact,
+ * dùng ở popover bảng Queue) luôn liệt kê hết mọi phase.
  */
 export function PhaseBreakdown({
   task,
@@ -261,6 +263,9 @@ export function PhaseBreakdown({
     return () => clearInterval(id);
   }, [isLive]);
 
+  // Compact: mặc định thu gọn (chỉ phase đang chạy), bấm để bung cả danh sách.
+  const [expanded, setExpanded] = useState(false);
+
   if (history.length === 0) return null;
 
   const completedMs = task.completed_at
@@ -275,8 +280,28 @@ export function PhaseBreakdown({
     return { phase: h.phase, durMs: Math.max(0, endMs - startMs), isCurrent };
   });
 
+  // Thu gọn: chỉ giữ dòng cuối (phase đang chạy / phase cuối cùng).
+  const collapsed = compact && !expanded && rows.length > 1;
+  const visible = collapsed ? rows.slice(-1) : rows;
+  const hiddenCount = rows.length - visible.length;
+  const toggleable = compact && rows.length > 1;
+
   return (
     <div
+      onClick={toggleable ? () => setExpanded((v) => !v) : undefined}
+      role={toggleable ? "button" : undefined}
+      tabIndex={toggleable ? 0 : undefined}
+      onKeyDown={
+        toggleable
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setExpanded((v) => !v);
+              }
+            }
+          : undefined
+      }
+      title={toggleable ? t("queue.timing.phasesTitle") : undefined}
       style={{
         // compact (dùng trong WorkspaceTaskRail — hàng NGANG): bỏ viền/đệm trên
         // để phase nằm liền mạch cùng dòng với các cột khác, không trông như
@@ -284,6 +309,7 @@ export function PhaseBreakdown({
         marginTop: compact ? 0 : 8,
         paddingTop: compact ? 0 : 8,
         borderTop: compact ? "none" : "1px solid var(--border, #e5e7eb)",
+        cursor: toggleable ? "pointer" : undefined,
       }}
     >
       {!compact && (
@@ -300,7 +326,7 @@ export function PhaseBreakdown({
           {t("queue.timing.phasesTitle")}
         </div>
       )}
-      {rows.map((r, i) => (
+      {visible.map((r, i) => (
         <div
           key={i}
           style={{
@@ -332,6 +358,12 @@ export function PhaseBreakdown({
           >
             {fmtDur(r.durMs)}
             {r.isCurrent ? "…" : ""}
+            {/* Chỉ báo còn phase bị ẩn (thu gọn) / đang bung (bấm để thu lại). */}
+            {toggleable && i === visible.length - 1 && (
+              <span style={{ color: "var(--ink-3, #9ca3af)", marginLeft: 4 }}>
+                {collapsed ? `+${hiddenCount}▾` : "▴"}
+              </span>
+            )}
           </span>
         </div>
       ))}

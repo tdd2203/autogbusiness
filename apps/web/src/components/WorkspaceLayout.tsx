@@ -13,7 +13,7 @@ import { InviteMemberModal } from "./InviteMemberModal";
 import { ManualAddModal } from "./ManualAddModal";
 import { BulkRemoveModal } from "./BulkRemoveModal";
 import { PasteInvoiceModal } from "./PasteInvoiceModal";
-import { toast } from "./Toast";
+import { toast, confirm } from "./Toast";
 
 type Tab = {
   to: string;
@@ -47,7 +47,6 @@ export default function WorkspaceLayout() {
     action?: string;
     emails?: string[];
   } | null>(null);
-  const [syncOpen, setSyncOpen] = useState(false);
   // Popup DÁN chi tiết hoá đơn (thay scrape) — mở khi bấm "Cập nhật giá & ngày renew".
   const [pasteBillingOpen, setPasteBillingOpen] = useState(false);
 
@@ -115,14 +114,24 @@ export default function WorkspaceLayout() {
   // tab nữa; hàng tab chỉ còn tab + nút hành động.
 
   // ---- Đồng bộ TOÀN BỘ (full-sync) từ ChatGPT về DB ----
-  // Mở modal 3 lựa chọn scope: members / invites / both → tạo task SYNC_DATA,
-  // extension scrape danh sách từ chatgpt.com/admin rồi bulk-upsert về DB.
-  // (Khôi phục lại sau khi từng bị gỡ tạm 2026-06-17. Backend /sync vẫn sẵn.)
+  // (user 2026-08-24) BỎ modal chọn scope: nút "Đồng bộ từ ChatGPT" chỉ hỏi
+  // XÁC NHẬN 1 lần rồi chạy luôn scope="both" (quét CẢ tab "Người dùng" lẫn tab
+  // "Lời mời đang chờ"). Tách riêng từng tab không còn cần — chọn nhầm scope chỉ
+  // làm dữ liệu lệch. Giữ 1 bước xác nhận vì đây là task nặng, chạy nhầm thì
+  // chiếm extension + tab chatgpt.com/admin của người khác.
+  // Tạo task SYNC_DATA → extension scrape chatgpt.com/admin rồi bulk-upsert về DB.
   // Đồng bộ 1 tài khoản lẻ per-row ở tab "Chờ tham gia" (Members.tsx) là tính
   // năng riêng, không thay thế full-sync này.
   const syncMembers = useMutation({
-    mutationFn: async (scope: "members" | "invites" | "both") => {
-      setSyncOpen(false);
+    mutationFn: async () => {
+      // Không cần body: tiêu đề + nút "Đồng bộ ngay" đã nói đủ.
+      const ok = await confirm("", {
+        title: t("member.syncButton"),
+        okText: t("member.syncConfirmOk"),
+        cancelText: t("common.cancel"),
+      });
+      if (!ok) throw new Error("__user_cancel__");
+      const scope = "both";
       // expected_locale chỉ để extension BÁO LỖI / hướng dẫn nếu ChatGPT lệch ngôn ngữ —
       // KHÔNG tự đổi Settings giúp user. Nguồn = "ngôn ngữ hệ thống" của workspace
       // (super-admin đặt ở Cài đặt), KHÔNG phải ngôn ngữ HIỂN THỊ dashboard của
@@ -139,27 +148,16 @@ export default function WorkspaceLayout() {
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
     },
     onError: (e) => {
+      if (e instanceof Error && e.message === "__user_cancel__") return;
       const msg = e instanceof ApiError ? String(e.detail) : String(e);
       toast.error(msg);
     },
   });
 
-  // ---- "Lời mời chờ xử lý" = QUÉT tab "Lời mời đang chờ xử lý" trên ChatGPT ----
-  // (user 2026-07-21) Nút này đọc ĐÚNG tab "Lời mời" qua SYNC_DATA scope=invites
-  // (syncMembers.mutate("invites")): extension thu thập các email đang ở tab đó
-  // (giống cách "Đồng bộ người dùng hoạt động" đọc tab "Người dùng") → upsert
-  // pending + phát hiện lời mời lạ.
-  //
-  // (user 2026-07-22) Quét xong, backend `reconcile.py` ĐỐI CHIẾU: email dashboard
-  // đang để "chờ tham gia" mà KHÔNG còn ở tab Lời mời → tự enqueue
-  // SYNC_MEMBERS_BATCH để extension tra tiếp TAB NGƯỜI DÙNG → thấy ⇒ đã tham gia
-  // (promote active), không thấy ⇒ giữ pending. Nên nút này giờ TỰ phát hiện ai đã
-  // tham gia, không phải chờ "Đồng bộ cả 2" nữa.
-  //
-  // An toàn: reconcile.py với scope='invites' vẫn bị guard (removal_scopes bỏ
-  // 'pending' khi thiếu 'active' + cấm hạ active→pending) nên một lần
-  // quét-chỉ-tab-Lời-mời KHÔNG xoá/hạ cấp ai (sự cố mất member 2026-07-13 đã được
-  // chặn) — việc "biến mất khỏi tab Lời mời" chỉ dẫn tới TRA THÊM, không tới xoá.
+  // scope="both" quét CẢ hai tab trên ChatGPT: "Người dùng" (active) và "Lời mời
+  // đang chờ xử lý" (pending). Sau khi quét, backend `reconcile.py` đối chiếu:
+  // email dashboard để "chờ tham gia" mà không còn ở tab Lời mời → tra tiếp tab
+  // Người dùng → thấy ⇒ promote active, không thấy ⇒ giữ pending.
 
   function openInviteForm() {
     setShowInviteModal(true);
@@ -236,7 +234,7 @@ export default function WorkspaceLayout() {
               )}
               {canSync && (
                 <button
-                  onClick={() => setSyncOpen(true)}
+                  onClick={() => syncMembers.mutate()}
                   disabled={syncMembers.isPending}
                   className="btn btn-sm btn-ghost"
                   title={t("member.syncTooltip")}
@@ -288,60 +286,6 @@ export default function WorkspaceLayout() {
       <div>
         <Outlet context={{ openBulkUpdate }} />
       </div>
-
-      {syncOpen && (
-        <div
-          onClick={() => setSyncOpen(false)}
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.45)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="settings-section"
-            style={{ width: 360, maxWidth: "90vw", background: "var(--surface, #1e1e1e)" }}
-          >
-            <h3 className="display-h3" style={{ marginBottom: 16 }}>
-              {t("member.syncButton")}
-            </h3>
-            <div className="flex flex-col" style={{ gap: 8 }}>
-              <button
-                className="btn btn-primary"
-                disabled={syncMembers.isPending}
-                onClick={() => syncMembers.mutate("members")}
-              >
-                {t("member.syncScopeMembers")}
-              </button>
-              <button
-                className="btn btn-primary"
-                disabled={syncMembers.isPending}
-                onClick={() => syncMembers.mutate("invites")}
-              >
-                {t("member.syncScopeInvites")}
-              </button>
-              <button
-                className="btn btn-primary"
-                disabled={syncMembers.isPending}
-                onClick={() => syncMembers.mutate("both")}
-              >
-                {t("member.syncScopeBoth")}
-              </button>
-              <button
-                className="btn btn-ghost"
-                onClick={() => setSyncOpen(false)}
-              >
-                {t("common.cancel")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {showInviteModal && workspaceId && (
         <InviteMemberModal

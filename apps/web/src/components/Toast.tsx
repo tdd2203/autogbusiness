@@ -271,9 +271,11 @@ function ConfirmDialog({
             {opts.title}
           </div>
         )}
-        <div className="text-sm text-slate-700 whitespace-pre-line leading-6">
-          {message}
-        </div>
+        {message && (
+          <div className="text-sm text-slate-700 whitespace-pre-line leading-6">
+            {message}
+          </div>
+        )}
         {requireType && (
           <div className="mt-3">
             <label className="block text-xs font-medium text-slate-600 mb-1">

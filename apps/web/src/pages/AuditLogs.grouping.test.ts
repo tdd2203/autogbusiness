@@ -150,3 +150,124 @@ describe("gom nhóm nhật ký kiểm tra", () => {
     expect(g?.events.map((e) => e.id).sort()).toEqual(["e3", "e4", "e7"]);
   });
 });
+
+/* Hỏng CẤP TASK rồi được đồng bộ cứu — ca thật 26/8/2026, task 3bc11c7b.
+   Backend chốt `QUEUE_TIMEOUT` ở mốc 8′ (extension im lặng sau khi mua suất), 26
+   giây sau mẻ đồng bộ thấy ĐỦ 3 email trong tab "Lời mời đang chờ". Lời mời đi
+   được, phí thu đúng — nhưng cờ hỏng dính vĩnh viễn nên quản trị viên tổng thấy
+   "Thất bại" trong khi sub-admin (không được xem log cấp hàng đợi) thấy "Thành
+   công" cho CÙNG một lệnh. */
+const BATCH_QID = "3bc11c7b-bcd4-4cd5-ba56-7478087dc03a";
+const BATCH_EMAILS = ["a@hotmail.com", "b@hotmail.com", "c@gmail.com"];
+
+function batchEvents(): { row: RawEvent; emails: string[] }[] {
+  return [
+    ...BATCH_EMAILS.map((em, i) => ({
+      row: {
+        id: `v${i}`,
+        timestamp: "2026-08-26T05:19:16.000Z",
+        actor_type: "EXTENSION",
+        action: "MEMBER_INVITE_VERIFIED",
+        result: "COMPLETED",
+        target_type: "MEMBER",
+        target_id: `m${i}`,
+        data: { email: em, queue_item_id: BATCH_QID, reason: "sync_found_in_pending" },
+      } as RawEvent,
+      emails: [em],
+    })),
+    {
+      row: {
+        id: "timeout",
+        timestamp: "2026-08-26T05:18:50.000Z",
+        actor_type: "SYSTEM",
+        action: "QUEUE_TIMEOUT:INVITE_MEMBER",
+        result: "FAILED",
+        target_type: "QUEUE_ITEM",
+        target_id: BATCH_QID,
+        data: { age_sec: 482 },
+      } as RawEvent,
+      emails: [],
+    },
+    {
+      row: {
+        id: "queued",
+        timestamp: "2026-08-26T05:10:47.000Z",
+        actor_type: "ADMIN",
+        action: "MEMBER_BULK_INVITE_QUEUED",
+        result: "PENDING",
+        target_type: "QUEUE_ITEM",
+        target_id: BATCH_QID,
+        data: { emails: BATCH_EMAILS, queue_item_id: BATCH_QID },
+      } as RawEvent,
+      emails: BATCH_EMAILS,
+    },
+  ];
+}
+
+function decorateWithEmails(rows: { row: RawEvent; emails: string[] }[]) {
+  return rows.map(({ row, emails }) => {
+    const impGroup = importantGroup(row.action);
+    return {
+      ...row,
+      cat: "member" as const,
+      impGroup,
+      important: impGroup !== null,
+      routine: impGroup === null,
+      status: row.result === "FAILED" ? "failed" : "success",
+      actorInitial: "S",
+      actorSub: "",
+      actorName: "hệ thống",
+      avatarBg: "",
+      targetEmails: emails,
+      workspace_name: "CHATGPT PRO",
+    };
+  }) as never[];
+}
+
+describe("hết giờ rồi được đồng bộ cứu", () => {
+  it("mọi email đều xác minh SAU mốc hết giờ → nhóm là thành công, không phải thất bại", () => {
+    const [g] = buildGroups(decorateWithEmails(batchEvents()));
+    expect(g.count).toBe(5);
+    expect(g.stages.failed).toBe(true); // mốc hết giờ vẫn có thật
+    expect(g.rescued).toBe(true);
+    expect(g.gstatus).toBe("done");
+  });
+
+  it("chỉ cứu được MỘT PHẦN email thì nhóm vẫn là thất bại", () => {
+    const rows = batchEvents().filter((r) => r.row.id !== "v2");
+    const [g] = buildGroups(decorateWithEmails(rows));
+    expect(g.rescued).toBe(false);
+    expect(g.gstatus).toBe("failed");
+  });
+
+  it("hỏng CẤP EMAIL (MEMBER_INVITE_FAILED) không bao giờ bị lật", () => {
+    const rows = batchEvents().map((r) =>
+      r.row.id === "timeout"
+        ? {
+            row: {
+              ...r.row,
+              action: "MEMBER_INVITE_FAILED",
+              target_type: "MEMBER",
+              target_id: "m0",
+              data: { email: BATCH_EMAILS[0], queue_item_id: BATCH_QID },
+            } as RawEvent,
+            emails: [BATCH_EMAILS[0]],
+          }
+        : r,
+    );
+    const [g] = buildGroups(decorateWithEmails(rows));
+    expect(g.rescued).toBe(false);
+    expect(g.gstatus).toBe("failed");
+  });
+
+  it("xác minh xảy ra TRƯỚC mốc hết giờ thì không tính là cứu", () => {
+    const rows = batchEvents().map((r) =>
+      r.row.action === "MEMBER_INVITE_VERIFIED"
+        ? { ...r, row: { ...r.row, timestamp: "2026-08-26T05:15:00.000Z" } }
+        : r,
+    );
+    const [g] = buildGroups(decorateWithEmails(rows));
+    expect(g.rescued).toBe(false);
+    expect(g.gstatus).toBe("failed");
+  });
+});

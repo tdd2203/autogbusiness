@@ -138,10 +138,6 @@ function CalcPanel({ preview }: { preview: TransferPreview }) {
         className="cell-muted"
         style={{ fontSize: 11.5, marginTop: 8, lineHeight: 1.5 }}
       >
-        {mode === "accumulate" && t("transfer.noteAccumulate")}
-        {mode === "fresh" && t("transfer.noteFresh")}
-        {mode === "unlimited" && t("transfer.noteUnlimited")}
-        <br />
         {t("transfer.noteRemoval", { email: source.email })}
       </div>
     </div>

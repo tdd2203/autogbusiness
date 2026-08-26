@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { computeBillingCycle, invoiceSeatPricing } from "./billing-math";
+import {
+  computeBillingCycle,
+  invoiceSeatPricing,
+  sortInvoicesForDisplay,
+} from "./billing-math";
 import type { BillingInvoice } from "../types";
 
 // "Hôm nay" cố định để test ổn định: 2026-07-05 (còn 20 ngày tới 25/7).
@@ -409,5 +413,74 @@ describe("computeBillingCycle", () => {
       expect(c.note).toBe("no_detail");
       expect(c.estimated).toBe(false);
     });
+  });
+});
+
+describe("sortInvoicesForDisplay", () => {
+  const inv = (date: string, number: string | null): BillingInvoice => ({
+    date,
+    amount_vnd: 1,
+    status: "paid",
+    invoice_number: number,
+  });
+
+  it("mới nhất lên đầu theo NGÀY", () => {
+    const out = sortInvoicesForDisplay([
+      inv("2026-07-25T00:00:00Z", "MSNS6RGC-0024"),
+      inv("2026-08-25T00:00:00Z", "MSNS6RGC-0031"),
+      inv("2026-08-24T00:00:00Z", "MSNS6RGC-0030"),
+    ]);
+    expect(out.map((i) => i.invoice_number)).toEqual([
+      "MSNS6RGC-0031",
+      "MSNS6RGC-0030",
+      "MSNS6RGC-0024",
+    ]);
+  });
+
+  it("CÙNG NGÀY: phá hoà bằng số hoá đơn giảm dần, bất kể thứ tự dán (ca thật 22/8/2026)", () => {
+    // Thứ tự trong JSONB là thứ tự DÁN — ở production đang ngược (0029 → 0026).
+    const out = sortInvoicesForDisplay([
+      inv("2026-08-22T00:00:00Z", "MSNS6RGC-0029"),
+      inv("2026-08-22T00:00:00Z", "MSNS6RGC-0026"),
+      inv("2026-08-22T00:00:00Z", "MSNS6RGC-0028"),
+      inv("2026-08-22T00:00:00Z", "MSNS6RGC-0027"),
+    ]);
+    expect(out.map((i) => i.invoice_number)).toEqual([
+      "MSNS6RGC-0029",
+      "MSNS6RGC-0028",
+      "MSNS6RGC-0027",
+      "MSNS6RGC-0026",
+    ]);
+  });
+
+  it("so đuôi theo SỐ chứ không theo chữ (0009 sau 0010)", () => {
+    const out = sortInvoicesForDisplay([
+      inv("2026-08-22T00:00:00Z", "M96E9GXY-9"),
+      inv("2026-08-22T00:00:00Z", "M96E9GXY-10"),
+    ]);
+    expect(out.map((i) => i.invoice_number)).toEqual([
+      "M96E9GXY-10",
+      "M96E9GXY-9",
+    ]);
+  });
+
+  it("hoá đơn KHÔNG có số xếp sau hoá đơn có số cùng ngày", () => {
+    const out = sortInvoicesForDisplay([
+      inv("2026-08-22T00:00:00Z", null),
+      inv("2026-08-22T00:00:00Z", "MSNS6RGC-0026"),
+    ]);
+    expect(out.map((i) => i.invoice_number)).toEqual(["MSNS6RGC-0026", null]);
+  });
+
+  it("không sửa mảng gốc", () => {
+    const src = [
+      inv("2026-07-25T00:00:00Z", "MSNS6RGC-0024"),
+      inv("2026-08-25T00:00:00Z", "MSNS6RGC-0031"),
+    ];
+    sortInvoicesForDisplay(src);
+    expect(src.map((i) => i.invoice_number)).toEqual([
+      "MSNS6RGC-0024",
+      "MSNS6RGC-0031",
+    ]);
   });
 });

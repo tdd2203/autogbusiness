@@ -121,6 +121,37 @@ function invDateMs(inv: BillingInvoice): number {
   return d.getTime();
 }
 
+/** So SỐ hoá đơn giảm dần ("…-0029" trước "…-0026"); thiếu số thì xếp sau. */
+function compareInvoiceNumberDesc(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): number {
+  if (!a && !b) return 0;
+  if (!a) return 1;
+  if (!b) return -1;
+  // numeric: so phần đuôi "0026" < "0029" theo SỐ, không theo chữ.
+  return b.localeCompare(a, undefined, { numeric: true, sensitivity: "base" });
+}
+
+/**
+ * Thứ tự HIỂN THỊ bảng lịch sử hoá đơn: MỚI NHẤT lên đầu.
+ *
+ * Chỉ so NGÀY là chưa đủ: mua thêm suất giữa kỳ sinh nhiều hoá đơn CÙNG NGÀY
+ * (ca thật CHATGPT PRO 22/8/2026 — `MSNS6RGC-0026..0029`), lúc đó thứ tự rơi về
+ * thứ tự phần tử trong JSONB (= thứ tự DÁN, có khi ngược) nên bảng đọc lộn xộn:
+ * ngày giảm dần nhưng trong cùng một ngày lại tăng dần. Phá hoà bằng SỐ hoá đơn
+ * (đuôi tăng theo mỗi lần Stripe xuất) → trong cùng ngày cũng mới-nhất-trước.
+ */
+export function sortInvoicesForDisplay(
+  invoices: BillingInvoice[],
+): BillingInvoice[] {
+  return [...invoices].sort(
+    (a, b) =>
+      invDateMs(b) - invDateMs(a) ||
+      compareInvoiceNumberDesc(a.invoice_number, b.invoice_number),
+  );
+}
+
 /**
  * Hoá đơn GỐC chu kỳ TRƯỚC — dùng làm giá/seat ước tính khi chu kỳ hiện tại chưa
  * có hoá đơn. Ưu tiên hoá đơn có đơn giá + period_end ≤ cycle_start (kết thúc

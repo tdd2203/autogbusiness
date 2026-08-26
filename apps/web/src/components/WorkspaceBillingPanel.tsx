@@ -25,6 +25,7 @@ import {
   cycleStartFromRenewal,
   daysBetween,
   invoiceSeatPricing,
+  sortInvoicesForDisplay,
 } from "./billing-math";
 import { toast } from "./Toast";
 
@@ -310,27 +311,22 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
               </tr>
             </thead>
             <tbody>
-              {[...invoices]
-                .sort(
-                  (a, b) =>
-                    new Date(b.date).getTime() - new Date(a.date).getTime(),
-                )
-                .map((inv, i) => (
-                  <InvoiceRow
-                    key={`${inv.date}-${inv.amount_vnd}-${i}`}
-                    inv={inv}
-                    formatDate={formatDate}
-                    tInvoiceStatus={tInvoiceStatus}
-                    notScraped={t("billing.notScrapedShort")}
-                    actualTooltip={t("billing.colActualTooltip")}
-                    monthTooltip={t("billing.colPerSeatMonthTooltip")}
-                    remainingTooltip={t("billing.colPerSeatRemainingTooltip")}
-                    canEditFee={canEditFee}
-                    feePlaceholder={t("billing.feePlaceholder")}
-                    savingFee={feeMut.isPending}
-                    onSaveFee={(fee) => feeMut.mutate({ inv, fee })}
-                  />
-                ))}
+              {sortInvoicesForDisplay(invoices).map((inv, i) => (
+                <InvoiceRow
+                  key={`${inv.date}-${inv.amount_vnd}-${i}`}
+                  inv={inv}
+                  formatDate={formatDate}
+                  tInvoiceStatus={tInvoiceStatus}
+                  notScraped={t("billing.notScrapedShort")}
+                  actualTooltip={t("billing.colActualTooltip")}
+                  monthTooltip={t("billing.colPerSeatMonthTooltip")}
+                  remainingTooltip={t("billing.colPerSeatRemainingTooltip")}
+                  canEditFee={canEditFee}
+                  feePlaceholder={t("billing.feePlaceholder")}
+                  savingFee={feeMut.isPending}
+                  onSaveFee={(fee) => feeMut.mutate({ inv, fee })}
+                />
+              ))}
             </tbody>
           </table>
         </details>

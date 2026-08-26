@@ -440,6 +440,39 @@ function eventMarksFailed(e: Decorated): boolean {
   return isTerminalFail(e.result);
 }
 
+/** Hỏng CẤP TASK (hết giờ, task báo FAILED) — không phải kết luận cho email nào. */
+function isTaskLevelFail(e: Decorated): boolean {
+  return !LIFECYCLE_FAIL_OPS.has(opOf(e.action));
+}
+
+/**
+ * Nhóm có cờ hỏng nhưng SAU ĐÓ mọi email đều có kết luận THÀNH CÔNG → coi là xong.
+ *
+ * Ca thật 26/8/2026 (task 3bc11c7b, mẻ 3 email): backend chốt `QUEUE_TIMEOUT` ở
+ * mốc 8′ vì extension im lặng, rồi 26 giây sau mẻ đồng bộ thấy đủ 3 email trong
+ * tab "Lời mời đang chờ" ⇒ 3 × `MEMBER_INVITE_VERIFIED`. Lời mời ĐI ĐƯỢC, phí thu
+ * đúng, nhưng cờ hỏng dính vĩnh viễn nên timeline hiện "Thất bại" — quản trị viên
+ * tổng thấy "Thất bại" còn sub-admin (không được xem log cấp hàng đợi) thấy "Thành
+ * công" cho CÙNG một lệnh.
+ *
+ * Chỉ lật khi hỏng là CẤP TASK: `MEMBER_INVITE_FAILED` của một email trong mẻ là
+ * kết luận riêng của email đó — mẻ vẫn phải hiện hỏng một phần, không được xoá.
+ * Và phải cứu ĐỦ mọi email của nhóm; cứu một nửa vẫn là hỏng.
+ */
+function rescuedAfterFail(evs: Decorated[], emails: string[]): boolean {
+  if (emails.length === 0) return false;
+  const fails = evs.filter(eventMarksFailed);
+  if (fails.length === 0 || !fails.every(isTaskLevelFail)) return false;
+  const failAt = Math.max(...fails.map((e) => new Date(e.timestamp).getTime()));
+  const rescued = new Set<string>();
+  for (const e of evs) {
+    if (!eventMarksDone(e)) continue;
+    if (new Date(e.timestamp).getTime() <= failAt) continue;
+    for (const em of e.targetEmails) rescued.add(em);
+  }
+  return emails.every((em) => rescued.has(em));
+}
+
 const GSTATUS_STYLE: Record<GStatus, { color: string; bg: string; key: string }> = {
   queued: { color: "var(--ink-3)", bg: "var(--surface-2)", key: "audit.gstatus.queued" },
   processing: { color: "var(--warning)", bg: "#f5eccb", key: "audit.status.pending" },
@@ -467,6 +500,8 @@ type Group = {
   avatarBg: string;
   gstatus: GStatus;
   stages: Stages;
+  /** Hỏng cấp task nhưng đã được cứu bằng kết luận thành công sau đó. */
+  rescued: boolean;
   singleStatus: StatusKey;
   // Loại chủ thể khởi tạo (ADMIN người / SYSTEM tự động / EXTENSION tiện ích).
   actorType: string;
@@ -619,7 +654,13 @@ function makeGroup(key: string, evs: Decorated[]): Group {
     done: has(eventMarksDone),
     failed: has(eventMarksFailed),
   };
-  const gstatus: GStatus = stages.failed
+  const emails: string[] = [];
+  for (const e of evs)
+    for (const em of e.targetEmails) if (!emails.includes(em)) emails.push(em);
+
+  // Hỏng cấp task rồi được đồng bộ cứu sau đó → KHÔNG phải nhóm hỏng.
+  const rescued = stages.failed && rescuedAfterFail(evs, emails);
+  const gstatus: GStatus = stages.failed && !rescued
     ? "failed"
     : stages.done
       ? "done"
@@ -654,10 +695,6 @@ function makeGroup(key: string, evs: Decorated[]): Group {
     code = evs[0].action;
   }
 
-  const emails: string[] = [];
-  for (const e of evs)
-    for (const em of e.targetEmails) if (!emails.includes(em)) emails.push(em);
-
   const impGroup = evs.map((e) => e.impGroup).find((g) => g !== null) ?? null;
   // Quan trọng (lên tab "Chính") = có nhóm nghiệp vụ thành viên (mời/gỡ/gia hạn/
   // đổi chủ). Đồng bộ/đăng nhập/cấu hình… không thuộc nhóm nào → tab "Khác".
@@ -684,6 +721,7 @@ function makeGroup(key: string, evs: Decorated[]): Group {
     avatarBg: initiator.avatarBg,
     gstatus,
     stages,
+    rescued,
     singleStatus: evs[0].status,
     actorType: initiator.actor_type,
   };
@@ -706,14 +744,20 @@ export function buildGroups(events: Decorated[]): Group[] {
 }
 
 /** Thanh tiến trình 3 bước: Xếp hàng → Đang chạy → Hoàn tất/Thất bại. */
-function Steps({ stages }: { stages: Stages }) {
+function Steps({ stages, rescued }: { stages: Stages; rescued: boolean }) {
   const t = useT();
   const steps = [
     { label: t("audit.step.queued"), reached: stages.queued, kind: "n" as const },
     { label: t("audit.step.running"), reached: stages.running, kind: "n" as const },
-    stages.failed
+    // Hết giờ rồi được đồng bộ cứu: nói thẳng "hoàn tất (sau khi hết giờ)" thay vì
+    // giấu mốc hết giờ — nó vẫn là thứ cần sửa, chỉ không phải một lệnh hỏng.
+    stages.failed && !rescued
       ? { label: t("audit.step.failed"), reached: true, kind: "fail" as const }
-      : { label: t("audit.step.done"), reached: stages.done, kind: "done" as const },
+      : {
+          label: rescued ? t("audit.step.rescued") : t("audit.step.done"),
+          reached: rescued || stages.done,
+          kind: "done" as const,
+        },
   ];
   const dotColor = (s: (typeof steps)[number]) => {
     if (!s.reached) return "var(--ink-4)";
@@ -1675,7 +1719,7 @@ function groupView(g: Group, t: TFn) {
   const statusText = awaitingPay
     ? t("audit.status.awaiting_payment")
     : g.lifecycle
-      ? t(gs.key)
+      ? t(g.rescued ? "audit.gstatus.rescued" : gs.key)
       : t(RESULT_LABEL[g.singleStatus]);
   const summary = summarize(g) ?? g.title;
   const targetEmailTitle =
@@ -1875,7 +1919,9 @@ function AuditTable({ filtered, expanded, setExpanded, isLoading }: AuditListPro
                         {g.emails.length > 1 ? ` +${g.emails.length - 1}` : ""}
                       </div>
                     )}
-                    {g.lifecycle && <Steps stages={g.stages} />}
+                    {g.lifecycle && (
+                      <Steps stages={g.stages} rescued={g.rescued} />
+                    )}
                   </div>
                   {/* TRẠNG THÁI */}
                   <div
@@ -2087,7 +2133,7 @@ function AuditCards({ filtered, expanded, setExpanded, isLoading }: AuditListPro
               )}
 
               {/* Thanh tiến trình vòng đời */}
-              {g.lifecycle && <Steps stages={g.stages} />}
+              {g.lifecycle && <Steps stages={g.stages} rescued={g.rescued} />}
 
               {/* Đáy thẻ: email đối tượng (đậm) + câu tóm tắt */}
               <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(0,0,0,.06)" }}>
