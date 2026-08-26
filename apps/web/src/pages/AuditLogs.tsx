@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { vnDateKey } from "../lib/wallet-history";
@@ -266,6 +266,21 @@ export function payRefsOf(evs: EventLike[]): string[] {
       add(e.data?.member_id);
   }
   return out;
+}
+
+/** Có nên hiện "Số dư sau" dưới hộp phí của một nhóm hay không.
+
+    Tài khoản TRẢ THẲNG từng lệnh (ví thiếu → quét QR đúng số tiền → `order_topup`
+    vào ví rồi trừ phí ngay) luôn về 0 sau mỗi lệnh: con số đó không nói lên điều gì,
+    chỉ làm người đọc tưởng ví đã hết tiền (user 2026-08-26). Chỉ hiện lại khi lệnh có
+    HOÀN PHÍ vì lời mời lỗi — lúc đó "số dư sau" chính là tiền đang nằm chờ dùng lại.
+    Ví có NẠP TRƯỚC (không có dòng tiền QR của chính lệnh này) giữ nguyên như cũ. */
+export function showsBalanceAfter(evs: EventLike[]): boolean {
+  const paidPerOrder = evs.some(
+    (e) => opOf(e.action) === "WALLET_ORDER_CREDITED",
+  );
+  if (!paidPerOrder) return true;
+  return evs.some((e) => opOf(e.action) === "WALLET_INVITE_REFUNDED");
 }
 
 /** Dạng ngắn để hiện trên hàng: 8 ký tự đầu của UUID. */
@@ -774,10 +789,27 @@ function nearestQueueRef(
   return best?.qid ?? null;
 }
 
+/** id hoá đơn QR mà dòng log nói tới. "Tạo lệnh thanh toán" neo bằng target, còn
+ *  "Thanh toán thành công" (bút toán ví) neo bằng `data.ref_type/ref_id`. */
+function orderIdOf(e: Decorated): string | null {
+  if (e.target_type === "PAYMENT_ORDER" && e.target_id) return e.target_id;
+  if (e.data?.ref_type === "order") {
+    const ref = e.data?.ref_id;
+    if (typeof ref === "string" && ref) return ref;
+  }
+  return null;
+}
+
 function groupKeyFor(e: Decorated, memberMap: Map<string, QueueRef[]>): string {
   if (e.target_type === "QUEUE_ITEM" && e.target_id) return "q:" + e.target_id;
   const qid = e.data?.queue_item_id;
   if (typeof qid === "string") return "q:" + qid;
+  /* Hoá đơn QR CHƯA gắn được task (lệnh gia hạn/đổi hạn không đi qua hàng đợi, hoặc
+     hoá đơn chưa trả xong) — "tạo lệnh" + "thanh toán thành công" vẫn là MỘT việc.
+     Khi API đã suy ra được `queue_item_id` từ hoá đơn thì hai nhánh trên bắt trước,
+     cả cụm về thẳng nhóm của lệnh mời. */
+  const oid = orderIdOf(e);
+  if (oid) return "o:" + oid;
   const op = opOf(e.action);
   if (e.target_type === "MEMBER" && e.target_id && QUEUE_ORPHAN_GLUE_OPS.has(op)) {
     const refs = memberMap.get(e.target_id);
@@ -928,6 +960,18 @@ export function splitByDay(groups: Group[]): DaySection[] {
   return out;
 }
 
+/** Hôm nay theo lịch VIỆT NAM (YYYY-MM-DD) — cùng mốc ngày mà dải ngày dùng. */
+function vnToday(): string {
+  return vnDateKey(new Date().toISOString());
+}
+
+/** Ngày liền trước/sau (delta = -1/+1), vẫn ở dạng YYYY-MM-DD. */
+function shiftDay(date: string, delta: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + delta);
+  return d.toISOString().slice(0, 10);
+}
+
 /** "2026-08-26" → "26/8/2026" (nhãn ngày kiểu Việt, bỏ số 0 thừa). */
 function vnDateLabel(date: string): string {
   const [y, m, d] = date.split("-").map(Number);
@@ -987,9 +1031,7 @@ function DayHeader({
           color: "var(--ink-2)",
         }}
       >
-        {date === vnDateKey(new Date().toISOString())
-          ? `${t("audit.today")} · ${label}`
-          : label}
+        {date === vnToday() ? `${t("audit.today")} · ${label}` : label}
       </span>
       <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
         {t("audit.opCount", { n: count })}
@@ -997,6 +1039,112 @@ function DayHeader({
     </div>
   );
 }
+
+/**
+ * Thanh chọn NGÀY XEM — lùi/tiến một ngày, hoặc bấm chọn thẳng trên lịch.
+ * Mặc định đứng ở hôm nay (chốt user 2026-08-26); "Tất cả" bỏ lọc ngày để cuộn
+ * lại toàn bộ nhật ký như trước.
+ */
+function DayPicker({
+  day,
+  onPick,
+}: {
+  day: string | null;
+  onPick: (next: string | null) => void;
+}) {
+  const t = useT();
+  const today = vnToday();
+  const cur = day ?? today;
+  const atToday = cur >= today;
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        flexWrap: "wrap",
+        marginBottom: 16,
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => onPick(shiftDay(cur, -1))}
+        aria-label={t("audit.dayPrev")}
+        title={t("audit.dayPrev")}
+        style={dayIconBtn}
+      >
+        ←
+      </button>
+      <button
+        type="button"
+        onClick={() => onPick(shiftDay(cur, 1))}
+        aria-label={t("audit.dayNext")}
+        title={t("audit.dayNext")}
+        disabled={atToday}
+        style={{ ...dayIconBtn, opacity: atToday ? 0.4 : 1 }}
+      >
+        →
+      </button>
+      <label
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          border: "1px solid var(--border-strong)",
+          background: "var(--surface, var(--bg))",
+          borderRadius: 8,
+          padding: "0 10px",
+          height: 32,
+          cursor: "pointer",
+        }}
+      >
+        <span
+          style={{
+            fontSize: 13,
+            fontWeight: 600,
+            whiteSpace: "nowrap",
+            color: "var(--ink)",
+          }}
+        >
+          {day
+            ? `${day === today ? `${t("audit.today")} · ` : ""}${vnDateLabel(day)}`
+            : t("audit.pickDay")}
+        </span>
+        {/* Ô lịch thu hẹp còn cái icon — nhãn ngày bên trái mới là phần đọc được. */}
+        <input
+          type="date"
+          value={cur}
+          max={today}
+          onChange={(e) => onPick(e.target.value || null)}
+          style={{
+            width: 20,
+            border: "none",
+            background: "transparent",
+            fontSize: 13,
+            color: "var(--ink-3)",
+            cursor: "pointer",
+            padding: 0,
+          }}
+        />
+      </label>
+      <Chip active={day === null} onClick={() => onPick(null)} label={t("audit.allDays")} />
+    </div>
+  );
+}
+
+const dayIconBtn: CSSProperties = {
+  width: 32,
+  height: 32,
+  flexShrink: 0,
+  border: "1px solid var(--border-strong)",
+  background: "var(--surface, var(--bg))",
+  borderRadius: 8,
+  fontSize: 14,
+  color: "var(--ink-2)",
+  cursor: "pointer",
+  display: "grid",
+  placeItems: "center",
+};
 
 /** Nút tải tiếp phần nhật ký cũ hơn (cần đến đâu tải đến đó). */
 function MoreBar({
@@ -1009,6 +1157,19 @@ function MoreBar({
   onMore: () => void;
 }) {
   const t = useT();
+  if (loading)
+    return (
+      <div
+        style={{
+          padding: "14px 20px",
+          textAlign: "center",
+          fontSize: 13,
+          color: "var(--ink-3)",
+        }}
+      >
+        {t("audit.loadingMore")}
+      </div>
+    );
   if (!hasMore) return null;
   return (
     <div style={{ padding: "14px 20px", display: "flex", justifyContent: "center" }}>
@@ -1698,6 +1859,7 @@ function ExpandedPanel({ g }: { g: Group }) {
   );
   // Số dư sau giao dịch (nếu payload có) — hiển thị dưới hộp phí.
   const balanceAfter = (() => {
+    if (!showsBalanceAfter(g.events)) return null;
     for (const e of g.events) {
       const v = e.data?.balance_after ?? e.data?.balance;
       if (typeof v === "number") return fmtMoney(v);
@@ -2097,6 +2259,8 @@ type AuditListProps = {
   isLoading: boolean;
   /** Bấm mã hoá đơn trên hàng → lọc nhật ký về đúng dòng tiền của lệnh đó. */
   onOpenPayments: (ref: string) => void;
+  /** Ngày đang xem (null = mọi ngày) — chỉ dùng cho lời nhắn khi rỗng. */
+  day: string | null;
   /** Còn nhật ký cũ hơn chưa tải (trang trước trả về đủ một lô). */
   hasMore: boolean;
   loadingMore: boolean;
@@ -2110,6 +2274,7 @@ function AuditTable({
   setExpanded,
   isLoading,
   onOpenPayments,
+  day,
   hasMore,
   loadingMore,
   onMore,
@@ -2381,7 +2546,7 @@ function AuditTable({
 
           <MoreBar hasMore={hasMore} loading={loadingMore} onMore={onMore} />
 
-          {!isLoading && filtered.length === 0 && (
+          {!isLoading && !loadingMore && filtered.length === 0 && (
             <div
               style={{
                 padding: 56,
@@ -2390,7 +2555,9 @@ function AuditTable({
                 fontSize: 14,
               }}
             >
-              {t("audit.emptyFiltered")}
+              {day
+                ? t("audit.emptyDay", { date: vnDateLabel(day) })
+                : t("audit.emptyFiltered")}
             </div>
           )}
         </div>
@@ -2406,6 +2573,7 @@ function AuditCards({
   setExpanded,
   isLoading,
   onOpenPayments,
+  day,
   hasMore,
   loadingMore,
   onMore,
@@ -2568,7 +2736,7 @@ function AuditCards({
 
       <MoreBar hasMore={hasMore} loading={loadingMore} onMore={onMore} />
 
-      {!isLoading && filtered.length === 0 && (
+      {!isLoading && !loadingMore && filtered.length === 0 && (
         <div
           style={{
             padding: 56,
@@ -2580,7 +2748,9 @@ function AuditCards({
             borderRadius: 16,
           }}
         >
-          {t("audit.emptyFiltered")}
+          {day
+            ? t("audit.emptyDay", { date: vnDateLabel(day) })
+            : t("audit.emptyFiltered")}
         </div>
       )}
     </div>
@@ -2617,11 +2787,16 @@ export default function AuditLogs() {
   // cấu hình, thao tác thành viên khác) tự chia nhóm phụ. Bỏ tab "Tất cả": hợp
   // của 2 tab đã là toàn bộ.
   const [view, setView] = useState<"main" | "other">("main");
-  const [bucket, setBucket] = useState<MainBucket | null>(null); // chip trong tab Chính
+  // Mở trang là đứng sẵn ở Chính · Thành viên (chốt 2026-08-26): việc mời/gỡ/gia
+  // hạn là thứ user vào nhật ký để xem, bảo mật và thanh toán chỉ tra khi cần.
+  // Bấm lại chip (hoặc bấm tab Chính) để bỏ lọc, xem cả 3 nhóm.
+  const [bucket, setBucket] = useState<MainBucket | null>("member"); // chip trong tab Chính
   const [otherCat, setOtherCat] = useState<OtherBucket | null>(null); // chip trong tab Khác
   // Lọc theo MÃ HOÁ ĐƠN: bấm mã trên lệnh mời/gia hạn → chỉ còn dòng tiền của lệnh đó.
   const [payRef, setPayRef] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  // Ngày đang xem; null = mọi ngày. Mở trang là đứng ở HÔM NAY (chốt 2026-08-26).
+  const [day, setDay] = useState<string | null>(vnToday());
 
   const decorated: Decorated[] = useMemo(() => {
     const qmap = buildQueueEmailMap(rows);
@@ -2690,7 +2865,37 @@ export default function AuditLogs() {
     });
   }, [rows, t]);
 
-  const groups = useMemo(() => buildGroups(decorated), [decorated]);
+  const allGroups = useMemo(() => buildGroups(decorated), [decorated]);
+  /* Nhật ký của NGÀY ĐANG XEM. Mọi con số trên trang (4 ô tóm tắt, số trên chip)
+     đếm theo đây: đổi ngày thì số đổi, còn bấm qua lại giữa các chip thì không —
+     đúng ý "số trên chip không nhảy" của bản trước. */
+  const groups = useMemo(
+    () => (day ? allGroups.filter((g) => vnDateKey(g.latestTs) === day) : allGroups),
+    [allGroups, day],
+  );
+
+  /* Chọn một ngày cũ hơn phần đã tải ⇒ tự lật tiếp các lô cho tới khi chạm ngày
+     đó (hoặc hết nhật ký). "Cần đến đâu tải đến đó" — user không phải bấm "xem
+     thêm" nhiều lần chỉ để tới được ngày mình chọn. Mỗi lô đẩy mốc cũ nhất lùi
+     thêm nên vòng này luôn dừng. */
+  const oldestLoaded = rows.length ? vnDateKey(rows[rows.length - 1].timestamp) : null;
+  useEffect(() => {
+    if (!day || oldestLoaded === null) return;
+    if (day > oldestLoaded) return; // ngày đã nằm trong phần tải rồi
+    if (!logs.hasNextPage || logs.isFetchingNextPage) return;
+    void logs.fetchNextPage();
+  }, [day, oldestLoaded, logs.hasNextPage, logs.isFetchingNextPage, logs.fetchNextPage]);
+
+  const mainCounts = useMemo(() => {
+    const by: Record<MainBucket, number> = { security: 0, member: 0, billing: 0 };
+    for (const g of groups) for (const b of g.buckets) by[b] += 1;
+    return by;
+  }, [groups]);
+  /* Chip đang lọc THẬT SỰ. Chip của nhóm rỗng không được render (xem thanh lọc
+     bên dưới) nên nếu cứ lọc theo nó thì danh sách trắng mà chẳng có nút nào để
+     gỡ — hay gặp đúng lúc mới mở trang, chip mặc định "Thành viên" chưa có sự
+     kiện nào. Nhóm rỗng ⇒ coi như không lọc. */
+  const activeBucket = bucket && mainCounts[bucket] > 0 ? bucket : null;
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -2699,7 +2904,7 @@ export default function AuditLogs() {
       // lọc tiếp theo nhóm phụ. Mã hoá đơn (nếu có) lọc CHỒNG lên trên.
       if (view === "main") {
         if (!g.buckets.length) return false;
-        if (bucket && !g.buckets.includes(bucket)) return false;
+        if (activeBucket && !g.buckets.includes(activeBucket)) return false;
       } else {
         if (g.buckets.length) return false;
         if (otherCat && g.otherBucket !== otherCat) return false;
@@ -2713,16 +2918,11 @@ export default function AuditLogs() {
       }
       return true;
     });
-  }, [groups, view, bucket, otherCat, payRef, search]);
+  }, [groups, view, activeBucket, otherCat, payRef, search]);
 
   const total = groups.length;
   // Số trên chip đếm theo TOÀN BỘ nhật ký (không theo bộ lọc đang bật) → bấm qua
-  // lại giữa các chip không thấy số nhảy.
-  const mainCounts = useMemo(() => {
-    const by: Record<MainBucket, number> = { security: 0, member: 0, billing: 0 };
-    for (const g of groups) for (const b of g.buckets) by[b] += 1;
-    return by;
-  }, [groups]);
+  // lại giữa các chip không thấy số nhảy (xem `mainCounts` ở trên).
   const otherCounts = useMemo(() => {
     const by: Record<OtherBucket, number> = {
       member: 0,
@@ -2778,7 +2978,9 @@ export default function AuditLogs() {
 
   return (
     <div className="page-fade">
-      {/* Dải tóm tắt */}
+      <DayPicker day={day} onPick={setDay} />
+
+      {/* Dải tóm tắt — đếm theo NGÀY ĐANG XEM */}
       <div className="metrics" style={{ marginBottom: 24 }}>
         <div className="metric">
           <div className="metric-label">{t("audit.sumTotal")}</div>
@@ -2853,7 +3055,7 @@ export default function AuditLogs() {
           ? MAIN_BUCKETS.filter((b) => mainCounts[b] > 0).map((b) => (
               <Chip
                 key={b}
-                active={bucket === b}
+                active={activeBucket === b}
                 onClick={() => {
                   setBucket((prev) => (prev === b ? null : b));
                   setPayRef(null);
@@ -2914,7 +3116,8 @@ export default function AuditLogs() {
           setExpanded={setExpanded}
           isLoading={logs.isLoading}
           onOpenPayments={openPayments}
-          hasMore={logs.hasNextPage}
+          day={day}
+          hasMore={day ? false : logs.hasNextPage}
           loadingMore={logs.isFetchingNextPage}
           onMore={() => logs.fetchNextPage()}
         />
@@ -2925,7 +3128,8 @@ export default function AuditLogs() {
           setExpanded={setExpanded}
           isLoading={logs.isLoading}
           onOpenPayments={openPayments}
-          hasMore={logs.hasNextPage}
+          day={day}
+          hasMore={day ? false : logs.hasNextPage}
           loadingMore={logs.isFetchingNextPage}
           onMore={() => logs.fetchNextPage()}
         />
@@ -2935,7 +3139,7 @@ export default function AuditLogs() {
         style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 14 }}
       >
         {t("audit.countLabel", { shown: filtered.length, total })}
-        {logs.hasNextPage && ` · ${t("audit.moreHint")}`}
+        {!day && logs.hasNextPage && ` · ${t("audit.moreHint")}`}
       </div>
     </div>
   );
