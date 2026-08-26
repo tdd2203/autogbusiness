@@ -180,18 +180,7 @@ export default function InviteMembers() {
   const nowMs = Date.now();
   const isRenew = (email: string) =>
     membersByEmail.get(email.toLowerCase())?.status === "active";
-  const isFree = (email: string) => {
-    const m = membersByEmail.get(email.toLowerCase());
-    return (
-      m?.status === "removed" &&
-      !!m.subscription_end_at &&
-      new Date(m.subscription_end_at).getTime() > nowMs
-    );
-  };
   const renewCount = entries.filter((e) => isRenew(e.email)).length;
-  // Email miễn phí = mời lại còn hạn (isFree); còn lại (mới + gia hạn) là tính phí.
-  const freeCount = entries.filter((e) => isFree(e.email)).length;
-  const chargedCount = entries.length - freeCount;
 
   // Lịch sử workspace của email đã từng tham gia (≥30 ngày, do chính user này mời).
   const emailHistory = useEmailHistory(validUnique);
@@ -238,6 +227,9 @@ export default function InviteMembers() {
   // hiện 0 dù có tính phí. Gom email theo workspace đích rồi gọi /invite-preview mỗi
   // nhóm (mirror lúc mời), cộng total_fee. plan_invite_fees lo 2 tầng phí +
   // miễn-phí còn-hạn/chuyển-ws + số tháng — không suy được ở client.
+  //
+  // Lấy LUÔN `free_emails` của cùng lời gọi đó để đếm miễn-phí/tính-phí (xem `isFree`
+  // ngay dưới) — cùng một nguồn với `total_fee` nên nhãn và số tiền không thể lệch nhau.
   const feePreviewInput = entries
     .map((e) => ({ email: e.email, months: e.months, ws: targetWsId(e.email) }))
     .filter((x): x is { email: string; months: number; ws: string } => !!x.ws);
@@ -255,16 +247,37 @@ export default function InviteMembers() {
         groups.set(x.ws, arr);
       }
       let total = 0;
+      const free = new Set<string>();
       for (const [ws, invites] of groups) {
-        const r = await api<{ total_fee: number }>(
+        const r = await api<{ total_fee: number; free_emails: string[] }>(
           `/api/v1/workspaces/${ws}/members/invite-preview`,
           { method: "POST", body: JSON.stringify({ invites, role: "member" }) },
         );
         total += r.total_fee;
+        for (const e of r.free_emails ?? []) free.add(e.toLowerCase());
       }
-      return { total };
+      return { total, free };
     },
   });
+
+  // MIỄN PHÍ do SERVER chốt (`free_emails` ở trên), KHÔNG tự suy ở client: luật miễn phí
+  // gồm cả member `pending` còn hạn (BE 2026-08-26) lẫn gói còn hạn nằm ở workspace KHÁC
+  // (chuyển/hợp nhất ws) — hai ca mà danh sách member đang tải ở đây không nhìn thấy.
+  // Luật cũ (chỉ `removed` trong ws đã tải) làm footer ghi "1 tính phí" ngay cạnh
+  // "Tổng phí: 0 đ" — cùng một lời mời, hai câu trả lời ngược nhau (user 2026-08-27).
+  // Chưa có kết quả preview (đang tải/lỗi) → tạm dùng luật cũ cho khỏi trống nhãn.
+  const isFree = (email: string) => {
+    const srv = feePreview.data?.free;
+    if (srv) return srv.has(email.toLowerCase());
+    const m = membersByEmail.get(email.toLowerCase());
+    return (
+      m?.status === "removed" &&
+      !!m.subscription_end_at &&
+      new Date(m.subscription_end_at).getTime() > nowMs
+    );
+  };
+  const freeCount = entries.filter((e) => isFree(e.email)).length;
+  const chargedCount = entries.length - freeCount;
 
   function removeEmailsFromText(emailsLower: Set<string>) {
     setEmailsText((text) =>
