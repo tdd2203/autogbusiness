@@ -303,17 +303,19 @@ const CHANNEL_CHIPS: { label: string; value: TxnChannel | null }[] = [
  * bên dưới kể từng lượt, hai thẻ này chốt tổng — đi kèm nhau và dùng CHUNG ngày
  * đang chọn ở thanh lịch sử.
  *
- * Thẻ "Mời" chỉ nói chuyện LỜI MỜI CÓ TÍNH PHÍ (user 2026-08-27): số email bị tính
- * phí trong ngày trên số lượt gửi. Trước đây nó lấy `emails_added` — mời lại email
- * CÒN HẠN miễn phí vẫn đẩy `last_invited_at` sang ngày mới nên bị đếm như email mới,
- * thành ra "2 / 1 lượt gửi" trong ngày chỉ có đúng 1 email tính phí.
+ * Thẻ "Mời" đọc LỜI MỜI TÍNH PHÍ: thành công / tổng. Đơn vị là EMAIL — dán 5 email
+ * trong một lần bấm vẫn là 5 lời mời, không phải 1 (user 2026-08-27). Trước đây nó
+ * lấy `emails_added`, mà mời lại email CÒN HẠN thì miễn phí nhưng vẫn đẩy
+ * `last_invited_at` sang ngày mới nên bị đếm như email mới thêm.
  */
 function DaySummary({ date, isToday }: { date: string; isToday: boolean }) {
   const { data, isLoading } = useWalletDailySummary(date);
   const suffix = isToday ? "HÔM NAY" : `NGÀY ${vnDateLabel(date)}`;
 
-  const batches = data?.invite_batches ?? 0;
-  const charged = data?.invite_count ?? 0;
+  // "Thành công" = lời mời tính phí KHÔNG bị hoàn. Lượt hỏng luôn được hoàn ngay nên
+  // hiệu số này là số lời mời thật sự vào được team.
+  const total = data?.invite_count ?? 0;
+  const ok = total - (data?.refunded_invite_count ?? 0);
   const spent = data?.fee_net ?? 0;
   const viaInvoice = data?.fee_from_invoice ?? 0;
   const viaWallet = data?.fee_from_balance ?? 0;
@@ -324,19 +326,19 @@ function DaySummary({ date, isToday }: { date: string; isToday: boolean }) {
       <div style={{ ...card, display: "flex", flexDirection: "column" }}>
         <div style={cardKicker}>MỜI {suffix}</div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, height: 46 }}>
-          <div style={bigNumber}>{isLoading ? "…" : charged}</div>
+          <div style={bigNumber}>{isLoading ? "…" : ok}</div>
           <div style={{ fontSize: 14, color: "var(--ink-3)" }}>
-            {batches > 0 ? `/ ${batches} lượt gửi` : "email tính phí"}
+            {total > 0 ? `/ ${total} lời mời` : "lời mời tính phí"}
           </div>
         </div>
         <div style={legendList}>
-          <LegendRow swatch="var(--ink-4)" label="Email tính phí" value={String(charged)} />
+          <LegendRow swatch="var(--ink-4)" label="Mời thành công" value={String(ok)} />
           {second && <LegendDivider />}
           {second}
         </div>
         <div style={{ marginTop: "auto", paddingTop: 20, minHeight: 52, display: "flex", alignItems: "center", fontSize: 12, color: "var(--ink-3)" }}>
-          Chỉ đếm lời mời CÓ tính phí — mời lại email còn hạn không tính. Lời mời lỗi
-          được hoàn phí lập tức về ví.
+          Mỗi email là một lời mời, kể cả khi gửi chung một lần. Mời lại email còn hạn
+          không tính phí nên không nằm ở đây; lời mời lỗi được hoàn phí lập tức.
         </div>
       </div>
 

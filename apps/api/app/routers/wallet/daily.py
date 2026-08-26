@@ -7,12 +7,12 @@ DST) — mặc định hôm nay:
     mốc "ngày thêm" y như tab *Email đã thêm*: COALESCE(last_invited_at,
     created_at). Email bị gỡ (mời hỏng, thu hồi, admin xoá…) đếm riêng ở
     `emails_removed` để con số chính không bị thổi phồng bởi lượt mời thất bại.
-  • `invite_count` = số EMAIL bị tính phí mời trong ngày (mỗi email 1 bút toán
-    `invite_fee`), `invite_batches` = số LƯỢT GỬI (số `ref_id` riêng biệt — một lần
-    bấm "mời" dán nhiều email vẫn là 1 lượt). Thẻ "Mời" ở trang Ví đọc hai số này
-    chứ không đọc `emails_added`: mời lại email CÒN HẠN thì miễn phí nhưng vẫn đẩy
-    `last_invited_at` sang ngày mới, nên `emails_added` đếm cả lượt không tốn đồng
-    nào (user 2026-08-27: thẻ hiện "2 / 1 lượt gửi" trong khi chỉ 1 email tính phí).
+  • `invite_count` = TỔNG lời mời tính phí trong ngày, đếm theo EMAIL: mỗi email là
+    một lời mời và có một bút toán `invite_fee` riêng, dán 5 email trong một lần bấm
+    vẫn là 5 lời mời (user 2026-08-27). Trừ đi `refunded_invite_count` ra số lời mời
+    THÀNH CÔNG — đó là cặp số thẻ "Mời" ở trang Ví hiện. Thẻ KHÔNG đọc `emails_added`:
+    mời lại email CÒN HẠN thì miễn phí nhưng vẫn đẩy `last_invited_at` sang ngày mới
+    nên `emails_added` đếm cả lượt không tốn đồng nào.
   • Phần giao dịch tách theo NGUỒN TIỀN thay vì cộng dồn có dấu: một lượt mời trả
     qua hoá đơn ghi 2 bút toán cùng lúc (order_topup +X, invite_fee −X) nên tổng
     có dấu = 0 dù user vẫn tiêu X. Vì vậy `fee_total` là TOÀN BỘ phí phát sinh,
@@ -83,7 +83,6 @@ def daily_summary(
             WalletTransaction.amount,
             WalletTransaction.reversed,
             WalletTransaction.created_at,
-            WalletTransaction.ref_id,
         )
         .where(
             WalletTransaction.user_id == user.id,
@@ -94,7 +93,7 @@ def daily_summary(
     ).all()
 
     per_kind: dict[str, list[int]] = {}
-    for kind, amount, _reversed, _at, _ref in rows:
+    for kind, amount, _reversed, _at in rows:
         acc = per_kind.setdefault(kind, [0, 0])
         acc[0] += 1
         acc[1] += int(amount)
@@ -121,7 +120,7 @@ def daily_summary(
     # tiền hoá đơn của nó Ở LẠI trong ví, không được tính là "đã tiêu qua hoá đơn".
     invoice_at: dict[datetime, int] = {}
     live_fee_at: dict[datetime, int] = {}
-    for kind, amount, was_reversed, at, _ref in rows:
+    for kind, amount, was_reversed, at in rows:
         if kind == "order_topup":
             invoice_at[at] = invoice_at.get(at, 0) + int(amount)
         elif kind in _FEE_KINDS and not was_reversed:
@@ -131,17 +130,6 @@ def daily_summary(
         max(0, min(invoice_at.get(at, 0), live))
         for at, live in live_fee_at.items()
     )
-    # Một LƯỢT GỬI (một lần bấm "mời", dù dán nhiều email) ghi 1 bút toán
-    # `invite_fee` cho MỖI email, tất cả cùng `ref_id` = queue item → số lượt gửi là
-    # số ref_id RIÊNG BIỆT, còn `invite_count` là số EMAIL bị tính phí.
-    invite_batches = len(
-        {
-            ref or f"txn:{i}"
-            for i, (kind, _a, _r, _at, ref) in enumerate(rows)
-            if kind == "invite_fee"
-        }
-    )
-
     return WalletDailySummaryOut(
         date=target.isoformat(),
         emails_added=emails_added,
@@ -153,7 +141,6 @@ def daily_summary(
         fee_from_invoice=fee_from_invoice,
         fee_from_balance=fee_net - fee_from_invoice,
         invite_count=count_of("invite_fee"),
-        invite_batches=invite_batches,
         refunded_invite_count=refunded_invite_count,
         renew_count=count_of("renew_fee"),
         topup_total=total("topup"),

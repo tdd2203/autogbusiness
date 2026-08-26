@@ -62,11 +62,9 @@ export type WalletDailySummary = {
   fee_from_invoice: number;
   /** Phần thực chi trừ từ số dư ví. */
   fee_from_balance: number;
-  /** Số EMAIL bị tính phí mời trong ngày (mỗi email 1 bút toán `invite_fee`). */
+  /** TỔNG lời mời tính phí trong ngày, đếm theo EMAIL (dán 5 email = 5 lời mời). */
   invite_count: number;
-  /** Số LƯỢT GỬI có tính phí — dán nhiều email trong một lần bấm vẫn là 1 lượt. */
-  invite_batches: number;
-  /** Số lượt mời trong ngày bị hỏng và đã hoàn phí. */
+  /** Số lượt mời trong ngày bị hỏng và đã hoàn phí (phần KHÔNG thành công). */
   refunded_invite_count: number;
   renew_count: number;
   /** Tiền nạp vào ví qua chuyển khoản trong ngày. */

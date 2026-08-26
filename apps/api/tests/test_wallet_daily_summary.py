@@ -51,9 +51,8 @@ def test_counts_today_emails_and_fees(client: TestClient, auth_header: dict) -> 
     assert s["date"] == datetime.now(VN_TZ).date().isoformat()
     assert s["emails_added"] == 3
     assert s["emails_removed"] == 0
+    # 3 email dán trong MỘT lần bấm mời vẫn là 3 LỜI MỜI (đơn vị đếm là email).
     assert s["invite_count"] == 3
-    # 3 email dán trong MỘT lần bấm mời = 1 lượt gửi.
-    assert s["invite_batches"] == 1
     assert s["fee_total"] == 3 * FEE
     # Ví đủ tiền → trừ thẳng số dư, không qua hoá đơn.
     assert s["fee_from_balance"] == 3 * FEE
@@ -234,9 +233,9 @@ def test_paid_invite_counts_ignore_free_reinvite(
     """Thẻ "Mời" đếm LỜI MỜI TÍNH PHÍ, không đếm mời lại email còn hạn (miễn phí).
 
     Mời lại email còn hạn vẫn đẩy `last_invited_at` sang ngày mới nên `emails_added`
-    tính nó như email thêm trong ngày — user 2026-08-27 thấy thẻ ghi "2 / 1 lượt gửi"
-    trong ngày chỉ có đúng 1 email bị trừ tiền. `invite_count`/`invite_batches` đọc
-    thẳng sổ ví nên không dính lượt miễn phí.
+    tính nó như email thêm trong ngày — user 2026-08-27 thấy thẻ ghi "2 / 1" trong
+    ngày chỉ có đúng 1 email bị trừ tiền. `invite_count` đọc thẳng sổ ví nên không
+    dính lượt miễn phí.
     """
     ws = create_ws(client, auth_header, "Daily WS 5")
     sub = make_beta_sub(client, auth_header, username="daily8", balance=300_000)
@@ -249,19 +248,25 @@ def test_paid_invite_counts_ignore_free_reinvite(
     s = _summary(client, sub["token"])
     assert s["emails_added"] == 2
     assert s["invite_count"] == 2  # chỉ 2 email bị tính phí
-    assert s["invite_batches"] == 1  # lượt mời lại miễn phí không thành lượt gửi
     assert s["fee_total"] == 2 * FEE
 
 
-def test_invite_batches_counts_separate_sends(client: TestClient, auth_header: dict) -> None:
-    """Hai lần bấm mời khác nhau = 2 lượt gửi, dù mỗi lần chỉ 1 email."""
+def test_invite_success_is_total_minus_refunded(client: TestClient, auth_header: dict) -> None:
+    """Cặp số của thẻ "Mời" = (tổng − đã hoàn) / tổng, gộp mọi lần bấm trong ngày."""
     ws = create_ws(client, auth_header, "Daily WS 6")
-    sub = make_beta_sub(client, auth_header, username="daily9", balance=300_000)
+    sub = make_beta_sub(client, auth_header, username="daily9", balance=500_000)
     assign(client, auth_header, ws["id"], sub["id"])
 
-    _bulk_invite(client, sub["token"], ws["id"], ["b1@example.com"])
-    _bulk_invite(client, sub["token"], ws["id"], ["b2@example.com"])
+    _bulk_invite(client, sub["token"], ws["id"], ["b1@example.com", "b2@example.com"])
+    bad = _bulk_invite(client, sub["token"], ws["id"], ["b3@example.com"])
+    upd = client.patch(
+        f"/api/v1/queue/{bad['queue_item_id']}",
+        json={"status": "FAILED", "error_code": "FAILED_UI_CHANGED", "error_message": "hỏng"},
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert upd.status_code == 200, upd.text
 
     s = _summary(client, sub["token"])
-    assert s["invite_count"] == 2
-    assert s["invite_batches"] == 2
+    assert s["invite_count"] == 3  # tổng lời mời tính phí
+    assert s["refunded_invite_count"] == 1  # 1 lời mời hỏng, đã hoàn
+    assert s["invite_count"] - s["refunded_invite_count"] == 2  # thẻ hiện "2 / 3"

@@ -1252,10 +1252,8 @@ class WalletDailySummaryOut(BaseModel):
     fee_net: int = 0
     fee_from_invoice: int
     fee_from_balance: int
-    #: Số EMAIL bị tính phí mời trong ngày (mỗi email 1 bút toán `invite_fee`).
+    #: TỔNG lời mời tính phí trong ngày, đếm theo EMAIL (dán 5 email = 5 lời mời).
     invite_count: int
-    #: Số LƯỢT GỬI có tính phí (ref_id riêng biệt) — dán nhiều email vẫn là 1 lượt.
-    invite_batches: int = 0
     #: Số lượt mời trong ngày đã hỏng và được hoàn phí.
     refunded_invite_count: int = 0
     renew_count: int
