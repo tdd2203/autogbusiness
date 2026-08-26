@@ -32,7 +32,45 @@ export type WalletTxn = {
   ref_type: string | null;
   ref_id: string | null;
   meta: Record<string, unknown> | null;
+  /** Chỉ có ở `invite_fee`: true ⇔ phí đã được hoàn (lượt mời hỏng). */
+  reversed?: boolean;
   created_at: string;
+};
+
+/** Báo cáo 1 ngày (giờ VN) của chính user — GET /api/v1/wallet/daily-summary. */
+export type WalletDailyKind = {
+  kind: WalletTxnKind | string;
+  count: number;
+  /** Tổng tiền CÓ DẤU của loại bút toán này trong ngày. */
+  amount: number;
+};
+
+export type WalletDailySummary = {
+  date: string; // YYYY-MM-DD
+  /** Email thêm trong ngày và CÒN trong team. */
+  emails_added: number;
+  /** Email thêm trong ngày nhưng đã rời (mời hỏng, thu hồi, bị xoá…). */
+  emails_removed: number;
+  txn_count: number;
+  /** Tổng phí mời + gia hạn phát sinh trong ngày (số dương), KỂ CẢ lượt đã hoàn. */
+  fee_total: number;
+  /** Phần `fee_total` đã hoàn lại vì mời hỏng — không tính là tiêu. */
+  fee_refunded: number;
+  /** THỰC CHI trong ngày = fee_total − fee_refunded. */
+  fee_net: number;
+  /** Phần thực chi trả thẳng qua hoá đơn (không trừ số dư ví). */
+  fee_from_invoice: number;
+  /** Phần thực chi trừ từ số dư ví. */
+  fee_from_balance: number;
+  invite_count: number;
+  /** Số lượt mời trong ngày bị hỏng và đã hoàn phí. */
+  refunded_invite_count: number;
+  renew_count: number;
+  /** Tiền nạp vào ví qua chuyển khoản trong ngày. */
+  topup_total: number;
+  /** Tiền hoàn do mời thất bại. */
+  refund_total: number;
+  by_kind: WalletDailyKind[];
 };
 
 export type TopupCreated = {

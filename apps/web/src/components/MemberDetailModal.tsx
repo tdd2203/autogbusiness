@@ -17,7 +17,7 @@
  * chuyển từ bảng "Email đã add" sang, thao tác sửa sai hiếm dùng.
  * Xem MemberDetailModal.md TRƯỚC KHI SỬA.
  */
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { toast } from "./Toast";
@@ -28,7 +28,7 @@ import { useAuth } from "../hooks/useAuth";
 import { useCorrectAddDate } from "../hooks/useSubscriptionApprovals";
 import { useSetMemberFee, useWalletAdminUsers, usePaymentSettings } from "../hooks/useWallet";
 import { formatVnd } from "../lib/wallet";
-import type { Member, MemberLog } from "../types";
+import type { AddedMember, Member, MemberLog } from "../types";
 
 /** ISO → giá trị cho <input type="datetime-local"> ("YYYY-MM-DDTHH:mm", giờ địa phương). */
 function toLocalInputValue(iso: string | null | undefined): string {
@@ -428,8 +428,54 @@ type MemberPaymentEntry = {
   ref_type: string | null;
   ref_id: string | null;
   meta: Record<string, unknown> | null;
+  /** Chỉ ở `invite_fee`: true ⇔ phí đã được hoàn (lượt mời hỏng). */
+  reversed?: boolean;
   created_at: string;
 };
+
+/** 1 dòng của khối dòng tiền: khoản lẻ, hoặc CẶP phí ↔ hoàn của một lượt mời hỏng. */
+type CashRow =
+  | { type: "entry"; entry: MemberPaymentEntry }
+  | { type: "voided"; fee: MemberPaymentEntry; refund: MemberPaymentEntry };
+
+/**
+ * Ghép `invite_fee` (đã `reversed`) với `invite_refund` của cùng lượt mời.
+ *
+ * Mời hỏng ghi 2 bút toán ngược dấu ở 2 thời điểm khác nhau; để rời ra thì người xem
+ * phải tự trừ nhẩm mới biết email này rốt cuộc có mất tiền hay không (user
+ * 2026-08-26). Ở ĐÂY chỉ GỘP chứ không giấu như trang Ví: khối này sinh ra để đối
+ * soát "email dùng miễn phí" (ca stockbox.m), giấu đi là mất luôn bằng chứng.
+ *
+ * Cùng `ref_id` (queue_item) là đủ vì mọi khoản trong khối đã thuộc về 1 email; thiếu
+ * bút toán hoàn (rơi ngoài `limit`) thì để nguyên dòng phí.
+ */
+export function pairMemberCashflow(entries: MemberPaymentEntry[]): CashRow[] {
+  // Ghép trước rồi mới dựng dòng: danh sách xếp MỚI→CŨ nên bút toán hoàn luôn đứng
+  // TRƯỚC phí của nó, quét một lượt sẽ đẩy nhầm bút toán hoàn thành dòng riêng.
+  const pairedRefund = new Map<string, MemberPaymentEntry>(); // fee.id → refund
+  const usedRefund = new Set<string>();
+  for (const fee of entries) {
+    if (fee.kind !== "invite_fee" || !fee.reversed) continue;
+    const refund = entries.find(
+      (r) =>
+        r.kind === "invite_refund" &&
+        !usedRefund.has(r.id) &&
+        r.ref_id === fee.ref_id &&
+        r.amount === -fee.amount,
+    );
+    if (!refund) continue;
+    usedRefund.add(refund.id);
+    pairedRefund.set(fee.id, refund);
+  }
+  const rows: CashRow[] = [];
+  for (const entry of entries) {
+    if (usedRefund.has(entry.id)) continue; // đã kể trong cặp của phí
+    const refund = pairedRefund.get(entry.id);
+    if (refund) rows.push({ type: "voided", fee: entry, refund });
+    else rows.push({ type: "entry", entry });
+  }
+  return rows;
+}
 
 type MemberPaymentOrder = {
   id: string;
@@ -530,6 +576,8 @@ export function MemberCashflow({
   // Đã thu phí mà thực thu = 0 ⇒ mọi khoản đều đã hoàn: email đang dùng MIỄN PHÍ.
   // Đây chính là ca stockbox.m — cảnh báo ngay trên đầu khối, đừng bắt admin tự trừ.
   const allRefunded = data.charged_total > 0 && data.net_total === 0;
+  // Cặp phí ↔ hoàn của lượt mời hỏng gộp thành 1 dòng (xem pairMemberCashflow).
+  const rows = pairMemberCashflow(data.entries);
   return (
     <div>
       <div
@@ -546,7 +594,7 @@ export function MemberCashflow({
         >
           {t("memberDetail.cashflowTitle")}
         </span>
-        {data.entries.length > 0 && (
+        {rows.length > 0 && (
           <span
             style={{
               fontFamily: "var(--font-mono)",
@@ -557,7 +605,7 @@ export function MemberCashflow({
               borderRadius: 999,
             }}
           >
-            {data.entries.length}
+            {rows.length}
           </span>
         )}
       </div>
@@ -608,13 +656,78 @@ export function MemberCashflow({
         </div>
       )}
 
-      {data.entries.length === 0 ? (
+      {rows.length === 0 ? (
         <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
           {t("memberDetail.cashEmpty")}
         </div>
       ) : (
         <div style={{ display: "grid", gap: 6 }}>
-          {data.entries.map((e) => {
+          {rows.map((row) => {
+            /* Lượt mời HỎNG: phí trừ rồi hoàn lại đủ ⇒ email này không mất đồng nào
+               cho lượt đó. Một dòng, số tiền gạch ngang + 0 ₫ — thay vì 2 dòng ngược
+               dấu ở 2 chỗ để người xem tự trừ (user 2026-08-26). */
+            if (row.type === "voided") {
+              const { fee, refund } = row;
+              return (
+                <div
+                  key={fee.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    padding: "8px 11px",
+                    background: "var(--bg)",
+                    border: "1px dashed var(--border)",
+                    borderRadius: 10,
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                      {t("memberDetail.cashVoidedTitle")}
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 10.5,
+                        color: "var(--ink-3)",
+                        marginTop: 2,
+                      }}
+                    >
+                      {formatDateTime(fee.created_at)} →{" "}
+                      {t("memberDetail.cashVoidedRefundedAt", {
+                        time: formatDateTime(refund.created_at),
+                      })}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    <div
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 11,
+                        color: "var(--ink-3)",
+                        textDecoration: "line-through",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {formatVnd(fee.amount)}
+                    </div>
+                    <div
+                      style={{
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 12.5,
+                        fontWeight: 600,
+                        color: "var(--ink-2)",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {formatVnd(0)}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            const e = row.entry;
             const positive = e.amount > 0;
             return (
               <div
@@ -920,14 +1033,27 @@ function InviteStepper({
   );
 }
 
-export function MemberDetailModal({
+/**
+ * Ruột của modal — chỉ biết HIỂN THỊ 1 email. Việc "đang xem email nào" do
+ * `MemberDetailModal` (cuối file) giữ, vì bấm mũi tên "→ email mới" sẽ đổi cả
+ * workspace lẫn member đang xem.
+ */
+function MemberDetailView({
   workspaceId,
   member,
   onClose,
+  onOpenChainMember,
+  onBack,
+  backEmail,
 }: {
   workspaceId: string;
   member: Member;
   onClose: () => void;
+  /** Bấm 1 chặng trong chuỗi "đã đổi sang" → mở chi tiết email đó. */
+  onOpenChainMember: (next: AddedMember) => void;
+  /** Có mặt khi đang đứng ở một email mở TỪ mũi tên (có chỗ để quay lại). */
+  onBack?: () => void;
+  backEmail?: string;
 }) {
   const t = useT();
   const formatDate = useFormatDate();
@@ -1252,8 +1378,40 @@ export function MemberDetailModal({
       ),
   });
 
+  // "Đã hoàn phí nhưng email vẫn trong team" là một món NỢ — mà nợ thì có lúc trả
+  // xong. Luật nhận biết phải TRÙNG KHÍT với backend (`_flag_refunded_while_in_team`
+  // trong members/reconcile.py), nếu không thì một bên im còn một bên vẫn đỏ:
+  // có bút toán `adjust` ÂM ĐÚNG BẰNG lần hoàn gần nhất, xảy ra SAU lần hoàn đó.
+  //
+  // ⚠️ KHÔNG dùng "thực thu > 0" cho tiện: một lượt GIA HẠN tháng sau cũng đẩy thực
+  // thu lên dương, và thế là món nợ của tháng trước bị đóng dấu "đã truy thu" trong
+  // khi chưa ai thu đồng nào. Cũng KHÔNG dò khoá `meta` (`recollect_of`,
+  // `manual_invite_at`…) vì mỗi lần truy thu tay trên production đánh dấu một kiểu.
+  const refundDebtSettled = useMemo(() => {
+    const entries = payments?.entries ?? [];
+    const refunds = entries.filter(
+      (e) => e.kind.endsWith("_refund") && e.amount > 0,
+    );
+    if (refunds.length === 0) return false;
+    const latest = refunds.reduce((a, b) =>
+      a.created_at >= b.created_at ? a : b,
+    );
+    return entries.some(
+      (e) =>
+        e.kind === "adjust" &&
+        e.amount === -latest.amount &&
+        e.created_at > latest.created_at,
+    );
+  }, [payments]);
+
   const actionLabel = (log: MemberLog) => {
     const action = log.action;
+    // Nợ đã truy thu xong → dòng này phải đọc như LỊCH SỬ, không phải như một lời
+    // đòi tiền còn treo (user 26/8/2026: "đã điều chỉnh trừ rồi nhưng thông báo vẫn
+    // gây nhầm lẫn"). Chấm đỏ + chữ "cần truy thu" chỉ dành cho nợ CHƯA thu.
+    if (action === "MEMBER_REFUND_WHILE_IN_TEAM" && refundDebtSettled) {
+      return t("memberLog.action.MEMBER_REFUND_WHILE_IN_TEAM_SETTLED");
+    }
     // Invite qua dashboard LUÔN đi đường bulk (kể cả 1 email). Chỉ gọi là "Mời
     // hàng loạt" khi mẻ đó thực sự có >1 email; mẻ 1 email hiện là "Lời mời".
     if (action === "MEMBER_BULK_INVITE_QUEUED") {
@@ -1388,6 +1546,30 @@ export function MemberDetailModal({
 
   // Chuỗi email thay thế (chỉ có ở tab "Đã xoá", dòng bị gỡ vì đổi email).
   const emailChain = member.email_changed_to ?? [];
+  // id member từng chặng — backend trả kèm CÙNG THỨ TỰ. Thiếu id (dữ liệu cũ, hoặc
+  // danh sách không đổ đầy) → chặng đó chỉ là chữ, không bấm được.
+  const emailChainIds = member.email_changed_to_ids ?? [];
+  // Chặng đang tải sau khi bấm (index) → hiện chấm chờ tại chỗ, chặn bấm chồng.
+  const [chainLoading, setChainLoading] = useState<number | null>(null);
+  const openChainMember = async (index: number) => {
+    const id = emailChainIds[index];
+    if (!id || chainLoading !== null) return;
+    setChainLoading(index);
+    try {
+      // Email nhận thường KHÔNG có trong danh sách đang mở (nó còn sống, có khi
+      // khác workspace) → hỏi thẳng backend theo id.
+      const next = await api<AddedMember>(`/api/v1/added-members/${id}`);
+      onOpenChainMember(next);
+    } catch {
+      // Kể cả 404 (email ngoài tầm nhìn của sub-admin) cũng nói bằng tiếng người:
+      // detail thô của backend không giúp gì cho người đang xem.
+      toast.error(
+        t("memberDetail.chainLoadError", { email: emailChain[index] }),
+      );
+    } finally {
+      setChainLoading(null);
+    }
+  };
   // Email ĐÃ RỜI TEAM: `subscription_end_at` trên dòng này KHÔNG còn là hạn đang
   // chạy — với ca đổi email nó là bản sao của hạn đã theo email mới đi. Vòng tròn
   // vì thế không được khoe "còn hạn / 27 ngày còn lại" như member đang sống.
@@ -1604,6 +1786,40 @@ export function MemberDetailModal({
             flexShrink: 0,
           }}
         >
+          {/* Đang xem một email mở TỪ mũi tên → nút quay lại email trước đó, để
+              không phải đóng modal rồi tìm lại dòng cũ trong bảng. */}
+          {onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              title={
+                backEmail
+                  ? t("memberDetail.chainBack", { email: backEmail })
+                  : t("common.back")
+              }
+              aria-label={
+                backEmail
+                  ? t("memberDetail.chainBack", { email: backEmail })
+                  : t("common.back")
+              }
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 9,
+                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--ink-3)",
+                fontSize: 14,
+                cursor: "pointer",
+                flexShrink: 0,
+              }}
+            >
+              ←
+            </button>
+          )}
           <div style={{ minWidth: 0, flex: 1 }}>
             <div
               style={{
@@ -1646,31 +1862,56 @@ export function MemberDetailModal({
                   flexWrap: "wrap",
                 }}
               >
-                {emailChain.map((email, i) => (
-                  <span
-                    key={email}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                    }}
-                  >
-                    <span aria-hidden="true">→</span>
-                    {/* Email CUỐI chuỗi là nơi đang giữ hạn + tiền → in đậm; các
-                        chặng giữa chỉ là đường đi, để nhạt. */}
+                {emailChain.map((email, i) => {
+                  const isLast = i === emailChain.length - 1;
+                  // Email CUỐI chuỗi là nơi đang giữ hạn + tiền → in đậm; các
+                  // chặng giữa chỉ là đường đi, để nhạt.
+                  const emailStyle = {
+                    color: isLast ? "var(--ink)" : "var(--ink-3)",
+                    fontWeight: isLast ? 600 : 400,
+                  } as const;
+                  const clickable = Boolean(emailChainIds[i]);
+                  return (
                     <span
+                      key={email}
                       style={{
-                        color:
-                          i === emailChain.length - 1
-                            ? "var(--ink)"
-                            : "var(--ink-3)",
-                        fontWeight: i === emailChain.length - 1 ? 600 : 400,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
                       }}
                     >
-                      {email}
+                      <span aria-hidden="true">→</span>
+                      {/* Bấm vào email nhận = mở CHI TIẾT của nó ngay trong modal
+                          này (hạn + tiền của email cũ đã theo nó đi, muốn xem tiếp
+                          thì phải sang đó). Không có id thì để nguyên chữ. */}
+                      {clickable ? (
+                        <button
+                          type="button"
+                          onClick={() => void openChainMember(i)}
+                          disabled={chainLoading !== null}
+                          title={t("memberDetail.chainOpenHint", { email })}
+                          style={{
+                            ...emailStyle,
+                            font: "inherit",
+                            fontWeight: emailStyle.fontWeight,
+                            background: "none",
+                            border: "none",
+                            padding: 0,
+                            cursor: chainLoading !== null ? "wait" : "pointer",
+                            textDecoration: "underline",
+                            textDecorationStyle: "dotted",
+                            textUnderlineOffset: 3,
+                          }}
+                        >
+                          {email}
+                          {chainLoading === i && " …"}
+                        </button>
+                      ) : (
+                        <span style={emailStyle}>{email}</span>
+                      )}
                     </span>
-                  </span>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -2116,11 +2357,18 @@ export function MemberDetailModal({
                       !terminal &&
                       log.id === liveInviteId &&
                       member.status === "active";
-                    const effResult = terminal?.result
-                      ? terminal.result
-                      : joinedFallback
-                        ? "COMPLETED"
-                        : log.result;
+                    // Cảnh báo nợ đã được trả → chấm xanh "đã xong", không còn là
+                    // ERROR đỏ. Backend ghi ERROR ở thời điểm phát hiện và audit là
+                    // sổ BẤT BIẾN, nên chỗ lật trạng thái phải nằm ở đây.
+                    const effResult =
+                      log.action === "MEMBER_REFUND_WHILE_IN_TEAM" &&
+                      refundDebtSettled
+                        ? "OK"
+                        : terminal?.result
+                          ? terminal.result
+                          : joinedFallback
+                            ? "COMPLETED"
+                            : log.result;
                     const dot = RESULT_DOT[effResult] ?? "var(--ink-3)";
                     const ring = RESULT_RING[effResult] ?? "var(--surface-2)";
                     return (
@@ -2261,6 +2509,41 @@ export function MemberDetailModal({
                               trong email — chỉ hiện được khi sync xác nhận. Cũng hiện
                               trên dòng Lời mời khi member đã active mà thiếu event
                               terminal (fallback dữ liệu cũ). */}
+                          {/* Nợ do hoàn phí oan: nói thẳng bằng tiền là còn nợ hay
+                              đã thu xong. Không có dòng này thì người đọc phải tự
+                              ghép nhật ký với panel "Dòng tiền" mới hiểu — đúng chỗ
+                              gây khó hiểu mà user chỉ ra 26/8/2026. Bản ghi cũ dùng
+                              `refunded_vnd`, bản mới dùng `amount`. */}
+                          {log.action === "MEMBER_REFUND_WHILE_IN_TEAM" && (
+                            <div
+                              style={{
+                                fontFamily: "var(--font-mono)",
+                                fontSize: 11,
+                                color: refundDebtSettled
+                                  ? "var(--success)"
+                                  : "var(--danger)",
+                                marginTop: 3,
+                              }}
+                            >
+                              {refundDebtSettled ? "✓ " : "! "}
+                              {t(
+                                refundDebtSettled
+                                  ? "memberLog.refundDebtSettled"
+                                  : "memberLog.refundDebtOpen",
+                                {
+                                  amount: formatVnd(
+                                    Number(
+                                      (log.data as Record<string, unknown> | null)
+                                        ?.amount ??
+                                        (log.data as Record<string, unknown> | null)
+                                          ?.refunded_vnd ??
+                                        0,
+                                    ),
+                                  ),
+                                },
+                              )}
+                            </div>
+                          )}
                           {log.action === "MEMBER_SYNC_PROMOTED_ACTIVE" && (
                             <div
                               style={{
@@ -2363,5 +2646,51 @@ export function MemberDetailModal({
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Modal "Chi tiết thành viên" — bọc ngoài `MemberDetailView` để giữ NGĂN XẾP email
+ * đang xem.
+ *
+ * Vì sao cần ngăn xếp: email bị gỡ do ĐỔI EMAIL hiện chuỗi "→ email mới" ở đầu
+ * modal, và bấm vào đó phải mở chi tiết email nhận (hạn + tiền đã theo nó đi). Email
+ * nhận có thể lại đổi tiếp (A → B → C) nên đường đi có nhiều tầng; nút ← lùi từng
+ * tầng, đóng modal thì reset về email gốc.
+ *
+ * `key` ép remount khi đổi email đang xem: mọi state cục bộ của view (đang sửa phí,
+ * đang sửa người nhắc, …) thuộc về ĐÚNG email đó, mang sang email khác là sai.
+ */
+export function MemberDetailModal({
+  workspaceId,
+  member,
+  onClose,
+}: {
+  workspaceId: string;
+  member: Member;
+  onClose: () => void;
+}) {
+  const [chain, setChain] = useState<AddedMember[]>([]);
+  const current = chain.length > 0 ? chain[chain.length - 1] : null;
+  // Email sẽ quay về khi bấm ←: tầng trước đó, hoặc email gốc nếu đang ở tầng 1.
+  const previousEmail =
+    chain.length > 1 ? chain[chain.length - 2].email : member.email;
+
+  return (
+    <MemberDetailView
+      key={current?.id ?? member.id}
+      // Email nhận có thể nằm ở workspace KHÁC → mọi endpoint theo workspace phải
+      // dùng workspace của chính email đang xem.
+      workspaceId={current?.workspace_id ?? workspaceId}
+      member={current ?? member}
+      onClose={onClose}
+      onOpenChainMember={(next) => setChain((prev) => [...prev, next])}
+      onBack={
+        chain.length > 0
+          ? () => setChain((prev) => prev.slice(0, -1))
+          : undefined
+      }
+      backEmail={chain.length > 0 ? previousEmail : undefined}
+    />
   );
 }

@@ -1,8 +1,9 @@
 import { useMemo, useState, type CSSProperties } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { vnDateKey } from "../lib/wallet-history";
 import { useT } from "../i18n";
-import { Chip, TimeCell } from "./Queue";
+import { Chip } from "./Queue";
 import { SearchInput } from "./Members";
 import { useIsMobile } from "../hooks/useIsMobile";
 
@@ -26,8 +27,10 @@ type AuditLog = {
  * thanh toán / hàng đợi) để nhấn mạnh trực quan cái gì đáng chú ý, và
  * hạ tông (routine) các sự kiện tự động của extension/hệ thống.
  * ------------------------------------------------------------------ */
+/** Số dòng nhật ký mỗi lượt tải; nút "xem thêm" tải tiếp một lô cũ hơn. */
+const AUDIT_PAGE_SIZE = 200;
+
 type Cat = "security" | "member" | "billing" | "queue";
-const CAT_ORDER: Cat[] = ["security", "member", "billing", "queue"];
 
 /* Sub-type hàng đợi tác động lên thành viên → xếp vào nhóm "Thành viên" (dù đi
    qua QUEUE_*), để thao tác thành viên được làm nổi bật thay vì lẫn vào hàng đợi. */
@@ -133,6 +136,143 @@ export function importantGroup(action: string): ImpGroup | null {
   return null;
 }
 
+/* ------------------------------------------------------------------
+ * PHÂN TAB (chốt user 2026-08-26). Tab "Chính" CHỈ có 3 nhóm:
+ *   • Bảo mật    — lịch sử đăng nhập / mật khẩu của các TÀI KHOẢN quản trị.
+ *   • Thành viên — lệnh MỜI · lệnh XOÁ · lệnh GIA HẠN.
+ *   • Thanh toán — TIỀN của chính các lệnh đó: trừ phí mời/gia hạn, hoàn phí,
+ *     hoá đơn QR (mã ORDER) trả cho lệnh mời/gia hạn.
+ * Mọi thứ còn lại (hàng đợi/đồng bộ, ví ngoài lệnh, cấu hình, thao tác thành viên
+ * khác như đổi chủ/đổi hạn) rơi xuống tab "Khác" và TỰ chia nhóm phụ ở đó.
+ *
+ * Một nhóm được phép thuộc NHIỀU chip cùng lúc: lệnh mời vừa là "Thành viên"
+ * (bản thân lệnh) vừa là "Thanh toán" (phí mời nằm CÙNG nhóm nhờ chung
+ * queue_item_id) — nên chip là TẬP HỢP, không phải một `cat` duy nhất như trước.
+ * ------------------------------------------------------------------ */
+export type MainBucket = "security" | "member" | "billing";
+export const MAIN_BUCKETS: MainBucket[] = ["security", "member", "billing"];
+export type OtherBucket = "member" | "wallet" | "queue" | "config" | "misc";
+export const OTHER_BUCKETS: OtherBucket[] = [
+  "member",
+  "wallet",
+  "queue",
+  "config",
+  "misc",
+];
+
+/** Trường tối thiểu của 1 sự kiện mà việc phân tab cần — để test khỏi dựng `Decorated`. */
+type EventLike = {
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  data: Record<string, unknown> | null;
+};
+
+/** Đăng nhập / mật khẩu / vòng đời tài khoản quản trị → chip "Bảo mật". Đổi cấu
+ *  hình, API key… KHÔNG thuộc đây (chúng là cấu hình, nằm tab "Khác"). */
+const AUTH_OPS = new Set([
+  "LOGIN_SUCCESS",
+  "LOGIN_FAILED",
+  "LOGIN_BLOCKED_DISABLED",
+  "LOGIN_BLOCKED_SPAM",
+  "PASSWORD_CHANGED",
+  "USER_PASSWORD_RESET",
+  "USER_CREATED",
+  "USER_REGISTERED",
+  "SUPER_ADMIN_SEEDED",
+]);
+
+/** Lệnh nghiệp vụ được lên tab "Chính" ở chip "Thành viên". `owner`/`sync` KHÔNG
+ *  nằm đây (yêu cầu user: chỉ mời · xoá · gia hạn) → rơi xuống tab "Khác". */
+const MEMBER_CMD_GROUPS = new Set<ImpGroup>(["invite", "remove", "renew"]);
+
+/** Tiền CỦA lệnh mời / lệnh gia hạn. Nạp ví, rút, điều chỉnh… là tiền NGOÀI lệnh
+ *  → tab "Khác" (nhóm Ví). `WALLET_ORDER_CREDITED` là tiền QR vào ví để trả ngay
+ *  cho một lệnh mời/gia hạn nên vẫn tính là thanh toán của lệnh. */
+const PAY_OPS = new Set([
+  "WALLET_INVITE_CHARGED",
+  "WALLET_INVITE_REFUNDED",
+  "WALLET_RENEW_CHARGED",
+  "WALLET_ORDER_CREDITED",
+]);
+const PAY_ORDER_KINDS = new Set(["invite", "renew"]);
+
+function isPayEvent(e: EventLike): boolean {
+  const op = opOf(e.action);
+  if (PAY_OPS.has(op)) return true;
+  // Hoá đơn QR: chỉ tính khi hoá đơn đó là của lệnh mời/gia hạn.
+  if (op === "PAYMENT_ORDER_CREATED")
+    return PAY_ORDER_KINDS.has(String(e.data?.kind ?? ""));
+  return false;
+}
+
+/** Các chip của tab "Chính" mà nhóm sự kiện này thuộc về (rỗng = xuống "Khác"). */
+export function mainBucketsOf(evs: EventLike[]): MainBucket[] {
+  const out: MainBucket[] = [];
+  if (evs.some((e) => AUTH_OPS.has(opOf(e.action)))) out.push("security");
+  if (
+    evs.some((e) => {
+      const g = importantGroup(e.action);
+      return g !== null && MEMBER_CMD_GROUPS.has(g);
+    })
+  )
+    out.push("member");
+  if (evs.some(isPayEvent)) out.push("billing");
+  return out;
+}
+
+/* Nhóm phụ của tab "Khác" — xét theo action KHỞI TẠO của nhóm. THỨ TỰ có ý nghĩa,
+   từ hẹp tới rộng: WORKSPACE_INVOICE_FEE_SET là chuyện tiền, WORKSPACE_SYNC_QUEUED
+   là chuyện đồng bộ, mọi WORKSPACE_* còn lại mới là cấu hình. Nhờ vậy các action
+   ít gặp (WORKSPACE_RENEWAL_DATE_RESTORED, USER_DISABLED…) vẫn có chỗ đứng thay vì
+   rơi hết vào "Linh tinh". */
+const OTHER_WALLET_RE =
+  /^(WALLET_|PAYMENT_ORDER_|MEMBER_PAYMENT_|MEMBER_FEE_SET|USER_FEE_SET|WORKSPACE_(INVOICE_FEE|CREDIT_BUDGET|BILLING|FINANCE))/;
+// MEMBER_BULK_UPSERT là bút toán của mẻ đối soát (reconcile.py) — chuyện đồng bộ,
+// không phải thao tác admin lên thành viên.
+const OTHER_QUEUE_RE =
+  /^(QUEUE_|SYNC_|UI_LABEL|AUTO_PURCHASE_SEAT|PURCHASE_SEAT|WORKSPACE_SYNC|MEMBER_SYNC|MEMBER_RECONCILE|MEMBER_INVITE_CLEANUP|MEMBER_BULK_UPSERT|MEMBER_(ROLE|LICENSE_TYPE|USAGE_LIMIT)_SYNCED)/;
+const OTHER_CONFIG_RE =
+  /^(WORKSPACE_|PAYMENT_SETTINGS|TELEGRAM_|INVITE_ALL_WORKSPACES|MEMBER_NOTIFY_|USER_)/;
+const OTHER_MEMBER_RE = /^(MEMBER_|REVOKE_INVITES)/;
+
+/** Nhóm phụ trong tab "Khác" cho một action (đã chắc chắn không thuộc tab Chính). */
+export function otherBucketOf(action: string): OtherBucket {
+  const op = opOf(action);
+  if (OTHER_WALLET_RE.test(op)) return "wallet";
+  if (OTHER_QUEUE_RE.test(op)) return "queue";
+  if (OTHER_CONFIG_RE.test(op)) return "config";
+  if (OTHER_MEMBER_RE.test(op)) return "member";
+  return "misc";
+}
+
+/* Mã hoá đơn của một lệnh = khoá mà GIAO DỊCH VÍ neo vào (`wallet_transactions.ref_id`):
+     • mời/gỡ (đi qua hàng đợi) → queue_item_id  (kind `invite_fee`)
+     • gia hạn                  → member_id      (kind `renew_fee`)
+   Nhờ vậy bấm mã trên lệnh mời/gia hạn là lọc ra ĐÚNG các dòng tiền của nó — kể cả
+   khi khoản trừ phí gia hạn nằm ở một nhóm riêng (không có queue_item_id để gộp). */
+export function payRefsOf(evs: EventLike[]): string[] {
+  const out: string[] = [];
+  const add = (v: unknown) => {
+    if (typeof v === "string" && v && !out.includes(v)) out.push(v);
+  };
+  for (const e of evs) {
+    const op = opOf(e.action);
+    if (e.target_type === "QUEUE_ITEM") add(e.target_id);
+    add(e.data?.queue_item_id);
+    if (op === "MEMBER_SUBSCRIPTION_RENEWED") add(e.target_id);
+    if (op === "WALLET_RENEW_CHARGED") add(e.data?.member_id ?? e.data?.ref_id);
+    if (op === "PAYMENT_ORDER_CREATED" && e.data?.kind === "renew")
+      add(e.data?.member_id);
+  }
+  return out;
+}
+
+/** Dạng ngắn để hiện trên hàng: 8 ký tự đầu của UUID. */
+export function shortRef(ref: string): string {
+  return ref.replace(/-/g, "").slice(0, 8);
+}
+
 type GroupColor = {
   accent: string;
   tint: string;
@@ -230,6 +370,8 @@ const ACT_TITLE: Record<string, string> = {
   WALLET_TOPUP_CREDITED: "Nạp tiền vào ví",
   WALLET_INVITE_CHARGED: "Trừ phí mời",
   WALLET_INVITE_REFUNDED: "Hoàn phí mời",
+  WALLET_RENEW_CHARGED: "Trừ phí gia hạn",
+  WALLET_DUPLICATE_INVOICE_CREDITED: "Cộng lại tiền trả trùng hoá đơn",
   WALLET_WITHDRAW_HOLD: "Giữ tiền rút",
   WALLET_WITHDRAW_SETTLED: "Chốt rút tiền",
   WALLET_WITHDRAW_REFUNDED: "Hoàn tiền rút",
@@ -488,6 +630,12 @@ type Group = {
   latestTs: string;
   cat: Cat;
   impGroup: ImpGroup | null;
+  /** Chip của tab "Chính" mà nhóm thuộc về; RỖNG = nhóm nằm ở tab "Khác". */
+  buckets: MainBucket[];
+  /** Nhóm phụ trong tab "Khác" (null khi nhóm ở tab "Chính"). */
+  otherBucket: OtherBucket | null;
+  /** Mã hoá đơn (khoá mà giao dịch ví neo vào) — bấm để xem chi tiết thanh toán. */
+  payRefs: string[];
   important: boolean;
   routine: boolean;
   title: string;
@@ -696,6 +844,11 @@ function makeGroup(key: string, evs: Decorated[]): Group {
   }
 
   const impGroup = evs.map((e) => e.impGroup).find((g) => g !== null) ?? null;
+  // Phân tab: 3 chip của "Chính"; không thuộc chip nào → "Khác" + nhóm phụ theo
+  // action KHỞI TẠO (nhóm phụ đọc theo việc đã làm, không theo sự kiện mới nhất).
+  const buckets = mainBucketsOf(evs);
+  const otherBucket = buckets.length ? null : otherBucketOf(initiator.action);
+  const payRefs = payRefsOf(evs);
   // Quan trọng (lên tab "Chính") = có nhóm nghiệp vụ thành viên (mời/gỡ/gia hạn/
   // đổi chủ). Đồng bộ/đăng nhập/cấu hình… không thuộc nhóm nào → tab "Khác".
   const important = evs.some((e) => e.important);
@@ -708,6 +861,9 @@ function makeGroup(key: string, evs: Decorated[]): Group {
     latestTs: evs[0].timestamp,
     cat: evs[0].cat,
     impGroup,
+    buckets,
+    otherBucket,
+    payRefs,
     important,
     routine: !important,
     title,
@@ -741,6 +897,141 @@ export function buildGroups(events: Decorated[]): Group[] {
     map.get(key)!.push(e);
   }
   return order.map((k) => makeGroup(k, map.get(k)!));
+}
+
+/* ── Gom theo NGÀY (giống trang Ví) ─────────────────────────────────────────
+ *
+ * Nhật ký trước đây mỗi dòng tự ghi lại ngày tháng của nó, mà cả trang chỉ tải
+ * 200 dòng mới nhất nên nhìn như bị chặn cứng vài ngày gần đây. Nay danh sách
+ * ngăn theo ngày y như lịch sử ví: dải ngày ở trên ("HÔM NAY · 26/8/2026"), dòng
+ * bên dưới CHỈ CÒN GIỜ, và tải tiếp phần cũ hơn khi bấm "xem thêm".
+ * ------------------------------------------------------------------------- */
+
+export type DaySection = { date: string; groups: Group[] };
+
+/** Xếp nhóm sự kiện vào từng ngày (giờ VN), mới→cũ. Nhóm bắc cầu qua nửa đêm
+ *  thuộc về ngày của sự kiện MỚI NHẤT trong nhóm — đúng mốc mà dòng đang hiện. */
+export function splitByDay(groups: Group[]): DaySection[] {
+  const out: DaySection[] = [];
+  const index = new Map<string, number>();
+  for (const g of groups) {
+    const date = vnDateKey(g.latestTs);
+    let at = index.get(date);
+    if (at == null) {
+      at = out.length;
+      index.set(date, at);
+      out.push({ date, groups: [] });
+    }
+    out[at].groups.push(g);
+  }
+  out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  return out;
+}
+
+/** "2026-08-26" → "26/8/2026" (nhãn ngày kiểu Việt, bỏ số 0 thừa). */
+function vnDateLabel(date: string): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return `${d}/${m}/${y}`;
+}
+
+/** Giờ Việt Nam của một mốc — ngày đã nằm ở dải ngăn ngày nên chỉ cần giờ. */
+function vnTimeLabel(iso: string): string {
+  return new Intl.DateTimeFormat("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(iso));
+}
+
+/** Ô giờ của một dòng nhật ký (ngày nằm ở dải ngăn ngày phía trên). */
+function TimeOfDay({ iso }: { iso: string }) {
+  return <span className="timestamp">{vnTimeLabel(iso)}</span>;
+}
+
+/** Dải ngăn ngày — bản sao của dải ngày trên trang Ví. `card` = bản đứng riêng
+ *  cho mobile (bo góc, viền quanh) thay vì dải nằm trong bảng. */
+function DayHeader({
+  date,
+  count,
+  padX,
+  card = false,
+}: {
+  date: string;
+  count: number;
+  padX: number;
+  card?: boolean;
+}) {
+  const t = useT();
+  const label = vnDateLabel(date);
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "baseline",
+        justifyContent: "space-between",
+        gap: 12,
+        flexWrap: "wrap",
+        padding: `10px ${padX}px`,
+        background: "var(--surface-2)",
+        border: card ? "1px solid var(--border)" : undefined,
+        borderRadius: card ? 12 : undefined,
+        borderBottom: card ? undefined : "1px solid var(--border)",
+      }}
+    >
+      <span
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 11,
+          letterSpacing: ".08em",
+          color: "var(--ink-2)",
+        }}
+      >
+        {date === vnDateKey(new Date().toISOString())
+          ? `${t("audit.today")} · ${label}`
+          : label}
+      </span>
+      <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
+        {t("audit.opCount", { n: count })}
+      </span>
+    </div>
+  );
+}
+
+/** Nút tải tiếp phần nhật ký cũ hơn (cần đến đâu tải đến đó). */
+function MoreBar({
+  hasMore,
+  loading,
+  onMore,
+}: {
+  hasMore: boolean;
+  loading: boolean;
+  onMore: () => void;
+}) {
+  const t = useT();
+  if (!hasMore) return null;
+  return (
+    <div style={{ padding: "14px 20px", display: "flex", justifyContent: "center" }}>
+      <button
+        type="button"
+        onClick={onMore}
+        disabled={loading}
+        style={{
+          fontSize: 13,
+          fontWeight: 600,
+          color: "var(--ink)",
+          background: "var(--surface, var(--bg))",
+          border: "1px solid var(--border-strong)",
+          borderRadius: 999,
+          padding: "8px 18px",
+          cursor: loading ? "progress" : "pointer",
+          opacity: loading ? 0.6 : 1,
+        }}
+      >
+        {loading ? t("audit.loadingMore") : t("audit.loadMore")}
+      </button>
+    </div>
+  );
 }
 
 /** Thanh tiến trình 3 bước: Xếp hàng → Đang chạy → Hoàn tất/Thất bại. */
@@ -1707,7 +1998,13 @@ function groupView(g: Group, t: TFn) {
   const col = g.impGroup ? IMP_COLOR[g.impGroup] : NEUTRAL_COLOR;
   const chipLabel = g.impGroup
     ? t(IMP_COLOR[g.impGroup].labelKey)
-    : t(`audit.cat.${g.cat}`);
+    : g.otherBucket
+      ? t(`audit.other.${g.otherBucket}`)
+      : t(`audit.cat.${g.cat}`);
+  /* Nhóm ở tab "Chính" luôn hiện TIÊU ĐỀ việc đã làm ("Đăng nhập thành công",
+     "Trừ phí gia hạn") thay vì nhãn nhóm chung chung — tab này ít dòng, mỗi dòng
+     đáng đọc. Tab "Khác" giữ nhãn nhóm để mắt lướt nhanh. */
+  const showTitle = g.important || g.buckets.length > 0;
   const gs = GSTATUS_STYLE[g.gstatus];
   const ss = STATUS_STYLE[g.singleStatus];
   const statusColor = g.lifecycle ? gs.color : ss.color;
@@ -1726,7 +2023,71 @@ function groupView(g: Group, t: TFn) {
     g.emails.length > 1
       ? t("audit.targetEmailCount", { n: g.emails.length })
       : t("audit.targetEmail");
-  return { col, chipLabel, statusColor, statusText, summary, targetEmailTitle };
+  // Mã hoá đơn chỉ hiện trên LỆNH (mời/xoá/gia hạn) và các dòng TIỀN của lệnh —
+  // không rắc mã lên mọi việc hàng đợi/đồng bộ.
+  const payRef =
+    g.buckets.includes("member") || g.buckets.includes("billing")
+      ? (g.payRefs[0] ?? null)
+      : null;
+  return {
+    col,
+    chipLabel,
+    showTitle,
+    statusColor,
+    statusText,
+    summary,
+    targetEmailTitle,
+    payRef,
+  };
+}
+
+/** Mã hoá đơn của lệnh — bấm để xem chi tiết thanh toán của chính lệnh đó. */
+function PayRefChip({
+  refId,
+  onOpen,
+}: {
+  refId: string;
+  onOpen: (ref: string) => void;
+}) {
+  const t = useT();
+  return (
+    <button
+      type="button"
+      title={t("audit.payRefHint")}
+      // Hàng là nút bung chi tiết — chặn nổi bọt để bấm mã không bung/thu hàng.
+      onClick={(e) => {
+        e.stopPropagation();
+        onOpen(refId);
+      }}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        fontSize: 11,
+        fontWeight: 600,
+        fontFamily: "var(--font-mono)",
+        color: "var(--ink-2)",
+        background: "var(--surface, var(--bg))",
+        border: "1px dashed var(--border-strong)",
+        borderRadius: 6,
+        padding: "2px 8px",
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+      }}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={1.6}
+        style={{ width: 12, height: 12, flexShrink: 0 }}
+      >
+        <path d="M6 3v18l2-1.5L10 21l2-1.5L14 21l2-1.5L18 21V3H6z" />
+        <path d="M9 8.5h6M9 12.5h6" />
+      </svg>
+      #{shortRef(refId)}
+    </button>
+  );
 }
 
 type AuditListProps = {
@@ -1734,10 +2095,25 @@ type AuditListProps = {
   expanded: string | null;
   setExpanded: React.Dispatch<React.SetStateAction<string | null>>;
   isLoading: boolean;
+  /** Bấm mã hoá đơn trên hàng → lọc nhật ký về đúng dòng tiền của lệnh đó. */
+  onOpenPayments: (ref: string) => void;
+  /** Còn nhật ký cũ hơn chưa tải (trang trước trả về đủ một lô). */
+  hasMore: boolean;
+  loadingMore: boolean;
+  onMore: () => void;
 };
 
 /** DESKTOP — bảng 5 cột + panel chi tiết mở rộng. */
-function AuditTable({ filtered, expanded, setExpanded, isLoading }: AuditListProps) {
+function AuditTable({
+  filtered,
+  expanded,
+  setExpanded,
+  isLoading,
+  onOpenPayments,
+  hasMore,
+  loadingMore,
+  onMore,
+}: AuditListProps) {
   const t = useT();
   return (
     <div className="table-card">
@@ -1777,215 +2153,233 @@ function AuditTable({ filtered, expanded, setExpanded, isLoading }: AuditListPro
             ))}
           </div>
 
-          {filtered.map((g) => {
-            const { col, chipLabel, statusColor, statusText, summary, targetEmailTitle } =
-              groupView(g, t);
-            const isOpen = expanded === g.key;
-            const toggle = () =>
-              setExpanded((k) => (k === g.key ? null : g.key));
-            return (
-              <div
-                key={g.key}
-                style={{
-                  position: "relative",
-                  borderBottom: "1px solid var(--border)",
-                  background: isOpen
-                    ? "var(--surface-2, var(--bg))"
-                    : g.important
-                      ? col.tint
-                      : "transparent",
-                }}
-              >
-                <span
-                  style={{
-                    position: "absolute",
-                    left: 0,
-                    top: 0,
-                    bottom: 0,
-                    width: 3,
-                    background: col.accent,
-                    opacity: g.important ? 1 : 0.45,
-                  }}
-                />
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onClick={toggle}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      toggle();
-                    }
-                  }}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: GRID,
-                    alignItems: "center",
-                    gap: 16,
-                    padding: "15px 24px",
-                    cursor: "pointer",
-                  }}
-                >
-                  {/* THỜI GIAN */}
-                  <div style={{ opacity: g.routine ? 0.7 : 1 }}>
-                    <TimeCell iso={g.latestTs} />
-                    {g.count > 1 && (
-                      <div
-                        style={{
-                          fontSize: 10.5,
-                          color: "var(--ink-3)",
-                          fontFamily: "var(--font-mono)",
-                          marginTop: 2,
-                        }}
-                      >
-                        {t("audit.opCount", { n: g.count })}
-                      </div>
-                    )}
-                  </div>
-                  {/* NGƯỜI THỰC HIỆN */}
-                  <div style={{ minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontSize: 13.5,
-                        fontWeight: 500,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {g.actorLabel || t("audit.actorUnknown")}
-                    </div>
-                  </div>
-                  {/* HÀNH ĐỘNG — chip nhóm + tag workspace + tiến trình */}
-                  <div style={{ minWidth: 0 }}>
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 8,
-                        flexWrap: "wrap",
-                      }}
-                    >
-                      <span
-                        style={{
-                          fontSize: 11.5,
-                          fontWeight: 600,
-                          borderRadius: 6,
-                          padding: "3px 10px",
-                          background: col.chipBg,
-                          color: col.chipText,
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {g.important ? g.title : chipLabel}
-                      </span>
-                      {g.workspaceName && (
-                        <span
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: 5,
-                            fontSize: 11,
-                            fontWeight: 500,
-                            color: "var(--ink-2)",
-                            background: "var(--surface, var(--bg))",
-                            border: "1px solid var(--border)",
-                            borderRadius: 6,
-                            padding: "2px 8px",
-                          }}
-                        >
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} style={{ width: 12, height: 12, flexShrink: 0 }}>
-                            <path d="M3 7h18M3 12h18M3 17h18" />
-                          </svg>
-                          {g.workspaceName}
-                        </span>
-                      )}
-                    </div>
-                    {g.emails.length > 0 && (
-                      <div
-                        style={{
-                          marginTop: 6,
-                          fontSize: 12.5,
-                          fontFamily: "var(--font-mono)",
-                          fontWeight: 600,
-                          color: "var(--ink)",
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                        }}
-                        title={g.emails.join(", ")}
-                      >
-                        {g.emails[0]}
-                        {g.emails.length > 1 ? ` +${g.emails.length - 1}` : ""}
-                      </div>
-                    )}
-                    {g.lifecycle && (
-                      <Steps stages={g.stages} rescued={g.rescued} />
-                    )}
-                  </div>
-                  {/* TRẠNG THÁI */}
+          {splitByDay(filtered).map((sec) => (
+            <div key={sec.date}>
+              <DayHeader date={sec.date} count={sec.groups.length} padX={24} />
+              {sec.groups.map((g) => {
+                const {
+                  col,
+                  chipLabel,
+                  showTitle,
+                  statusColor,
+                  statusText,
+                  summary,
+                  targetEmailTitle,
+                  payRef,
+                } = groupView(g, t);
+                const isOpen = expanded === g.key;
+                const toggle = () =>
+                  setExpanded((k) => (k === g.key ? null : g.key));
+                return (
                   <div
+                    key={g.key}
                     style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 7,
-                      minWidth: 0,
+                      position: "relative",
+                      borderBottom: "1px solid var(--border)",
+                      background: isOpen
+                        ? "var(--surface-2, var(--bg))"
+                        : g.important
+                          ? col.tint
+                          : "transparent",
                     }}
                   >
                     <span
                       style={{
-                        width: 7,
-                        height: 7,
-                        borderRadius: "50%",
-                        background: statusColor,
-                        flexShrink: 0,
+                        position: "absolute",
+                        left: 0,
+                        top: 0,
+                        bottom: 0,
+                        width: 3,
+                        background: col.accent,
+                        opacity: g.important ? 1 : 0.45,
                       }}
                     />
-                    <span
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      onClick={toggle}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          toggle();
+                        }
+                      }}
                       style={{
-                        fontSize: 12.5,
-                        fontWeight: 600,
-                        color: statusColor,
-                        whiteSpace: "nowrap",
+                        display: "grid",
+                        gridTemplateColumns: GRID,
+                        alignItems: "center",
+                        gap: 16,
+                        padding: "15px 24px",
+                        cursor: "pointer",
                       }}
                     >
-                      {statusText}
-                    </span>
+                      {/* THỜI GIAN */}
+                      <div style={{ opacity: g.routine ? 0.7 : 1 }}>
+                        <TimeOfDay iso={g.latestTs} />
+                        {g.count > 1 && (
+                          <div
+                            style={{
+                              fontSize: 10.5,
+                              color: "var(--ink-3)",
+                              fontFamily: "var(--font-mono)",
+                              marginTop: 2,
+                            }}
+                          >
+                            {t("audit.opCount", { n: g.count })}
+                          </div>
+                        )}
+                      </div>
+                      {/* NGƯỜI THỰC HIỆN */}
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontSize: 13.5,
+                            fontWeight: 500,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {g.actorLabel || t("audit.actorUnknown")}
+                        </div>
+                      </div>
+                      {/* HÀNH ĐỘNG — chip nhóm + tag workspace + tiến trình */}
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 8,
+                            flexWrap: "wrap",
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontSize: 11.5,
+                              fontWeight: 600,
+                              borderRadius: 6,
+                              padding: "3px 10px",
+                              background: col.chipBg,
+                              color: col.chipText,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {showTitle ? g.title : chipLabel}
+                          </span>
+                          {g.workspaceName && (
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 5,
+                                fontSize: 11,
+                                fontWeight: 500,
+                                color: "var(--ink-2)",
+                                background: "var(--surface, var(--bg))",
+                                border: "1px solid var(--border)",
+                                borderRadius: 6,
+                                padding: "2px 8px",
+                              }}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} style={{ width: 12, height: 12, flexShrink: 0 }}>
+                                <path d="M3 7h18M3 12h18M3 17h18" />
+                              </svg>
+                              {g.workspaceName}
+                            </span>
+                          )}
+                          {payRef && (
+                            <PayRefChip refId={payRef} onOpen={onOpenPayments} />
+                          )}
+                        </div>
+                        {g.emails.length > 0 && (
+                          <div
+                            style={{
+                              marginTop: 6,
+                              fontSize: 12.5,
+                              fontFamily: "var(--font-mono)",
+                              fontWeight: 600,
+                              color: "var(--ink)",
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                            title={g.emails.join(", ")}
+                          >
+                            {g.emails[0]}
+                            {g.emails.length > 1 ? ` +${g.emails.length - 1}` : ""}
+                          </div>
+                        )}
+                        {g.lifecycle && (
+                          <Steps stages={g.stages} rescued={g.rescued} />
+                        )}
+                      </div>
+                      {/* TRẠNG THÁI */}
+                      <div
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 7,
+                          minWidth: 0,
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: 7,
+                            height: 7,
+                            borderRadius: "50%",
+                            background: statusColor,
+                            flexShrink: 0,
+                          }}
+                        />
+                        <span
+                          style={{
+                            fontSize: 12.5,
+                            fontWeight: 600,
+                            color: statusColor,
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {statusText}
+                        </span>
+                      </div>
+                      {/* ĐỐI TƯỢNG & KẾT QUẢ */}
+                      <TargetResult
+                        emails={g.emails}
+                        summary={summary}
+                        title={targetEmailTitle}
+                      />
+                      {/* Chevron */}
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "center",
+                          color: "var(--ink-4)",
+                        }}
+                      >
+                        <svg
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth={2}
+                          style={{
+                            width: 15,
+                            height: 15,
+                            transition: "transform .15s",
+                            transform: isOpen ? "rotate(180deg)" : "none",
+                          }}
+                        >
+                          <path d="M6 9l6 6 6-6" />
+                        </svg>
+                      </div>
+                    </div>
+                    {isOpen && <ExpandedPanel g={g} />}
                   </div>
-                  {/* ĐỐI TƯỢNG & KẾT QUẢ */}
-                  <TargetResult
-                    emails={g.emails}
-                    summary={summary}
-                    title={targetEmailTitle}
-                  />
-                  {/* Chevron */}
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "center",
-                      color: "var(--ink-4)",
-                    }}
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth={2}
-                      style={{
-                        width: 15,
-                        height: 15,
-                        transition: "transform .15s",
-                        transform: isOpen ? "rotate(180deg)" : "none",
-                      }}
-                    >
-                      <path d="M6 9l6 6 6-6" />
-                    </svg>
-                  </div>
-                </div>
-                {isOpen && <ExpandedPanel g={g} />}
-              </div>
-            );
-          })}
+                );
+              })}
+            </div>
+          ))}
+
+          <MoreBar hasMore={hasMore} loading={loadingMore} onMore={onMore} />
 
           {!isLoading && filtered.length === 0 && (
             <div
@@ -2006,148 +2400,173 @@ function AuditTable({ filtered, expanded, setExpanded, isLoading }: AuditListPro
 }
 
 /** MOBILE — mỗi nhóm là 1 thẻ (viền trái màu theo nhóm nghiệp vụ). */
-function AuditCards({ filtered, expanded, setExpanded, isLoading }: AuditListProps) {
+function AuditCards({
+  filtered,
+  expanded,
+  setExpanded,
+  isLoading,
+  onOpenPayments,
+  hasMore,
+  loadingMore,
+  onMore,
+}: AuditListProps) {
   const t = useT();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {filtered.map((g) => {
-        const { col, chipLabel, statusColor, statusText, summary, targetEmailTitle } =
-          groupView(g, t);
-        const isOpen = expanded === g.key;
-        const toggle = () => setExpanded((k) => (k === g.key ? null : g.key));
-        return (
-          <div
-            key={g.key}
-            style={{
-              overflow: "hidden",
-              borderRadius: 16,
-              border: "1px solid var(--border)",
-              borderLeft: `4px solid ${col.accent}`,
-              background: g.important ? col.tint : "var(--surface)",
-              boxShadow: "var(--shadow-card)",
-            }}
-          >
-            <div
-              role="button"
-              tabIndex={0}
-              onClick={toggle}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  toggle();
-                }
-              }}
-              style={{ padding: 16, cursor: "pointer" }}
-            >
-              {/* Hàng trên: thời gian (+ số thao tác) · trạng thái · chevron */}
-              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-                <div style={{ opacity: g.routine ? 0.75 : 1 }}>
-                  <TimeCell iso={g.latestTs} />
-                  {g.count > 1 && (
-                    <div style={{ fontSize: 11, color: "var(--ink-3)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
-                      {t("audit.opCount", { n: g.count })}
+      {splitByDay(filtered).map((sec) => (
+        <div key={sec.date} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <DayHeader date={sec.date} count={sec.groups.length} padX={14} card />
+          {sec.groups.map((g) => {
+            const {
+              col,
+              chipLabel,
+              showTitle,
+              statusColor,
+              statusText,
+              summary,
+              targetEmailTitle,
+              payRef,
+            } = groupView(g, t);
+            const isOpen = expanded === g.key;
+            const toggle = () => setExpanded((k) => (k === g.key ? null : g.key));
+            return (
+              <div
+                key={g.key}
+                style={{
+                  overflow: "hidden",
+                  borderRadius: 16,
+                  border: "1px solid var(--border)",
+                  borderLeft: `4px solid ${col.accent}`,
+                  background: g.important ? col.tint : "var(--surface)",
+                  boxShadow: "var(--shadow-card)",
+                }}
+              >
+                <div
+                  role="button"
+                  tabIndex={0}
+                  onClick={toggle}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      toggle();
+                    }
+                  }}
+                  style={{ padding: 16, cursor: "pointer" }}
+                >
+                  {/* Hàng trên: thời gian (+ số thao tác) · trạng thái · chevron */}
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+                    <div style={{ opacity: g.routine ? 0.75 : 1 }}>
+                      <TimeOfDay iso={g.latestTs} />
+                      {g.count > 1 && (
+                        <div style={{ fontSize: 11, color: "var(--ink-3)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
+                          {t("audit.opCount", { n: g.count })}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, color: statusColor, whiteSpace: "nowrap" }}>
+                        <span style={{ width: 7, height: 7, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
+                        {statusText}
+                      </span>
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                        style={{
+                          width: 15,
+                          height: 15,
+                          color: "var(--ink-4)",
+                          transition: "transform .15s",
+                          transform: isOpen ? "rotate(180deg)" : "none",
+                        }}
+                      >
+                        <path d="M6 9l6 6 6-6" />
+                      </svg>
+                    </div>
+                  </div>
+
+                  {/* Hàng chip: hành động + workspace + người thực hiện */}
+                  <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span
+                      style={{
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                        borderRadius: 8,
+                        padding: "4px 9px",
+                        background: col.chipBg,
+                        color: col.chipText,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {showTitle ? g.title : chipLabel}
+                    </span>
+                    {g.workspaceName && (
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 5,
+                          fontSize: 11.5,
+                          fontWeight: 500,
+                          color: "var(--ink-2)",
+                          background: "var(--surface)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 8,
+                          padding: "3px 9px",
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} style={{ width: 12, height: 12, flexShrink: 0 }}>
+                          <path d="M3 7h18M3 12h18M3 17h18" />
+                        </svg>
+                        {g.workspaceName}
+                      </span>
+                    )}
+                    {payRef && <PayRefChip refId={payRef} onOpen={onOpenPayments} />}
+                    <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>
+                      {t("audit.byActor")}{" "}
+                      <b style={{ fontWeight: 700, color: "var(--ink-2)" }}>
+                        {g.actorLabel || t("audit.actorUnknown")}
+                      </b>
+                    </span>
+                  </div>
+
+                  {g.emails.length > 0 && (
+                    <div
+                      style={{
+                        marginTop: 10,
+                        fontSize: 13,
+                        fontFamily: "var(--font-mono)",
+                        fontWeight: 600,
+                        color: "var(--ink)",
+                        wordBreak: "break-all",
+                      }}
+                    >
+                      {g.emails[0]}
+                      {g.emails.length > 1 ? ` +${g.emails.length - 1}` : ""}
                     </div>
                   )}
+
+                  {/* Thanh tiến trình vòng đời */}
+                  {g.lifecycle && <Steps stages={g.stages} rescued={g.rescued} />}
+
+                  {/* Đáy thẻ: email đối tượng (đậm) + câu tóm tắt */}
+                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(0,0,0,.06)" }}>
+                    <TargetResult
+                      emails={g.emails}
+                      summary={summary}
+                      title={targetEmailTitle}
+                    />
+                  </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 600, color: statusColor, whiteSpace: "nowrap" }}>
-                    <span style={{ width: 7, height: 7, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
-                    {statusText}
-                  </span>
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    style={{
-                      width: 15,
-                      height: 15,
-                      color: "var(--ink-4)",
-                      transition: "transform .15s",
-                      transform: isOpen ? "rotate(180deg)" : "none",
-                    }}
-                  >
-                    <path d="M6 9l6 6 6-6" />
-                  </svg>
-                </div>
+                {isOpen && <ExpandedPanel g={g} />}
               </div>
+            );
+          })}
+        </div>
+      ))}
 
-              {/* Hàng chip: hành động + workspace + người thực hiện */}
-              <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <span
-                  style={{
-                    fontSize: 11.5,
-                    fontWeight: 600,
-                    borderRadius: 8,
-                    padding: "4px 9px",
-                    background: col.chipBg,
-                    color: col.chipText,
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {g.important ? g.title : chipLabel}
-                </span>
-                {g.workspaceName && (
-                  <span
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 5,
-                      fontSize: 11.5,
-                      fontWeight: 500,
-                      color: "var(--ink-2)",
-                      background: "var(--surface)",
-                      border: "1px solid var(--border)",
-                      borderRadius: 8,
-                      padding: "3px 9px",
-                    }}
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} style={{ width: 12, height: 12, flexShrink: 0 }}>
-                      <path d="M3 7h18M3 12h18M3 17h18" />
-                    </svg>
-                    {g.workspaceName}
-                  </span>
-                )}
-                <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>
-                  {t("audit.byActor")}{" "}
-                  <b style={{ fontWeight: 700, color: "var(--ink-2)" }}>
-                    {g.actorLabel || t("audit.actorUnknown")}
-                  </b>
-                </span>
-              </div>
-
-              {g.emails.length > 0 && (
-                <div
-                  style={{
-                    marginTop: 10,
-                    fontSize: 13,
-                    fontFamily: "var(--font-mono)",
-                    fontWeight: 600,
-                    color: "var(--ink)",
-                    wordBreak: "break-all",
-                  }}
-                >
-                  {g.emails[0]}
-                  {g.emails.length > 1 ? ` +${g.emails.length - 1}` : ""}
-                </div>
-              )}
-
-              {/* Thanh tiến trình vòng đời */}
-              {g.lifecycle && <Steps stages={g.stages} rescued={g.rescued} />}
-
-              {/* Đáy thẻ: email đối tượng (đậm) + câu tóm tắt */}
-              <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(0,0,0,.06)" }}>
-                <TargetResult
-                  emails={g.emails}
-                  summary={summary}
-                  title={targetEmailTitle}
-                />
-              </div>
-            </div>
-            {isOpen && <ExpandedPanel g={g} />}
-          </div>
-        );
-      })}
+      <MoreBar hasMore={hasMore} loading={loadingMore} onMore={onMore} />
 
       {!isLoading && filtered.length === 0 && (
         <div
@@ -2173,20 +2592,38 @@ export default function AuditLogs() {
   const isMobile = useIsMobile(GRID_MIN);
   // Dòng đang mở bảng chi tiết (key nhóm) — bấm để xổ/thu.
   const [expanded, setExpanded] = useState<string | null>(null);
-  const logs = useQuery({
+  // Nhật ký tải theo TRANG, mới→cũ: mở trang ra thấy phần gần đây, bấm "xem thêm"
+  // thì tải tiếp lô cũ hơn (user 2026-08-26: "show từng ngày, cần đến đâu tải đến
+  // đó"). Con trỏ là (timestamp, id) của dòng cuối lô trước — phải kèm id vì nhiều
+  // log ghi trong CÙNG một request mang y hệt timestamp.
+  const logs = useInfiniteQuery({
     queryKey: ["audit-logs"],
-    queryFn: () => api<AuditLog[]>("/api/v1/audit-logs?limit=200"),
+    initialPageParam: "",
+    queryFn: ({ pageParam }) =>
+      api<AuditLog[]>(`/api/v1/audit-logs?limit=${AUDIT_PAGE_SIZE}${pageParam}`),
+    // Lô trả về NGẮN hơn một trang ⇒ đã chạm đáy nhật ký.
+    getNextPageParam: (last) => {
+      if (last.length < AUDIT_PAGE_SIZE) return undefined;
+      const tail = last[last.length - 1];
+      return `&before=${encodeURIComponent(tail.timestamp)}&before_id=${tail.id}`;
+    },
   });
-  // Hai tab chính: "main" = sự kiện QUAN TRỌNG (nghiệp vụ thành viên: gỡ/mời/gia
-  // hạn/đổi hạn/thanh toán/ví) — mặc định; "other" = phần còn lại (đăng nhập, đổi
-  // cấu hình, đồng bộ, hàng đợi…) — nhiễu, tách riêng khỏi tab chính (yêu cầu user
-  // 2026-07-12). Bỏ tab "Tất cả": hợp của 2 tab đã là toàn bộ.
+  const rows = useMemo(
+    () => (logs.data?.pages ?? []).flat(),
+    [logs.data],
+  );
+  // Hai tab: "main" = 3 nhóm user quan tâm (bảo mật · thành viên · thanh toán —
+  // chốt 2026-08-26), "other" = phần còn lại (hàng đợi/đồng bộ, ví ngoài lệnh,
+  // cấu hình, thao tác thành viên khác) tự chia nhóm phụ. Bỏ tab "Tất cả": hợp
+  // của 2 tab đã là toàn bộ.
   const [view, setView] = useState<"main" | "other">("main");
-  const [cat, setCat] = useState<Cat | null>(null); // null = mọi nhóm trong tab
+  const [bucket, setBucket] = useState<MainBucket | null>(null); // chip trong tab Chính
+  const [otherCat, setOtherCat] = useState<OtherBucket | null>(null); // chip trong tab Khác
+  // Lọc theo MÃ HOÁ ĐƠN: bấm mã trên lệnh mời/gia hạn → chỉ còn dòng tiền của lệnh đó.
+  const [payRef, setPayRef] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
   const decorated: Decorated[] = useMemo(() => {
-    const rows = logs.data ?? [];
     const qmap = buildQueueEmailMap(rows);
     const memberIdMap = buildMemberIdEmailMap(rows);
     return rows.map((l) => {
@@ -2251,22 +2688,23 @@ export default function AuditLogs() {
         targetEmails,
       };
     });
-  }, [logs.data, t]);
+  }, [rows, t]);
 
   const groups = useMemo(() => buildGroups(decorated), [decorated]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return groups.filter((g) => {
-      // Chip nhóm phụ (vd "Thanh toán") lọc XUYÊN tab: khi chọn chip thì bỏ qua
-      // ranh giới main/other — cần thiết vì "Thanh toán" = nạp (ở Khác) + gia hạn
-      // (ở Chính), chỉ cách này mới gộp cả hai vào một chip. Không chọn chip →
-      // theo tab: main = quan trọng, other = phần còn lại.
-      if (cat) {
-        if (g.cat !== cat) return false;
-      } else if (view === "main" ? !g.important : g.important) {
-        return false;
+      // Tab Chính = nhóm thuộc ít nhất 1 trong 3 chip; tab Khác = phần còn lại,
+      // lọc tiếp theo nhóm phụ. Mã hoá đơn (nếu có) lọc CHỒNG lên trên.
+      if (view === "main") {
+        if (!g.buckets.length) return false;
+        if (bucket && !g.buckets.includes(bucket)) return false;
+      } else {
+        if (g.buckets.length) return false;
+        if (otherCat && g.otherBucket !== otherCat) return false;
       }
+      if (payRef && !g.payRefs.includes(payRef)) return false;
       if (q) {
         const hay = `${g.title} ${g.emails.join(" ")} ${g.events
           .map((e) => `${e.action} ${e.actor_label ?? ""} ${e.target_id ?? ""}`)
@@ -2275,29 +2713,68 @@ export default function AuditLogs() {
       }
       return true;
     });
-  }, [groups, view, cat, search]);
+  }, [groups, view, bucket, otherCat, payRef, search]);
 
   const total = groups.length;
+  // Số trên chip đếm theo TOÀN BỘ nhật ký (không theo bộ lọc đang bật) → bấm qua
+  // lại giữa các chip không thấy số nhảy.
+  const mainCounts = useMemo(() => {
+    const by: Record<MainBucket, number> = { security: 0, member: 0, billing: 0 };
+    for (const g of groups) for (const b of g.buckets) by[b] += 1;
+    return by;
+  }, [groups]);
+  const otherCounts = useMemo(() => {
+    const by: Record<OtherBucket, number> = {
+      member: 0,
+      wallet: 0,
+      queue: 0,
+      config: 0,
+      misc: 0,
+    };
+    for (const g of groups) if (g.otherBucket) by[g.otherBucket] += 1;
+    return by;
+  }, [groups]);
   const importantCount = useMemo(
-    () => groups.filter((g) => g.important).length,
+    () => groups.filter((g) => g.buckets.length > 0).length,
     [groups],
   );
   const otherCount = total - importantCount;
-  const securityCount = useMemo(
-    () => groups.filter((g) => g.cat === "security").length,
+  const routineCount = otherCount;
+  // Ô "Cảnh báo bảo mật" (chữ đỏ) chỉ đếm ĐĂNG NHẬP HỎNG/BỊ CHẶN — đăng nhập
+  // thành công là chuyện thường ngày, đếm chung vào đây thì con số đỏ mất nghĩa
+  // (chip "Bảo mật" bên dưới vẫn hiện đủ cả lịch sử đăng nhập).
+  const securityAlertCount = useMemo(
+    () =>
+      groups.filter(
+        (g) =>
+          g.buckets.includes("security") &&
+          g.events.some((e) => /^LOGIN_(FAILED|BLOCKED)/.test(opOf(e.action))),
+      ).length,
     [groups],
   );
-  const routineCount = useMemo(
-    () => groups.filter((g) => g.cat === "queue").length,
-    [groups],
-  );
-  // Đếm theo nhóm PHỤ trên TOÀN BỘ nhật ký (chip lọc xuyên tab, không giới hạn
-  // theo tab đang xem) → số trên chip ổn định dù đang ở tab nào.
-  const catCounts = useMemo(() => {
-    const by: Record<Cat, number> = { security: 0, member: 0, billing: 0, queue: 0 };
-    for (const g of groups) by[g.cat] += 1;
-    return by;
-  }, [groups]);
+
+  const goTab = (next: "main" | "other") => {
+    setView(next);
+    setBucket(null);
+    setOtherCat(null);
+    setPayRef(null);
+  };
+
+  /* Bấm mã hoá đơn trên một lệnh → tab Chính · chip Thanh toán · lọc đúng mã đó,
+     và mở sẵn nhóm có dòng tiền. Lệnh gia hạn ghi phí ở MỘT NHÓM RIÊNG (khoản
+     `renew_fee` neo vào member_id, không có queue_item_id để gộp) nên bộ lọc mã
+     là cách duy nhất gom lệnh + tiền của nó về cùng một màn. Nếu mã đó chưa có
+     dòng tiền nào (mời trả bằng QR mà hoá đơn đã bị dọn) thì KHÔNG bật chip
+     Thanh toán, tránh danh sách rỗng. */
+  const openPayments = (ref: string) => {
+    const hits = groups.filter((g) => g.payRefs.includes(ref));
+    const billing = hits.filter((g) => g.buckets.includes("billing"));
+    setView("main");
+    setBucket(billing.length ? "billing" : null);
+    setOtherCat(null);
+    setPayRef(ref);
+    setExpanded((billing[0] ?? hits[0])?.key ?? null);
+  };
 
   return (
     <div className="page-fade">
@@ -2315,7 +2792,7 @@ export default function AuditLogs() {
             <span className="metric-dot danger" />
           </div>
           <div className="metric-value" style={{ color: "var(--danger)" }}>
-            {securityCount}
+            {securityAlertCount}
           </div>
         </div>
         <div className="metric">
@@ -2346,27 +2823,23 @@ export default function AuditLogs() {
         className="flex flex-wrap items-center gap-2"
         style={{ marginBottom: 16 }}
       >
-        {/* 2 tab chính: Chính (quan trọng, mặc định) · Khác (phần còn lại) */}
+        {/* 2 tab: Chính (bảo mật · thành viên · thanh toán) · Khác (phần còn lại) */}
         <Chip
           active={view === "main"}
-          onClick={() => {
-            setView("main");
-            setCat(null);
-          }}
+          onClick={() => goTab("main")}
           label={t("audit.tab.main")}
           count={importantCount}
         />
         <Chip
           active={view === "other"}
-          onClick={() => {
-            setView("other");
-            setCat(null);
-          }}
+          onClick={() => goTab("other")}
           label={t("audit.tab.other")}
           count={otherCount}
         />
-        {/* Lọc nhóm PHỤ trong tab đang xem (bấm lại để bỏ lọc). */}
-        {CAT_ORDER.some((c) => catCounts[c] > 0) && (
+        {/* Nhóm phụ của tab đang xem (bấm lại để bỏ lọc). */}
+        {(view === "main"
+          ? MAIN_BUCKETS.some((b) => mainCounts[b] > 0)
+          : OTHER_BUCKETS.some((b) => otherCounts[b] > 0)) && (
           <div
             style={{
               width: 1,
@@ -2376,15 +2849,55 @@ export default function AuditLogs() {
             }}
           />
         )}
-        {CAT_ORDER.filter((c) => catCounts[c] > 0).map((c) => (
-          <Chip
-            key={c}
-            active={cat === c}
-            onClick={() => setCat((prev) => (prev === c ? null : c))}
-            label={t(`audit.cat.${c}`)}
-            count={catCounts[c]}
-          />
-        ))}
+        {view === "main"
+          ? MAIN_BUCKETS.filter((b) => mainCounts[b] > 0).map((b) => (
+              <Chip
+                key={b}
+                active={bucket === b}
+                onClick={() => {
+                  setBucket((prev) => (prev === b ? null : b));
+                  setPayRef(null);
+                }}
+                label={t(`audit.cat.${b}`)}
+                count={mainCounts[b]}
+              />
+            ))
+          : OTHER_BUCKETS.filter((b) => otherCounts[b] > 0).map((b) => (
+              <Chip
+                key={b}
+                active={otherCat === b}
+                onClick={() =>
+                  setOtherCat((prev) => (prev === b ? null : b))
+                }
+                label={t(`audit.other.${b}`)}
+                count={otherCounts[b]}
+              />
+            ))}
+        {/* Đang lọc theo mã hoá đơn — nói rõ đang xem tiền của lệnh nào + nút bỏ lọc. */}
+        {payRef && (
+          <button
+            type="button"
+            onClick={() => setPayRef(null)}
+            title={t("audit.payRefClear")}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 7,
+              fontSize: 12,
+              fontWeight: 600,
+              fontFamily: "var(--font-mono)",
+              color: "var(--ink)",
+              background: "var(--surface-2)",
+              border: "1px solid var(--border-strong)",
+              borderRadius: 999,
+              padding: "5px 11px",
+              cursor: "pointer",
+            }}
+          >
+            {t("audit.payRefFilter", { code: shortRef(payRef) })}
+            <span style={{ color: "var(--ink-3)", fontSize: 13 }}>✕</span>
+          </button>
+        )}
         <div style={{ flex: 1 }} />
         <SearchInput
           value={search}
@@ -2400,6 +2913,10 @@ export default function AuditLogs() {
           expanded={expanded}
           setExpanded={setExpanded}
           isLoading={logs.isLoading}
+          onOpenPayments={openPayments}
+          hasMore={logs.hasNextPage}
+          loadingMore={logs.isFetchingNextPage}
+          onMore={() => logs.fetchNextPage()}
         />
       ) : (
         <AuditTable
@@ -2407,6 +2924,10 @@ export default function AuditLogs() {
           expanded={expanded}
           setExpanded={setExpanded}
           isLoading={logs.isLoading}
+          onOpenPayments={openPayments}
+          hasMore={logs.hasNextPage}
+          loadingMore={logs.isFetchingNextPage}
+          onMore={() => logs.fetchNextPage()}
         />
       )}
       <div
@@ -2414,6 +2935,7 @@ export default function AuditLogs() {
         style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 14 }}
       >
         {t("audit.countLabel", { shown: filtered.length, total })}
+        {logs.hasNextPage && ` · ${t("audit.moreHint")}`}
       </div>
     </div>
   );

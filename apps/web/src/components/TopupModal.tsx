@@ -16,8 +16,9 @@ import QrBrandRow from "./QrBrandRow";
 
 const PRESETS = [100_000, 200_000, 500_000, 1_000_000];
 
-export default function TopupModal({ onClose }: { onClose: () => void }) {
-  const [amount, setAmount] = useState<number>(200_000);
+/** `initialAmount` — số tiền user đã gõ ở khối Nạp/Rút trang Ví, mở modal là có sẵn. */
+export default function TopupModal({ onClose, initialAmount }: { onClose: () => void; initialAmount?: number }) {
+  const [amount, setAmount] = useState<number>(initialAmount && initialAmount > 0 ? initialAmount : 200_000);
   const [order, setOrder] = useState<TopupCreated | null>(null);
   const createTopup = useCreateTopup();
   const qc = useQueryClient();

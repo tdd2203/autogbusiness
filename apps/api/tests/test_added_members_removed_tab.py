@@ -339,3 +339,104 @@ def test_removed_tab_respects_ownership_visibility(
         "subowned@example.com",
         "adminowned@example.com",
     }
+
+
+def test_removed_tab_chain_carries_member_ids(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Mỗi chặng của chuỗi đổi email kèm ID member — modal bấm mũi tên mới mở được.
+
+    Tra theo CHUỖI EMAIL là không đủ (cùng một email có thể tồn tại ở nhiều
+    workspace), nên `email_changed_to_ids` phải khớp 1-1 theo thứ tự với
+    `email_changed_to`.
+    """
+    ws = _ws(client, auth_header, "WS chain ids")
+    first = _invite(client, auth_header, ws["id"], "chain1@example.com")
+    second = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{first['id']}/change-email",
+        json={"new_email": "chain2@example.com"},
+        headers=auth_header,
+    )
+    assert second.status_code == 201, second.text
+    third = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{second.json()['id']}/change-email",
+        json={"new_email": "chain3@example.com"},
+        headers=auth_header,
+    )
+    assert third.status_code == 201, third.text
+
+    rows = client.get("/api/v1/added-members?removed=true", headers=auth_header).json()
+    row = next(r for r in rows if r["email"] == "chain1@example.com")
+    assert row["email_changed_to"] == ["chain2@example.com", "chain3@example.com"]
+    assert row["email_changed_to_ids"] == [second.json()["id"], third.json()["id"]]
+
+
+def test_get_added_member_by_id_returns_detail_row(
+    client: TestClient, auth_header: dict
+) -> None:
+    """`GET /added-members/{id}` trả ĐÚNG hình dạng 1 dòng danh sách (kèm workspace).
+
+    Modal chi tiết bấm mũi tên "đã đổi sang" phải mở được email nhận — email đó còn
+    sống nên KHÔNG nằm trong tab "Đã xoá" đang mở, phải hỏi thẳng theo id.
+    """
+    ws = _ws(client, auth_header, "WS detail by id")
+    member = _invite(client, auth_header, ws["id"], "byid@example.com")
+
+    resp = client.get(f"/api/v1/added-members/{member['id']}", headers=auth_header)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == member["id"]
+    assert body["email"] == "byid@example.com"
+    assert body["workspace_id"] == ws["id"]
+    assert body["workspace_name"] == "WS detail by id"
+    # Email còn sống, không phải ca đổi email → không có chuỗi.
+    assert body["email_changed_to"] == []
+    assert body["email_changed_to_ids"] == []
+
+
+def test_get_added_member_by_id_404_for_unknown_and_others(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Id lạ → 404; email của người khác → cũng 404 với sub-admin (đúng luật danh sách)."""
+    ws = _ws(client, auth_header, "WS detail visibility")
+    sub = client.post(
+        "/api/v1/users",
+        json={
+            "username": "subdetail1",
+            "password": "SubPassword123!",
+            "permissions": ["MEMBER_VIEW", "MEMBER_INVITE"],
+        },
+        headers=auth_header,
+    )
+    assert sub.status_code == 201, sub.text
+    assign = client.post(
+        f"/api/v1/workspaces/{ws['id']}/assignments",
+        json={"user_id": sub.json()["id"]},
+        headers=auth_header,
+    )
+    assert assign.status_code in (200, 201), assign.text
+    sub_h = {
+        "Authorization": "Bearer "
+        + client.post(
+            "/api/v1/auth/login",
+            json={"identifier": "subdetail1", "password": "SubPassword123!"},
+        ).json()["access_token"]
+    }
+
+    theirs = _invite(client, auth_header, ws["id"], "adminonly@example.com")
+    mine = _invite(client, sub_h, ws["id"], "subsees@example.com")
+
+    assert (
+        client.get(f"/api/v1/added-members/{theirs['id']}", headers=sub_h).status_code
+        == 404
+    )
+    assert (
+        client.get(f"/api/v1/added-members/{mine['id']}", headers=sub_h).status_code
+        == 200
+    )
+    assert (
+        client.get(
+            f"/api/v1/added-members/{uuid.uuid4()}", headers=auth_header
+        ).status_code
+        == 404
+    )

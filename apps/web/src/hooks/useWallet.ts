@@ -17,6 +17,7 @@ import type {
   TopupCreated,
   Wallet,
   WalletAdminUser,
+  WalletDailySummary,
   WalletTxn,
   Withdrawal,
   WithdrawalAdmin,
@@ -43,6 +44,19 @@ export function useWalletTransactions() {
     queryFn: () =>
       api<{ items: WalletTxn[] }>("/api/v1/wallet/transactions?limit=100"),
     enabled,
+    refetchOnWindowFocus: true,
+  });
+}
+
+/** Báo cáo trong ngày (giờ VN): email đã thêm + giao dịch. `date` = YYYY-MM-DD. */
+export function useWalletDailySummary(date: string) {
+  const { user } = useAuth();
+  const enabled = !!user?.wallet_beta || !!user?.is_super_admin;
+  return useQuery({
+    queryKey: ["wallet", "daily-summary", date],
+    queryFn: () =>
+      api<WalletDailySummary>(`/api/v1/wallet/daily-summary?date=${date}`),
+    enabled: enabled && !!date,
     refetchOnWindowFocus: true,
   });
 }

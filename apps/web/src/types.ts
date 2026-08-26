@@ -139,6 +139,9 @@ export type Member = {
    *  email đang giữ hạn/tiền. Backend CHỈ đổ đầy ở danh sách tab "Đã xoá" cho dòng
    *  removed_reason="email_changed"; mọi nơi khác undefined/rỗng. */
   email_changed_to?: string[];
+  /** ID member của TỪNG chặng trong `email_changed_to` (cùng thứ tự, cùng độ dài) —
+   *  để modal chi tiết bấm thẳng vào mũi tên mà mở email nhận. */
+  email_changed_to_ids?: string[];
   created_at: string;
   /** Lần CUỐI invite/re-invite qua dashboard. NULL nếu member chỉ từ SYNC.
    *  Cột "Ngày thêm" hiển thị last_invited_at ?? created_at để khớp Queue. */

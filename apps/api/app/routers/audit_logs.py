@@ -1,7 +1,8 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.deps import get_session, require_permission
@@ -174,6 +175,35 @@ def _audit_log_visible(
 # Quét tối đa N dòng gần nhất rồi post-filter — tránh SQL prefilter bỏ sót log
 # hàng loạt (member_ids JSONB), extension (actor_id NULL), gán chủ cũ, v.v.
 _SUB_ADMIN_AUDIT_SCAN = 3000
+# Trang nhật ký tải theo NGÀY (cần đến đâu tải đến đó) nên một trang của sub-admin
+# có thể phải quét lùi nhiều lô mới gom đủ `limit` dòng THẤY ĐƯỢC. Quét lùi tối đa
+# ngần này lô để trang không bao giờ dừng sớm chỉ vì lô đầu toàn log của người khác.
+_SUB_ADMIN_MAX_CHUNKS = 8
+
+
+def _before_cursor(
+    stmt: "Select[tuple[AuditLog]]",
+    ts: datetime | None,
+    log_id: UUID | None,
+) -> "Select[tuple[AuditLog]]":
+    """Chỉ lấy log CŨ HƠN mốc (ts, id) — con trỏ phân trang.
+
+    Phải kèm `id` vì `server_default=func.now()` là HẰNG trong một transaction:
+    mọi log ghi cùng một request mang y hệt timestamp. Cắt trang bằng mỗi
+    `timestamp <` sẽ nuốt luôn các log anh em cùng mốc.
+    """
+    if ts is None:
+        return stmt
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    if log_id is None:
+        return stmt.where(AuditLog.timestamp < ts)
+    return stmt.where(
+        or_(
+            AuditLog.timestamp < ts,
+            and_(AuditLog.timestamp == ts, AuditLog.id < log_id),
+        )
+    )
 
 
 @router.get("", response_model=list[AuditLogOut])
@@ -183,24 +213,43 @@ def list_audit_logs(
     limit: int = Query(default=100, le=500),
     action: str | None = Query(default=None),
     actor_type: str | None = Query(default=None),
+    before: datetime | None = Query(default=None),
+    before_id: UUID | None = Query(default=None),
 ) -> list[AuditLogOut]:
-    stmt = select(AuditLog).order_by(AuditLog.timestamp.desc())
+    """Một TRANG nhật ký, mới→cũ. `before`/`before_id` = con trỏ (dòng cuối của
+    trang trước) để trang sau tải tiếp phần cũ hơn. Trả về ÍT HƠN `limit` dòng
+    nghĩa là đã hết nhật ký — UI dựa vào đó để ẩn nút "xem thêm"."""
+    base = select(AuditLog).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
     if action:
-        stmt = stmt.where(AuditLog.action == action)
+        base = base.where(AuditLog.action == action)
     if actor_type:
-        stmt = stmt.where(AuditLog.actor_type == actor_type)
+        base = base.where(AuditLog.actor_type == actor_type)
 
     if user.is_super_admin:
-        rows = list(db.execute(stmt.limit(limit)).scalars())
+        rows = list(
+            db.execute(_before_cursor(base, before, before_id).limit(limit)).scalars()
+        )
     else:
         owned_ids, owned_emails = _owned_member_sets(db, user.id)
-        raw = list(db.execute(stmt.limit(_SUB_ADMIN_AUDIT_SCAN)).scalars())
-        own_queue_ids = _own_queue_item_ids(db, user.id, raw)
-        rows = [
-            r
-            for r in raw
-            if _audit_log_visible(r, user, owned_ids, owned_emails, own_queue_ids)
-        ][:limit]
+        rows = []
+        ts, log_id = before, before_id
+        for _ in range(_SUB_ADMIN_MAX_CHUNKS):
+            raw = list(
+                db.execute(
+                    _before_cursor(base, ts, log_id).limit(_SUB_ADMIN_AUDIT_SCAN)
+                ).scalars()
+            )
+            if not raw:
+                break
+            own_queue_ids = _own_queue_item_ids(db, user.id, raw)
+            for r in raw:
+                if _audit_log_visible(r, user, owned_ids, owned_emails, own_queue_ids):
+                    rows.append(r)
+                    if len(rows) >= limit:
+                        break
+            if len(rows) >= limit or len(raw) < _SUB_ADMIN_AUDIT_SCAN:
+                break
+            ts, log_id = raw[-1].timestamp, raw[-1].id
 
     # Suy tên workspace cho các log gắn workspace (mời/xoá thành viên, workspace…).
     ids: set[UUID] = set()

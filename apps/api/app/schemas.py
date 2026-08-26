@@ -404,6 +404,8 @@ class MemberPaymentEntryOut(BaseModel):
     ref_type: str | None = None
     ref_id: str | None = None
     meta: dict | None = None
+    # True ⇔ phí này đã được hoàn (xem WalletTxnOut.reversed).
+    reversed: bool = False
     created_at: datetime
 
 
@@ -517,6 +519,10 @@ class AddedMemberOut(MemberOut):
     # email đang giữ hạn/tiền. Chỉ đổ đầy ở tab "Đã xoá" cho dòng `removed_reason=
     # 'email_changed'`; rỗng ở mọi trường hợp khác.
     email_changed_to: list[str] = Field(default_factory=list)
+    # ID member tương ứng TỪNG chặng của `email_changed_to` (cùng thứ tự, cùng độ
+    # dài). Có id thì UI mới mở thẳng được chi tiết email nhận từ mũi tên trong modal
+    # — email trùng nhau ở nhiều workspace nên tra theo chuỗi email là không đủ.
+    email_changed_to_ids: list[UUID] = Field(default_factory=list)
 
 
 class PaymentRequestNotice(BaseModel):
@@ -1204,12 +1210,55 @@ class WalletTxnOut(BaseModel):
     ref_type: str | None
     ref_id: str | None
     meta: dict | None
+    # True ⇔ khoản `invite_fee` này ĐÃ được hoàn (mời hỏng). FE ghép cặp phí ↔ hoàn
+    # theo (ref_id, meta.email) rồi giấu cả cặp đi: lượt mời hỏng không làm mất đồng
+    # nào nên hiện 2 dòng ngược dấu ở 2 chỗ khác nhau chỉ tổ rối (user 2026-08-26).
+    reversed: bool = False
     created_at: datetime
 
 
 class WalletTxnPage(BaseModel):
     items: list[WalletTxnOut]
     next_cursor: str | None = None
+
+
+class WalletDailyKindOut(BaseModel):
+    """1 loại bút toán trong ngày: bao nhiêu lượt, tổng tiền (CÓ DẤU, VND)."""
+
+    kind: str
+    count: int
+    amount: int
+
+
+class WalletDailySummaryOut(BaseModel):
+    """Báo cáo 1 ngày (giờ VN) của chính user — xem `routers/wallet/daily.py`.
+
+    `fee_total` là TOÀN BỘ phí mời/gia hạn phát sinh trong ngày (số dương); cộng dồn
+    có dấu không dùng được vì lượt trả qua hoá đơn ghi +X rồi −X cùng lúc.
+
+    Lượt mời HỎNG đã được hoàn phí thì không tiêu đồng nào, nên số user cần nhìn là
+    `fee_net` = `fee_total` − `fee_refunded` (THỰC CHI). `fee_from_invoice` /
+    `fee_from_balance` tách `fee_net` theo nguồn tiền, chỉ tính phí còn hiệu lực.
+    """
+
+    date: str
+    emails_added: int
+    emails_removed: int
+    txn_count: int
+    fee_total: int
+    #: Phần `fee_total` đã bị hoàn lại (lượt mời hỏng) — không tính vào thực chi.
+    fee_refunded: int = 0
+    #: THỰC CHI trong ngày = fee_total − fee_refunded.
+    fee_net: int = 0
+    fee_from_invoice: int
+    fee_from_balance: int
+    invite_count: int
+    #: Số lượt mời trong ngày đã hỏng và được hoàn phí.
+    refunded_invite_count: int = 0
+    renew_count: int
+    topup_total: int
+    refund_total: int
+    by_kind: list[WalletDailyKindOut] = Field(default_factory=list)
 
 
 class TopupCreateIn(BaseModel):

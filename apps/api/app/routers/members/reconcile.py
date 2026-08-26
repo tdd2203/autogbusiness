@@ -28,6 +28,7 @@ from app.models import (
     Invite,
     Member,
     QueueItem,
+    WalletTransaction,
     Workspace,
 )
 from app.schemas import InviteVerifyReconcileIn, MemberBulkUpsert
@@ -43,6 +44,18 @@ logger = logging.getLogger(__name__)
 # full sync trước đó cách 11 ngày), nhưng không lôi lại lịch sử cổ: member bị gỡ
 # lâu rồi mà nay quay lại thường là ĐƯỢC MỜI LẠI, không phải xoá hỏng.
 FAKE_REMOVE_LOOKBACK = timedelta(days=30)
+
+# Cửa sổ dò "ĐÃ HOÀN PHÍ MÀ EMAIL VẪN Ở TRONG TEAM". Lời mời bị chốt hỏng sẽ hoàn
+# phí RỒI XOÁ SẠCH bản ghi, nên bằng chứng ngược lại chỉ lộ ra ở lần đồng bộ KẾ
+# TIẾP — có khi 50 phút sau (ca sonvvng 15/8/2026), có khi vài ngày nếu không ai
+# bấm đồng bộ. 7 ngày đủ rộng cho cả hai, mà vẫn đủ hẹp để một email được mời lại
+# đàng hoàng nhiều tuần sau không bị lôi lại lần hoàn phí cũ.
+REFUND_WHILE_IN_TEAM_LOOKBACK = timedelta(days=7)
+
+# Sai số ghép bút toán hoàn với lần chốt hỏng. Hai thứ này được ghi trong CÙNG một
+# transaction (`fail_deferred_invite`) nên thực tế lệch 0; để 5 phút chỉ là biên an
+# toàn cho các đường chốt hỏng cũ có thể hoàn phí ở bước riêng.
+REFUND_MATCH_SLACK = timedelta(minutes=5)
 
 # VÙNG BẢO VỆ LỜI MỜI TƯƠI: ChatGPT index lời mời vừa gửi vào tab "Lời mời đang
 # chờ xử lý" TRỄ 1-30s (mẻ nhiều email còn lâu hơn — server gửi tuần tự). Mọi
@@ -134,6 +147,162 @@ def _flag_fake_removals(
         logger.warning(
             "[fake-remove] workspace=%s phát hiện %d email bị XOÁ-GIẢ (absent_confirmed) "
             "nay sống lại qua sync: %s",
+            workspace.id,
+            len(flagged),
+            ", ".join(flagged[:10]),
+        )
+    return flagged
+
+
+def _flag_refunded_while_in_team(
+    db: Session,
+    workspace: Workspace,
+    emails: list[str],
+    now: datetime,
+) -> list[str]:
+    """Bóc ca ĐÃ HOÀN PHÍ MÀ EMAIL VẪN Ở TRONG TEAM → `MEMBER_REFUND_WHILE_IN_TEAM`.
+
+    Bối cảnh (ca thật `sonvvng@gmail.com` 15/8/2026, mãi 26/8 mới lộ): extension bấm
+    mời xong, ChatGPT hiện toast thành công, nhưng vòng F5 không đọc kịp danh sách →
+    lời mời kẹt "chờ xác minh". Quá 20 phút, `stale-invite-resolver` chốt hỏng: hoàn
+    330.000đ cho đại lý VÀ xoá luôn bản ghi member. 50 phút sau, đồng bộ thấy email
+    ĐANG THẬT SỰ ở trong workspace nên dựng lại một dòng member MỚI — dòng do sync đẻ
+    ra không mang theo ký ức nào về tiền. Kết quả: email dùng trọn 30 ngày mà cửa
+    hàng không thu được đồng nào, và KHÔNG có một dòng nhật ký nào nói ra điều đó. Ba
+    ca cùng kiểu trước đó đều phải dò tay mới thấy.
+
+    Chỗ nối duy nhất giữa hai vế nằm ĐÚNG Ở ĐÂY: lần sync dựng lại (hoặc hồi sinh)
+    member chính là khoảnh khắc kết luận "lời mời hỏng" bị chứng minh là sai. Hàm này
+    biến khoảnh khắc đó thành 1 dòng nhật ký ERROR đích danh, kèm số tiền và ví cần
+    truy thu — timeline chi tiết thành viên đã render sẵn action này.
+
+    KHÔNG tự trừ tiền. Truy thu đẩy ví đại lý xuống ÂM, và khoản âm sẽ nuốt trọn lần
+    nạp kế tiếp của họ (ví đại lý là ví "đi qua": nạp đúng bằng phí rồi tiêu ngay,
+    số dư gần như luôn 0). Đó là quyết định của chủ cửa hàng, không phải của một
+    callback đồng bộ chạy lúc 3 giờ sáng.
+
+    Chỉ ghi khi ĐỦ CẢ BỐN — mỗi điều bịt một kiểu báo oan:
+      1. có `MEMBER_INVITE_FAILED` cho đúng (workspace, email) trong cửa sổ dò;
+      2. có bút toán `invite_refund` khớp lần chốt hỏng đó ⇒ tiền ĐÃ thật sự trả lại
+         (chốt hỏng mà không hoàn phí thì chẳng ai nợ ai);
+      3. chưa có bút toán `adjust` nào thu lại đúng số đã hoàn cho email ấy;
+      4. chưa từng ghi cảnh báo cho chính lần hoàn ấy ⇒ idempotent qua mọi lần sync
+         sau, kể cả khi member lại bị gỡ rồi lại sống lại.
+    """
+    if not emails:
+        return []
+    # Session của dự án chạy `autoflush=False` (app/db.py): member vừa `db.add` trong
+    # vòng lặp upsert CHƯA nhìn thấy được bằng SELECT. Không flush ở đây thì cảnh báo
+    # mất `target_id` → không neo vào timeline của member nào cả, đúng thứ khiến ca
+    # sonvvng im lặng suốt 11 ngày. Vẫn trong transaction chung, caller commit.
+    db.flush()
+    fails = db.execute(
+        select(AuditLog.data, AuditLog.timestamp)
+        .where(
+            AuditLog.action == "MEMBER_INVITE_FAILED",
+            AuditLog.timestamp >= now - REFUND_WHILE_IN_TEAM_LOOKBACK,
+            AuditLog.data["workspace_id"].astext == str(workspace.id),
+            func.lower(AuditLog.data["email"].astext).in_(emails),
+        )
+        .order_by(AuditLog.timestamp.desc())
+    ).all()
+    # Đã sort giảm dần → lần gặp ĐẦU TIÊN của mỗi email là lần chốt hỏng MỚI NHẤT.
+    latest_fail: dict[str, tuple[dict, datetime]] = {}
+    for data, ts in fails:
+        email = ((data or {}).get("email") or "").lower()
+        if email and email not in latest_fail:
+            latest_fail[email] = (data or {}, ts)
+    if not latest_fail:
+        return []
+
+    refunds = db.execute(
+        select(WalletTransaction)
+        .where(
+            WalletTransaction.kind == "invite_refund",
+            WalletTransaction.created_at >= now - REFUND_WHILE_IN_TEAM_LOOKBACK,
+            func.lower(WalletTransaction.meta["email"].astext).in_(list(latest_fail)),
+        )
+        .order_by(WalletTransaction.seq.desc())
+    ).scalars().all()
+    latest_refund: dict[str, WalletTransaction] = {}
+    for txn in refunds:
+        email = ((txn.meta or {}).get("email") or "").lower()
+        if email and email not in latest_refund:
+            latest_refund[email] = txn
+
+    flagged: list[str] = []
+    for email, (data, fail_ts) in latest_fail.items():
+        txn = latest_refund.get(email)
+        if txn is None or abs(txn.created_at - fail_ts) > REFUND_MATCH_SLACK:
+            continue  # chốt hỏng mà không hoàn phí → không có gì để đòi
+        # ĐÃ TRUY THU CHƯA: tìm bút toán `adjust` ÂM ĐÚNG BẰNG số đã hoàn, cho chính
+        # email này, xảy ra SAU lần hoàn. Nhận diện bằng hình dạng chứ không bằng một
+        # khoá `meta` cố định, vì ba lần truy thu tay trước đó mỗi lần đánh dấu một
+        # kiểu (`recollect_of`, `member_id`+`manual_invite_at`…) — bắt theo khoá là
+        # bỏ sót và báo động lại món nợ đã trả xong.
+        reclaimed = db.execute(
+            select(WalletTransaction.id)
+            .where(
+                WalletTransaction.kind == "adjust",
+                WalletTransaction.amount == -txn.amount,
+                func.lower(WalletTransaction.meta["email"].astext) == email,
+                WalletTransaction.seq > txn.seq,
+            )
+            .limit(1)
+        ).first()
+        if reclaimed is not None:
+            continue  # đã truy thu rồi
+        already = db.execute(
+            select(AuditLog.id)
+            .where(
+                AuditLog.action == "MEMBER_REFUND_WHILE_IN_TEAM",
+                AuditLog.data["refund_txn_id"].astext == str(txn.id),
+            )
+            .limit(1)
+        ).first()
+        if already is not None:
+            continue  # đã cảnh báo cho đúng lần hoàn này
+        member_id = db.execute(
+            select(Member.id).where(
+                Member.workspace_id == workspace.id, Member.email == email
+            )
+        ).scalar_one_or_none()
+        blind_hours = round((now - fail_ts).total_seconds() / 3600, 1)
+        log_event(
+            db,
+            actor_type="SYSTEM",
+            action="MEMBER_REFUND_WHILE_IN_TEAM",
+            result="ERROR",
+            target_type="MEMBER",
+            target_id=str(member_id) if member_id else None,
+            data={
+                "email": email,
+                "workspace_id": str(workspace.id),
+                "amount": txn.amount,
+                "refund_txn_id": str(txn.id),
+                "wallet_id": str(txn.wallet_id),
+                "user_id": str(txn.user_id) if txn.user_id else None,
+                "failed_at": fail_ts.isoformat(),
+                "error_code": data.get("error_code"),
+                "queue_item_id": data.get("queue_item_id"),
+                "blind_hours": blind_hours,
+                "note": (
+                    f"Lời mời bị chốt hỏng lúc {fail_ts.isoformat()} "
+                    f"({data.get('error_code') or 'không rõ mã'}) và đã hoàn "
+                    f"{txn.amount:,}đ về ví, NHƯNG đồng bộ này cho thấy email vẫn "
+                    "đang ở trong workspace ⇒ dịch vụ đã giao mà chưa thu được đồng "
+                    f"nào (đã {blind_hours} giờ). Kiểm tra rồi truy thu bằng bút "
+                    "toán 'adjust' âm đúng số này, có meta.email — hệ thống KHÔNG "
+                    "tự trừ vì việc đó đẩy ví đại lý xuống âm."
+                ),
+            },
+            commit=False,
+        )
+        flagged.append(email)
+    if flagged:
+        logger.warning(
+            "[refund-in-team] workspace=%s phát hiện %d email ĐÃ HOÀN PHÍ mà vẫn ở "
+            "trong team (cần truy thu): %s",
             workspace.id,
             len(flagged),
             ", ".join(flagged[:10]),
@@ -637,6 +806,17 @@ def bulk_upsert_members(
 
     # Dò XOÁ-GIẢ TRƯỚC khi commit: mọi audit của lần sync này vào cùng 1 transaction.
     fake_removed_emails = _flag_fake_removals(db, workspace, resurrected, now)
+    # Dò HOÀN PHÍ OAN: email vừa được dựng lại (hoặc hồi sinh) mà trước đó lời mời
+    # của nó bị chốt hỏng + đã hoàn tiền ⇒ đang dùng miễn phí. Xét cả hai nguồn vì
+    # hai đường chốt hỏng để lại hai dấu vết khác nhau: `fail_deferred_invite` XOÁ
+    # hẳn bản ghi (→ lần sau sync tạo mới), các đường cũ chỉ mark removed (→ hồi
+    # sinh). Cùng transaction với các audit trên.
+    refund_debt_emails = _flag_refunded_while_in_team(
+        db,
+        workspace,
+        created_emails + [email for _, email, _ in resurrected],
+        now,
+    )
 
     db.add(workspace)
     log_event(
@@ -652,6 +832,7 @@ def bulk_upsert_members(
             "updated": updated,
             "removed_missing": removed_count,
             "fake_removed": len(fake_removed_emails),
+            "refund_debt": len(refund_debt_emails),
             "total": len(body.members),
             "is_full_sync": body.is_full_sync,
             "reconcile_skipped": reconcile_skipped,
@@ -711,6 +892,14 @@ def bulk_upsert_members(
         # ChatGPT vẫn còn) → extension mang xuống QueueItem.result để dashboard
         # cảnh báo, thay vì chỉ nằm im trong nhật ký.
         "fake_removed_emails": fake_removed_emails[:50],
+        # Email đã được hoàn phí mà vẫn ở trong team (đang dùng miễn phí, cần truy
+        # thu). ⚠️ Extension HIỆN KHÔNG đọc field này (`runner.ts` chỉ chuyển tiếp
+        # `created_emails`/`removed_emails`/`mismatch` xuống QueueItem.result), y
+        # như `fake_removed_emails`. Đường hiện ra cho người dùng là AUDIT: tab
+        # "Chính" của Nhật ký (`MEMBER_REFUND_WHILE_IN_TEAM` nằm trong IMP_OP_GROUP)
+        # + timeline trong modal chi tiết thành viên. Field này để nguyên cho ai gọi
+        # thẳng endpoint và cho lần nối banner sau — đừng tin là dashboard đã hiện.
+        "refund_debt_emails": refund_debt_emails[:50],
         "total": len(body.members),
         "rogue_pending_emails": rogue_pending_emails,
         "reconcile_skipped": reconcile_skipped,

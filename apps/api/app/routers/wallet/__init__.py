@@ -13,3 +13,4 @@ from . import orders  # noqa: F401,E402
 from . import withdraw  # noqa: F401,E402
 from . import admin  # noqa: F401,E402
 from . import report  # noqa: F401,E402
+from . import daily  # noqa: F401,E402

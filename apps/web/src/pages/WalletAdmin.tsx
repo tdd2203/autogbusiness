@@ -21,6 +21,8 @@ import {
   useWalletAdminUserTransactions,
 } from "../hooks/useWallet";
 import { formatVnd, TXN_KIND_LABEL, type PaymentSettings, type SepayAuthMethod, type WalletAdminUser, type WalletTxn, type WalletTxnKind, type WithdrawalAdmin } from "../lib/wallet";
+import { pairVoidedInvites } from "../lib/wallet-history";
+import type { VoidedPair } from "../lib/wallet-history";
 import { toast } from "../components/Toast";
 import InputModal from "../components/InputModal";
 import { ApiError } from "../lib/api";
@@ -260,33 +262,99 @@ const CHIPS: { key: TxnCategory | "all"; label: string }[] = [
 // mỗi request = 1 transaction → cùng timestamp ⇔ cùng 1 thao tác. Gộp để hiển thị
 // 1 DÒNG theo action, thay vì tách "nạp qua hoá đơn" rồi trừ N phí: tiền order_topup
 // chỉ ĐI QUA ví để trả ngay cho lệnh, KHÔNG phải nạp thật (chỉ hoàn về ví nếu lỗi).
-type TxnGroup = { key: string; txns: WalletTxn[]; category: TxnCategory };
+type TxnGroup = {
+  key: string;
+  txns: WalletTxn[];
+  category: TxnCategory;
+  /** Có phần tử ⇒ đây là dòng "mời hỏng đã hoàn phí" (khi đó `txns` rỗng). */
+  voided: VoidedPair[];
+  /** Số email hỏng CÙNG mốc — dòng thường ghi chú "cùng lượt này có N email hỏng". */
+  voidedSiblings: number;
+  /** Tiền hoá đơn ở lại ví vì lượt hỏng đã được hoàn phí. */
+  invoiceStranded: number;
+};
 
-function groupTxns(all: WalletTxn[]): TxnGroup[] {
-  const byTime = new Map<string, WalletTxn[]>();
-  const order: string[] = [];
-  for (const t of all) {
-    if (!byTime.has(t.created_at)) {
-      byTime.set(t.created_at, []);
-      order.push(t.created_at);
-    }
-    byTime.get(t.created_at)!.push(t);
+/**
+ * Gộp theo mốc thời gian, đồng thời TÁCH các lượt mời hỏng đã hoàn đủ phí
+ * (`invite_fee` reversed ↔ `invite_refund`) ra nhóm riêng — trang Ví người dùng ẩn
+ * mặc định, ở đây cũng vậy cho đồng bộ (user 2026-08-26). Luật ghép cặp dùng chung
+ * `pairVoidedInvites` với trang Ví, đừng chép lại ở đây.
+ */
+export function groupTxns(all: WalletTxn[]): TxnGroup[] {
+  const pairs = pairVoidedInvites(all);
+  const paired = new Set<string>();
+  for (const [feeId, p] of pairs) {
+    paired.add(feeId);
+    paired.add(p.refund.id);
   }
-  return order.map((k) => {
-    const txns = byTime.get(k)!;
-    const cats = txns.map((t) => txnCategory(t.kind));
-    // Nhóm có phí (mời/gia hạn) → xếp "fee" dù kèm order_topup (order_topup là nguồn
-    // trả, không phải nạp). Nhóm chỉ có order_topup (hoá đơn hết hạn → giữ lại ví) →
-    // vẫn là nạp thật.
-    const category: TxnCategory = cats.includes("fee")
-      ? "fee"
-      : cats.includes("refund")
-        ? "refund"
-        : cats.includes("topup")
-          ? "topup"
-          : "other";
-    return { key: k, txns, category };
-  });
+  const byTime = new Map<string, WalletTxn[]>();
+  const voidedByTime = new Map<string, VoidedPair[]>();
+  const invoiceByTime = new Map<string, number>();
+  const order: string[] = [];
+  const touch = (k: string) => {
+    if (!byTime.has(k) && !voidedByTime.has(k)) order.push(k);
+  };
+  for (const t of all) {
+    const pair = pairs.get(t.id);
+    if (pair) {
+      touch(t.created_at);
+      const list = voidedByTime.get(t.created_at);
+      if (list) list.push(pair);
+      else voidedByTime.set(t.created_at, [pair]);
+      continue;
+    }
+    if (paired.has(t.id)) continue; // bút toán hoàn — đã kể trong cặp của phí
+    touch(t.created_at);
+    if (t.kind === "order_topup") {
+      invoiceByTime.set(t.created_at, (invoiceByTime.get(t.created_at) ?? 0) + t.amount);
+    }
+    const list = byTime.get(t.created_at);
+    if (list) list.push(t);
+    else byTime.set(t.created_at, [t]);
+  }
+  const groups: TxnGroup[] = [];
+  for (const k of order) {
+    const voided = voidedByTime.get(k) ?? [];
+    // Lượt hỏng trả qua hoá đơn: tiền hoá đơn đã vào ví rồi phí hoàn về ⇒ ví DÔI RA,
+    // đó không phải khoản triệt tiêu nên dòng hoá đơn vẫn phải hiện, kèm lời giải.
+    const stranded = Math.max(
+      0,
+      Math.min(invoiceByTime.get(k) ?? 0, voided.reduce((n, p) => n - p.fee.amount, 0)),
+    );
+    const txns = byTime.get(k) ?? [];
+    if (txns.length > 0) {
+      const cats = txns.map((t) => txnCategory(t.kind));
+      // Nhóm có phí (mời/gia hạn) → xếp "fee" dù kèm order_topup (order_topup là nguồn
+      // trả, không phải nạp). Nhóm chỉ có order_topup (hoá đơn hết hạn → giữ lại ví) →
+      // vẫn là nạp thật.
+      const category: TxnCategory = cats.includes("fee")
+        ? "fee"
+        : cats.includes("refund")
+          ? "refund"
+          : cats.includes("topup")
+            ? "topup"
+            : "other";
+      groups.push({
+        key: k,
+        txns,
+        category,
+        voided: [],
+        voidedSiblings: voided.length,
+        invoiceStranded: cats.includes("fee") ? 0 : stranded,
+      });
+    }
+    if (voided.length > 0) {
+      groups.push({
+        key: `${k}#voided`,
+        txns: [],
+        category: "refund",
+        voided,
+        voidedSiblings: 0,
+        invoiceStranded: stranded,
+      });
+    }
+  }
+  return groups;
 }
 
 function DetailModal({ user, onClose }: { user: WalletAdminUser; onClose: () => void }) {
@@ -298,7 +366,15 @@ function DetailModal({ user, onClose }: { user: WalletAdminUser; onClose: () => 
 
   const all = data?.items ?? [];
   const groups = useMemo(() => groupTxns(all), [all]);
-  const shown = filter === "all" ? groups : groups.filter((g) => g.category === filter);
+  // Lượt mời hỏng đã hoàn đủ phí không làm ví suy chuyển đồng nào → ẩn mặc định như
+  // trang Ví người dùng. Riêng khi bấm chip "Hoàn" thì hiện luôn: admin đang đi tìm
+  // đúng mấy khoản đó, bắt bật thêm một nút nữa là vô duyên.
+  const [showVoided, setShowVoided] = useState(false);
+  const voidedCount = useMemo(() => groups.reduce((n, g) => n + g.voided.length, 0), [groups]);
+  const revealVoided = showVoided || filter === "refund";
+  const shown = (filter === "all" ? groups : groups.filter((g) => g.category === filter)).filter(
+    (g) => revealVoided || g.voided.length === 0,
+  );
   // 4 con số TÁCH BẠCH để đối soát (user 2026-07-27: "tiền vào phải bằng tiền ra,
   // điều chỉnh và hoàn tính riêng, không gộp"):
   //  • TỔNG NẠP  = tiền THẬT vào ví từ webhook ngân hàng: nạp chủ động (topup) +
@@ -432,6 +508,31 @@ function DetailModal({ user, onClose }: { user: WalletAdminUser; onClose: () => 
 
         {/* Danh sách giao dịch */}
         <div style={{ overflowY: "auto", padding: "6px 12px 12px" }}>
+          {voidedCount > 0 && (
+            <div
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap",
+                fontSize: 12.5, color: "var(--w-muted)", background: "var(--w-accent-soft)",
+                borderRadius: "var(--w-radius-sm)", padding: "9px 12px", margin: "6px 0 4px",
+              }}
+            >
+              <span>
+                {revealVoided ? "Đang hiện" : "Đã ẩn"} {voidedCount} lượt mời hỏng — phí đã hoàn lại đủ, ví không suy chuyển.
+              </span>
+              {filter !== "refund" && (
+                <button
+                  type="button"
+                  onClick={() => setShowVoided((v) => !v)}
+                  style={{
+                    padding: "5px 12px", borderRadius: 999, border: "1px solid var(--w-line)", background: "transparent",
+                    color: "var(--w-ink)", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, cursor: "pointer",
+                  }}
+                >
+                  {showVoided ? "Ẩn đi" : "Vẫn xem"}
+                </button>
+              )}
+            </div>
+          )}
           {isLoading ? (
             <p style={{ fontSize: 13, color: "var(--w-muted)", padding: "14px 12px" }}>Đang tải…</p>
           ) : shown.length === 0 ? (
@@ -464,7 +565,7 @@ function EqOp({ children }: { children: string }) {
 }
 
 /** Một dòng giao dịch: ① loại ② nguồn/thành viên/thời gian ③ số tiền + số dư sau. */
-function TxnRow({ t }: { t: WalletTxn }) {
+function TxnRow({ t, note }: { t: WalletTxn; note?: string }) {
   const kindLabel = TXN_KIND_LABEL[t.kind] ?? t.kind;
   const source = TXN_SOURCE[t.kind];
   const email = t.meta?.email ? String(t.meta.email) : null;
@@ -477,6 +578,7 @@ function TxnRow({ t }: { t: WalletTxn }) {
       <div style={{ flex: 1, minWidth: 0, lineHeight: 1.45 }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: "var(--w-ink)" }}>{kindLabel}</div>
         {source && <div style={{ fontSize: 12.5, color: "var(--w-muted)" }}>{source}</div>}
+        {note && <div style={{ fontSize: 12.5, color: "var(--w-muted)", marginTop: 1 }}>{note}</div>}
         {email && <div style={{ fontSize: 12.5, color: "var(--w-muted)", marginTop: 1 }}>Thành viên: <span style={{ color: "var(--w-ink)", fontWeight: 500 }}>{email}</span></div>}
         {reason && <div style={{ fontSize: 12.5, color: "var(--w-muted)", marginTop: 1, overflowWrap: "anywhere" }}>Lý do: <span style={{ color: "var(--w-ink)", fontWeight: 500 }}>{reason}</span></div>}
         <div style={{ fontSize: 11.5, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 3, opacity: 0.85 }}>{new Date(t.created_at).toLocaleString("vi-VN")}</div>
@@ -496,11 +598,19 @@ function TxnRow({ t }: { t: WalletTxn }) {
  *  tiết từng email. */
 function TxnGroupRow({ g }: { g: TxnGroup }) {
   const [open, setOpen] = useState(false);
-  if (g.txns.length === 1) return <TxnRow t={g.txns[0]} />;
+  if (g.voided.length > 0) return <VoidedInviteRow pairs={g.voided} invoiceStranded={g.invoiceStranded} />;
+
+  // Lượt hỏng đã hoàn hết, chỉ còn bút toán hoá đơn: tiền đó Ở LẠI trong ví, phải nói
+  // ra kẻo trơ một dòng "+X nạp qua hoá đơn" không đầu không cuối.
+  const strandedNote =
+    g.invoiceStranded > 0
+      ? `Lượt mời cùng lúc bị hỏng, phí đã hoàn — ${formatVnd(g.invoiceStranded)} tiền hoá đơn ở lại trong ví.`
+      : undefined;
+  if (g.txns.length === 1) return <TxnRow t={g.txns[0]} note={strandedNote} />;
 
   const fees = g.txns.filter((t) => t.kind === "invite_fee" || t.kind === "renew_fee");
   // Nhóm nhiều txn nhưng không phải mời/gia hạn (hiếm) → render từng dòng như cũ.
-  if (fees.length === 0) return <>{g.txns.map((t) => <TxnRow key={t.id} t={t} />)}</>;
+  if (fees.length === 0) return <>{g.txns.map((t) => <TxnRow key={t.id} t={t} note={strandedNote} />)}</>;
 
   const paidViaOrder = g.txns.some((t) => t.kind === "order_topup");
   const isRenew = fees.every((t) => t.kind === "renew_fee");
@@ -525,6 +635,11 @@ function TxnGroupRow({ g }: { g: TxnGroup }) {
           <div style={{ fontSize: 12.5, color: "var(--w-muted)" }}>
             {paidViaOrder ? "Thanh toán qua hoá đơn · không trừ số dư ví" : "Trừ từ số dư ví"}
           </div>
+          {g.voidedSiblings > 0 && (
+            <div style={{ fontSize: 12.5, color: "var(--w-muted)" }}>
+              Cùng lượt này có {g.voidedSiblings} email hỏng, đã hoàn phí (không tính vào số bên phải).
+            </div>
+          )}
           <div style={{ fontSize: 11.5, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 3, opacity: 0.85 }}>{created}</div>
         </div>
         <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -543,6 +658,60 @@ function TxnGroupRow({ g }: { g: TxnGroup }) {
               </span>
               <span style={{ color: "var(--w-neg)", fontFamily: "var(--font-mono)", flexShrink: 0 }}>
                 −{formatVnd(Math.abs(t.amount)).replace("-", "")}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Các lượt MỜI HỎNG cùng một lúc: phí trừ rồi hoàn lại đủ ⇒ ví không suy chuyển. Gộp
+ * cả cặp vào 1 dòng đặt đúng chỗ lượt mời, thay vì "Phí mời −X" một chỗ và "Hoàn phí
+ * mời +X" một chỗ khác để người đối soát tự trừ cho nhau (user 2026-08-26).
+ */
+function VoidedInviteRow({ pairs, invoiceStranded }: { pairs: VoidedPair[]; invoiceStranded: number }) {
+  const [open, setOpen] = useState(false);
+  const fee = pairs.reduce((s, p) => s - p.fee.amount, 0); // tổng phí đã trừ (dương)
+  return (
+    <div>
+      <div
+        className="wallet-admin-row"
+        style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: "14px 12px", borderRadius: "var(--w-radius-sm)", cursor: "pointer" }}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div style={{ width: 34, height: 34, flexShrink: 0, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, background: "var(--w-accent-soft)", color: "var(--w-accent)" }}>↩</div>
+        <div style={{ flex: 1, minWidth: 0, lineHeight: 1.45 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--w-ink)" }}>
+            Mời thất bại · {pairs.length} email · đã hoàn phí
+            <span style={{ color: "var(--w-muted)", fontSize: 11, marginLeft: 6, display: "inline-block", transform: open ? "rotate(180deg)" : "none" }}>▾</span>
+          </div>
+          <div style={{ fontSize: 12.5, color: "var(--w-muted)" }}>
+            Đã trừ {formatVnd(fee)} rồi hoàn lại đủ · ví không suy chuyển
+            {invoiceStranded > 0 && ` · ${formatVnd(invoiceStranded)} tiền hoá đơn ở lại trong ví`}
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 3, opacity: 0.85 }}>
+            {new Date(pairs[0].fee.created_at).toLocaleString("vi-VN")}
+          </div>
+        </div>
+        <div style={{ textAlign: "right", flexShrink: 0 }}>
+          <div style={{ fontSize: 12, color: "var(--w-muted)", fontFamily: "var(--font-mono)", textDecoration: "line-through" }}>
+            −{formatVnd(fee).replace("-", "")}
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 800, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--w-muted)" }}>0 đ</div>
+        </div>
+      </div>
+      {open && (
+        <div style={{ margin: "0 12px 8px 60px", borderLeft: "2px solid var(--w-line)", paddingLeft: 14, display: "grid", gap: 6 }}>
+          {pairs.map((p) => (
+            <div key={p.fee.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12.5 }}>
+              <span style={{ color: "var(--w-muted)", minWidth: 0, overflowWrap: "anywhere" }}>
+                {p.fee.meta?.email ? String(p.fee.meta.email) : "(không rõ email)"}
+              </span>
+              <span style={{ color: "var(--w-muted)", fontFamily: "var(--font-mono)", flexShrink: 0, whiteSpace: "nowrap" }}>
+                −{formatVnd(Math.abs(p.fee.amount)).replace("-", "")} → hoàn {new Date(p.refund.created_at).toLocaleString("vi-VN")}
               </span>
             </div>
           ))}

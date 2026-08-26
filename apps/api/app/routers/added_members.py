@@ -70,6 +70,34 @@ def _email_change_next_map(db: Session) -> dict[str, tuple[str, str]]:
     return out
 
 
+def _email_change_chain(
+    member: Member, next_map: dict[str, tuple[str, str]]
+) -> tuple[list[str], list[UUID]]:
+    """Chuỗi email THAY THẾ cho `member` (A → B → C) + id member từng chặng.
+
+    Chỉ có nghĩa với email bị gỡ VÌ ĐỔI EMAIL. Trả (emails, ids) LUÔN cùng độ dài để
+    UI ghép 1-1: bấm chặng thứ i thì mở đúng member ids[i].
+    """
+    emails: list[str] = []
+    ids: list[UUID] = []
+    if member.removed_reason != REMOVED_REASON_EMAIL_CHANGED:
+        return emails, ids
+    seen = {str(member.id)}
+    cursor = str(member.id)
+    for _ in range(_EMAIL_CHAIN_MAX_HOPS):
+        step = next_map.get(cursor)
+        if step is None:
+            break
+        next_email, next_id = step
+        emails.append(next_email)
+        ids.append(UUID(next_id))
+        if next_id in seen:
+            break  # vòng (email cũ được mời lại rồi lại đổi) → dừng
+        seen.add(next_id)
+        cursor = next_id
+    return emails, ids
+
+
 def _recompute_member_payment_status(member: Member) -> None:
     """Tính lại `Member.payment_status` TỔNG HỢP từ các chu kỳ (nguồn sự thật).
 
@@ -209,21 +237,10 @@ def list_added_members(
             # (A → B → C). Người dùng nhìn email cũ phải biết hạn/tiền của nó giờ nằm
             # ở đâu — không có chuỗi này thì email cũ trông như "mất trắng mà vẫn còn
             # hạn" (user hỏi 2026-08-24).
-            if removed and member.removed_reason == REMOVED_REASON_EMAIL_CHANGED:
-                chain: list[str] = []
-                seen = {str(member.id)}
-                cursor = str(member.id)
-                for _ in range(_EMAIL_CHAIN_MAX_HOPS):
-                    step = next_email_map.get(cursor)
-                    if step is None:
-                        break
-                    next_email, next_id = step
-                    chain.append(next_email)
-                    if next_id in seen:
-                        break  # vòng (email cũ được mời lại rồi lại đổi) → dừng
-                    seen.add(next_id)
-                    cursor = next_id
+            if removed:
+                chain, chain_ids = _email_change_chain(member, next_email_map)
                 out.email_changed_to = chain
+                out.email_changed_to_ids = chain_ids
             rows.append(out)
         for member in chunk:
             db.expunge(member)
@@ -287,6 +304,54 @@ def pending_payment_requests(
             )
         )
     return notices
+
+
+@router.get("/{member_id}", response_model=AddedMemberOut)
+def get_added_member(
+    member_id: UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> AddedMemberOut:
+    """1 email theo id — CÙNG hình dạng 1 dòng của danh sách (kèm chu kỳ, chủ, ws).
+
+    Dùng cho modal "Chi tiết thành viên": bấm email ở mũi tên "đã đổi sang" để nhảy
+    sang chi tiết email nhận. Email nhận thường KHÔNG nằm trong danh sách đang mở
+    (nó còn sống, còn danh sách là tab "Đã xoá"; có khi lại khác workspace) nên
+    không tra được từ dữ liệu đã nạp — phải hỏi thẳng theo id.
+
+    Quyền: super-admin xem mọi email; sub-admin chỉ email CHÍNH MÌNH add (giống luật
+    ai-thấy-gì của danh sách). Ngoài tầm nhìn → 404 y như không tồn tại.
+    """
+    member = db.execute(
+        select(Member)
+        .options(
+            selectinload(Member.workspace),
+            selectinload(Member.invited_by),
+            selectinload(Member.subscription_cycles),
+        )
+        .where(Member.id == member_id)
+    ).scalar_one_or_none()
+    if member is None or (
+        not user.is_super_admin and member.invited_by_user_id != user.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Member not found"
+        )
+
+    _recompute_member_payment_status(member)
+    out = AddedMemberOut.model_validate(member)
+    out.workspace_name = member.workspace.name if member.workspace else None
+    out.invited_by_username = member.invited_by.username if member.invited_by else None
+    out.cycles = [
+        SubscriptionCycleOut.model_validate(c) for c in member.subscription_cycles
+    ]
+    # Email nhận có thể ĐÃ ĐỔI TIẾP (A → B → C): giữ chuỗi để bấm đi tiếp được.
+    # Bản đồ đổi email quét cả bảng nhật ký → chỉ dựng khi email này ĐÚNG là ca đổi.
+    if member.removed_reason == REMOVED_REASON_EMAIL_CHANGED:
+        chain, chain_ids = _email_change_chain(member, _email_change_next_map(db))
+        out.email_changed_to = chain
+        out.email_changed_to_ids = chain_ids
+    return out
 
 
 def _load_cycles_with_member(
