@@ -79,6 +79,11 @@ services:
       SEPAY_APIKEY: ${SEPAY_APIKEY:-}
       SEPAY_SECRET_KEY: ${SEPAY_SECRET_KEY:-}
       SEPAY_WEBHOOK_SECRET: ${SEPAY_WEBHOOK_SECRET:-}
+      # Token API TÀI KHOẢN SePay — để mình chủ động kéo SAO KÊ ngân hàng về đối
+      # soát (khác 3 biến trên: chúng xác thực webhook SePay bắn tới). Rỗng =
+      # tắt nút "Kéo sao kê SePay", webhook vẫn chạy bình thường.
+      SEPAY_USER_API_TOKEN: ${SEPAY_USER_API_TOKEN:-}
+      SEPAY_USER_API_BASE: ${SEPAY_USER_API_BASE:-https://my.sepay.vn}
       WALLET_INVITE_FEE_DEFAULT: ${WALLET_INVITE_FEE_DEFAULT:-100000}
       WALLET_TEST_USERNAME: ${WALLET_TEST_USERNAME:-wallet_tester}
       WALLET_TEST_PASSWORD: ${WALLET_TEST_PASSWORD:-}
