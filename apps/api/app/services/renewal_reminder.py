@@ -134,12 +134,16 @@ def normalize_target(raw: str | None) -> tuple[str | None, int | None]:
     return f"@{cleaned}", None
 
 
-def resolve_assignee_chat_id(db: Session, member: Member) -> int | None:
+def resolve_assignee_chat_id(db: Session, member: Member, *, persist: bool = True) -> int | None:
     """chat_id của người được CHỈ ĐỊNH cho email này, hoặc None nếu chưa sẵn sàng.
 
     @username chỉ khớp được sau khi người đó bấm /start bot (bảng `telegram_contacts`)
     — đó là ràng buộc của Telegram, không phải lựa chọn thiết kế. Khớp xong thì LƯU
     LẠI vào `notify_telegram_chat_id` để lần sau khỏi tra.
+
+    `persist=False` cho người gọi CHỈ ĐỌC (endpoint GET xem trước mẫu): vẫn khớp
+    @username y hệt lúc gửi thật, nhưng không nhét sửa đổi vào session của một request
+    không hề commit — sửa đổi đó chỉ chờ autoflush rồi bị rollback lúc đóng session.
     """
     if member.notify_telegram_chat_id:
         return member.notify_telegram_chat_id
@@ -154,8 +158,9 @@ def resolve_assignee_chat_id(db: Session, member: Member) -> int | None:
     ).scalar_one_or_none()
     if not contact:
         return None
-    member.notify_telegram_chat_id = contact.chat_id
-    db.add(member)
+    if persist:
+        member.notify_telegram_chat_id = contact.chat_id
+        db.add(member)
     return contact.chat_id
 
 

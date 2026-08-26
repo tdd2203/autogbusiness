@@ -30,8 +30,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.audit import log_event
 from app.config import get_settings
@@ -1587,20 +1587,42 @@ def _recipient_options(db: Session, user: User) -> list[TelegramRecipientOut]:
                 kind="subscriber",
             ),
         )
+    # Chỉ định bằng @username thì `notify_telegram_chat_id` chỉ được lưu khi có việc gọi
+    # `resolve_assignee_chat_id` (lúc gửi thật, hoặc lúc đặt chỉ định nếu người đó đã
+    # /start trước). Lọc mỗi cột ấy là bỏ sót người ĐANG nhận tin thật sự — họ biến mất
+    # khỏi ô chọn nên đại lý không soạn nổi mẫu riêng cho họ. Khớp @username ngay trong
+    # câu truy vấn (một lượt), thay vì gọi resolver cho từng email.
+    contact = aliased(TelegramContact)
     assigned = db.execute(
-        select(Member.notify_telegram_chat_id, Member.notify_telegram_target)
+        select(Member.notify_telegram_chat_id, Member.notify_telegram_target, contact.chat_id)
+        .outerjoin(
+            contact,
+            and_(
+                Member.notify_telegram_target.startswith("@"),
+                contact.username == func.lower(func.substr(Member.notify_telegram_target, 2)),
+                # Đã chặn bot ⇒ `resolve_assignee_chat_id` coi như chưa khớp; ô chọn phải
+                # nói cùng một chuyện.
+                contact.blocked_at.is_(None),
+            ),
+        )
         .where(
             Member.invited_by_user_id == user.id,
-            Member.notify_telegram_chat_id.is_not(None),
+            or_(
+                Member.notify_telegram_chat_id.is_not(None),
+                Member.notify_telegram_target.startswith("@"),
+            ),
         )
         .distinct()
     ).all()
-    for assigned_chat_id, target in assigned:
+    for assigned_chat_id, target, resolved_chat_id in assigned:
+        chat = assigned_chat_id or resolved_chat_id
+        if chat is None:
+            continue  # @username chưa ai /start → chưa có chat nào để soạn mẫu
         out.setdefault(
-            assigned_chat_id,
+            chat,
             TelegramRecipientOut(
-                chat_id=assigned_chat_id,
-                label=target or f"chat {assigned_chat_id}",
+                chat_id=chat,
+                label=target or f"chat {chat}",
                 kind="assignee",
             ),
         )
@@ -1649,7 +1671,12 @@ def _template_audience(
                 return recipient.kind
     if scope == "member" and member_id is not None:
         member = db.get(Member, member_id)
-        if member is not None and member.notify_telegram_chat_id:
+        # Hỏi ĐÚNG hàm lúc gửi thật dùng, không tự đọc mỗi `notify_telegram_chat_id`:
+        # email chỉ định bằng @username (chat_id chưa kịp lưu) vẫn là tin GỬI KHÁCH, mà
+        # đọc thiếu thì xem trước lại vẽ ra tin của đại lý kèm link dashboard.
+        if member is not None and renewal_reminder.resolve_assignee_chat_id(
+            db, member, persist=False
+        ):
             return "assignee"
     # Chưa chỉ định ai → chính đại lý nhận tin của email đó (xem `_recipients_for`).
     return "owner"
@@ -1769,8 +1796,13 @@ def _preview_real_members(
     if scope == "member":
         return [m for m in rows if m.id == member_id][:PREVIEW_REAL_LIMIT]
     if scope == "chat" and chat_id is not None:
+        # Ai đang giữ email này — hỏi đúng hàm lúc gửi thật dùng, để email chỉ định bằng
+        # @username (chat_id chưa kịp lưu) không bị đếm nhầm sang danh sách của đại lý.
+        def assignee(member: Member) -> int | None:
+            return renewal_reminder.resolve_assignee_chat_id(db, member, persist=False)
+
         if user.telegram_chat_id == chat_id:
-            keep = [m for m in rows if not m.notify_telegram_chat_id]
+            keep = [m for m in rows if not assignee(m)]
         else:
             subs = (
                 db.execute(
@@ -1785,7 +1817,7 @@ def _preview_real_members(
             keep = (
                 [m for m in rows if any(renewal_reminder.subscription_covers(s, m) for s in subs)]
                 if subs
-                else [m for m in rows if m.notify_telegram_chat_id == chat_id]
+                else [m for m in rows if assignee(m) == chat_id]
             )
         return keep[:PREVIEW_REAL_LIMIT]
     return rows[:PREVIEW_REAL_LIMIT]

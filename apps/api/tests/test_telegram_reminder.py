@@ -1675,6 +1675,53 @@ def test_template_starts_from_the_default_of_the_real_audience(
     assert out["audience"] == "owner"
 
 
+def test_template_audience_resolves_username_assignment_like_a_real_send(
+    client: TestClient, auth_header: dict, bot_on
+) -> None:
+    """Chỉ định bằng @username (chat_id chưa kịp lưu) vẫn là tin GỬI KHÁCH.
+
+    GUARD cho bug đã sửa: bản xem trước tự đọc mỗi `notify_telegram_chat_id`, trong khi
+    lúc gửi thật `resolve_assignee_chat_id` còn khớp @username qua `telegram_contacts`.
+    Email chỉ định kiểu đó bị xem trước vẽ thành tin của đại lý kèm link dashboard, còn
+    khách thì nhận một tin khác hẳn — đúng thứ bản xem trước phải ngăn.
+    """
+    with SessionLocal() as db:
+        db.add(TelegramContact(chat_id=ASSIGNEE_CHAT, username="khach_vip"))
+        db.commit()
+    owner_id = _link_owner()
+    ws = _make_ws(client, auth_header)
+    member_id = _add_member(
+        client,
+        ws,
+        "khach-username@example.com",
+        days_left=30,
+        owner_id=owner_id,
+        notify_telegram_target="@khach_vip",
+    )
+
+    out = client.get(
+        f"/api/v1/telegram/template?scope=member&member_id={member_id}", headers=auth_header
+    ).json()
+    assert out["audience"] == "assignee"
+    assert out["link_is_dashboard"] is False
+    assert renewal_reminder.SELLER_CONTACT in out["preview"]
+    assert "/renewals" not in out["preview"]
+
+    # GET chỉ ĐỌC: không được nhân tiện ghi cache chat_id trong một request không commit
+    # — sửa đổi ấy chỉ chờ autoflush rồi bị rollback lúc đóng session.
+    with SessionLocal() as db:
+        assert db.get(Member, UUID(member_id)).notify_telegram_chat_id is None
+
+    # Người đó cũng phải có mặt trong ô chọn người nhận: họ ĐANG nhận tin thật sự, mà
+    # thiếu tên trong danh sách thì đại lý không soạn nổi mẫu riêng cho họ.
+    assert ASSIGNEE_CHAT in {r["chat_id"] for r in out["recipients"]}
+    per_chat = client.get(
+        f"/api/v1/telegram/template?scope=chat&chat_id={ASSIGNEE_CHAT}", headers=auth_header
+    )
+    assert per_chat.status_code == 200, per_chat.text
+    assert per_chat.json()["audience"] == "assignee"
+
+
 # ── Link về web: chỉ cho người đăng nhập được ────────────────────────────────
 
 
