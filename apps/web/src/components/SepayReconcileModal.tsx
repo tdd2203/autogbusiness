@@ -13,7 +13,7 @@
  * Super-admin thấy toàn bộ tiền vào (và có nút kéo sao kê từ API SePay để dựng lại ngày
  * cũ); user thường chỉ thấy giao dịch khớp đúng mã của mình.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSepayDay, useSepaySync } from "../hooks/useWallet";
 import { formatVnd, SEPAY_RESULT_LABEL } from "../lib/wallet";
 import type { SepayEvent } from "../lib/wallet";
@@ -62,6 +62,12 @@ export default function SepayReconcileModal({
   const [date, setDate] = useState(initialDate ?? today);
   const { data, isLoading } = useSepayDay(date);
   const sync = useSepaySync();
+  // Đổi ngày thì cuộn danh sách về đầu: khung cao cố định nên nếu giữ nguyên vị trí
+  // cuộn cũ, ngày mới ít giao dịch hơn sẽ mở ra ở giữa chừng (có khi trống trơn).
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    listRef.current?.scrollTo({ top: 0 });
+  }, [date]);
 
   const events = data?.events ?? [];
   const gap = (data?.received_total ?? 0) - (data?.credited_total ?? 0);
@@ -137,7 +143,7 @@ export default function SepayReconcileModal({
           />
         </div>
 
-        <div style={{ padding: "0 20px 20px" }}>
+        <div ref={listRef} style={list}>
           {isLoading && <div style={emptyBox}>Đang tải…</div>}
 
           {!isLoading && events.length === 0 && data && (
@@ -225,16 +231,23 @@ function Stat({ label, value, sub, fg = "var(--ink)" }: { label: string; value: 
 }
 
 const backdrop: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 };
-const modal: React.CSSProperties = { background: "var(--bg)", borderRadius: 22, width: 620, maxWidth: "100%", maxHeight: "92vh", overflowY: "auto", boxShadow: "0 24px 70px -18px rgba(28,26,23,0.4), 0 2px 8px rgba(28,26,23,0.08)" };
-const header: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "22px 24px 14px", gap: 12 };
+// Khung CAO CỐ ĐỊNH, không co theo số dòng: ngày 30 giao dịch và ngày 2 giao dịch
+// phải cho ra đúng một khung. Trước đây modal tự cao theo nội dung nên bấm sang
+// ngày khác là cả hộp nhảy kích thước, nút mũi tên chạy khỏi chỗ vừa bấm
+// (user 2026-08-27: "rất khó chịu"). Chỉ danh sách bên trong cuộn.
+const modal: React.CSSProperties = { background: "var(--bg)", borderRadius: 22, width: 620, maxWidth: "100%", height: "min(760px, 92vh)", display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 24px 70px -18px rgba(28,26,23,0.4), 0 2px 8px rgba(28,26,23,0.08)" };
+const header: React.CSSProperties = { flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "22px 24px 14px", gap: 12 };
 const closeBtn: React.CSSProperties = { width: 32, height: 32, borderRadius: 9, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink-3)", fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1, flexShrink: 0 };
 
-const dayBar: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "0 20px 12px" };
+const dayBar: React.CSSProperties = { flexShrink: 0, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "0 20px 12px" };
 const iconBtn: React.CSSProperties = { width: 32, height: 32, borderRadius: 8, border: "1px solid var(--border-strong)", background: "var(--surface)", color: "var(--ink-2)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" };
 const datePick: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, border: "1px solid var(--border-strong)", background: "var(--surface)", borderRadius: 8, padding: "0 10px", height: 32, cursor: "pointer" };
 const syncBtn: React.CSSProperties = { marginLeft: "auto", padding: "0 14px", height: 32, borderRadius: 8, border: "1px solid var(--border-strong)", background: "var(--surface)", color: "var(--ink)", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" };
 
-const statRow: React.CSSProperties = { display: "flex", gap: 14, flexWrap: "wrap", margin: "0 20px 14px", padding: "14px 16px", border: "1px solid var(--border)", borderRadius: 14, background: "var(--surface-2)" };
+const statRow: React.CSSProperties = { flexShrink: 0, display: "flex", gap: 14, flexWrap: "wrap", margin: "0 20px 14px", padding: "14px 16px", border: "1px solid var(--border)", borderRadius: 14, background: "var(--surface-2)" };
+// Chiếm hết chỗ trống còn lại của khung và tự cuộn — nhờ vậy chiều cao modal do
+// khung quyết định chứ không phải số dòng.
+const list: React.CSSProperties = { flex: 1, minHeight: 0, overflowY: "auto", padding: "0 20px 20px" };
 const row: React.CSSProperties = { padding: "12px 0", borderTop: "1px solid var(--border)" };
 const badge: React.CSSProperties = { fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, border: "1px solid", whiteSpace: "nowrap" };
 const emptyBox: React.CSSProperties = { padding: "28px 12px", textAlign: "center", fontSize: 13, color: "var(--ink-3)" };

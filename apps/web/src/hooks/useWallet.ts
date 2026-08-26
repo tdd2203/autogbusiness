@@ -6,6 +6,7 @@
  * theo memory `mutation-must-refresh-ui`.
  */
 import {
+  keepPreviousData,
   useInfiniteQuery,
   useMutation,
   useQuery,
@@ -75,7 +76,13 @@ export function useWalletTransactions(day: string | null = null) {
   });
 }
 
-/** Đối soát ngân hàng: dữ liệu SePay báo về trong NGÀY (giờ VN). */
+/**
+ * Đối soát ngân hàng: dữ liệu SePay báo về trong NGÀY (giờ VN).
+ *
+ * `keepPreviousData`: đổi ngày thì GIỮ số của ngày cũ tới khi ngày mới về, thay vì
+ * rơi về undefined một nhịp — nếu không, ba con số trên đầu chớp về 0đ rồi mới nhảy
+ * lên giá trị thật, nhìn như đang hỏng (user 2026-08-27).
+ */
 export function useSepayDay(date: string, enabled = true) {
   const { user } = useAuth();
   const allowed = !!user?.wallet_beta || !!user?.is_super_admin;
@@ -83,6 +90,7 @@ export function useSepayDay(date: string, enabled = true) {
     queryKey: ["wallet", "sepay-events", date],
     queryFn: () => api<SepayDay>(`/api/v1/wallet/sepay-events?date=${date}`),
     enabled: enabled && allowed && !!date,
+    placeholderData: keepPreviousData,
     refetchOnWindowFocus: true,
   });
 }
