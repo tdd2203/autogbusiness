@@ -275,6 +275,36 @@ export function groupRowsByDay(
   return groups;
 }
 
+/**
+ * Số dòng đang bị CÔNG TẮC "hiện lượt lỗi mời" giấu đi trong đúng phạm vi đang xem
+ * (chip kênh + ngày). Dùng cho lúc danh sách rỗng: ngày chỉ có lượt hỏng thì trước
+ * đây trang in "Không có giao dịch trong ngày …" nghe như mất dữ liệu (user
+ * 2026-08-27), trong khi thật ra dòng đó đang bị ẩn.
+ *
+ * Luật lọc phải khớp `groupRowsByDay`: dòng bị chip/ngày loại thì KHÔNG tính là
+ * "đang ẩn" — nó nằm ngoài phạm vi, bật công tắc lên cũng không hiện.
+ */
+export function countHiddenRows(
+  rows: TxnRow[],
+  opts: {
+    channel?: TxnChannel | null;
+    day?: string | null;
+    hidden?: ReadonlySet<TxnRow>;
+  } = {},
+): { voided: number; settled: number } {
+  const { channel = null, day = null, hidden } = opts;
+  let voided = 0;
+  let settled = 0;
+  for (const row of rows) {
+    const ch = rowChannel(row);
+    if (channel && ch !== channel) continue;
+    if (day && vnDateKey(rowAt(row)) !== day) continue;
+    if (ch === "voided") voided += row.type === "voided" ? row.pairs.length : 1;
+    else if (hidden?.has(row)) settled += 1;
+  }
+  return { voided, settled };
+}
+
 // ── Xuất báo cáo CSV ────────────────────────────────────────────────────────
 
 const CHANNEL_LABEL: Record<TxnChannel, string> = {

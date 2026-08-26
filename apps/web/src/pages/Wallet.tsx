@@ -25,6 +25,7 @@ import type { WalletDailySummary, WalletTxn } from "../lib/wallet";
 import {
   buildTxnCsv,
   buildTxnRows,
+  countHiddenRows,
   countVoidedInvites,
   groupRowsByDay,
   traceRefundUsage,
@@ -131,6 +132,12 @@ export default function Wallet() {
   const groups = useMemo(
     () => groupRowsByDay(rows, { channel, day, showVoided, hidden: settled }),
     [rows, channel, day, showVoided, settled],
+  );
+  // Bao nhiêu dòng đang bị công tắc giấu TRONG phạm vi đang xem — để danh sách rỗng
+  // còn nói được "đang ẩn N dòng" thay vì "không có giao dịch" (user 2026-08-27).
+  const hiddenHere = useMemo(
+    () => countHiddenRows(rows, { channel, day, hidden: settled }),
+    [rows, channel, day, settled],
   );
 
   const fee = wallet?.invite_fee_vnd ?? 0;
@@ -248,6 +255,8 @@ export default function Wallet() {
             loadingMore={isFetchingNextPage}
             day={day}
             trace={trace}
+            hidden={showVoided ? { voided: 0, settled: 0 } : hiddenHere}
+            onShowHidden={() => setShowVoided(true)}
           />
         </div>
 
@@ -293,13 +302,18 @@ const CHANNEL_CHIPS: { label: string; value: TxnChannel | null }[] = [
  * Chốt số trong NGÀY: mời được bao nhiêu email và tiêu/nạp bao nhiêu tiền. Lịch sử
  * bên dưới kể từng lượt, hai thẻ này chốt tổng — đi kèm nhau và dùng CHUNG ngày
  * đang chọn ở thanh lịch sử.
+ *
+ * Thẻ "Mời" chỉ nói chuyện LỜI MỜI CÓ TÍNH PHÍ (user 2026-08-27): số email bị tính
+ * phí trong ngày trên số lượt gửi. Trước đây nó lấy `emails_added` — mời lại email
+ * CÒN HẠN miễn phí vẫn đẩy `last_invited_at` sang ngày mới nên bị đếm như email mới,
+ * thành ra "2 / 1 lượt gửi" trong ngày chỉ có đúng 1 email tính phí.
  */
 function DaySummary({ date, isToday }: { date: string; isToday: boolean }) {
   const { data, isLoading } = useWalletDailySummary(date);
   const suffix = isToday ? "HÔM NAY" : `NGÀY ${vnDateLabel(date)}`;
 
-  const invites = data?.invite_count ?? 0;
-  const added = data?.emails_added ?? 0;
+  const batches = data?.invite_batches ?? 0;
+  const charged = data?.invite_count ?? 0;
   const spent = data?.fee_net ?? 0;
   const viaInvoice = data?.fee_from_invoice ?? 0;
   const viaWallet = data?.fee_from_balance ?? 0;
@@ -310,18 +324,19 @@ function DaySummary({ date, isToday }: { date: string; isToday: boolean }) {
       <div style={{ ...card, display: "flex", flexDirection: "column" }}>
         <div style={cardKicker}>MỜI {suffix}</div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, height: 46 }}>
-          <div style={bigNumber}>{isLoading ? "…" : added}</div>
+          <div style={bigNumber}>{isLoading ? "…" : charged}</div>
           <div style={{ fontSize: 14, color: "var(--ink-3)" }}>
-            {invites > 0 ? `/ ${invites} lượt gửi` : "email vào team"}
+            {batches > 0 ? `/ ${batches} lượt gửi` : "email tính phí"}
           </div>
         </div>
         <div style={legendList}>
-          <LegendRow swatch="var(--ink-4)" label="Email đã thêm" value={String(added)} />
+          <LegendRow swatch="var(--ink-4)" label="Email tính phí" value={String(charged)} />
           {second && <LegendDivider />}
           {second}
         </div>
         <div style={{ marginTop: "auto", paddingTop: 20, minHeight: 52, display: "flex", alignItems: "center", fontSize: 12, color: "var(--ink-3)" }}>
-          Lời mời lỗi được hoàn phí lập tức về ví.
+          Chỉ đếm lời mời CÓ tính phí — mời lại email còn hạn không tính. Lời mời lỗi
+          được hoàn phí lập tức về ví.
         </div>
       </div>
 
@@ -395,7 +410,7 @@ function LegendDivider() {
 
 /* ── Lịch sử theo ngày ─────────────────────────────────────────────────────── */
 
-function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace }: { groups: DayGroup[]; limit: number; onMore: () => void; canMore: boolean; loadingMore: boolean; day: string | null; trace: RefundTrace }) {
+function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace, hidden, onShowHidden }: { groups: DayGroup[]; limit: number; onMore: () => void; canMore: boolean; loadingMore: boolean; day: string | null; trace: RefundTrace; hidden: { voided: number; settled: number }; onShowHidden: () => void }) {
   const today = vnToday();
   let budget = limit;
   const visible: DayGroup[] = [];
@@ -407,9 +422,28 @@ function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace }: 
   const total = groups.reduce((n, g) => n + g.rows.length, 0);
 
   if (groups.length === 0) {
+    // Rỗng vì CÔNG TẮC đang giấu hết, không phải vì không có gì: nói thẳng đang ẩn
+    // cái gì và cho bấm hiện ngay tại chỗ — câu "không có giao dịch" ở đây làm user
+    // tưởng dữ liệu bay mất (user 2026-08-27).
+    const label = hiddenLabel(hidden.voided, hidden.settled);
     return (
       <div style={{ padding: "34px 20px", textAlign: "center", fontSize: 13, color: "var(--ink-3)" }}>
-        {day ? `Không có giao dịch trong ngày ${vnDateLabel(day)}.` : "Chưa có giao dịch nào."}
+        {label ? (
+          <>
+            <div>
+              {day
+                ? `Ngày ${vnDateLabel(day)} chỉ có ${label} — đang ẩn.`
+                : `Chỉ có ${label} — đang ẩn.`}
+            </div>
+            <button onClick={onShowHidden} style={{ ...secondaryBtn, marginTop: 12 }}>
+              Hiện {label}
+            </button>
+          </>
+        ) : day ? (
+          `Không có giao dịch trong ngày ${vnDateLabel(day)}.`
+        ) : (
+          "Chưa có giao dịch nào."
+        )}
       </div>
     );
   }

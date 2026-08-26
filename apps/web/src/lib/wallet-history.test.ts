@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTxnCsv, buildTxnRows, countVoidedInvites, groupRowsByDay, rowChannel, traceRefundUsage } from "./wallet-history";
+import { buildTxnCsv, buildTxnRows, countHiddenRows, countVoidedInvites, groupRowsByDay, rowChannel, traceRefundUsage } from "./wallet-history";
 import type { WalletTxn } from "./wallet";
 
 /* Ca thật: mời hỏng thì phí bị trừ rồi hoàn lại đủ (2 bút toán ngược dấu, 2 thời
@@ -180,6 +180,48 @@ describe("groupRowsByDay — gom theo ngày VN + chip lọc", () => {
       feeAt("2026-08-26T01:00:00Z", "a@x.com"),
     ]);
     expect(groupRowsByDay(rows).map((g) => g.date)).toEqual(["2026-08-26", "2026-08-25"]);
+  });
+});
+
+describe("countHiddenRows — danh sách rỗng vì công tắc, không phải vì mất dữ liệu", () => {
+  const feeAt = (at: string, email: string) => txn({ kind: "invite_fee", amount: -FEE, created_at: at, meta: { email } });
+
+  it("ngày chỉ có lượt hỏng: rỗng nhưng đếm được 1 dòng đang ẩn", () => {
+    const rows = buildTxnRows([refundOf("a@x.com", "2026-08-26T02:30:00Z"), feeOf("a@x.com", "2026-08-26T02:00:00Z", true)]);
+    expect(groupRowsByDay(rows, { day: "2026-08-26" })).toHaveLength(0);
+    expect(countHiddenRows(rows, { day: "2026-08-26" })).toEqual({ voided: 1, settled: 0 });
+  });
+
+  it("ngày khác thì không tính — bật công tắc lên cũng không hiện gì ở đây", () => {
+    const rows = buildTxnRows([refundOf("a@x.com", "2026-08-26T02:30:00Z"), feeOf("a@x.com", "2026-08-26T02:00:00Z", true)]);
+    expect(countHiddenRows(rows, { day: "2026-08-25" })).toEqual({ voided: 0, settled: 0 });
+  });
+
+  it("chip kênh tiền loại lượt hỏng ra ⇒ không coi là đang ẩn", () => {
+    const rows = buildTxnRows([refundOf("a@x.com", "2026-08-26T02:30:00Z"), feeOf("a@x.com", "2026-08-26T02:00:00Z", true)]);
+    expect(countHiddenRows(rows, { channel: "wallet" })).toEqual({ voided: 0, settled: 0 });
+  });
+
+  it("khoản hoàn đã bị tiêu hết đếm riêng ô settled", () => {
+    const bad = "2026-08-26T05:00:00Z";
+    const rows = buildTxnRows([
+      feeAt("2026-08-26T06:00:00Z", "good@x.com"),
+      refundOf("bad@x.com", "2026-08-26T05:30:00Z"),
+      txn({ kind: "invite_fee", amount: -FEE, created_at: bad, meta: { email: "bad@x.com" }, reversed: true }),
+      txn({ kind: "order_topup", amount: FEE, created_at: bad, ref_type: "order" }),
+    ]);
+    const creditRow = rows.find((r) => r.type === "group" && r.txns[0].kind === "order_topup");
+    expect(countHiddenRows(rows, { hidden: new Set([creditRow!]) })).toEqual({ voided: 1, settled: 1 });
+  });
+
+  it("ngày có dòng thật thì vẫn đếm phần đang ẩn (dùng cho nhãn công tắc)", () => {
+    const rows = buildTxnRows([
+      feeAt("2026-08-26T03:00:00Z", "b@x.com"),
+      refundOf("a@x.com", "2026-08-26T02:30:00Z"),
+      feeOf("a@x.com", "2026-08-26T02:00:00Z", true),
+    ]);
+    expect(groupRowsByDay(rows, { day: "2026-08-26" })[0].rows).toHaveLength(1);
+    expect(countHiddenRows(rows, { day: "2026-08-26" })).toEqual({ voided: 1, settled: 0 });
   });
 });
 
