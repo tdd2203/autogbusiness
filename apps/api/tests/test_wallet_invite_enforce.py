@@ -7,6 +7,8 @@ Phí mặc định hệ thống giờ = 380k; test GHIM về 100k qua settings (
 để giữ nguyên các con số + cấu hình sẵn ngân hàng để nhánh QR dựng được mã.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -203,7 +205,18 @@ def test_per_member_fee_overrides_default(client: TestClient, auth_header: dict)
     assert fr.status_code == 200, fr.text
     assert fr.json()["fee_vnd"] == 250_000
 
-    # Mời lại (member pending → re-invite qua bulk) → trừ đúng 250k (phí riêng).
+    # Hết hạn thì mới có kỳ MỚI để tính phí: từ 26/8/2026 mời lại trong kỳ ĐANG
+    # chạy là miễn phí ở MỌI cửa vào (xem tests/test_reinvite_free_by_period.py),
+    # nên phí riêng chỉ có chỗ áp khi kỳ cũ đã khép lại.
+    past = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    er = client.patch(
+        f"/api/v1/workspaces/{ws['id']}/members/{member_id}/subscription",
+        json={"subscription_end_at": past},
+        headers=auth_header,
+    )
+    assert er.status_code == 200, er.text
+
+    # Mời lại (member pending hết hạn → re-invite qua bulk) → trừ đúng 250k (phí riêng).
     br = _bulk(client, sub["token"], ws["id"], ["pm@example.com"])
     assert br.status_code == 202, br.text
     assert wallet_of(client, sub["token"])["balance"] == 150_000  # 400k - 250k

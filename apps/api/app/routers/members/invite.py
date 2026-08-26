@@ -223,15 +223,21 @@ def perform_invite_core(
             existing = existing_map.get(email)  # active đã lọc ở trên → chỉ removed/pending
             movable = movable_map.get(email)  # gói còn hạn cùng chủ ở ws KHÁC (nếu có)
             if existing:
-                if (
-                    reinvite or existing.status == "removed"
-                ) and _is_paid_period_active(existing, now):
+                if _is_paid_period_active(existing, now):
                     # CÒN HẠN → mời lại MIỄN PHÍ (user 2026-07-14): đã trả tiền cho kỳ
                     # này rồi, xoá KHÔNG hoàn tiền → mời lại chỉ TIẾP TỤC kỳ đã trả.
                     # GIỮ NGUYÊN cửa sổ hạn + chu kỳ đã thanh toán → KHÔNG chargeable
-                    # và BỎ QUA `months` yêu cầu. Áp cho: (a) mời THƯỜNG email `removed`
-                    # còn hạn; (b) action MỜI LẠI (`reinvite`) email `pending` còn hạn.
-                    # Với (b) member chưa rời đội → GIỮ joined_at. Xem
+                    # và BỎ QUA `months` yêu cầu.
+                    #
+                    # MIỄN PHÍ THEO GÓI, KHÔNG THEO CỬA VÀO (user 2026-08-26). Trước đây
+                    # email `pending` còn hạn chỉ miễn phí khi đi qua action "Mời lại";
+                    # gõ lại chính email đó vào form mời thường thì bị trừ phí LẦN HAI
+                    # cho cùng một kỳ đã trả. Cùng một email, cùng một kỳ, hai cửa vào
+                    # ra hai số tiền — người dùng không có cách nào biết trước. Nay chỉ
+                    # còn một luật: gói còn hạn thì mời lại không mất tiền.
+                    #
+                    # `removed` → member đã rời đội, đặt lại mốc tham gia; `pending`
+                    # chưa rời nên GIỮ joined_at. Xem
                     # [[reinvite-still-valid-is-free]] / invite.md §phí.
                     if existing.status == "removed":
                         existing.joined_at = now  # bất biến invite-time = join-date
@@ -508,8 +514,10 @@ def plan_invite_fees(
     (mua thêm N tháng, months>0); email còn-hạn = miễn phí. Tổng phí gộp cả mời lẫn
     gia hạn → quyết định trừ-ví-hay-tạo-QR; trừ THẬT dùng members trả về từ core.
 
-    `reinvite=True` mirror perform_invite_core: email CÒN HẠN (kể cả `pending`) miễn
-    phí. Nếu không mirror, mời-lại còn-hạn sẽ bị đòi QR/402 oan dù thực tế không trừ."""
+    Email CÒN HẠN (`removed` hay `pending`, đi qua form mời thường hay action "Mời
+    lại") đều MIỄN PHÍ — mirror perform_invite_core. Không mirror thì mời-lại còn-hạn
+    bị đòi QR/402 oan dù thực tế không trừ đồng nào. `reinvite` chỉ còn ảnh hưởng
+    TIỀN TỐ của extension (thu hồi lời mời cũ), không còn ảnh hưởng phí."""
     now = datetime.now(timezone.utc)
     emails = [e for e, _ in entries]
     existing = {
@@ -544,13 +552,9 @@ def plan_invite_fees(
                 if fee > 0:
                     out.append((email, fee))
             continue
-        if (
-            m is not None
-            and (reinvite or m.status == "removed")
-            and _is_paid_period_active(m, now)
-        ):
-            # còn hạn → mời lại miễn phí (mirror perform_invite_core). Mời thường chỉ
-            # áp cho removed; action Mời lại (reinvite) áp cho cả pending còn hạn.
+        if m is not None and _is_paid_period_active(m, now):
+            # còn hạn → mời lại miễn phí (mirror perform_invite_core), KHÔNG phân biệt
+            # mời thường hay action "Mời lại" — xem chú thích ở đó (user 2026-08-26).
             continue
         if email in movable_map and (m is None or m.status == "removed"):
             # CHUYỂN/HỢP NHẤT WORKSPACE miễn phí (add nhầm ws → add lại): gói removed

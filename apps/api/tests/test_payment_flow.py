@@ -12,6 +12,8 @@ Phủ:
 Phí GHIM = 100k (mặc định hệ thống giờ 380k) + cấu hình ngân hàng (fixture `_pin_fee`).
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -296,6 +298,15 @@ def test_user_fee_and_member_override(client: TestClient, auth_header: dict) -> 
         json={"fee_vnd": 50_000},
         headers=auth_header,
     )
+    # Hết hạn thì mới có kỳ MỚI để tính phí: từ 26/8/2026 mời lại trong kỳ ĐANG chạy
+    # là miễn phí ở mọi cửa vào (xem tests/test_reinvite_free_by_period.py).
+    past = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    er = client.patch(
+        f"/api/v1/workspaces/{ws['id']}/members/{member_id}/subscription",
+        json={"subscription_end_at": past},
+        headers=auth_header,
+    )
+    assert er.status_code == 200, er.text
     br = client.post(
         f"/api/v1/workspaces/{ws['id']}/members/bulk-invite",
         json={"emails": ["u1@example.com"], "role": "member"},
@@ -366,7 +377,6 @@ def test_subscription_qr_when_insufficient(client: TestClient, auth_header: dict
 def _backdate_order(order_id: str, minutes: int) -> None:
     """Lùi created_at của hoá đơn để giả lập quá hạn."""
     import uuid
-    from datetime import datetime, timedelta, timezone
 
     from app.db import SessionLocal
     from app.models import PaymentOrder

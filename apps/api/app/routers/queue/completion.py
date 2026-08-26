@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -291,6 +291,244 @@ def reconcile_failed_invite(
             item_id=item.id,
             now=now_terminal,
         )
+
+
+def close_invite_defer_with_sync_evidence(
+    db: Session,
+    member: Member,
+    *,
+    workspace_name: str,
+    found_in: str,
+) -> bool:
+    """Đồng bộ ĐÃ THẤY email trong ChatGPT ⇒ đóng trạng thái "chờ xác minh" của lời
+    mời bằng `MEMBER_INVITE_VERIFIED`. Trả True nếu vừa ghi. KHÔNG commit.
+
+    `defer_unverified_invite` hoãn phán xử một lời mời đã bấm Gửi mà extension không
+    xác minh kịp, rồi giao việc đối chiếu cho `SYNC_MEMBERS_BATCH`. Nhưng cái CHỐT
+    của lời hứa đó — `_resolve_stale_pending_invites_once` (main.py) — chỉ chấp nhận
+    hai dấu hiệu: member sang 'active', hoặc có `MEMBER_INVITE_VERIFIED` nối tiếp.
+
+    ⚠️ CA THẬT 26/8/2026 (task 76d68e55, mẻ 5 email): mời đi thật, mẻ sync ngay sau
+    đó trả `found_in='pending'` cho cả 5 — đúng bằng chứng cần tìm — nhưng nhánh
+    reconcile chỉ chạm `last_synced_at`, không để lại dấu hiệu nào trong hai dấu hiệu
+    trên. Hết 20′ resolver hoàn 5×330.000đ + void kỳ + xoá bản ghi của những lời mời
+    đang nằm chờ THẬT trong ChatGPT. `found_in='pending'` là bằng chứng DƯƠNG rằng
+    lời mời đã đi: người được mời chưa bấm nhận không phải là dịch vụ giao hỏng.
+
+    `found_in='none'` KHÔNG gọi vào đây: không thấy đâu cả thì phải để resolver chốt.
+    """
+    if found_in not in ("active", "pending"):
+        return False
+    defer_ev = (
+        db.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.action == "MEMBER_INVITE_PENDING_VERIFY",
+                AuditLog.target_type == "MEMBER",
+                AuditLog.target_id == str(member.id),
+            )
+            .order_by(AuditLog.timestamp.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if defer_ev is None:
+        return False  # không có lời mời nào đang treo → không có gì để đóng
+    # Đã có kết luận nối tiếp (VERIFIED/FAILED) → khỏi ghi chồng.
+    resolved_after = db.execute(
+        select(AuditLog.id)
+        .where(
+            AuditLog.target_type == "MEMBER",
+            AuditLog.target_id == str(member.id),
+            AuditLog.action.in_(("MEMBER_INVITE_VERIFIED", "MEMBER_INVITE_FAILED")),
+            AuditLog.timestamp > defer_ev.timestamp,
+        )
+        .limit(1)
+    ).first()
+    if resolved_after is not None:
+        return False
+    log_event(
+        db,
+        actor_type="EXTENSION",
+        actor_label=f"workspace:{workspace_name}",
+        action="MEMBER_INVITE_VERIFIED",
+        result="COMPLETED",
+        target_type="MEMBER",
+        target_id=str(member.id),
+        data={
+            "email": member.email.lower(),
+            "workspace_id": str(member.workspace_id),
+            "queue_item_id": (defer_ev.data or {}).get("queue_item_id"),
+            "verified_at": datetime.now(timezone.utc).isoformat(),
+            "error_code": None,
+            "reason": f"sync_found_in_{found_in}",
+        },
+        commit=False,
+    )
+    return True
+
+
+# Lời mời phải ĐỦ CŨ thì lời chứng "không thấy ở đâu cả" của đồng bộ mới đáng tin.
+# Tab "Lời mời đang chờ" của ChatGPT không cập nhật tức thì; chốt hỏng ngay sau cú
+# bấm Gửi là rơi vào đúng cái bẫy mà cả đường hoãn-phán-xử sinh ra để tránh (hoàn
+# phí + xoá bản ghi của một lời mời đang nằm chờ THẬT). Ca timeout 8′ luôn vượt mốc
+# này nên vẫn được chốt ngay; ca `VERIFY_FAILED` hỏng sớm (~2′) thì nhường cho
+# `_resolve_stale_pending_invites_once` ở mốc 20′ như cũ.
+INVITE_MISSING_MIN_AGE = timedelta(minutes=5)
+
+
+def fail_deferred_invite(
+    db: Session,
+    member: Member,
+    *,
+    queue_item_id: str | None,
+    actor_type: str,
+    actor_label: str,
+    error_code: str,
+    now: datetime,
+    extra: dict | None = None,
+) -> None:
+    """CHỐT HỎNG một lời mời đang treo "chờ xác minh", theo ĐÚNG một email.
+
+    Ba việc, đúng thứ tự (thứ tự có ý nghĩa — xem chú thích từng bước): ghi
+    `MEMBER_INVITE_FAILED` (timeline lật "Thất bại"), hoàn phí + void kỳ đã trả,
+    rồi xoá phantom member/invite. KHÔNG commit — caller commit.
+
+    Dùng chung cho hai người gọi để đường tiền chỉ có MỘT bản: resolver 20′
+    (`main.py::_resolve_stale_pending_invites_once`) và nhánh đồng bộ báo
+    `found_in='none'` (`close_invite_defer_with_missing_evidence`).
+    """
+    from app.routers.members._shared import void_refunded_invite_periods
+
+    email = member.email.lower()
+    ws_id = member.workspace_id
+    # 1. Timeline FAILED — TRƯỚC khi xoá member để lookup còn thấy đối tượng.
+    log_event(
+        db,
+        actor_type=actor_type,
+        actor_label=actor_label,
+        action="MEMBER_INVITE_FAILED",
+        result="FAILED",
+        target_type="MEMBER",
+        target_id=str(member.id),
+        data={
+            "email": email,
+            "workspace_id": str(ws_id),
+            "queue_item_id": queue_item_id,
+            "verified_at": now.isoformat(),
+            "error_code": error_code,
+            **(extra or {}),
+        },
+        commit=False,
+    )
+    # 2. Hoàn phí (idempotent) + void kỳ đã trả — CHỈ void khi lượt hoàn này thực
+    #    sự trả tiền lại cho chính email đó (bất biến "hoàn phí ⇒ void kỳ"; void mà
+    #    không hoàn = cắt kỳ khách đã trả bằng task khác — ca thật 23/8/2026).
+    refunded = (
+        wallet_service.refund_invite(db, UUID(queue_item_id), emails=[email])
+        if queue_item_id
+        else None
+    )
+    if refunded and refunded.emails:
+        void_refunded_invite_periods(
+            db, workspace_id=ws_id, emails=refunded.emails, now=now
+        )
+    # 3. Xoá phantom member + invite (email này CHƯA từng tham gia).
+    db.execute(
+        delete(Invite).where(
+            Invite.workspace_id == ws_id,
+            func.lower(Invite.email) == email,
+        )
+    )
+    db.delete(member)
+
+
+def close_invite_defer_with_missing_evidence(
+    db: Session,
+    member: Member,
+    *,
+    workspace_name: str,
+    found_in: str,
+    now: datetime,
+) -> bool:
+    """Đồng bộ KHÔNG THẤY email ở tab nào ⇒ chốt lời mời đang treo là HỎNG + hoàn
+    phí NGAY. Trả True nếu vừa chốt (member đã bị xoá — caller đừng đụng nữa).
+
+    Đối xứng với `close_invite_defer_with_sync_evidence` (chiều dương). Trước đây
+    chiều âm chỉ đóng dấu `member.sync_missing_at` rồi vẫn bắt chờ đủ 20′ cho
+    `_resolve_stale_pending_invites_once` — trong khi mẻ đồng bộ VỪA trả lời đúng
+    câu hỏi mà resolver sẽ đi hỏi lại. Tiền của đại lý bị giam thêm ~19 phút cho
+    một lời mời đã biết chắc là hỏng (user 26/8/2026).
+
+    Chỉ chốt khi ĐỦ CẢ NĂM điều — mỗi điều bịt một kiểu chốt oan:
+      1. `found_in='none'` (quét cả tab Lời mời lẫn Người dùng đều không thấy);
+      2. member còn `pending` (chưa ai bấm nhận);
+      3. có `MEMBER_INVITE_PENDING_VERIFY` đang treo, chưa có VERIFIED/FAILED nối tiếp;
+      4. lời mời đã đủ cũ (`INVITE_MISSING_MIN_AGE`) — tab lời mời không tươi tức thì;
+      5. không còn task INVITE_MEMBER nào đang mở cho email đó (đang chạy ≠ hỏng).
+    """
+    if found_in != "none" or member.status != "pending":
+        return False
+    email = member.email.lower()
+    anchor = member.last_invited_at or member.created_at
+    if anchor is None or now - anchor < INVITE_MISSING_MIN_AGE:
+        return False
+    defer_ev = (
+        db.execute(
+            select(AuditLog)
+            .where(
+                AuditLog.action == "MEMBER_INVITE_PENDING_VERIFY",
+                AuditLog.target_type == "MEMBER",
+                AuditLog.target_id == str(member.id),
+            )
+            .order_by(AuditLog.timestamp.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if defer_ev is None:
+        return False
+    resolved_after = db.execute(
+        select(AuditLog.id)
+        .where(
+            AuditLog.target_type == "MEMBER",
+            AuditLog.target_id == str(member.id),
+            AuditLog.action.in_(("MEMBER_INVITE_VERIFIED", "MEMBER_INVITE_FAILED")),
+            AuditLog.timestamp > defer_ev.timestamp,
+        )
+        .limit(1)
+    ).first()
+    if resolved_after is not None:
+        return False
+    open_invite = db.execute(
+        select(QueueItem.id)
+        .where(
+            QueueItem.workspace_id == member.workspace_id,
+            QueueItem.type == "INVITE_MEMBER",
+            QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
+            or_(
+                QueueItem.payload["email"].astext == email,
+                QueueItem.payload.contains({"emails": [email]}),
+            ),
+        )
+        .limit(1)
+    ).first()
+    if open_invite is not None:
+        return False
+
+    fail_deferred_invite(
+        db,
+        member,
+        queue_item_id=(defer_ev.data or {}).get("queue_item_id"),
+        actor_type="EXTENSION",
+        actor_label=f"workspace:{workspace_name}",
+        error_code="INVITE_NOT_FOUND_BY_SYNC",
+        now=now,
+        extra={"reason": "sync_found_in_none", "deferred_at": defer_ev.timestamp.isoformat()},
+    )
+    return True
 
 
 def defer_unverified_invite(
@@ -1191,7 +1429,26 @@ def update_task(
                         commit=False,
                     )
                     promoted_active_emails.append(target_email)
-                db.add(member)
+                # KHÔNG thấy email ở đâu ⇒ chốt lời mời đang treo là HỎNG + hoàn
+                # phí NGAY (member bị xoá → không đụng gì nữa). Xem
+                # close_invite_defer_with_missing_evidence.
+                closed_missing = close_invite_defer_with_missing_evidence(
+                    db,
+                    member,
+                    workspace_name=workspace.name,
+                    found_in=found_in,
+                    now=now,
+                )
+                if not closed_missing:
+                    # Thấy email trong ChatGPT ⇒ đóng "chờ xác minh" của lời mời
+                    # đang treo (nếu có) — xem close_invite_defer_with_sync_evidence.
+                    close_invite_defer_with_sync_evidence(
+                        db,
+                        member,
+                        workspace_name=workspace.name,
+                        found_in=found_in,
+                    )
+                    db.add(member)
 
     # SYNC_MEMBERS_BATCH COMPLETED → "đồng bộ hàng loạt" reconcile theo MẢNG
     # `result.data.results` = [{email, found_in}]. Cùng ngữ nghĩa với SYNC_MEMBER
@@ -1241,6 +1498,26 @@ def update_task(
                     commit=False,
                 )
                 promoted_active_emails.append(email)
+            # Thấy email trong ChatGPT ⇒ đóng "chờ xác minh" của lời mời đang treo.
+            # ĐÂY là mắt xích đã đứt ngày 26/8/2026 — mẻ sync này chính là mẻ mà
+            # `defer_unverified_invite` enqueue để đi tìm bằng chứng, mà tìm được
+            # rồi lại không ghi nhận. Xem close_invite_defer_with_sync_evidence.
+            # Chiều âm: không thấy đâu cả ⇒ chốt hỏng + hoàn phí NGAY (member bị
+            # xoá → bỏ qua phần còn lại của email này).
+            if close_invite_defer_with_missing_evidence(
+                db,
+                member,
+                workspace_name=workspace.name,
+                found_in=found_in,
+                now=now,
+            ):
+                continue
+            close_invite_defer_with_sync_evidence(
+                db,
+                member,
+                workspace_name=workspace.name,
+                found_in=found_in,
+            )
             db.add(member)
 
     # PHANTOM CLEANUP cho INVITE_MEMBER: xoá Member + Invite records mà ChatGPT

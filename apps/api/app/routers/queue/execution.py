@@ -12,7 +12,7 @@ Endpoints (đăng ký lên router dùng chung từ `_shared`):
   - PATCH /{item_id}/progress → update_progress
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
@@ -29,6 +29,61 @@ from app.schemas import QueueOut, QueueProgressUpdate
 
 from ._shared import router
 from .completion import defer_unverified_invite, reconcile_failed_invite
+
+# Task còn BÁO NHỊP (progress tick) thì chưa phải task chết — nhưng cũng không
+# được sống mãi: trần tuyệt đối = ngưỡng của loại task × hệ số này, tính từ
+# `picked_at`. Extension kẹt trong một vòng lặp vẫn báo phase sẽ bị dọn ở mốc đó.
+_ALIVE_HARD_CAP = 2
+
+
+def _progress_beat_at(progress: dict | None) -> datetime | None:
+    """Mốc tick tiến độ GẦN NHẤT extension gửi (`progress.at`, giờ server ISO-8601).
+
+    `update_progress` đóng dấu mốc này ở MỌI tick — khác `progress.history` vốn chỉ
+    thêm mốc khi phase ĐỔI, nên một bước chờ dài (mua suất chờ ChatGPT xử lý giao
+    dịch) không để lại dấu vết nào trong history dù extension vẫn báo nhịp đều.
+    """
+    raw = (progress or {}).get("at")
+    if not isinstance(raw, str):
+        return None
+    try:
+        beat = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return beat if beat.tzinfo else beat.replace(tzinfo=timezone.utc)
+
+
+def stuck_verdict(
+    picked_at: datetime,
+    progress: dict | None,
+    now: datetime,
+    threshold: timedelta,
+) -> tuple[bool, str, int, int]:
+    """Task IN_PROGRESS này coi là TREO chưa? → (treo?, lý do, giây im lặng, giây tổng).
+
+    Ngưỡng đếm từ mốc SỐNG GẦN NHẤT (`max(picked_at, tick tiến độ cuối)`), không
+    phải từ `picked_at`.
+
+    ⚠️ CA THẬT 26/8/2026 (3 lệnh mời phải mua suất — fdeeadc5, cd03d5ff, 3bc11c7b):
+    mua suất chờ ChatGPT xử lý giao dịch tốn ~3,5′, cộng bước mời + xác minh là
+    chạm trần 8′ của INVITE_MEMBER ⇒ backend chốt TIMEOUT trong khi extension vẫn
+    đang chạy và lời mời ĐÃ đi thật. Đếm theo im lặng thì task còn báo nhịp không
+    bị giết oan, mà task chết im (service worker MV3 chết, tab đóng, kênh đứt) vẫn
+    bị dọn đúng như cũ — đó mới là thứ ngưỡng này sinh ra để bắt.
+
+    Trần tuyệt đối `threshold × _ALIVE_HARD_CAP` chặn ca extension kẹt trong vòng
+    lặp báo nhịp vô tận: hàng đợi chạy tuần tự, một task như thế mà sống mãi là
+    chặn mọi lệnh sau nó.
+    """
+    beat = _progress_beat_at(progress)
+    last_alive = max(picked_at, beat) if beat is not None else picked_at
+    silent_sec = int((now - last_alive).total_seconds())
+    total_sec = int((now - picked_at).total_seconds())
+    if now - last_alive > threshold:
+        return True, "silent", silent_sec, total_sec
+    if now - picked_at > threshold * _ALIVE_HARD_CAP:
+        return True, "hard_cap", silent_sec, total_sec
+    return False, "alive", silent_sec, total_sec
 
 
 @router.get("/next", response_model=QueueOut | None)
@@ -50,8 +105,6 @@ def pick_next(
     còn task dài (SYNC_DATA lật nhiều trang ~137s, PURCHASE_SEAT chain Stripe/
     Link) giữ ngưỡng cao hơn để KHÔNG bị auto-fail oan khi đang chạy thật.
     """
-    from datetime import timedelta
-
     # Ngưỡng treo theo loại task. Tính từ p50/max thực đo (xem execution.md mục 5):
     # INVITE max 79s, SYNC_DATA max 137s, các UI op khác <45s. Ngưỡng để dư buffer
     # trên max thực nhưng vẫn thấp hơn nhiều so với 5 phút cũ.
@@ -96,22 +149,35 @@ def pick_next(
         .scalars()
         .all()
     )
-    stuck_tasks = [
-        t
-        for t in in_progress
-        if t.picked_at is not None
-        and now - t.picked_at
-        > STUCK_THRESHOLDS.get(t.type, DEFAULT_STUCK_THRESHOLD)
-    ]
-    for stuck in stuck_tasks:
-        age_sec = int((now - stuck.picked_at).total_seconds()) if stuck.picked_at else None
+    # Ngưỡng đếm từ mốc SỐNG GẦN NHẤT (tick tiến độ cuối), không phải từ `picked_at`
+    # — xem `stuck_verdict`. Task còn báo nhịp = còn chạy, giết nó là giết oan.
+    stuck_tasks: list[tuple[QueueItem, str, int, int]] = []
+    for t in in_progress:
+        if t.picked_at is None:
+            continue
+        verdict, reason, silent_sec, total_sec = stuck_verdict(
+            t.picked_at,
+            t.progress,
+            now,
+            STUCK_THRESHOLDS.get(t.type, DEFAULT_STUCK_THRESHOLD),
+        )
+        if verdict:
+            stuck_tasks.append((t, reason, silent_sec, total_sec))
+    for stuck, reason, silent_sec, age_sec in stuck_tasks:
         threshold = STUCK_THRESHOLDS.get(stuck.type, DEFAULT_STUCK_THRESHOLD)
         threshold_min = int(threshold.total_seconds() // 60)
         stuck.status = "FAILED"
         stuck.error_code = "TIMEOUT"
         stuck.error_message = (
-            f"Task IN_PROGRESS quá {threshold_min} phút ({age_sec}s) — extension "
-            f"không trả kết quả. Auto-cleanup lúc pick task tiếp theo."
+            (
+                f"Extension IM LẶNG {silent_sec}s (quá ngưỡng {threshold_min} phút) — "
+                f"không báo tiến độ, không trả kết quả. Tổng {age_sec}s kể từ lúc nhận task."
+                if reason == "silent"
+                else f"Task chạy {age_sec}s — quá trần tuyệt đối "
+                f"{threshold_min * _ALIVE_HARD_CAP} phút dù vẫn báo tiến độ (nhịp cuối "
+                f"{silent_sec}s trước). Dọn để hàng đợi chạy tiếp."
+            )
+            + " Auto-cleanup lúc pick task tiếp theo."
         )
         stuck.completed_at = now
         db.add(stuck)
@@ -123,7 +189,12 @@ def pick_next(
             result="FAILED",
             target_type="QUEUE_ITEM",
             target_id=str(stuck.id),
-            data={"age_sec": age_sec, "workspace_id": str(workspace.id)},
+            data={
+                "age_sec": age_sec,
+                "silent_sec": silent_sec,
+                "timeout_reason": reason,
+                "workspace_id": str(workspace.id),
+            },
             commit=False,
         )
         # ⚠️ INVITE_MEMBER timeout PHẢI reconcile (trước đây chỉ set status=FAILED →
@@ -253,6 +324,11 @@ def _merge_progress_history(prev: dict | None, incoming: dict) -> dict:
     hoặc hiện tại). Không thêm cột DB → không cần migration.
     """
     merged = dict(incoming)
+    # Dấu NHỊP SỐNG: đóng ở MỌI tick (khác `history` chỉ thêm mốc khi phase đổi).
+    # `pick_next` đọc mốc này để không giết oan task đang chạy thật — xem
+    # `stuck_verdict` và ca 26/8/2026 (mua suất chờ giao dịch ~3,5′ trong im lặng
+    # của history nhưng vẫn báo nhịp mỗi 10s).
+    merged["at"] = datetime.now(timezone.utc).isoformat()
     history = list((prev or {}).get("history") or [])
     phase = incoming.get("phase")
     if phase and (not history or history[-1].get("phase") != phase):

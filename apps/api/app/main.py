@@ -26,9 +26,8 @@ from app.ratelimit import RateLimitMiddleware
 from app.routers.members._shared import (
     SUBSCRIPTION_GRACE_AFTER_EXPIRY,
     _has_open_remove_task,
-    void_refunded_invite_periods,
 )
-from app.services import wallet_service
+from app.routers.queue.completion import fail_deferred_invite
 from app.routers.members.remove import _build_removal_task
 from app.sse import publish_task_event
 from app.routers import (
@@ -510,6 +509,8 @@ def _resolve_stale_pending_invites_once() -> None:
             )
             seen: set[str] = set()
             resolved = 0
+            # Số email được GỠ khỏi limbo bằng bằng chứng đồng bộ (không hoàn phí).
+            confirmed = 0
             for ev in events:
                 mid = ev.target_id
                 if not mid or mid in seen:
@@ -536,6 +537,50 @@ def _resolve_stale_pending_invites_once() -> None:
                 if resolved_after is not None:
                     continue
                 email = member.email.lower()
+                # ĐỒNG BỘ ĐÃ NHÌN THẤY email này SAU mốc hoãn ⇒ lời mời ĐI ĐƯỢC.
+                #
+                # `last_synced_at` chỉ được chạm khi extension quét ChatGPT và thấy
+                # email trong tab "Lời mời" hoặc "Người dùng"; `sync_missing_at`
+                # NULL nghĩa là lần quét gần nhất KHÔNG phải loại "không thấy đâu
+                # cả" (found_in='none'). Hai điều đó cộng lại là bằng chứng DƯƠNG,
+                # mạnh ngang việc member đã sang 'active' — chỉ khác là người được
+                # mời chưa bấm nhận, mà đó không phải lỗi của dịch vụ đã giao.
+                #
+                # ⚠️ CA THẬT 26/8/2026 (mẻ 5 email, task 76d68e55): mời đi thật,
+                # `SYNC_MEMBERS_BATCH` ngay sau đó trả `found_in='pending'` cho cả 5
+                # — nhưng nhánh reconcile của batch chỉ chạm `last_synced_at`, KHÔNG
+                # ghi `MEMBER_INVITE_VERIFIED`, nên bằng chứng ấy vô hình với vòng
+                # kiểm tra bên trên. Đủ 20′ là resolver hoàn 5×330.000đ + void kỳ +
+                # xoá sạch bản ghi của những lời mời đang nằm chờ thật trong ChatGPT.
+                # `completion.py` nay ghi VERIFIED ngay khi sync thấy; lớp này giữ
+                # cho các bản ghi ĐÃ lỡ hoãn trước bản vá (sync của chúng chạy xong
+                # rồi, không còn mẻ nào quay lại ghi giúp).
+                if (
+                    member.sync_missing_at is None
+                    and member.last_synced_at is not None
+                    and member.last_synced_at > ev.timestamp
+                ):
+                    log_event(
+                        db,
+                        actor_type="SYSTEM",
+                        actor_label="system:stale-invite-resolver",
+                        action="MEMBER_INVITE_VERIFIED",
+                        result="COMPLETED",
+                        target_type="MEMBER",
+                        target_id=mid,
+                        data={
+                            "email": email,
+                            "workspace_id": str(member.workspace_id),
+                            "queue_item_id": (ev.data or {}).get("queue_item_id"),
+                            "verified_at": now.isoformat(),
+                            "error_code": None,
+                            "reason": "sync_saw_member_after_defer",
+                            "last_synced_at": member.last_synced_at.isoformat(),
+                        },
+                        commit=False,
+                    )
+                    confirmed += 1
+                    continue
                 # Còn task mời đang chạy/chờ → chưa kết thúc, không chốt vội.
                 open_invite = db.execute(
                     select(QueueItem.id)
@@ -553,55 +598,32 @@ def _resolve_stale_pending_invites_once() -> None:
                 if open_invite is not None:
                     continue
 
-                qid = (ev.data or {}).get("queue_item_id")
-                ws_id = member.workspace_id
-                # 1. Timeline FAILED (TRƯỚC khi xoá member để lookup còn thấy).
-                log_event(
+                # Ghi FAILED + hoàn phí + void kỳ + xoá phantom — MỘT bản dùng
+                # chung với nhánh "đồng bộ không thấy email" (`completion.py`), để
+                # đường tiền không có hai phiên bản trôi dạt khỏi nhau.
+                fail_deferred_invite(
                     db,
+                    member,
+                    queue_item_id=(ev.data or {}).get("queue_item_id"),
                     actor_type="SYSTEM",
                     actor_label="system:stale-invite-resolver",
-                    action="MEMBER_INVITE_FAILED",
-                    result="FAILED",
-                    target_type="MEMBER",
-                    target_id=mid,
-                    data={
-                        "email": email,
-                        "workspace_id": str(ws_id),
-                        "queue_item_id": qid,
-                        "verified_at": now.isoformat(),
-                        "error_code": "INVITE_UNVERIFIED_TIMEOUT",
-                    },
-                    commit=False,
+                    error_code="INVITE_UNVERIFIED_TIMEOUT",
+                    now=now,
                 )
-                # 2. Hoàn phí (idempotent) + void kỳ đã trả — CHỈ void khi lượt hoàn
-                #    này thực sự trả tiền lại cho chính email đó. Không có phí để hoàn
-                #    (mời lại khi còn hạn = miễn phí) mà vẫn void = cắt kỳ khách đã trả
-                #    bằng task khác, không đồng nào bù (ca thật 23/8/2026 —
-                #    xem `queue/completion.py::reconcile_failed_invite`).
-                refunded = (
-                    wallet_service.refund_invite(db, UUID(qid), emails=[email])
-                    if qid
-                    else None
-                )
-                if refunded and refunded.emails:
-                    void_refunded_invite_periods(
-                        db, workspace_id=ws_id, emails=refunded.emails, now=now
-                    )
-                # 3. Xoá phantom member + invite (email này CHƯA từng tham gia).
-                db.execute(
-                    delete(Invite).where(
-                        Invite.workspace_id == ws_id,
-                        func.lower(Invite.email) == email,
-                    )
-                )
-                db.delete(member)
                 resolved += 1
-            if resolved:
+            if resolved or confirmed:
                 db.commit()
+            if resolved:
                 logger.info(
                     "[stale-invite] chốt FAILED %d lời mời kẹt limbo (>%d phút)",
                     resolved,
                     int(STALE_PENDING_INVITE_WINDOW.total_seconds() // 60),
+                )
+            if confirmed:
+                logger.info(
+                    "[stale-invite] GIỮ NGUYÊN %d lời mời: đồng bộ đã thấy email "
+                    "trong ChatGPT sau mốc hoãn (không hoàn phí, không xoá)",
+                    confirmed,
                 )
     except Exception as e:  # noqa: BLE001
         logger.warning("[stale-invite] tick failed: %s", e)
