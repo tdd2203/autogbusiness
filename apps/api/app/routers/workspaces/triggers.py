@@ -39,6 +39,7 @@ from app.deps import (
 )
 from app.models import Member, QueueItem, User, Workspace
 from app.permissions import Permission
+from app.routers.members._shared import _visibility_filter
 from app.schemas import PurchaseSeatIn, SyncMemberIn, SyncMembersBatchIn
 from app.sse import publish_task_event
 
@@ -310,8 +311,10 @@ def trigger_sync_members_batch(
     dedup: đã có SYNC_MEMBERS_BATCH PENDING/IN_PROGRESS của workspace → trả task cũ.
     """
     _get_workspace_or_404(db, workspace_id)
-    assert_workspace_access(db, user, workspace_id)
     if body.all_pending:
+        # Nút "Đồng bộ lời mời" ở header workspace quét TOÀN BỘ pending của không
+        # gian → vẫn cần quyền truy cập workspace.
+        assert_workspace_access(db, user, workspace_id)
         # Gom TOÀN BỘ email đang pending của workspace từ DB (không phụ thuộc web
         # truyền lên) — đúng ý "đồng bộ toàn bộ email chờ tham gia" của nút header.
         rows = db.execute(
@@ -322,7 +325,23 @@ def trigger_sync_members_batch(
         ).scalars()
         emails = sorted({e.strip().lower() for e in rows if e and e.strip()})
     else:
-        emails = sorted({e.strip().lower() for e in body.emails if e.strip()})
+        # KHÔNG gate assert_workspace_access cho danh sách email chỉ định: gán
+        # workspace CHỈ giới hạn việc ADD (mời). Thanh "Cập nhật N đã chọn → Đồng bộ"
+        # ở trang "Email đã thêm" quét xuyên workspace, nên sub-admin không (còn)
+        # được gán vẫn phải kiểm tra được email MÌNH ĐÃ ADD đã tham gia hay chưa —
+        # khớp sync-member lẻ + remove/renew/change-email. Khoá rò rỉ bằng
+        # `_visibility_filter` dưới đây thay vì bằng assignment.
+        wanted = {e.strip().lower() for e in body.emails if e.strip()}
+        if wanted:
+            stmt = select(Member.email).where(
+                Member.workspace_id == workspace_id,
+                func.lower(Member.email).in_(wanted),
+            )
+            stmt = _visibility_filter(stmt, user)
+            rows = db.execute(stmt).scalars()
+            emails = sorted({e.strip().lower() for e in rows if e and e.strip()})
+        else:
+            emails = []
     if not emails:
         if body.all_pending:
             # Không có member nào đang chờ tham gia — không cần tạo task.
@@ -334,7 +353,13 @@ def trigger_sync_members_batch(
             }
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Danh sách email rỗng.",
+            detail=(
+                "Danh sách email rỗng."
+                if not any(e.strip() for e in body.emails)
+                # Có gửi email nhưng không email nào là member bạn quản lý trong
+                # workspace này → nói rõ, đừng báo "rỗng" gây khó hiểu.
+                else "Không có email nào thuộc quyền quản lý của bạn trong workspace này."
+            ),
         )
 
     # Dedupe: đã có SYNC_MEMBERS_BATCH PENDING/IN_PROGRESS cho workspace → trả task cũ
