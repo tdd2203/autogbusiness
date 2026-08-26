@@ -11,7 +11,9 @@
  * đều lệch về phía "thà báo không rõ còn hơn mua đúp":
  *   - so bằng cặp số CÙNG THANG ĐO (số trang trước ↔ số trang sau) khi có;
  *   - bí lắm mới mượn bộ đếm hộp "Quản lý suất" làm mốc "trước";
- *   - nhích được một phần (0 < delta < qty) là KHÔNG rõ, không phải "chưa mua".
+ *   - nhích được một phần (0 < delta < qty) là KHÔNG rõ, không phải "chưa mua";
+ *   - ChatGPT đã in băng-rôn xanh "đã cập nhật thành công" thì cấm hẳn phán
+ *     quyết "chưa mua", dù số suất đứng im.
  *
  * Ghi chú về thang đo: bộ đếm hộp "Quản lý suất" ghim vào hàng suất TIÊU CHUẨN,
  * còn `total` của trang gộp mọi loại. Lấy `counter` so với `total` thì phần suất
@@ -92,9 +94,19 @@ export function judgeSeatsAfterReload(input: {
    * giao dịch ⇒ tuyệt đối không được kết luận "chưa mua" từ nó.
    */
   effectiveLaterText?: string | null;
+  /**
+   * Băng-rôn XANH ChatGPT in ra sau khi bấm mua ("Gói đăng ký của bạn đã được
+   * cập nhật thành công" — ảnh user 26/8/2026), null nếu không bắt được.
+   *
+   * Có câu này là ChatGPT tự nói giao dịch ĐÃ đi qua ⇒ số suất chưa nhích chỉ
+   * còn hai cách giải thích: trang cập nhật chậm, hoặc hiệu lực từ kỳ sau. Cả
+   * hai đều KHÔNG cho phép mua lại, nên cấm đường "chưa mua".
+   */
+  successToastText?: string | null;
 }): SeatPurchaseVerdict {
   const { qty, counterBefore, pageBefore, after } = input;
   const effectiveLaterText = input.effectiveLaterText ?? null;
+  const successToastText = input.successToastText ?? null;
   if (qty < 1) return { kind: "unclear", reason: `số suất cần mua không hợp lệ (${qty})` };
 
   const pair = pickPair(pageBefore, counterBefore, after);
@@ -114,6 +126,16 @@ export function judgeSeatsAfterReload(input: {
     return { kind: "purchased", basis: pair.basis, before: pair.before, after: pair.after, delta };
   }
   if (delta <= 0) {
+    if (successToastText) {
+      return {
+        kind: "unclear",
+        reason:
+          `số suất chưa nhích (${pair.before} → ${pair.after}) NHƯNG ChatGPT đã báo ` +
+          `"${successToastText}" — giao dịch ĐÃ đi qua (tiền đã trừ), trang chỉ chưa ` +
+          "cập nhật kịp hoặc thay đổi có hiệu lực kỳ sau. TUYỆT ĐỐI không mua lại: " +
+          "admin mở ChatGPT xem số suất rồi quyết.",
+      };
+    }
     if (effectiveLaterText) {
       return {
         kind: "unclear",

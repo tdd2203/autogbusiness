@@ -40,10 +40,21 @@ function makeEl(state: string | null = "open", text = ""): FakeEl {
 }
 
 /** DOM tối thiểu: một tập node đang nằm trong trang + getComputedStyle giả. */
-function setupDom(nodes: FakeEl[]): { remove: (el: FakeEl) => void } {
+function setupDom(nodes: FakeEl[]): {
+  remove: (el: FakeEl) => void;
+  /** Chữ ĐANG in ngoài trang (ngoài hộp) — nơi băng-rôn xanh treo. */
+  setPageText: (text: string) => void;
+} {
   const inDom = new Set(nodes);
+  const page = { text: "" };
   vi.stubGlobal("document", {
-    body: { contains: (el: FakeEl) => inDom.has(el) },
+    body: {
+      contains: (el: FakeEl) => inDom.has(el),
+      get textContent() {
+        return page.text;
+      },
+      children: [] as FakeEl[],
+    },
     querySelectorAll: () => Array.from(inDom),
   });
   vi.stubGlobal("window", {
@@ -52,8 +63,16 @@ function setupDom(nodes: FakeEl[]): { remove: (el: FakeEl) => void } {
       visibility: "visible",
     }),
   });
-  return { remove: (el: FakeEl) => inDom.delete(el) };
+  return {
+    remove: (el: FakeEl) => inDom.delete(el),
+    setPageText: (text: string) => {
+      page.text = text;
+    },
+  };
 }
+
+/** Câu ChatGPT in ra khi giao dịch đã đi qua (ảnh user 26/8/2026). */
+const SUCCESS_TOAST = "Gói đăng ký của bạn đã được cập nhật thành công";
 
 describe("waitForChargeModalDismiss", () => {
   beforeEach(() => {
@@ -187,6 +206,76 @@ describe("waitForChargeModalDismiss", () => {
     await vi.advanceTimersByTimeAsync(2_000);
 
     expect(done).toMatchObject({ dismissed: true, errorBanner: null });
+  });
+
+  // ── Ca ChatGPT in băng-rôn XANH ngoài trang (ảnh user 2026-08-26) ──────
+  it("thấy 'đã cập nhật thành công' mà hộp vẫn treo → thôi chờ sau 15s, ghi lại câu đó", async () => {
+    const modal = makeEl();
+    const dom = setupDom([modal]);
+
+    let done: Awaited<ReturnType<typeof waitForChargeModalDismiss>> | null = null;
+    void waitForChargeModalDismiss(asEl(modal)).then((r) => {
+      done = r;
+    });
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    dom.setPageText(`Thành viên${SUCCESS_TOAST}Suất Tiêu chuẩn 68`);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(done).toBeNull(); // còn nán cho hộp tự đóng
+
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(done).toMatchObject({
+      dismissed: false,
+      // DOM giả không có node toast riêng nên hàm chép cả cụm text — điều được
+      // chốt ở đây là "có bắt được câu đó", còn việc cắt gọn thì
+      // `detect-success-toast.test.ts` chốt trên DOM có node hẳn hoi.
+      successToast: expect.stringContaining(SUCCESS_TOAST),
+    });
+    // Không đốt hết 120s: ChatGPT đã trả lời rồi.
+    expect(done!.waitedMs).toBeLessThan(30_000);
+  });
+
+  it("băng-rôn xanh ĐÈ băng-rôn đỏ — lỗi kia chỉ là lỗi dựng màn hình", async () => {
+    const modal = makeEl();
+    const dom = setupDom([modal]);
+
+    let done: Awaited<ReturnType<typeof waitForChargeModalDismiss>> | null = null;
+    void waitForChargeModalDismiss(asEl(modal)).then((r) => {
+      done = r;
+    });
+
+    dom.setPageText(SUCCESS_TOAST);
+    await vi.advanceTimersByTimeAsync(1_000);
+    modal.textContent = "Đã xảy ra sự cố khi cập nhật gói đăng ký của bạn";
+    modal.children = [
+      makeEl("open", "Đã xảy ra sự cố khi cập nhật gói đăng ký của bạn"),
+    ];
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(done).toMatchObject({
+      dismissed: false,
+      errorBanner: null,
+      successToast: SUCCESS_TOAST,
+    });
+  });
+
+  it("toast chớp một nhịp rồi tắt vẫn được GIỮ tới lúc trả kết quả", async () => {
+    const modal = makeEl();
+    const dom = setupDom([modal]);
+
+    let done: Awaited<ReturnType<typeof waitForChargeModalDismiss>> | null = null;
+    void waitForChargeModalDismiss(asEl(modal)).then((r) => {
+      done = r;
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    dom.setPageText(SUCCESS_TOAST);
+    await vi.advanceTimersByTimeAsync(1_000);
+    dom.setPageText(""); // toast tự tắt
+    dom.remove(modal);
+    await vi.advanceTimersByTimeAsync(3_000);
+
+    expect(done).toMatchObject({ dismissed: true, successToast: SUCCESS_TOAST });
   });
 
   it("chờ lâu thì gọi onWait để báo tiến độ, không im lặng", async () => {

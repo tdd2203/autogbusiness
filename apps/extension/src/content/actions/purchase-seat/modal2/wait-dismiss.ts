@@ -6,6 +6,7 @@ import {
   OVERLAY_CLEAR_TIMEOUT_MS,
 } from "../constants";
 import { findModalErrorBanner } from "./detect-error-banner";
+import { findSuccessToast, isToastNode } from "./detect-success-toast";
 
 const LOG = "[autogpt-purchase-seat]";
 
@@ -16,6 +17,14 @@ const LOG = "[autogpt-purchase-seat]";
  * cho đủ 120s chỉ tổ đốt thời gian của task.
  */
 const ERROR_BANNER_STABLE_POLLS = 6;
+
+/**
+ * Thấy băng-rôn XANH "Gói đăng ký của bạn đã được cập nhật thành công" rồi thì
+ * chỉ nán thêm chừng này cho hộp tự đóng. ChatGPT đã nói thẳng là xong, nằm chờ
+ * đủ 120s nữa chẳng biết thêm điều gì — mà caller thì có sẵn đường tải lại trang
+ * cho sạch lớp phủ.
+ */
+const SUCCESS_TOAST_GRACE_MS = 15_000;
 
 export type ChargeDismissResult = {
   /** Hộp "Xem lại giao dịch mua" đã đóng hẳn. */
@@ -33,6 +42,15 @@ export type ChargeDismissResult = {
    * đọc lại SỐ SUẤT mới biết được, tuyệt đối không tự bấm mua lại khi chưa đọc.
    */
   errorBanner: string | null;
+  /**
+   * Câu báo THÀNH CÔNG ChatGPT in ra ngoài trang ("Gói đăng ký của bạn đã được
+   * cập nhật thành công" — ảnh user 2026-08-26). null = không thấy.
+   *
+   * Có câu này ⇒ giao dịch ĐÃ đi qua, dù hộp còn treo hay băng-rôn đỏ có chớp.
+   * Không có thì KHÔNG kết luận được gì (toast tự tắt sau vài giây, ta chỉ đọc
+   * trang theo nhịp poll) — xem `detect-success-toast.ts`.
+   */
+  successToast: string | null;
 };
 
 /** Hộp coi như đã đóng khi rời DOM, bị ẩn, hoặc Radix đánh dấu data-state=closed. */
@@ -57,6 +75,10 @@ function overlayStillUp(): boolean {
   for (const el of Array.from(nodes)) {
     if (el.getAttribute("data-state") === "closed") continue;
     if (el.getAttribute("aria-hidden") === "true") continue;
+    // Toast KHÔNG chặn trang: nó là dải thông báo nổi, bấm xuyên qua được. Radix
+    // đánh dấu nó `data-state="open"` y như hộp thật, nên không loại ra là mọi
+    // cú mua thành công đều bị kết luận "lớp phủ còn nằm lại" → tải lại trang oan.
+    if (isToastNode(el)) continue;
     const style = window.getComputedStyle(el);
     if (style.display === "none" || style.visibility === "hidden") continue;
     const rect = el.getBoundingClientRect();
@@ -90,8 +112,21 @@ export async function waitForChargeModalDismiss(
   let dismissed = false;
   let errorBanner: string | null = null;
   let errorStreak = 0;
+  let successToast: string | null = null;
+  let successAt: number | null = null;
 
   while (Date.now() < deadline) {
+    // Băng-rôn xanh có thể chớp lên rồi tắt — thấy một lần là GIỮ, vì nó chỉ nói
+    // một điều và điều đó không đảo ngược: ChatGPT đã ghi nhận giao dịch.
+    if (successToast === null) {
+      const toast = findSuccessToast();
+      if (toast) {
+        successToast = toast;
+        successAt = Date.now();
+        console.log(`${LOG} ChatGPT báo THÀNH CÔNG ngoài trang: "${toast}"`);
+      }
+    }
+
     if (isClosed(modal)) {
       closedStreak += 1;
       if (closedStreak >= CHARGE_DISMISS_STABLE_POLLS) {
@@ -101,6 +136,16 @@ export async function waitForChargeModalDismiss(
       }
     } else {
       closedStreak = 0;
+
+      // Đã có băng-rôn thành công mà hộp vẫn treo → thôi chờ. Giao dịch xong
+      // rồi; việc còn lại (dọn lớp phủ) là của cú tải lại trang phía caller.
+      if (successAt !== null && Date.now() - successAt >= SUCCESS_TOAST_GRACE_MS) {
+        console.warn(
+          `${LOG} đã thấy báo thành công nhưng hộp còn treo sau ` +
+            `${SUCCESS_TOAST_GRACE_MS / 1000}s → thôi chờ, caller tải lại trang`,
+        );
+        break;
+      }
 
       // Hộp còn mở: ChatGPT đang xử lý, hay đã trả lời rằng hỏng?
       const banner = findModalErrorBanner(modal);
@@ -137,7 +182,10 @@ export async function waitForChargeModalDismiss(
       dismissed: false,
       overlayCleared: false,
       waitedMs: Date.now() - started,
-      errorBanner,
+      // Báo thành công đè băng-rôn đỏ: ChatGPT có ca in lỗi ở khâu dựng lại màn
+      // hình SAU khi đã trừ tiền. Câu xanh nói về giao dịch, câu đỏ nói về màn hình.
+      errorBanner: successToast ? null : errorBanner,
+      successToast,
     };
   }
 
@@ -145,6 +193,15 @@ export async function waitForChargeModalDismiss(
   const overlayDeadline = Date.now() + OVERLAY_CLEAR_TIMEOUT_MS;
   let overlayCleared = false;
   while (Date.now() < overlayDeadline) {
+    // Toast thường hiện ĐÚNG LÚC hộp vừa đóng, tức là sau vòng lặp trên. Đọc
+    // tiếp ở đây để không bỏ lỡ câu khẳng định "đã trừ tiền".
+    if (successToast === null) {
+      const toast = findSuccessToast();
+      if (toast) {
+        successToast = toast;
+        console.log(`${LOG} ChatGPT báo THÀNH CÔNG ngoài trang: "${toast}"`);
+      }
+    }
     if (!overlayStillUp()) {
       overlayCleared = true;
       break;
@@ -162,5 +219,5 @@ export async function waitForChargeModalDismiss(
     `${LOG} giao dịch xong sau ${Math.round(waitedMs / 1000)}s ` +
       `(hộp đóng, lớp phủ ${overlayCleared ? "đã rời trang" : "CÒN nằm lại"})`,
   );
-  return { dismissed: true, overlayCleared, waitedMs, errorBanner: null };
+  return { dismissed: true, overlayCleared, waitedMs, errorBanner: null, successToast };
 }

@@ -104,6 +104,42 @@ describe("judgeSeatsAfterReload", () => {
     expect(v.kind).toBe("purchased");
   });
 
+  it("ChatGPT đã báo 'cập nhật thành công' → suất đứng im cũng KHÔNG được mua lại", () => {
+    const v = judgeSeatsAfterReload({
+      qty: 2,
+      counterBefore: 66,
+      pageBefore: { total: 66, standard: 66 },
+      after: { total: 66, standard: 66 },
+      successToastText: "Gói đăng ký của bạn đã được cập nhật thành công",
+    });
+    // Câu đó là ChatGPT tự nói tiền ĐÃ trừ. Số chưa nhích chỉ là trang chậm hoặc
+    // hiệu lực kỳ sau — mua lại ở đây là trừ tiền lần hai cho cùng một task.
+    expect(v.kind).toBe("unclear");
+    expect(v.kind === "unclear" && v.reason).toContain("cập nhật thành công");
+  });
+
+  it("suất TỤT mà có báo thành công → vẫn không mua lại", () => {
+    const v = judgeSeatsAfterReload({
+      qty: 1,
+      counterBefore: 65,
+      pageBefore: { total: 65, standard: 65 },
+      after: { total: 64, standard: 64 },
+      successToastText: "Gói đăng ký của bạn đã được cập nhật thành công",
+    });
+    expect(v.kind).toBe("unclear");
+  });
+
+  it("báo thành công mà suất tăng đủ → chốt luôn là đã mua", () => {
+    const v = judgeSeatsAfterReload({
+      qty: 3,
+      counterBefore: 65,
+      pageBefore: { total: 65, standard: 65 },
+      after: { total: 68, standard: 68 },
+      successToastText: "Gói đăng ký của bạn đã được cập nhật thành công",
+    });
+    expect(v).toMatchObject({ kind: "purchased", delta: 3 });
+  });
+
   it("suất TỤT sau khi tải lại (ai đó vừa giảm suất) → chưa mua", () => {
     const v = judgeSeatsAfterReload({
       qty: 1,

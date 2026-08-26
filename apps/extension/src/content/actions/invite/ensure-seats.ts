@@ -605,6 +605,7 @@ export async function ensureSeatsForInvite(
         seat_shortfall: shortfall,
         seat_purchased: 0,
         seat_purchase: purchaseData,
+        seat_success_toast: purchaseData.charge_success_toast ?? null,
       },
     };
   }
@@ -650,6 +651,10 @@ export async function ensureSeatsForInvite(
       seat_shortfall: shortfall,
       seat_purchased: shortfall,
       seat_purchase: purchaseData,
+      // Câu ChatGPT in ra khi mua xong ("Gói đăng ký của bạn đã được cập nhật
+      // thành công") — nâng lên mức 1 để dashboard khỏi phải bới trong cục
+      // `seat_purchase`, và để đọc được ngay khi soi một lệnh mời đã trừ tiền.
+      seat_success_toast: purchaseData.charge_success_toast ?? null,
       seat_total_after: totalAfter,
       seat_assigned_after: before.assigned,
       seat_free_after: totalAfter - before.assigned,
@@ -733,6 +738,7 @@ export async function ensureSeatsForInvite(
         seat_shortfall: shortfall,
         seat_purchased: shortfall,
         seat_purchase: purchaseData,
+        seat_success_toast: purchaseData.charge_success_toast ?? null,
         seat_after_source: "pending_reload_recheck",
       },
     };
@@ -774,6 +780,7 @@ export async function ensureSeatsForInvite(
         seat_shortfall: shortfall,
         seat_purchased: shortfall,
         seat_purchase: purchaseData,
+        seat_success_toast: purchaseData.charge_success_toast ?? null,
         seat_total_after: after ? recheck.ratioTotal ?? after.total : null,
         seat_assigned_after: after?.assigned ?? null,
         seat_free_after: freeOf(after),

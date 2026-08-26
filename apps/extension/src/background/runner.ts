@@ -2536,6 +2536,14 @@ async function runOnceOnSlot(
       typeof buyData.charge_effective_later_text === "string"
         ? buyData.charge_effective_later_text
         : null;
+    /**
+     * ChatGPT có in băng-rôn xanh "Gói đăng ký của bạn đã được cập nhật thành
+     * công" không. Có ⇒ tiền ĐÃ trừ, cấm hẳn nhánh mua lại dù số suất đứng im.
+     */
+    const successToastText =
+      typeof buyData.charge_success_toast === "string"
+        ? buyData.charge_success_toast
+        : null;
     /** Số suất trang in ra TRƯỚC khi bấm mua — mốc so chuẩn nhất (cùng nguồn). */
     const pageBefore: SeatReadout | null =
       buyData.seat_page_standard_before != null ||
@@ -2552,9 +2560,11 @@ async function runOnceOnSlot(
     );
     await reportRunnerProgress(config, task.id, {
       phase: "seat-reload-verify",
-      message: banner
-        ? `ChatGPT báo "${banner}" — tải lại trang để xem số suất đã lên chưa...`
-        : "Chưa xác nhận được số suất — tải lại trang để đọc lại...",
+      message: successToastText
+        ? `ChatGPT báo "${successToastText}" — tải lại trang để đọc số suất mới...`
+        : banner
+          ? `ChatGPT báo "${banner}" — tải lại trang để xem số suất đã lên chưa...`
+          : "Chưa xác nhận được số suất — tải lại trang để đọc lại...",
     });
 
     /** Tải lại tab admin cho sạch. Trả null nếu xong, ngược lại là lý do hỏng. */
@@ -2627,6 +2637,8 @@ async function runOnceOnSlot(
               after,
               // Hộp nói "có hiệu lực vào kỳ sau" ⇒ cấm kết luận "chưa mua".
               effectiveLaterText,
+              // ChatGPT đã báo "cập nhật thành công" ⇒ cũng cấm "chưa mua".
+              successToastText,
             })
           : {
               kind: "unclear",
@@ -2675,6 +2687,7 @@ async function runOnceOnSlot(
           seat_page_total_after_reload: after.total,
           seat_page_standard_after_reload: after.standard,
           seat_effective_later_text: effectiveLaterText,
+          seat_success_toast: successToastText,
         };
         // Số đọc trên trang VỪA TẢI LẠI là số tươi nhất ta có → gửi cho backend
         // cập nhật `workspace.seat_total` (xem `_absorb_seat_reading`). KHÔNG gửi

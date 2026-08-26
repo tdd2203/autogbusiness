@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.13.18";
+export const VERSION = "0.13.19";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,21 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.13.19",
+    date: "2026-08-26",
+    kind: "fix",
+    summary:
+      "Đọc dòng xanh 'Gói đăng ký của bạn đã được cập nhật thành công' — mua xong là biết ngay, không mua lại lần hai.",
+    details: [
+      "ChatGPT in dòng xanh đó ở đỉnh trang ngay sau khi mua suất thành công (ảnh user 26/8). Từ nay extension đọc dòng này và coi nó là lời xác nhận TIỀN ĐÃ TRỪ.",
+      "Chốt đáng tiền nhất: sau khi tải lại trang mà số suất chưa nhích, trước đây extension kết luận 'chưa mua' rồi tự mua lại một lần. Nay thấy dòng xanh này thì CẤM mua lại — số chưa nhích chỉ là trang cập nhật chậm hoặc thay đổi có hiệu lực kỳ sau. Có nghi ngờ thì dừng để admin quyết, không trừ tiền lần hai.",
+      "Hộp thanh toán không chịu đóng: có dòng xanh thì chỉ chờ thêm 15 giây rồi đi tải lại trang đọc số suất, thay vì nằm chờ đủ 2 phút mới trả lời chung chung.",
+      "Băng-rôn đỏ 'Đã xảy ra sự cố' chớp lên cùng lúc với dòng xanh thì tính theo dòng xanh — lỗi đó là lỗi dựng lại màn hình, xảy ra sau khi đã trừ tiền.",
+      "Sửa luôn một chỗ tính nhầm: dòng thông báo nổi này bị đếm là 'lớp phủ còn chặn trang', khiến mua thành công lần nào cũng phải tải lại trang một lượt thừa.",
+      "Dòng xác nhận được ghi vào kết quả lệnh để admin đối chiếu. Thêm 17 test.",
+    ],
+  },
   {
     version: "0.13.18",
     date: "2026-08-26",

@@ -864,6 +864,15 @@ export async function executePurchaseSeat(
           : "cần tải lại trang để đọc lại số suất"),
     );
   }
+  // Băng-rôn XANH ngoài trang ("Gói đăng ký của bạn đã được cập nhật thành
+  // công") là lời ChatGPT nói thẳng rằng giao dịch đã đi qua. Ghi vào kết quả để
+  // background dùng làm chốt CẤM MUA LẠI ở bước F5 đọc lại số suất.
+  if (charge.successToast) {
+    console.log(
+      `${LOG} ChatGPT xác nhận: "${charge.successToast}" → giao dịch ĐÃ đi qua` +
+        (verify.verified ? " (số suất trên trang cũng đã lên)" : ", còn số suất thì đọc lại sau khi tải trang"),
+    );
+  }
   // Chưa xác nhận được bằng con số nào → background tải lại trang rồi đọc lại
   // (`readSeatsOnly`). Xác nhận được rồi thì thôi, khỏi tốn một vòng tải trang.
   const needsReloadVerify = !verify.verified;
@@ -895,6 +904,10 @@ export async function executePurchaseSeat(
       // Câu ChatGPT in ra khi hỏng — null nếu không có. Dashboard hiện nguyên văn
       // để admin đối chiếu với màn hình ChatGPT.
       charge_error_banner: charge.errorBanner,
+      // Câu ChatGPT in ra khi giao dịch ĐÃ đi qua ("Gói đăng ký của bạn đã được
+      // cập nhật thành công") — null nếu không bắt được. Có nó thì tuyệt đối
+      // KHÔNG được mua lại (xem `judgeSeatsAfterReload`).
+      charge_success_toast: charge.successToast,
       // Hộp nói thay đổi chỉ có hiệu lực từ kỳ gia hạn sau ("Có hiệu lực vào 25
       // tháng 9, 2026") → số suất hôm nay KHÔNG phản ánh giao dịch này. Background
       // đọc cờ này để CẤM đường mua lại tự động.
@@ -915,13 +928,17 @@ export async function executePurchaseSeat(
             (dismissed
               ? ""
               : ` ⚠️ Hộp thanh toán chưa đóng sau ${Math.round(charge.waitedMs / 1000)}s — số suất đã lên nên giao dịch ĐÃ đi qua, chỉ cần tải lại trang.`)
-          : charge.errorBanner
-            ? `Đã bấm 'Xác nhận mua' nhưng ChatGPT báo: "${charge.errorBanner}". ` +
-              `Số suất trên trang chưa xác nhận được (${verify.reason ?? "?"}) vì hộp còn che trang. ` +
-              "Đang tải lại trang để đọc lại số suất — chưa kết luận đã trừ tiền hay chưa."
-            : `Đã bấm 'Xác nhận mua' nhưng hộp chưa đóng sau ${Math.round(charge.waitedMs / 1000)}s chờ, ` +
-              `số suất trên trang cũng chưa xác nhận (${verify.reason ?? "?"}). ` +
-              "Giao dịch CÓ THỂ đã đi qua — kiểm tra lại số suất trên ChatGPT trước khi tạo task mua mới.",
+          : charge.successToast
+            ? `ChatGPT báo "${charge.successToast}" ⇒ giao dịch ĐÃ đi qua (${qty} suất, tiền đã trừ), ` +
+              `nhưng hộp thanh toán chưa đóng nên chưa đọc được số suất trên trang ` +
+              `(${verify.reason ?? "?"}). Đang tải lại trang để đọc lại số suất — KHÔNG mua lại.`
+            : charge.errorBanner
+              ? `Đã bấm 'Xác nhận mua' nhưng ChatGPT báo: "${charge.errorBanner}". ` +
+                `Số suất trên trang chưa xác nhận được (${verify.reason ?? "?"}) vì hộp còn che trang. ` +
+                "Đang tải lại trang để đọc lại số suất — chưa kết luận đã trừ tiền hay chưa."
+              : `Đã bấm 'Xác nhận mua' nhưng hộp chưa đóng sau ${Math.round(charge.waitedMs / 1000)}s chờ, ` +
+                `số suất trên trang cũng chưa xác nhận (${verify.reason ?? "?"}). ` +
+                "Giao dịch CÓ THỂ đã đi qua — kiểm tra lại số suất trên ChatGPT trước khi tạo task mua mới.",
     },
   };
 }
