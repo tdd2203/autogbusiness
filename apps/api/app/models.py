@@ -419,6 +419,21 @@ class Member(Base):
     sync_missing_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # ĐỔI EMAIL CHƯA XONG: lệnh gỡ email CŨ khỏi ChatGPT đã hỏng, nên email này còn
+    # ăn ghế thật dù dashboard đã chuyển hạn sang email mới. Đặt trên bản ghi email
+    # CŨ; `email_change_stuck_to` là email mới lẽ ra đã thay nó.
+    #
+    # Vì sao phải có cột chứ không chỉ ghi nhật ký: đổi email đánh dấu email cũ
+    # `removed` NGAY trong DB rồi mới nhờ extension gỡ trên ChatGPT. Gỡ hỏng thì
+    # KHÔNG ai dọn — lần đồng bộ sau thấy email vẫn ở đó nên hồi sinh nó về `active`,
+    # thế là một ghế thành hai mà không chỗ nào kêu. Ca thật 22/8/2026: một ghế đổi
+    # email hai lần, cuối cùng khách trả 660.000đ cho thứ đáng lẽ 330.000đ và team
+    # ôm thêm một ghế ChatGPT không ai trả. Nhật ký có ghi, nhưng nằm sâu trong
+    # timeline của member — không ai thấy trước khi hậu quả xảy ra.
+    email_change_stuck_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    email_change_stuck_to: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Lần CUỐI member được invite/re-invite qua dashboard. Khác created_at (bất
     # biến từ lần đầu) — reconcile bulk-upsert dùng COALESCE(last_invited_at,
     # created_at) để KHÔNG mark removed oan member vừa re-invite (xem reconcile.py).

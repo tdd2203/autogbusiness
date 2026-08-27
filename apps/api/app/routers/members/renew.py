@@ -71,6 +71,11 @@ def perform_renew_core(db: Session, user: User, member: Member, months: int) -> 
 
     member.subscription_months = months
     member.subscription_end_at = new_end
+    # GIA HẠN cho dòng đang mang cờ "đổi email chưa xong" = quyết định giữ nó lại như
+    # một ghế CÓ TRẢ TIỀN ⇒ nó thôi là phần thừa của lần đổi email. Không gỡ cờ thì
+    # lần gỡ sau bị gán nhầm lý do 'đổi email' và cảnh báo kêu oan trên ghế tử tế.
+    member.email_change_stuck_at = None
+    member.email_change_stuck_to = None
     # Mốc neo "Ngày gia hạn" = hạn mới − months×30 (khớp _resolve_purchased_at của
     # subscription.py: mở lại modal hiển thị đúng chu kỳ vừa gia hạn).
     member.subscription_purchased_at = (

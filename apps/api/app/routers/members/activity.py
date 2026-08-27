@@ -12,6 +12,12 @@ duyệt thanh toán nhiều email) đặt `target_id=None` nhưng nhét danh sá
 `data["member_ids"]`. Vì vậy query bắt CẢ HAI: `target_id == id` OR
 `data @> {"member_ids": [id]}` (JSONB containment) — để không sót lịch sử.
 
+ĐỔI EMAIL đi CẢ HAI CHIỀU: log `MEMBER_EMAIL_CHANGED` ghi `target_id` = member
+MỚI, `data["old_member_id"]` = member CŨ. Xem email mới → lần NGƯỢC về lấy lịch sử
+email cũ (khối `old_email_from_change` bên dưới). Xem email CŨ → bắt log đó theo
+`data @> {"old_member_id": <id>}`, nếu không thẻ email cũ câm tịt về chuyện nó đã
+đổi đi đâu (user hỏi 27/8/2026: email cũ chỉ còn trơ 2 dòng mời).
+
 NGOẠI LỆ mời hàng loạt: `MEMBER_BULK_INVITE_QUEUED` ghi `target_type="QUEUE_ITEM"`
 (chưa có member.id lúc log) — KHÔNG lọt 2 nhánh trên. Email member nằm trong
 `data["entries"][].email`, nên bắt thêm nhánh thứ 3 khớp theo (workspace_id,
@@ -123,6 +129,16 @@ def list_member_logs(
         ),
     )
     ors: list = [member_match, bulk_invite_match, invite_terminal_match]
+
+    # Đang xem email CŨ: log đổi email nằm dưới `target_id` của member MỚI nên không
+    # nhánh nào ở trên bắt được. Khớp thẳng theo `old_member_id` để dòng "Đổi email"
+    # hiện ở CẢ hai đầu của lần đổi.
+    ors.append(
+        and_(
+            AuditLog.action == "MEMBER_EMAIL_CHANGED",
+            AuditLog.data.contains({"old_member_id": mid}),
+        )
+    )
 
     if old_email_from_change and old_email_from_change != member.email.lower():
         ors.append(

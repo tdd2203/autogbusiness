@@ -1496,10 +1496,18 @@ function MemberDetailView({
     const result = lg.result === "OK" ? "COMPLETED" : lg.result;
     terminalByQueue.set(qid, { result, timestamp: lg.timestamp, kind });
   }
+  // Dòng đổi email nhìn TỪ PHÍA EMAIL CŨ (backend trả log này cho cả hai đầu — xem
+  // activity.py): lời mời trong lệnh đổi là của email MỚI, KHÔNG phải của email đang
+  // xem. Nên dòng này không được mượn stepper "Đã mời → Chờ tham gia" (nó sẽ kể
+  // vòng đời của email khác), cũng không được coi là lời mời "đang hiệu lực".
+  const isChangeAwayFromHere = (log: MemberLog) =>
+    log.action === "MEMBER_EMAIL_CHANGED" &&
+    String((log.data as Record<string, unknown> | null)?.old_member_id ?? "") ===
+      member.id;
   const isInviteQueued = (log: MemberLog) =>
     log.action === "MEMBER_INVITE_QUEUED" ||
     log.action === "MEMBER_BULK_INVITE_QUEUED" ||
-    log.action === "MEMBER_EMAIL_CHANGED" ||
+    (log.action === "MEMBER_EMAIL_CHANGED" && !isChangeAwayFromHere(log)) ||
     log.action === "MEMBER_SUBSCRIPTION_TRANSFERRED";
   const isRemoveQueued = (log: MemberLog) =>
     log.action === "MEMBER_REMOVE_QUEUED" ||

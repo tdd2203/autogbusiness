@@ -16,12 +16,13 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
 from app.deps import get_session, require_extension_workspace
 from app.models import (
+    REMOVED_REASON_EMAIL_CHANGED,
     REMOVED_REASON_INVITE_FAILED,
     REMOVED_REASON_SYNC_MISSING,
     AuditLog,
@@ -152,6 +153,148 @@ def _flag_fake_removals(
             ", ".join(flagged[:10]),
         )
     return flagged
+
+
+def _mark_email_change_stuck(
+    db: Session, workspace: Workspace, members: list[Member]
+) -> list[str]:
+    """Gắn "ĐỔI EMAIL CHƯA XONG" cho các dòng vừa sống lại từ lần removed vì đổi email.
+
+    Sống lại = ChatGPT VẪN trả email này ⇒ lệnh gỡ nó đã hỏng: hạn đã theo email mới
+    đi nhưng ghế cũ vẫn bị ăn, một suất thành hai. `email_change_stuck_at` do vòng lặp
+    đặt; ở đây chỉ tra thêm email KẾ THỪA — nhật ký `MEMBER_EMAIL_CHANGED` là nơi DUY
+    NHẤT biết cũ→mới (bảng members không có liên kết đó). 1 truy vấn cho cả lô.
+
+    KHÔNG tự sửa dữ liệu (không gỡ hộ, không đóng hạn): việc của hàm này là để lại
+    dấu vết đọc được. Cờ được gỡ khi email đó THỰC SỰ rời ChatGPT — xem khối `stale`
+    bên dưới và `queue/completion.py` (đường gỡ có xác minh).
+    """
+    if not members:
+        return []
+    by_id = {str(m.id): m for m in members}
+    rows = (
+        db.execute(
+            select(AuditLog.data)
+            .where(
+                AuditLog.action == "MEMBER_EMAIL_CHANGED",
+                AuditLog.data["old_member_id"].astext.in_(list(by_id)),
+            )
+            .order_by(AuditLog.timestamp)
+        )
+        .scalars()
+        .all()
+    )
+    # Sắp TĂNG dần rồi ghi đè → email cũ từng bị đổi nhiều lần lấy lần GẦN NHẤT.
+    for data in rows:
+        d = data or {}
+        target = by_id.get(str(d.get("old_member_id")))
+        new_email = d.get("new_email")
+        if target is not None and isinstance(new_email, str) and new_email.strip():
+            target.email_change_stuck_to = new_email.strip().lower()
+    logger.warning(
+        "[email-change-stuck] workspace=%s %d email đổi-email VẪN CÒN trên ChatGPT "
+        "(lệnh gỡ hỏng, đang ăn ghế): %s",
+        workspace.id,
+        len(members),
+        ", ".join(
+            f"{m.email} → {m.email_change_stuck_to or '?'}" for m in members[:10]
+        ),
+    )
+    return [m.email for m in members]
+
+
+def _retry_stuck_email_change_removals(
+    db: Session, workspace: Workspace, incoming_emails: set[str]
+) -> list[tuple[str, str]]:
+    """Email đã ĐỔI mà vẫn còn trên ChatGPT ⇒ xếp lại lệnh gỡ. Trả [(task_id, type)].
+
+    "Đã đổi email thì chắc chắn phải xoá" (chốt user 2026-08-27). Trước đây lệnh gỡ
+    hỏng là hết đường: không thử lại, không cảnh báo, email cũ ở lại ăn ghế tới khi
+    có người tình cờ nhìn thấy — ca thật 22/8/2026 kéo dài 4 ngày và tốn thêm một ghế.
+
+    Chống spam hàng đợi bằng ĐÚNG một luật: đang có task gỡ nào mở (PENDING/
+    IN_PROGRESS) cho email đó thì thôi. Task hỏng → lần đồng bộ sau xếp lại; email
+    rời đi thật → cờ được gỡ (xem khối `stale` + `queue/completion.py`) nên vòng lặp
+    tự dừng.
+    """
+    if not incoming_emails:
+        return []
+    stuck = (
+        db.execute(
+            select(Member).where(
+                Member.workspace_id == workspace.id,
+                Member.email_change_stuck_at.isnot(None),
+                Member.status.in_(("active", "pending")),
+                Member.email.in_(incoming_emails),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    queued: list[tuple[str, str]] = []
+    for m in stuck:
+        task_type = "REVOKE_INVITES" if m.status == "pending" else "REMOVE_MEMBER"
+        # Task gỡ đang mở cho CHÍNH email này? (REMOVE_MEMBER gắn member_id,
+        # REVOKE_INVITES gắn danh sách email — soi cả hai khuôn payload.)
+        open_task = db.execute(
+            select(QueueItem.id)
+            .where(
+                QueueItem.workspace_id == workspace.id,
+                QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
+                QueueItem.type.in_(("REMOVE_MEMBER", "REVOKE_INVITES")),
+                or_(
+                    QueueItem.payload["member_id"].astext == str(m.id),
+                    QueueItem.payload.contains({"emails": [m.email]}),
+                ),
+            )
+            .limit(1)
+        ).first()
+        if open_task is not None:
+            continue
+        item = QueueItem(
+            type=task_type,
+            status="PENDING",
+            workspace_id=workspace.id,
+            payload=(
+                {"emails": [m.email]}
+                if task_type == "REVOKE_INVITES"
+                else {"member_id": str(m.id), "email": m.email}
+            ),
+            created_by_id=None,
+        )
+        db.add(item)
+        db.flush()
+        queued.append((str(item.id), task_type))
+        log_event(
+            db,
+            actor_type="SYSTEM",
+            action="MEMBER_EMAIL_CHANGE_REMOVE_RETRY",
+            result="PENDING",
+            target_type="MEMBER",
+            target_id=str(m.id),
+            data={
+                "email": m.email,
+                "workspace_id": str(workspace.id),
+                "changed_to": m.email_change_stuck_to,
+                "stuck_since": m.email_change_stuck_at.isoformat()
+                if m.email_change_stuck_at
+                else None,
+                "queue_item_id": str(item.id),
+                "task_type": task_type,
+                "note": (
+                    "Email này đã ĐỔI sang email khác nhưng lệnh gỡ trước đó không "
+                    "chốt được — ChatGPT vẫn trả nó về. Xếp lại lệnh gỡ để trả ghế."
+                ),
+            },
+            commit=False,
+        )
+    if queued:
+        logger.warning(
+            "[email-change-stuck] workspace=%s xếp lại %d lệnh gỡ cho email đã đổi",
+            workspace.id,
+            len(queued),
+        )
+    return queued
 
 
 def _flag_refunded_while_in_team(
@@ -357,6 +500,9 @@ def bulk_upsert_members(
     # Member đang 'removed' mà ChatGPT vẫn trả về → (id, email, removed_at cũ).
     # Đối chiếu audit sau vòng lặp để bóc ca XOÁ-GIẢ — xem `_flag_fake_removals`.
     resurrected: list[tuple[UUID, str, datetime | None]] = []
+    # Dòng bị đánh removed VÌ ĐỔI EMAIL mà ChatGPT vẫn trả về → lệnh gỡ email cũ đã
+    # hỏng. Gom lại để gắn cờ + email kế thừa sau vòng lặp (1 truy vấn cho cả lô).
+    email_change_revived: list[Member] = []
     # Default subscription cho member scrape-only (chưa từng invite qua dashboard):
     # 1 tháng = 30 ngày. Theo yêu cầu user 2026-05-19.
     # Mốc neo "Ngày gia hạn" LẦN ĐẦU = NGÀY THAM GIA thật: last_invited_at ?? joined_at
@@ -406,6 +552,30 @@ def bulk_upsert_members(
             # retention 30 ngày (giống invite.py / change_email.py). Tránh member
             # active mà vẫn còn removed_at rác + để job hard-delete không dính.
             if existing.status != "removed" and existing.removed_at is not None:
+                # ⚠️ ĐỔI EMAIL CHƯA XONG. Dòng này bị đánh removed vì ĐỔI EMAIL (hạn
+                # đã theo email mới đi) mà ChatGPT vẫn trả nó về ⇒ lệnh gỡ email cũ
+                # HỎNG, ghế vẫn đang bị ăn. Xoá trắng `removed_reason` ở đây là mất
+                # luôn dấu vết "đây là ca đổi email": lần nó thực sự rời đi sau này
+                # sẽ bị ghi `sync_missing`, và chuỗi cũ→mới ở tab "Đã xoá" (đọc
+                # `removed_reason`) đứt hẳn — ca thật 22/8/2026 `lampesdafret22`.
+                # Chuyển dấu vết sang cột riêng thay vì giữ `removed_reason` trên
+                # một dòng đang active (dòng active mà mang lý do xoá là dữ liệu bẩn).
+                if existing.removed_reason == REMOVED_REASON_EMAIL_CHANGED:
+                    existing.email_change_stuck_at = now
+                    # TIỀN: đã đổi email thì hạn ĐÃ THEO EMAIL MỚI ĐI — dòng cũ không
+                    # được còn hạn, kẻo mời lại chính nó lại MIỄN PHÍ
+                    # (`_is_paid_period_active` chỉ đọc mốc này) và
+                    # `find_movable_paid_members` còn chuyển "hạn ma" đó sang workspace
+                    # khác. `change_email` đóng mốc này từ 24/8/2026; dòng đổi TRƯỚC
+                    # mốc đó vẫn ôm hạn tương lai (ca `pablomarcolinoo` 28/7) nên đóng
+                    # tại đây. KHÔNG bao giờ đặt None (None = vô thời hạn, xem
+                    # EXPIRY_RULES §5).
+                    if (
+                        existing.subscription_end_at is None
+                        or existing.subscription_end_at > now
+                    ):
+                        existing.subscription_end_at = now
+                    email_change_revived.append(existing)
                 existing.removed_at = None
                 existing.removed_reason = None
             # ⚠️ "Sống lại" KHÔNG vô hại: nếu lần removed gần nhất là do XOÁ TỰ
@@ -595,7 +765,15 @@ def bulk_upsert_members(
         for m in stale:
             m.status = "removed"
             m.removed_at = now
-            m.removed_reason = REMOVED_REASON_SYNC_MISSING
+            # Dòng đang mang cờ "đổi email chưa xong" nay MỚI thực sự rời ChatGPT ⇒
+            # đây là kết cục MUỘN của lần đổi email, không phải "tự nhiên biến mất".
+            # Ghi `sync_missing` ở đây chính là chỗ làm đứt chuỗi cũ→mới (22/8/2026).
+            if m.email_change_stuck_at is not None:
+                m.removed_reason = REMOVED_REASON_EMAIL_CHANGED
+                m.email_change_stuck_at = None
+                m.email_change_stuck_to = None
+            else:
+                m.removed_reason = REMOVED_REASON_SYNC_MISSING
             m.last_synced_at = now
             removed_count += 1
             removed_emails.append(m.email)
@@ -806,6 +984,12 @@ def bulk_upsert_members(
 
     # Dò XOÁ-GIẢ TRƯỚC khi commit: mọi audit của lần sync này vào cùng 1 transaction.
     fake_removed_emails = _flag_fake_removals(db, workspace, resurrected, now)
+    # Ca ĐỔI EMAIL chưa xong (lệnh gỡ email cũ hỏng, email vẫn ở ChatGPT): gắn email
+    # kế thừa vào cờ đã đặt trong vòng lặp.
+    _mark_email_change_stuck(db, workspace, email_change_revived)
+    # ... và XẾP LẠI LỆNH GỠ cho mọi email đã đổi mà ChatGPT vẫn còn trả về (kể cả
+    # ca mắc kẹt từ lần đồng bộ trước): đã đổi email thì chắc chắn phải xoá.
+    stuck_retry_tasks = _retry_stuck_email_change_removals(db, workspace, incoming_emails)
     # Dò HOÀN PHÍ OAN: email vừa được dựng lại (hoặc hồi sinh) mà trước đó lời mời
     # của nó bị chốt hỏng + đã hoàn tiền ⇒ đang dùng miễn phí. Xét cả hai nguồn vì
     # hai đường chốt hỏng để lại hai dấu vết khác nhau: `fail_deferred_invite` XOÁ
@@ -869,6 +1053,12 @@ def bulk_upsert_members(
             commit=False,
         )
     db.commit()
+    for task_id, task_type in stuck_retry_tasks:
+        # Sau commit — đánh thức extension để nó gỡ ngay, đừng đợi lượt quét sau.
+        publish_task_event(
+            workspace_id,
+            {"type": "task-available", "task_id": task_id, "task_type": task_type},
+        )
     if joined_check_task_id:
         # Sau commit — extension pick ngay task tra tab "Người dùng".
         publish_task_event(

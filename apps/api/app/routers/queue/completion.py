@@ -26,7 +26,9 @@ from app.deps import (
 )
 from app.models import (
     REMOVED_REASON_BY_ADMIN,
+    REMOVED_REASON_EMAIL_CHANGED,
     REMOVED_REASON_EXPIRED,
+    REMOVED_REASON_INVITE_FAILED,
     REMOVED_REASON_INVITE_REVOKED,
     AuditLog,
     Invite,
@@ -216,28 +218,15 @@ def reconcile_failed_invite(
             commit=False,
         )
 
-    # 2. Xoá Member + Invite phantom (chỉ pending chưa join).
+    # 2. Email "ma" của task. XOÁ Ở BƯỚC 5 — SAU khi hoàn phí + void kỳ, không phải
+    #    ở đây (đảo thứ tự 2026-08-27): xoá trước thì kỳ ĐÃ TRẢ cascade đi mất trước
+    #    khi có ai kịp hỏi kỳ đó đã được hoàn tiền chưa. Xem `_delete_phantom_members`.
     invites = (
         db.execute(select(Invite).where(Invite.queue_item_id == item.id))
         .scalars()
         .all()
     )
     emails_to_delete = [inv.email.lower() for inv in invites]
-    if emails_to_delete:
-        db.execute(
-            delete(Member).where(
-                Member.workspace_id == workspace_id,
-                Member.email.in_(emails_to_delete),
-                Member.status == "pending",
-                Member.joined_at.is_(None),
-            )
-        )
-        db.execute(
-            delete(Invite).where(
-                Invite.queue_item_id == item.id,
-                Invite.email.in_(emails_to_delete),
-            )
-        )
 
     # 3. Hoàn toàn bộ phí invite_fee của task.
     refunded = wallet_service.refund_invite(db, item.id, emails=None)
@@ -262,7 +251,7 @@ def reconcile_failed_invite(
 
     # 4. Hoàn phí ⇒ void kỳ đã trả — CHỈ cho email THỰC SỰ có tiền quay về ví lượt
     #    này (`refunded.emails`), KHÔNG phải mọi email trong payload task. Phantom nào
-    #    joined_at != NULL không bị xoá ở bước 2 vẫn phải mất "hạn ma" → không cho
+    #    joined_at != NULL không bị xoá ở bước 5 vẫn phải mất "hạn ma" → không cho
     #    mời lại miễn phí oan. Xem void_refunded_invite_periods / bug thuylinhtctbg.
     #
     #    ⚠️ Ca thật 23/8/2026: void theo `task_emails` cắt oan kỳ hạn
@@ -278,7 +267,24 @@ def reconcile_failed_invite(
     void_refunded_invite_periods(
         db, workspace_id=workspace_id, emails=refunded.emails, now=now_terminal
     )
-    # 5. Member đã `active` thì bước 4 KHÔNG đụng tới (void = xoá hạn = tặng vô thời
+    # 5. GIỜ mới xoá Member + Invite phantom. Kỳ nào sống sót bước 4 = tiền KHÔNG
+    #    được hoàn lượt này (vd kỳ kế thừa từ lần ĐỔI EMAIL) ⇒ bản ghi đó chỉ chuyển
+    #    `removed`, không xoá — kẻo mất trắng lịch sử tiền.
+    if emails_to_delete:
+        _delete_phantom_members(
+            db,
+            workspace_id=workspace_id,
+            emails=emails_to_delete,
+            now=now_terminal,
+            queue_item_id=item.id,
+        )
+        db.execute(
+            delete(Invite).where(
+                Invite.queue_item_id == item.id,
+                Invite.email.in_(emails_to_delete),
+            )
+        )
+    # 6. Member đã `active` thì bước 4 KHÔNG đụng tới (void = xoá hạn = tặng vô thời
     #    hạn, xem docstring flag_refunded_invite_debt) → đánh dấu CHƯA THANH TOÁN +
     #    báo động, kẻo email vẫn ở trong team mà màn hình hiện "đã thanh toán".
     if refunded:
@@ -378,6 +384,93 @@ def close_invite_defer_with_sync_evidence(
 INVITE_MISSING_MIN_AGE = timedelta(minutes=5)
 
 
+def _email_change_target_emails(db: Session, queue_item_id: str | UUID) -> set[str]:
+    """Email MỚI của lần đổi email / chuyển hạn mà lượt mời của nó CHÍNH LÀ task này.
+
+    `change_email` (và `transfer_subscription`) ghi `invite_queue_item_id` = id task
+    mời vào nhật ký, nên từ task hỏng lần ngược ra được: bản ghi email mới này không
+    phải "ma" của một lời mời mới — nó đang ôm chu kỳ CHUYỂN sang từ email cũ.
+    """
+    rows = (
+        db.execute(
+            select(AuditLog.data).where(
+                AuditLog.action.in_(
+                    ("MEMBER_EMAIL_CHANGED", "MEMBER_SUBSCRIPTION_TRANSFERRED")
+                ),
+                AuditLog.data["invite_queue_item_id"].astext == str(queue_item_id),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    out: set[str] = set()
+    for data in rows:
+        for key in ("new_email", "target_email"):
+            value = (data or {}).get(key)
+            if isinstance(value, str) and value.strip():
+                out.add(value.strip().lower())
+    return out
+
+
+def _delete_phantom_members(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    emails: list[str],
+    now: datetime,
+    queue_item_id: str | UUID | None = None,
+) -> list[str]:
+    """Xoá bản ghi "ma" của lời mời hỏng — TRỪ bản ghi KẾ THỪA chu kỳ đã trả.
+
+    "Ma" = `pending` + `joined_at IS NULL`: email chưa từng vào team, lời mời hỏng thì
+    xoá hẳn cho sạch. Nhưng khuôn đó KHÔNG chỉ có ma: bản ghi email MỚI của một lần
+    ĐỔI EMAIL cũng y hệt, mà nó đang ôm toàn bộ `member_subscription_cycles` CHUYỂN
+    sang từ email cũ. Xoá thẳng ⇒ chu kỳ cascade theo ⇒ lịch sử tiền biến mất: báo cáo
+    hụt lần mua đầu, và mời lại email đó bị tính phí như email MỚI — khách trả lần hai
+    cho cùng một ghế (ca thật 22/8/2026: chuỗi lampesdafret22 → minalqureshi221 →
+    saghan876 chỉ còn đúng MỘT chu kỳ, chu kỳ mua gốc không còn ở bản ghi nào).
+
+    Nhận diện KHÔNG đoán mò: `queue_item_id` của task hỏng lần ngược ra nhật ký
+    `MEMBER_EMAIL_CHANGED` (`_email_change_target_emails`). Lời mời thường vẫn bị xoá
+    y như cũ — chỉ đúng bản ghi kế thừa mà CÒN chu kỳ mới được giữ lại, chuyển
+    `removed`/`invite_failed` (đúng cách `reconcile.py` làm với lời mời hỏng): biến
+    mất khỏi danh sách sống, nhưng lịch sử tiền còn nguyên.
+
+    Gọi SAU khi đã hoàn phí + void kỳ của chính lượt hỏng này: kỳ nào CÒN LẠI lúc đó
+    mới thật sự là tiền chưa được hoàn.
+
+    Trả về các email được GIỮ LẠI thay vì xoá.
+    """
+    if not emails:
+        return []
+    protected = (
+        _email_change_target_emails(db, queue_item_id) if queue_item_id else set()
+    )
+    rows = (
+        db.execute(
+            select(Member).where(
+                Member.workspace_id == workspace_id,
+                Member.email.in_([e.lower() for e in emails]),
+                Member.status == "pending",
+                Member.joined_at.is_(None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    kept: list[str] = []
+    for m in rows:
+        if m.email.lower() in protected and m.subscription_cycles:
+            m.status = "removed"
+            m.removed_at = now
+            m.removed_reason = REMOVED_REASON_INVITE_FAILED
+            db.add(m)
+            kept.append(m.email)
+        else:
+            db.delete(m)
+    return kept
+
+
 def fail_deferred_invite(
     db: Session,
     member: Member,
@@ -434,14 +527,28 @@ def fail_deferred_invite(
         void_refunded_invite_periods(
             db, workspace_id=ws_id, emails=refunded.emails, now=now
         )
-    # 3. Xoá phantom member + invite (email này CHƯA từng tham gia).
+    # 3. Xoá phantom member + invite (email này CHƯA từng tham gia). Bước 2 đã hoàn
+    #    phí + void kỳ, nên kỳ nào CÒN LẠI là tiền chưa được hoàn ⇒ giữ bản ghi lại
+    #    thay vì xoá (ca đổi email — xem `_delete_phantom_members`).
     db.execute(
         delete(Invite).where(
             Invite.workspace_id == ws_id,
             func.lower(Invite.email) == email,
         )
     )
-    db.delete(member)
+    #    (Ở ĐÂY xoá KHÔNG lọc `pending`/`joined_at IS NULL` như hai đường kia — giữ
+    #    nguyên hành vi cũ, chỉ thêm đúng một ngoại lệ: còn chu kỳ thì không xoá.)
+    if (
+        queue_item_id
+        and member.subscription_cycles
+        and email in _email_change_target_emails(db, queue_item_id)
+    ):
+        member.status = "removed"
+        member.removed_at = now
+        member.removed_reason = REMOVED_REASON_INVITE_FAILED
+        db.add(member)
+    else:
+        db.delete(member)
 
 
 def close_invite_defer_with_missing_evidence(
@@ -1130,7 +1237,15 @@ def update_task(
             for member in stale_members:
                 member.status = "removed"
                 member.removed_at = revoked_at
-                member.removed_reason = revoke_reason
+                # Cùng lý lẽ với nhánh REMOVE_MEMBER: lời mời của email đang mắc kẹt
+                # vì ĐỔI EMAIL nay thu hồi được thật → lý do là 'đổi email', không
+                # phải 'thu hồi lời mời'.
+                if member.email_change_stuck_at is not None:
+                    member.removed_reason = REMOVED_REASON_EMAIL_CHANGED
+                    member.email_change_stuck_at = None
+                    member.email_change_stuck_to = None
+                else:
+                    member.removed_reason = revoke_reason
                 db.add(member)
                 log_event(
                     db,
@@ -1356,7 +1471,17 @@ def update_task(
                 # Lý do lưu THẲNG lên member (cột removed_reason) để tab "Đã xoá"
                 # đọc trực tiếp, khỏi truy ngược audit log — nhiều đường xoá khác
                 # ghi log ở cấp WORKSPACE nên không tra ngược theo email được.
-                if expired_init:
+                if member.email_change_stuck_at is not None:
+                    # Ca ĐỔI EMAIL MẮC KẸT (lần gỡ trước hỏng → sync thấy email vẫn
+                    # ở ChatGPT nên hồi sinh nó) nay đã gỡ được THẬT. Đây là kết cục
+                    # muộn của lần đổi email, không phải "admin xoá tay": ghi
+                    # by_admin ở đây là làm đứt chuỗi cũ→mới ở tab "Đã xoá", đúng
+                    # cái sai đã xảy ra ngày 22/8/2026. Cờ mắc kẹt gỡ luôn.
+                    remove_data["removal_reason"] = "email_changed"
+                    member.removed_reason = REMOVED_REASON_EMAIL_CHANGED
+                    member.email_change_stuck_at = None
+                    member.email_change_stuck_to = None
+                elif expired_init:
                     remove_data["removal_reason"] = "expired"
                     member.removed_reason = REMOVED_REASON_EXPIRED
                 else:
@@ -1717,22 +1842,8 @@ def update_task(
                 commit=False,
             )
 
-        if emails_to_delete:
-            db.execute(
-                delete(Member).where(
-                    Member.workspace_id == workspace.id,
-                    Member.email.in_(emails_to_delete),
-                    Member.status == "pending",
-                    Member.joined_at.is_(None),
-                )
-            )
-            db.execute(
-                delete(Invite).where(
-                    Invite.queue_item_id == item.id,
-                    Invite.email.in_(emails_to_delete),
-                )
-            )
-
+        # Xoá bản ghi "ma" nằm SAU hoàn phí + void (đảo thứ tự 2026-08-27) — xem
+        # `_delete_phantom_members`: xoá trước thì kỳ ĐÃ TRẢ cascade đi mất.
         # HOÀN PHÍ VÍ (feature 003) cho email COMPLETED nhưng KHÔNG verify được
         # (unverified). verify_scrape_failed → không xoá/không hoàn. Idempotent qua
         # cột `reversed`. No-op nếu task không có giao dịch invite_fee (non-beta).
@@ -1741,7 +1852,7 @@ def update_task(
                 db, item.id, emails=emails_to_delete
             )
             # Hoàn phí ⇒ void kỳ đã trả (phantom joined_at != NULL sống sót bộ lọc
-            # xoá bên trên vẫn phải mất "hạn ma"). Void theo `refunded.emails` —
+            # xoá bên dưới vẫn phải mất "hạn ma"). Void theo `refunded.emails` —
             # email KHÔNG được hoàn đồng nào thì kỳ hạn của họ do task khác trả,
             # cắt là cướp hạn (ca thật 23/8, xem reconcile_failed_invite).
             from app.routers.members._shared import (
@@ -1766,6 +1877,20 @@ def update_task(
                     item_id=item.id,
                     now=now_terminal,
                 )
+            # GIỜ mới xoá: kỳ sống sót void = tiền chưa được hoàn ⇒ giữ bản ghi.
+            _delete_phantom_members(
+                db,
+                workspace_id=workspace.id,
+                emails=emails_to_delete,
+                now=now_terminal,
+                queue_item_id=item.id,
+            )
+            db.execute(
+                delete(Invite).where(
+                    Invite.queue_item_id == item.id,
+                    Invite.email.in_(emails_to_delete),
+                )
+            )
 
     # SYNC_BILLING chỉ chạy khi user chủ động trigger từ dashboard (WorkspaceLayout
     # "Cập nhật giá & ngày renew" / Workspaces list "Sync billing"). Extension

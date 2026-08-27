@@ -77,10 +77,21 @@ def _email_change_chain(
 
     Chỉ có nghĩa với email bị gỡ VÌ ĐỔI EMAIL. Trả (emails, ids) LUÔN cùng độ dài để
     UI ghép 1-1: bấm chặng thứ i thì mở đúng member ids[i].
+
+    Hai cửa vào, vì ca ĐỔI EMAIL CHƯA XONG (lệnh gỡ email cũ hỏng → đồng bộ thấy email
+    vẫn ở ChatGPT nên hồi sinh nó, xoá luôn `removed_reason`) làm dòng cũ KHÔNG còn
+    nhãn `email_changed` dù nhật ký vẫn nguyên bằng chứng:
+      - `removed_reason == 'email_changed'` — ca thường (gỡ trót lọt);
+      - `email_change_stuck_at` — ca đang mắc kẹt, dòng cũ đang sống lại.
+    Thiếu cửa thứ hai thì đúng lúc cần cảnh báo nhất (một suất ăn hai ghế) lại là lúc
+    chuỗi cũ→mới biến mất — ca thật 22/8/2026.
     """
     emails: list[str] = []
     ids: list[UUID] = []
-    if member.removed_reason != REMOVED_REASON_EMAIL_CHANGED:
+    if (
+        member.removed_reason != REMOVED_REASON_EMAIL_CHANGED
+        and member.email_change_stuck_at is None
+    ):
         return emails, ids
     seen = {str(member.id)}
     cursor = str(member.id)
@@ -347,7 +358,10 @@ def get_added_member(
     ]
     # Email nhận có thể ĐÃ ĐỔI TIẾP (A → B → C): giữ chuỗi để bấm đi tiếp được.
     # Bản đồ đổi email quét cả bảng nhật ký → chỉ dựng khi email này ĐÚNG là ca đổi.
-    if member.removed_reason == REMOVED_REASON_EMAIL_CHANGED:
+    if (
+        member.removed_reason == REMOVED_REASON_EMAIL_CHANGED
+        or member.email_change_stuck_at is not None
+    ):
         chain, chain_ids = _email_change_chain(member, _email_change_next_map(db))
         out.email_changed_to = chain
         out.email_changed_to_ids = chain_ids

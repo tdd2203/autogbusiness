@@ -150,6 +150,46 @@ def test_member_logs_after_change_email(
     assert email_changed["data"]["new_email"] == "lineage-new@example.com"
 
 
+def test_member_logs_old_email_sees_change(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Email CŨ cũng phải thấy dòng MEMBER_EMAIL_CHANGED của chính nó.
+
+    Log đổi email ghi `target_id` = member MỚI, `data["old_member_id"]` = member cũ.
+    Thiếu nhánh khớp theo `old_member_id` thì thẻ email cũ chỉ còn trơ mấy dòng mời,
+    không nơi nào kể nó đã đổi đi đâu (ca thật 22/8/2026, user hỏi 27/8/2026).
+    """
+    ws = _create_workspace(client, auth_header)
+    inv = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "back-old@example.com", "subscription_months": 1},
+        headers=auth_header,
+    )
+    assert inv.status_code == 201, inv.text
+    old = inv.json()
+
+    chg = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{old['id']}/change-email",
+        json={"new_email": "back-new@example.com"},
+        headers=auth_header,
+    )
+    assert chg.status_code == 201, chg.text
+
+    # Member cũ nay status='removed' — endpoint vẫn phải trả log (không lọc status).
+    logs = _logs(client, ws["id"], old["id"], auth_header).json()
+    changed = [lg for lg in logs if lg["action"] == "MEMBER_EMAIL_CHANGED"]
+    assert len(changed) == 1, [lg["action"] for lg in logs]
+    assert changed[0]["data"]["old_email"] == "back-old@example.com"
+    assert changed[0]["data"]["new_email"] == "back-new@example.com"
+    assert changed[0]["data"]["old_member_id"] == old["id"]
+
+    # Không bắt vơ: email KHÁC trong cùng workspace không được dính log đổi này.
+    _upsert_active(client, ws, ["back-bystander@example.com"])
+    other = _member(client, ws["id"], "back-bystander@example.com", auth_header)
+    other_logs = _logs(client, ws["id"], other["id"], auth_header).json()
+    assert "MEMBER_EMAIL_CHANGED" not in [lg["action"] for lg in other_logs]
+
+
 def test_member_logs_unknown_member_404(client: TestClient, auth_header: dict):
     ws = _create_workspace(client, auth_header)
     resp = _logs(
