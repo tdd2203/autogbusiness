@@ -2279,6 +2279,271 @@ body {
     color: var(--ink-3);
   }
 
+
+  /* ---------- Invite workspace config modal (đích mời theo user) ---------- */
+  .iwc-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(16, 24, 16, 0.42);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+  }
+  .iwc-modal {
+    width: 620px;
+    max-width: 100%;
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    overflow: hidden;
+  }
+  .iwc-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 16px 20px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .iwc-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .iwc-search {
+    flex: 1;
+    min-width: 0;
+    padding-left: 12px;
+    background: var(--surface);
+  }
+  .iwc-count {
+    font-size: 12px;
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+  .iwc-body {
+    overflow-y: auto;
+    padding: 6px 20px 14px;
+  }
+
+  .iwc-row {
+    position: relative;
+    padding: 12px 12px 11px;
+    margin-top: 6px;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .iwc-row:hover {
+    background: var(--surface-2);
+  }
+  /* Vàng = chưa lưu (xanh lá đã dành cho workspace đang bật). */
+  .iwc-row.dirty {
+    background: var(--warning-bg);
+    border-color: var(--warning-border);
+  }
+  .iwc-row.off {
+    opacity: 0.55;
+  }
+  .iwc-row-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .iwc-email {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13.5px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .iwc-tag {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--ink-3);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    padding: 0 7px;
+  }
+  .iwc-dot {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--warning-accent);
+  }
+
+  .iwc-seg {
+    display: inline-flex;
+    flex-shrink: 0;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 2px;
+    gap: 2px;
+  }
+  .iwc-row.dirty .iwc-seg,
+  .iwc-row:hover .iwc-seg {
+    background: var(--surface);
+  }
+  .iwc-seg-btn {
+    border: none;
+    background: transparent;
+    color: var(--ink-2);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: 7px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s, color 0.15s;
+  }
+  .iwc-seg-btn:hover:not(.on) {
+    color: var(--ink);
+    background: var(--surface-2);
+  }
+  .iwc-seg-btn.on {
+    background: var(--ink);
+    color: #fff;
+  }
+
+  .iwc-chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 9px;
+  }
+  .iwc-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 210px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--ink-2);
+    font-family: inherit;
+    font-size: 12px;
+    padding: 4px 11px 4px 8px;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .iwc-chip:hover {
+    border-color: var(--ink-3);
+    color: var(--ink);
+  }
+  .iwc-chip.on {
+    background: var(--success-bg);
+    border-color: var(--success);
+    color: var(--success-strong);
+    font-weight: 500;
+  }
+  .iwc-chip.on:hover {
+    background: #d9f0e4;
+  }
+  .iwc-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    font-size: 10px;
+    line-height: 1;
+    background: var(--surface-2);
+    color: var(--ink-3);
+  }
+  .iwc-chip.on .iwc-check {
+    background: var(--success);
+    color: #fff;
+  }
+  .iwc-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .iwc-bulk {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 2px;
+  }
+  .iwc-link {
+    border: none;
+    background: transparent;
+    font-family: inherit;
+    font-size: 11.5px;
+    color: var(--ink-3);
+    padding: 2px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .iwc-link:hover:not(:disabled) {
+    color: var(--ink);
+    background: var(--surface-2);
+  }
+  .iwc-link:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+  .iwc-hint {
+    margin-top: 7px;
+    font-size: 11.5px;
+    color: var(--ink-3);
+  }
+  .iwc-hint.warn {
+    color: var(--warning);
+  }
+
+  .iwc-foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .iwc-foot-text {
+    flex: 1;
+    min-width: 0;
+    font-size: 12.5px;
+    color: var(--ink-2);
+  }
+  .iwc-foot-warn {
+    color: var(--warning);
+  }
+
+  @media (max-width: 560px) {
+    .iwc-row-top {
+      flex-wrap: wrap;
+    }
+    .iwc-email {
+      flex-basis: 100%;
+    }
+    .iwc-foot {
+      flex-wrap: wrap;
+    }
+    .iwc-foot-text {
+      flex-basis: 100%;
+    }
+  }
+
   @media (max-width: 640px) {
     .tg-modal-backdrop {
       padding: 12px;
