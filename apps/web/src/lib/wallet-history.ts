@@ -210,15 +210,21 @@ export function rowSpend(row: TxnRow): number {
   return row.txns.reduce((s, t) => (FEE_KINDS.has(t.kind) ? s - t.amount : s), 0);
 }
 
-/** Số suất MỜI MỚI tính phí trong dòng — lượt lỗi mời không tính. */
+/** Số lượt `invite_fee` tính phí trong dòng — lượt lỗi mời không tính.
+ *
+ *  DỰ PHÒNG cho ô "New" ở tiêu đề ngày: số chính lấy từ `daily-summary` của server,
+ *  vì cộng tại chỗ chỉ thấy phần lịch sử đã tải (100 bút toán/trang). Chỗ này cũng
+ *  KHÔNG tách được email cũ hết hạn add lại — lượt đó cũng là `invite_fee` — nên khi
+ *  rơi về đây con số có thể nhỉnh hơn số của server. */
 export function rowNewSeats(row: TxnRow): number {
   if (row.type !== "group") return 0;
   return row.txns.filter((t) => t.kind === "invite_fee").length;
 }
 
-/** Số suất GIA HẠN tính phí trong dòng. Tách khỏi mời mới vì gia hạn tốn tiền mà
+/** Số lượt `renew_fee` tính phí trong dòng. Tách khỏi mời mới vì gia hạn tốn tiền mà
  *  KHÔNG thêm email nào vào team — gộp chung làm số "Seat" lệch với thẻ "Mời hôm
- *  nay" mà không ai giải thích được (user 2026-08-26). */
+ *  nay" mà không ai giải thích được (user 2026-08-26). Cũng là DỰ PHÒNG của ô
+ *  "Renew" (xem `rowNewSeats`). */
 export function rowRenewSeats(row: TxnRow): number {
   if (row.type !== "group") return 0;
   return row.txns.filter((t) => t.kind === "renew_fee").length;

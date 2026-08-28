@@ -17,6 +17,11 @@ DST) — mặc định hôm nay:
     qua hoá đơn ghi 2 bút toán cùng lúc (order_topup +X, invite_fee −X) nên tổng
     có dấu = 0 dù user vẫn tiêu X. Vì vậy `fee_total` là TOÀN BỘ phí phát sinh,
     còn `fee_from_invoice` / `fee_from_balance` cho biết tiền ra từ đâu.
+  • `new_email_count` / `renew_email_count` = cặp số "New / Renew" ở tiêu đề ngày
+    trong lịch sử ví, chia theo EMAIL chứ không theo loại bút toán: New = email
+    chưa từng trả tiền thành công lần nào, Renew = email cũ trả tiếp (gia hạn,
+    hoặc hết hạn rồi add lại — lượt này vẫn đi qua `invite_fee` nên phân loại
+    theo `kind` sẽ đếm nhầm thành email mới).
   • Lượt mời HỎNG đã hoàn phí thì user KHÔNG mất đồng nào, nhưng bút toán phí vẫn
     nằm đó (cờ `reversed`) — cộng vào "đã tiêu" là thổi phồng con số rồi lại phải
     tự trừ nhẩm phần hoàn ở ô khác (user 2026-08-26: "khó nhìn khó hiểu"). Nên
@@ -45,6 +50,13 @@ VN_TZ = timezone(timedelta(hours=7))
 
 # Bút toán tính là "phí đã tiêu trong ngày" (mời lần đầu + gia hạn).
 _FEE_KINDS = ("invite_fee", "renew_fee")
+
+
+def _fee_email(row) -> str:
+    """Email của bút toán phí (chữ thường). `meta.email` do charge_invite/charge_renew
+    ghi; dòng cũ thiếu meta → chuỗi rỗng, coi như không đối chiếu được."""
+    meta = row[4] or {}
+    return str(meta.get("email") or "").lower()
 
 
 @router.get("/daily-summary", response_model=WalletDailySummaryOut)
@@ -83,6 +95,8 @@ def daily_summary(
             WalletTransaction.amount,
             WalletTransaction.reversed,
             WalletTransaction.created_at,
+            WalletTransaction.meta,
+            WalletTransaction.seq,
         )
         .where(
             WalletTransaction.user_id == user.id,
@@ -93,7 +107,7 @@ def daily_summary(
     ).all()
 
     per_kind: dict[str, list[int]] = {}
-    for kind, amount, _reversed, _at in rows:
+    for kind, amount, _reversed, _at, _meta, _seq in rows:
         acc = per_kind.setdefault(kind, [0, 0])
         acc[0] += 1
         acc[1] += int(amount)
@@ -114,13 +128,56 @@ def daily_summary(
     fee_net = fee_total - fee_refunded
     refunded_invite_count = sum(1 for r in fee_rows if r[0] == "invite_fee" and r[2])
 
+    # ── New / Renew: email LẦN ĐẦU trả tiền vs email CŨ trả tiếp ──────────
+    # New = email chưa từng có lượt thu phí thành công nào trước đó. Renew = email
+    # cũ nay lại trả tiền, gồm cả gia hạn lẫn email hết hạn được add lại. Trước
+    # đây trang Ví phân loại theo LOẠI bút toán nên mọi `invite_fee` đều là New,
+    # email cũ add lại bị đếm như email mới toanh (user 2026-08-28).
+    #
+    # Mốc phân biệt là SỔ CÁI chứ không phải bản ghi member: lượt mời hỏng đã
+    # hoàn phí thì không tính là "đã từng add" (email chưa vào team lần nào và
+    # cũng chưa tốn đồng nào) → mời lại nó vẫn là New. Ngược lại, email trả tiền
+    # thành công rồi thì mọi lượt trả sau đó đều là Renew, kể cả khi lượt sau đi
+    # qua luồng mời mới (`invite_fee`) vì gói cũ đã hết hạn.
+    live_fees = [r for r in rows if r[0] in _FEE_KINDS and not r[2]]
+    emails = {_fee_email(r) for r in live_fees} - {""}
+    first_seq: dict[str, int] = {}
+    if emails:
+        email_col = func.lower(WalletTransaction.meta["email"].astext)
+        first_seq = {
+            e: seq
+            for e, seq in db.execute(
+                select(email_col, func.min(WalletTransaction.seq))
+                .where(
+                    WalletTransaction.user_id == user.id,
+                    WalletTransaction.kind.in_(_FEE_KINDS),
+                    WalletTransaction.reversed.is_(False),
+                    # Chặn trên = hết ngày đang xem: báo cáo ngày cũ không được đổi
+                    # nghĩa vì những lượt trả tiền xảy ra SAU đó.
+                    WalletTransaction.created_at < end,
+                    email_col.in_(sorted(emails)),
+                )
+                .group_by(email_col)
+            ).all()
+        }
+    new_email_count = 0
+    renew_email_count = 0
+    for r in live_fees:
+        email = _fee_email(r)
+        # `renew_fee` luôn là gia hạn, kể cả email add từ trước khi có ví (không có
+        # bút toán nào cũ hơn để đối chiếu nên quy tắc "lần đầu" sẽ nhận nhầm).
+        if r[0] == "renew_fee" or (email and first_seq.get(email) != r[5]):
+            renew_email_count += 1
+        else:
+            new_email_count += 1
+
     # Tiền hoá đơn về ví (order_topup) luôn được tiêu ngay cho lượt mời/gia hạn CÙNG
     # THỜI ĐIỂM (một transaction = một mốc `created_at`) → đó chính là phần phí KHÔNG
     # trừ số dư. Ghép theo từng mốc thay vì so tổng cả ngày: lượt hỏng đã hoàn thì
     # tiền hoá đơn của nó Ở LẠI trong ví, không được tính là "đã tiêu qua hoá đơn".
     invoice_at: dict[datetime, int] = {}
     live_fee_at: dict[datetime, int] = {}
-    for kind, amount, was_reversed, at in rows:
+    for kind, amount, was_reversed, at, _meta, _seq in rows:
         if kind == "order_topup":
             invoice_at[at] = invoice_at.get(at, 0) + int(amount)
         elif kind in _FEE_KINDS and not was_reversed:
@@ -143,6 +200,8 @@ def daily_summary(
         invite_count=count_of("invite_fee"),
         refunded_invite_count=refunded_invite_count,
         renew_count=count_of("renew_fee"),
+        new_email_count=new_email_count,
+        renew_email_count=renew_email_count,
         topup_total=total("topup"),
         refund_total=total("invite_refund"),
         by_kind=by_kind,

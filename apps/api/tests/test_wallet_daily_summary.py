@@ -270,3 +270,93 @@ def test_invite_success_is_total_minus_refunded(client: TestClient, auth_header:
     assert s["invite_count"] == 3  # tổng lời mời tính phí
     assert s["refunded_invite_count"] == 1  # 1 lời mời hỏng, đã hoàn
     assert s["invite_count"] - s["refunded_invite_count"] == 2  # thẻ hiện "2 / 3"
+
+
+def _craft_txns(sub: dict, rows: list[tuple]) -> None:
+    """Ghi thẳng bút toán vào sổ ví theo đúng thứ tự truyền vào (seq tăng dần).
+
+    Mỗi phần tử: (kind, email, reversed, created_at). Dùng cho các ca New/Renew cần
+    một lượt trả tiền từ NGÀY TRƯỚC — luồng mời thật không tạo được mốc quá khứ.
+    """
+    from app.db import SessionLocal
+    from app.models import User, WalletTransaction
+    from app.services import wallet_service
+
+    with SessionLocal() as db:
+        user = db.get(User, uuid.UUID(sub["id"]))
+        wallet = wallet_service.get_or_create_wallet(db, user.id)
+        for kind, email, was_reversed, created_at in rows:
+            txn = WalletTransaction(
+                wallet_id=wallet.id,
+                user_id=user.id,
+                kind=kind,
+                amount=FEE if kind == "invite_refund" else -FEE,
+                balance_after=0,
+                held_after=0,
+                ref_type="renew" if kind == "renew_fee" else "invite",
+                meta={"email": email, "fee": FEE},
+                reversed=was_reversed,
+            )
+            if created_at is not None:
+                txn.created_at = created_at
+            db.add(txn)
+            db.flush()  # seq cấp theo thứ tự chèn
+        db.commit()
+
+
+def test_new_counts_only_first_paid_email(client: TestClient, auth_header: dict) -> None:
+    """New = email chưa từng trả tiền lần nào; email cũ trả tiếp là Renew.
+
+    Phân loại theo LOẠI bút toán thì email hết hạn add lại cũng đi qua `invite_fee`
+    nên bị đếm thành email mới toanh (user 2026-08-28). Mốc đúng là sổ ví: đã có
+    lượt thu phí thành công trước đó ⇒ Renew.
+    """
+    sub = make_beta_sub(client, auth_header, username="daily10", balance=0)
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    _craft_txns(
+        sub,
+        [
+            ("invite_fee", "old@example.com", False, yesterday),
+            # Hôm nay: email cũ add lại, email mới toanh, và một lượt gia hạn.
+            ("invite_fee", "old@example.com", False, None),
+            ("invite_fee", "fresh@example.com", False, None),
+            ("renew_fee", "member@example.com", False, None),
+        ],
+    )
+
+    s = _summary(client, sub["token"])
+    assert s["new_email_count"] == 1  # chỉ fresh@
+    assert s["renew_email_count"] == 2  # old@ add lại + member@ gia hạn
+    assert s["invite_count"] == 2  # ô "Mời" vẫn đếm cả hai lượt invite_fee
+
+
+def test_refunded_attempt_does_not_make_email_old(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Mời hỏng đã hoàn phí thì email đó chưa từng vào team ⇒ mời lại vẫn là New."""
+    sub = make_beta_sub(client, auth_header, username="daily11", balance=0)
+    _craft_txns(
+        sub,
+        [
+            ("invite_fee", "retry@example.com", True, None),  # hỏng, đã hoàn
+            ("invite_refund", "retry@example.com", False, None),
+            ("invite_fee", "retry@example.com", False, None),  # mời lại, ăn tiền
+        ],
+    )
+
+    s = _summary(client, sub["token"])
+    assert s["new_email_count"] == 1
+    assert s["renew_email_count"] == 0
+    assert s["refunded_invite_count"] == 1
+
+
+def test_fresh_invite_flow_counts_as_new(client: TestClient, auth_header: dict) -> None:
+    """Luồng mời thật: 2 email chưa từng có trong sổ ⇒ New 2, Renew 0."""
+    ws = create_ws(client, auth_header, "Daily WS 7")
+    sub = make_beta_sub(client, auth_header, username="daily12", balance=300_000)
+    assign(client, auth_header, ws["id"], sub["id"])
+    _bulk_invite(client, sub["token"], ws["id"], ["n1@example.com", "n2@example.com"])
+
+    s = _summary(client, sub["token"])
+    assert s["new_email_count"] == 2
+    assert s["renew_email_count"] == 0

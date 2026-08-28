@@ -67,6 +67,10 @@ export type WalletDailySummary = {
   /** Số lượt mời trong ngày bị hỏng và đã hoàn phí (phần KHÔNG thành công). */
   refunded_invite_count: number;
   renew_count: number;
+  /** Lượt trả tiền thành công cho email CHƯA TỪNG trả tiền lần nào (ô "New"). */
+  new_email_count: number;
+  /** Lượt trả tiền cho email CŨ: gia hạn, hoặc hết hạn rồi add lại (ô "Renew"). */
+  renew_email_count: number;
   /** Tiền nạp vào ví qua chuyển khoản trong ngày. */
   topup_total: number;
   /** Tiền hoàn do mời thất bại. */

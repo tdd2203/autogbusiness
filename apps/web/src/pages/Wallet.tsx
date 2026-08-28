@@ -269,6 +269,7 @@ export default function Wallet() {
             trace={trace}
             hidden={showVoided ? { voided: 0, settled: 0 } : hiddenHere}
             onShowHidden={() => setShowVoided(true)}
+            serverTotals={channel === null}
           />
         </div>
 
@@ -424,7 +425,7 @@ function LegendDivider() {
 
 /* ── Lịch sử theo ngày ─────────────────────────────────────────────────────── */
 
-function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace, hidden, onShowHidden }: { groups: DayGroup[]; limit: number; onMore: () => void; canMore: boolean; loadingMore: boolean; day: string | null; trace: RefundTrace; hidden: { voided: number; settled: number }; onShowHidden: () => void }) {
+function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace, hidden, onShowHidden, serverTotals }: { groups: DayGroup[]; limit: number; onMore: () => void; canMore: boolean; loadingMore: boolean; day: string | null; trace: RefundTrace; hidden: { voided: number; settled: number }; onShowHidden: () => void; serverTotals: boolean }) {
   const today = vnToday();
   let budget = limit;
   const visible: DayGroup[] = [];
@@ -472,15 +473,7 @@ function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace, hi
             </span>
             {/* Màn hẹp: cho các con số xuống dòng chứ không để nguyên một dải nowrap
                 rồi bị thẻ (overflow hidden) cắt cụt mất ô cuối. */}
-            <span style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 12, color: "var(--ink-2)" }}>
-              <DayStat label="Nạp" value={formatVnd(g.topup)} />
-              <span style={{ width: 1, height: 11, background: "var(--border-strong)" }} />
-              <DayStat label="Chi" value={formatVnd(g.spend)} />
-              <span style={{ width: 1, height: 11, background: "var(--border-strong)" }} />
-              <DayStat label="New" value={String(g.newSeats)} />
-              <span style={{ width: 1, height: 11, background: "var(--border-strong)" }} />
-              <DayStat label="Renew" value={String(g.renewSeats)} />
-            </span>
+            <DayHeaderStats group={g} fromServer={serverTotals} />
           </div>
           {g.rows.map((r) => <HistoryRow key={rowKey(r)} row={r} trace={trace} />)}
         </div>
@@ -493,6 +486,32 @@ function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace, hi
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Chốt số của DÒNG TIÊU ĐỀ NGÀY — đọc thẳng số của SERVER thay vì cộng dồn mấy
+ * dòng đang tải. Lịch sử phân trang 100 bút toán một lần, nên ngày đông lượt thì
+ * cộng tại chỗ chỉ ra một phần: thẻ trên báo 67 lời mời mà tiêu đề ngày ghi
+ * "New 45 · Chi 14.850.000" (user 2026-08-28).
+ *
+ * `fromServer=false` khi đang lọc theo kênh tiền (chip "Trừ số dư ví"…): lúc đó
+ * số của cả ngày KHÔNG khớp với danh sách đã lọc, nên vẫn cộng tại chỗ.
+ * Chưa có số server (đang tải, mất mạng) cũng rơi về số cộng tại chỗ.
+ */
+function DayHeaderStats({ group, fromServer }: { group: DayGroup; fromServer: boolean }) {
+  const { data } = useWalletDailySummary(fromServer ? group.date : "");
+  const d = fromServer ? data : undefined;
+  return (
+    <span style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 12, color: "var(--ink-2)" }}>
+      <DayStat label="Nạp" value={formatVnd(d ? d.topup_total : group.topup)} />
+      <span style={{ width: 1, height: 11, background: "var(--border-strong)" }} />
+      <DayStat label="Chi" value={formatVnd(d ? d.fee_net : group.spend)} />
+      <span style={{ width: 1, height: 11, background: "var(--border-strong)" }} />
+      <DayStat label="New" value={String(d ? d.new_email_count : group.newSeats)} />
+      <span style={{ width: 1, height: 11, background: "var(--border-strong)" }} />
+      <DayStat label="Renew" value={String(d ? d.renew_email_count : group.renewSeats)} />
+    </span>
   );
 }
 

@@ -1282,6 +1282,10 @@ class WalletDailySummaryOut(BaseModel):
     #: Số lượt mời trong ngày đã hỏng và được hoàn phí.
     refunded_invite_count: int = 0
     renew_count: int
+    #: Lượt trả tiền thành công cho email CHƯA TỪNG trả tiền lần nào (ô "New").
+    new_email_count: int = 0
+    #: Lượt trả tiền thành công cho email CŨ (gia hạn, hoặc hết hạn rồi add lại).
+    renew_email_count: int = 0
     topup_total: int
     refund_total: int
     by_kind: list[WalletDailyKindOut] = Field(default_factory=list)
