@@ -1276,7 +1276,9 @@ export default function InviteMembers() {
                 background: "var(--surface-2)",
               }}
             >
-              <div style={{ fontSize: 12.5, color: "var(--ink-3)" }}>
+              {/* Dòng tổng kết + cảnh báo mua thêm suất: to hơn phần chữ phụ khác
+                  (14.5 thay vì 12.5) vì đây là chỗ chốt tiền, phải đọc được ngay. */}
+              <div style={{ fontSize: 14.5, color: "var(--ink-3)" }}>
                 {t("invite.parsed", { n: entries.length })}
                 {" · "}
                 {t("invite.feeChargedCount", { n: chargedCount })}
