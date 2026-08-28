@@ -1725,8 +1725,25 @@ function TaskPanels({ workspaceId }: { workspaceId: string | undefined }) {
                   <div style={{ fontSize: 13, fontWeight: 500, color: "var(--ink)" }}>
                     {taskLabel(tk)}
                   </div>
-                  <div style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 2 }}>
-                    {tk.status === "FAILED" ? tk.error_code ?? "FAILED" : tTaskType(tk.type)}
+                  {/* Lệnh hỏng: người dùng cần MỘT CÂU biết phải làm gì, không
+                      cần mã kỹ thuật. Backend đã rút gọn `error_message` cho tài
+                      khoản không phải super-admin (`services/task_errors.py`) —
+                      ở đây chỉ việc hiện nó, giữ 2 dòng cho gọn hàng. */}
+                  <div
+                    style={{
+                      fontSize: 11.5,
+                      color: tk.status === "FAILED" ? "var(--danger)" : "var(--ink-3)",
+                      marginTop: 2,
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                    }}
+                    title={tk.status === "FAILED" ? tk.error_message ?? "" : undefined}
+                  >
+                    {tk.status === "FAILED"
+                      ? tk.error_message ?? tk.error_code ?? t("sync.failedUnknown")
+                      : tTaskType(tk.type)}
                   </div>
                 </div>
                 <div

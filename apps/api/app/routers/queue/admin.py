@@ -30,6 +30,7 @@ from app.deps import (
 from app.models import QueueItem, User
 from app.permissions import Permission
 from app.schemas import QueueCreate, QueueOut
+from app.services.task_errors import friendly_error_message
 from app.sse import publish_task_event
 
 from ._shared import router
@@ -136,6 +137,15 @@ def list_tasks(
         )
         # Quyền huỷ: super-admin huỷ mọi task; sub-admin chỉ task mình tạo.
         it.can_cancel = user.is_super_admin or it.created_by_id == user.id
+        # Lỗi: sub-admin chỉ thấy MỘT CÂU dễ hiểu, super-admin giữ nhật ký đầy đủ
+        # (chốt user 28/8/2026 — xem `services/task_errors.py`). Đây là cửa duy
+        # nhất dashboard lấy task nên chặn ở đây là chặn hết mọi trang.
+        if not user.is_super_admin:
+            # `expunge` TRƯỚC khi đổi: `error_message` là cột thật, sửa trên object
+            # còn gắn session là mở đường cho một cú autoflush ghi đè nhật ký lỗi
+            # xuống DB. Tách khỏi session rồi thì không cách nào ghi nhầm được.
+            db.expunge(it)
+            it.error_message = friendly_error_message(it.error_code, it.error_message)
     return items
 
 

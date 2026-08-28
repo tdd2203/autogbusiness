@@ -23,7 +23,7 @@ export default function Queue() {
   const t = useT();
   const tStatus = useTranslateEnum("status");
   const tTaskType = useTranslateEnum("taskType");
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
 
   const items = useQuery({
     queryKey: ["queue", "all"],
@@ -212,10 +212,11 @@ export default function Queue() {
                     <PayloadCell payload={it.payload} />
                   </td>
                   <td>
-                    {it.error_code ? (
+                    {it.error_code || it.error_message ? (
                       <ErrorCell
-                        code={it.error_code}
+                        code={it.error_code ?? ""}
                         message={it.error_message ?? ""}
+                        showCode={!!user?.is_super_admin}
                       />
                     ) : (
                       <PayloadCell payload={it.result} variant="success" />
@@ -242,8 +243,20 @@ export default function Queue() {
  * Hiển thị error_code + error_message dạng có thể expand. Nhiều error message
  * giờ chứa diag step-by-step nhiều dòng (xem [runner.ts ensureContentInjected])
  * — collapse 2 dòng đầu, click để xem full.
+ *
+ * `showCode=false` (người dùng không phải super-admin): giấu mã kỹ thuật, chỉ
+ * còn một câu tiếng Việt do backend rút gọn (`services/task_errors.py`). Mã như
+ * `NOT_ENOUGH_SEATS` không nói gì với đại lý ngoài việc "có gì đó hỏng nặng".
  */
-export function ErrorCell({ code, message }: { code: string; message: string }) {
+export function ErrorCell({
+  code,
+  message,
+  showCode = true,
+}: {
+  code: string;
+  message: string;
+  showCode?: boolean;
+}) {
   const t = useT();
   const [expanded, setExpanded] = useState(false);
   const hasMultiline = message.includes("\n");
@@ -256,7 +269,7 @@ export function ErrorCell({ code, message }: { code: string; message: string }) 
         maxWidth: 380,
       }}
     >
-      <strong className="mono">{code}:</strong>{" "}
+      {showCode && code ? <strong className="mono">{code}:</strong> : null}{" "}
       <span
         style={{
           whiteSpace: "pre-wrap",
