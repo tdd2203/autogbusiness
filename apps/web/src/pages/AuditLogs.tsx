@@ -138,6 +138,10 @@ const IMP_OP_GROUP: Record<string, ImpGroup> = {
   // Đồng bộ xong VẪN lệch số lượng (ChatGPT header ≠ AutoGPT) → admin PHẢI thấy
   // để truy nguyên nhân. Đưa lên tab "Chính" (nhóm sync).
   MEMBER_SYNC_MISMATCH: "sync",
+  // Trả lại "chờ tham gia" cho người bị nâng oan thành "đã tham gia" (lệnh kiểm
+  // tra chạy nhầm tab "Lời mời"). Cặp đôi với MEMBER_SYNC_PROMOTED_ACTIVE nên để
+  // cùng nhóm mời — admin phải thấy ở tab "Chính".
+  MEMBER_ACTIVE_DOWNGRADED_PENDING: "invite",
 };
 
 /** Nhóm nghiệp vụ quan trọng của 1 action (null = không quan trọng). */
@@ -389,6 +393,7 @@ const ACT_TITLE: Record<string, string> = {
   MEMBER_INVITE_VERIFY_RECONCILE: "Đối soát mời thành viên",
   MEMBER_RECONCILE_SKIPPED: "Bỏ qua đối soát",
   MEMBER_SYNC_MISMATCH: "Lệch số lượng sau đồng bộ",
+  MEMBER_ACTIVE_DOWNGRADED_PENDING: "Trả về chờ tham gia (đồng bộ)",
   MEMBER_PAYMENT_MARKED: "Đánh dấu đã thanh toán",
   MEMBER_PAYMENT_REQUESTED: "Yêu cầu thanh toán",
   MEMBER_SUBSCRIPTION_RENEWED: "Gia hạn gói thành viên",

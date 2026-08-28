@@ -3,7 +3,7 @@ import { reportProgress } from "../../progress";
 import { TEXT_FALLBACKS } from "../../selectors";
 import { clearMemberFilter, filterLookupOnce } from "../remove/member-filter";
 import { locateMemberRow } from "../remove/locate-member";
-import { clickTabAndWait } from "../sync";
+import { clickTabAndWait, DEFAULT_TAB_VERIFY } from "../sync";
 
 const LOG = "[autogpt-sync-batch]";
 
@@ -78,11 +78,16 @@ export async function executeSyncMembersBatch(
     },
     true,
   );
+  // ĐÒI KIỂM CHỨNG URL (`DEFAULT_TAB_VERIFY`) chứ không click rồi ngủ 800ms:
+  // đứng nhầm ở tab "Lời mời đang chờ xử lý" thì ô lọc vẫn tìm THẤY email đang
+  // chờ, và cái "thấy" đó bị báo về là "đã tham gia" — backend nâng pending →
+  // active cho người chưa vào team (ca `yen.2xtnd` 28/8/2026, dashboard 244 vs
+  // ChatGPT 243). Không về được tab đúng thì THÀ BÁO LỖI còn hơn kết luận sai.
   const onActive = await clickTabAndWait(
     "tab_active_members",
     TEXT_FALLBACKS.tabActiveMembers,
     800,
-    undefined,
+    DEFAULT_TAB_VERIFY,
     12_000,
   );
   if (!onActive) {
@@ -90,7 +95,8 @@ export async function executeSyncMembersBatch(
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
       error_message:
-        "Không vào được tab Người dùng để kiểm tra. Mở chatgpt.com/admin/members và thử lại.",
+        `Không vào được tab Người dùng để kiểm tra (URL hiện tại '${location.search || "(rỗng)"}'). ` +
+        "Mở chatgpt.com/admin/members và thử lại.",
     };
   }
 

@@ -1,7 +1,7 @@
 import type { ExecuteActionResponse } from "../../../shared/messages";
 import { reportProgress } from "../../progress";
 import { TEXT_FALLBACKS } from "../../selectors";
-import { clickTabAndWait } from "../sync";
+import { clickTabAndWait, DEFAULT_TAB_VERIFY } from "../sync";
 import { locateMemberRow } from "../remove/locate-member";
 
 const LOG = "[autogpt-sync-member]";
@@ -40,11 +40,14 @@ export async function executeSyncMember(
     { phase: "searching", message: `Tìm ${target} ở tab Người dùng...` },
     true,
   );
+  // Kiểm chứng URL thay vì tin cú click (xem `DEFAULT_TAB_VERIFY`): còn kẹt ở
+  // ?tab=invites thì ô lọc tìm thấy chính lời mời đang chờ và bị hiểu là "đã
+  // tham gia".
   const onActive = await clickTabAndWait(
     "tab_active_members",
     TEXT_FALLBACKS.tabActiveMembers,
     800,
-    undefined,
+    DEFAULT_TAB_VERIFY,
     12_000,
   );
   if (!onActive) {
@@ -52,7 +55,8 @@ export async function executeSyncMember(
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
       error_message:
-        "Không vào được tab Người dùng để xác minh. Mở chatgpt.com/admin/members và thử lại.",
+        `Không vào được tab Người dùng để xác minh (URL hiện tại '${location.search || "(rỗng)"}'). ` +
+        "Mở chatgpt.com/admin/members và thử lại.",
     };
   }
 

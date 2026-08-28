@@ -9,6 +9,41 @@ function findTabButton(
 }
 
 /**
+ * Tab "Người dùng" là tab MẶC ĐỊNH của /admin/members — URL của nó KHÔNG mang
+ * `?tab=`. Truyền hằng này vào `verifyTabParam` để ĐÒI KIỂM CHỨNG đã về đúng tab
+ * đó, thay vì tin vào một cú click không ai soát lại.
+ *
+ * VÌ SAO CẦN (ca thật 28/8/2026, workspace GPT1): `SYNC_MEMBERS_BATCH` click tab
+ * "Người dùng" rồi ngủ 800ms là coi như xong. Tab admin được tái dùng nên URL còn
+ * `?tab=invites` do lệnh mời trước để lại; cú click rơi vào lúc React chưa gắn
+ * handler ⇒ vẫn đứng ở tab "Lời mời đang chờ xử lý". Ô lọc ở đó tìm THẤY email
+ * đang chờ ⇒ báo "đã tham gia" ⇒ backend nâng pending → active cho người chưa hề
+ * vào team. Dashboard đếm 244 trong khi ChatGPT chỉ có 243.
+ */
+export const DEFAULT_TAB_VERIFY = "\u0000default-tab";
+
+const WRONG_SUB_TAB_RE = /[?&]tab=(invites|requests)/;
+
+/** Đang đứng ở tab "Lời mời"/"Yêu cầu" (đọc theo URL) hay không. */
+export function onWrongSubTab(): boolean {
+  return WRONG_SUB_TAB_RE.test(location.search);
+}
+
+/** Tên đọc được của mốc kiểm chứng, để ghi nhật ký. */
+function verifyLabel(verifyTabParam: string): string {
+  return verifyTabParam === DEFAULT_TAB_VERIFY
+    ? "URL sạch (không ?tab=invites/requests)"
+    : verifyTabParam;
+}
+
+/** URL hiện tại đã khớp tab cần tới chưa. */
+function tabParamMatches(verifyTabParam: string): boolean {
+  return verifyTabParam === DEFAULT_TAB_VERIFY
+    ? !onWrongSubTab()
+    : location.search.includes(verifyTabParam);
+}
+
+/**
  * Click tab + đợi DOM render. Trả true nếu tab đã ACTIVE, false nếu không.
  *
  * Trang /admin/members có 3 tab:
@@ -53,7 +88,7 @@ export async function clickTabAndWait(
   }
 
   // Đã đúng tab sẵn (URL khớp) → khỏi click.
-  if (verifyTabParam && location.search.includes(verifyTabParam)) {
+  if (verifyTabParam && tabParamMatches(verifyTabParam)) {
     console.log(
       `[autogpt-sync] tab '${tabTexts[0]}' đã active sẵn (${location.search})`,
     );
@@ -79,7 +114,7 @@ export async function clickTabAndWait(
     const deadline = Date.now() + Math.max(postClickWaitMs, 3000);
     while (Date.now() < deadline) {
       await sleep(250);
-      if (location.search.includes(verifyTabParam)) {
+      if (tabParamMatches(verifyTabParam)) {
         console.log(
           `[autogpt-sync] tab '${tabTexts[0]}' đã active (URL ${location.search})`,
         );
@@ -88,12 +123,12 @@ export async function clickTabAndWait(
       }
     }
     console.warn(
-      `[autogpt-sync] click tab '${tabTexts[0]}' attempt ${attempt + 1}: URL chưa có '${verifyTabParam}' (search='${location.search}') — retry`,
+      `[autogpt-sync] click tab '${tabTexts[0]}' attempt ${attempt + 1}: URL chưa khớp '${verifyLabel(verifyTabParam)}' (search='${location.search}') — retry`,
     );
   }
 
   console.warn(
-    `[autogpt-sync] KHÔNG đổi được sang tab '${tabTexts[0]}' (cần '${verifyTabParam}') sau ${MAX_ATTEMPTS} lần — bỏ qua, KHÔNG scrape nhầm tab`,
+    `[autogpt-sync] KHÔNG đổi được sang tab '${tabTexts[0]}' (cần '${verifyLabel(verifyTabParam ?? "")}') sau ${MAX_ATTEMPTS} lần — bỏ qua, KHÔNG scrape nhầm tab`,
   );
   return false;
 }

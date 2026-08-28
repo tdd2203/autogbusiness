@@ -13,7 +13,12 @@ import { reportProgress } from "../../progress";
 import { getChatGPTUserInfo } from "../../scrapers/user";
 import { TEXT_FALLBACKS } from "../../selectors";
 import { checkSeatAvailability } from "../purchase-seat/check-seat-availability";
-import { clickTabAndWait, findTabButton } from "./click-tab-and-wait";
+import {
+  clickTabAndWait,
+  DEFAULT_TAB_VERIFY,
+  findTabButton,
+  onWrongSubTab,
+} from "./click-tab-and-wait";
 import { MAX_SYNC_MS, scrapeCurrentTab } from "./scrape-current-tab";
 
 export async function executeSync(
@@ -158,7 +163,14 @@ export async function executeSync(
   let activeExpectedTotal: number | null = null;
   if (!scrapeActive) {
     console.log(`[autogpt-sync] scope=${scope} → bỏ qua tab Người dùng`);
-  } else if (await clickTabAndWait("tab_active_members", TEXT_FALLBACKS.tabActiveMembers)) {
+  } else if (
+    await clickTabAndWait(
+      "tab_active_members",
+      TEXT_FALLBACKS.tabActiveMembers,
+      1500,
+      DEFAULT_TAB_VERIFY,
+    )
+  ) {
     tab1Found = true;
     const { members, expectedTotal } = await scrapeCurrentTab(
       taskId,
@@ -171,9 +183,22 @@ export async function executeSync(
       `[autogpt-sync] tab Người dùng: ${members.length} entries (header ${expectedTotal ?? "?"})`,
     );
     for (const m of members) merged.set(m.email, m);
+  } else if (onWrongSubTab()) {
+    // Vừa quét xong tab "Lời mời" mà KHÔNG quay về được tab "Người dùng": URL
+    // còn ?tab=invites. Đường fallback bên dưới (scrape DOM hiện tại như tab
+    // active) ở đây là TAI HOẠ — nó gắn nhãn `active` cho cả danh sách lời mời
+    // đang chờ, backend nâng hết pending → active. Thà báo lỗi.
+    return {
+      ok: false,
+      error_code: "UI_ELEMENT_NOT_FOUND",
+      error_message:
+        `Không quay lại được tab "Người dùng" (URL còn '${location.search}') — ` +
+        `dừng để không gắn nhãn "đã tham gia" cho danh sách lời mời đang chờ.`,
+    };
   } else {
     // Tab buttons không có → có thể trang không phải /admin/members.
-    // Fallback: scrape DOM hiện tại như tab "active".
+    // Fallback: scrape DOM hiện tại như tab "active". Chỉ đi vào đây khi URL
+    // KHÔNG ở sub-tab nào khác (guard ngay bên trên).
     console.warn(
       "[autogpt-sync] không tìm được tab buttons — scrape DOM hiện tại như Người dùng",
     );

@@ -118,10 +118,19 @@ def test_missing_in_autogpt_named(client: TestClient, auth_header: dict) -> None
     assert mm["scraped_active"] == 2
 
 
-def test_extra_in_autogpt_named(client: TestClient, auth_header: dict) -> None:
-    """AutoGPT đang active nhưng ChatGPT lại liệt kê ở tab pending (không có ở tab
-    active) → chốt chặn active→pending giữ nguyên active, nhưng đây là trạng thái
-    lệch → nêu ĐÍCH DANH ở extra_in_autogpt để admin kiểm tra."""
+def test_active_o_autogpt_ma_chatgpt_dang_cho_thi_ha_lai(
+    client: TestClient, auth_header: dict
+) -> None:
+    """AutoGPT đang active nhưng ChatGPT liệt kê ở tab "Lời mời đang chờ xử lý".
+
+    TRƯỚC 28/8/2026: chốt chặn active→pending giữ nguyên active và chỉ nêu đích
+    danh ở `extra_in_autogpt` — nêu mãi mà không ai sửa được, vì lần sync nào cũng
+    lại bị chặn y hệt (ca `yen.2xtnd`, workspace GPT1: dashboard 244 / ChatGPT 243).
+
+    NAY: mẻ sync quét cả 2 tab và không bị nghi thiếu thì tự HẠ về pending, nên
+    sau sync không còn gì lệch để báo. Chi tiết + các lớp an toàn:
+    `test_sync_downgrade_wrong_active.py`.
+    """
     ws = _ws(client, auth_header, "Mismatch Extra WS")
     key = {"X-API-KEY": ws["extension_api_key"]}
     _seed_active(client, key, ws["id"], ["z@example.com"])
@@ -139,11 +148,10 @@ def test_extra_in_autogpt_named(client: TestClient, auth_header: dict) -> None:
         headers=key,
     )
     assert resp.status_code == 200, resp.text
-    mm = resp.json()["mismatch"]
-    assert mm is not None
-    assert mm["extra_in_autogpt"] == ["z@example.com"], mm
-    assert mm["db_active"] == 1
-    assert mm["scraped_active"] == 0
+    body = resp.json()
+    assert body["downgraded_to_pending"] == ["z@example.com"], body
+    # Hạ xong thì header (0 active) khớp DB (0 active) → không còn lệch để báo.
+    assert body["mismatch"] is None, body
 
 
 def test_skipped_partial_scrape_no_mismatch(

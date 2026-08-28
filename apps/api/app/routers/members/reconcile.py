@@ -729,6 +729,68 @@ def bulk_upsert_members(
                 f"{incoming_active_count} nhưng DB đang có {existing_active_count}"
             )
 
+    # ⚠️ SỬA NGƯỢC CÁI ĐÃ NÂNG OAN: pending → active.
+    #
+    # `SYNC_MEMBER`/`SYNC_MEMBERS_BATCH` kết luận "đã tham gia" chỉ bằng việc ô lọc
+    # tab "Người dùng" tìm thấy email. Đứng nhầm ở tab "Lời mời đang chờ xử lý"
+    # (URL còn ?tab=invites do lệnh mời trước để lại) thì ô lọc VẪN tìm thấy — và
+    # lời mời đang chờ bị ghi thành active. Chốt chặn chống-hạ-cấp ở vòng upsert
+    # phía trên khiến sai lầm đó VĨNH VIỄN: mọi lần sync sau đều thấy email ở tab
+    # Lời mời, đều bị chặn hạ, nên dashboard đếm dư mãi (ca `yen.2xtnd` 28/8/2026:
+    # dashboard 244 active trong khi ChatGPT có 243).
+    #
+    # Mẻ sync quét CẢ HAI tab và KHÔNG bị nghi thiếu thì đủ thẩm quyền phán: email
+    # nằm ở tab Lời mời và KHÔNG có ở tab Người dùng ⇒ đang chờ, không phải active.
+    # Hạ ở đây an toàn hơn hẳn mark-removed (giữ nguyên bản ghi, hạn, lịch sử) và
+    # tự đảo lại ở lần sync sau nếu người đó tham gia thật.
+    downgraded_to_pending: list[str] = []
+    if (
+        not reconcile_skipped
+        and "active" in scopes
+        and "pending" in scopes
+        and body.reconcile_pending_emails is not None
+    ):
+        _scraped_pending = {
+            e.lower() for e in body.reconcile_pending_emails
+        } & incoming_emails
+        # Extension gộp 2 tab theo email với "active thắng", nên một email không
+        # thể vừa active vừa pending. Trừ đi cho chắc, phòng payload lạ.
+        _wrongly_active = _scraped_pending - (incoming_emails - _scraped_pending)
+        if _wrongly_active:
+            for row in (
+                db.execute(
+                    select(Member).where(
+                        Member.workspace_id == workspace_id,
+                        Member.status == "active",
+                        func.lower(Member.email).in_(_wrongly_active),
+                    )
+                )
+                .scalars()
+                .all()
+            ):
+                row.status = "pending"
+                row.last_synced_at = now
+                downgraded_to_pending.append(row.email)
+            if downgraded_to_pending:
+                log_event(
+                    db,
+                    actor_type="EXTENSION",
+                    actor_label=f"workspace:{workspace.name}",
+                    action="MEMBER_ACTIVE_DOWNGRADED_PENDING",
+                    result="SUCCESS",
+                    target_type="WORKSPACE",
+                    target_id=str(workspace_id),
+                    data={
+                        "emails": downgraded_to_pending[:50],
+                        "count": len(downgraded_to_pending),
+                        "note": (
+                            "Đang ở tab 'Lời mời đang chờ xử lý' của ChatGPT mà "
+                            "dashboard ghi active — trả về đúng trạng thái chờ."
+                        ),
+                    },
+                    commit=False,
+                )
+
     if removal_scopes and incoming_emails and not reconcile_skipped:
         # Safety: KHÔNG reconcile member vừa invite qua dashboard trong 10 phút
         # gần đây (ChatGPT thường mất 1-30s để index pending invite vào tab "Lời
@@ -1092,6 +1154,8 @@ def bulk_upsert_members(
         "refund_debt_emails": refund_debt_emails[:50],
         "total": len(body.members),
         "rogue_pending_emails": rogue_pending_emails,
+        # Email từng bị ghi nhầm 'active' nay trả về 'pending' nhờ mẻ sync 2 tab.
+        "downgraded_to_pending": downgraded_to_pending[:50],
         "reconcile_skipped": reconcile_skipped,
         "reconcile_skip_reason": skip_reason,
         # Số email lệch giữa tab Lời mời và dashboard → đã enqueue tra tab Người dùng.

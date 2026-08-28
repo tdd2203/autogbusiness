@@ -2256,6 +2256,12 @@ async function runOnceOnSlot(
     // 2 mục menu dữ liệu cũng chỉ có ở sub-tab "Người dùng" (member đã tham gia).
     "EXPORT_MEMBER_DATA",
     "DELETE_MEMBER_DATA",
+    // 2 lệnh "đã tham gia chưa": TOÀN BỘ kết luận của chúng là "email có ở tab
+    // Người dùng hay không". Chạy khi tab còn ?tab=invites do lệnh mời trước để
+    // lại thì ô lọc tìm thấy chính lời mời đang chờ ⇒ báo "đã tham gia" ⇒ backend
+    // nâng pending → active cho người chưa vào team (ca `yen.2xtnd` 28/8/2026).
+    "SYNC_MEMBER",
+    "SYNC_MEMBERS_BATCH",
   ]);
   // Các action này thao tác trên sub-tab "Người dùng". Phải ép về /admin/members SẠCH
   // (không query) khi tab SAI ở 1 trong 2 dạng:
