@@ -607,12 +607,13 @@ export default function InviteMembers() {
               <div style={{ fontSize: 16, fontWeight: 600, letterSpacing: "-0.01em" }}>
                 {t("invite.modalTitle")}
               </div>
+              {/* KHÔNG chặn bề ngang: để câu phụ đề tự xuống dòng theo bề ngang thẻ.
+                  `maxWidth: 660` cũ làm nó luôn gãy giữa câu dù thẻ còn thừa chỗ. */}
               <div
                 style={{
                   fontSize: 12.5,
                   color: "var(--ink-3)",
                   marginTop: 3,
-                  maxWidth: 660,
                   lineHeight: 1.45,
                 }}
               >
