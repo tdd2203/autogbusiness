@@ -1440,6 +1440,10 @@
   "inviteMembers.seatsLeft": "còn {n}",
   "inviteMembers.seatsNone": "hết suất",
   "inviteMembers.seatsHint": "Còn {left} suất trống · danh sách này cần {need} suất mới",
+  "inviteMembers.seatFreeWord": "suất trống",
+  "inviteMembers.seatTotalUnknown": "chưa đồng bộ tổng suất",
+  "inviteMembers.seatNeedN": "cần {n}",
+  "inviteMembers.seatShortN": "thiếu {n}",
   "inviteMembers.seatsUnknownHint": "Chưa biết tổng suất (không gian chưa đồng bộ thanh toán)",
   "inviteMembers.seatShortage": "{name}: cần {need} suất mới nhưng chỉ còn {left} — sẽ phải mua thêm {buy} suất"
 }

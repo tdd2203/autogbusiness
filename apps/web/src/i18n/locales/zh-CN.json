@@ -1440,6 +1440,10 @@
   "inviteMembers.seatsLeft": "剩 {n}",
   "inviteMembers.seatsNone": "无空位",
   "inviteMembers.seatsHint": "剩余 {left} 个空位 · 此列表需要 {need} 个新席位",
+  "inviteMembers.seatFreeWord": "个空位",
+  "inviteMembers.seatTotalUnknown": "尚未同步总席位",
+  "inviteMembers.seatNeedN": "需 {n}",
+  "inviteMembers.seatShortN": "缺 {n}",
   "inviteMembers.seatsUnknownHint": "尚未获知总席位数（该工作区未同步账单）",
   "inviteMembers.seatShortage": "{name}：需要 {need} 个新席位，但只剩 {left} 个 — 需另购 {buy} 个席位"
 }

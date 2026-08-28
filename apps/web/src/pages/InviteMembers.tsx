@@ -491,6 +491,29 @@ export default function InviteMembers() {
     if (left === null) return "";
     return left > 0 ? t("inviteMembers.seatsLeft", { n: left }) : t("inviteMembers.seatsNone");
   };
+  /**
+   * Không gian hiện trên DẢI SUẤT ở đầu thẻ: mọi đích được cấp + đích của email cũ
+   * (lịch sử) nếu nằm ngoài danh sách cấp — nếu không, dán một email cũ vào là dải
+   * suất im lặng bỏ qua đúng cái không gian sắp bị trừ suất.
+   */
+  const seatBarWs = (() => {
+    const ids = eligibleWs.map((w) => w.workspace_id);
+    for (const id of seatPlan.keys()) if (!ids.includes(id)) ids.push(id);
+    return ids.map((id) => ({
+      id,
+      name:
+        seatMap.get(id)?.name ??
+        eligibleWs.find((w) => w.workspace_id === id)?.name ??
+        "—",
+    }));
+  })();
+  /** Không gian ĐANG có vấn đề: hết suất, hoặc danh sách đang dán cần nhiều hơn số
+   * suất còn trống (mời tiếp là extension đi mua thêm suất bằng tiền thật). Chỉ chỗ
+   * này mới được tô đỏ — còn lại giữ đơn sắc cho đỡ rối. */
+  const seatAlarm = (wsId: string | undefined) => {
+    const { left, short } = seatInfo(wsId);
+    return left !== null && (left === 0 || short > 0);
+  };
 
   const canSubmit = !!workspaceId && entries.length > 0 && !bulkInvite.isPending;
 
@@ -595,7 +618,112 @@ export default function InviteMembers() {
               >
                 {t("inviteMembers.cardSubtitle")}
               </div>
+
             </div>
+
+            {/* DẢI SUẤT — mỗi không gian một khối số kiểu thẻ tổng quan: nhãn mono +
+                CHỈ số suất còn lại, không kể đã dùng bao nhiêu. Đơn sắc cho đỡ rối,
+                chỉ đỏ khi hết suất hoặc danh sách đang dán vượt suất trống. Nguồn
+                `useWorkspaceSeats` (poll 15s) nên số tự nhảy khi extension mời/xoá
+                hay admin khác thao tác ở tab kia. */}
+            {seatBarWs.length > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  rowGap: 14,
+                  padding: "14px 20px 15px",
+                  borderBottom: "1px solid var(--border)",
+                }}
+              >
+                {seatBarWs.map((w, i) => {
+                  const { left, need, short } = seatInfo(w.id);
+                  const alarm = seatAlarm(w.id);
+                  return (
+                    <div
+                      key={w.id}
+                      title={
+                        left === null
+                          ? t("inviteMembers.seatsUnknownHint")
+                          : t("inviteMembers.seatsHint", { left, need })
+                      }
+                      style={{
+                        minWidth: 118,
+                        paddingLeft: i === 0 ? 0 : 20,
+                        marginLeft: i === 0 ? 0 : 20,
+                        borderLeft: i === 0 ? "none" : "1px solid var(--border)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 10,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.06em",
+                          color: "var(--ink-3)",
+                          maxWidth: 190,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {w.name}
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "baseline",
+                          gap: 6,
+                          marginTop: 7,
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontFamily: "var(--font-display)",
+                            fontSize: 26,
+                            fontWeight: 700,
+                            letterSpacing: "-0.03em",
+                            lineHeight: 1,
+                            color: alarm ? "var(--danger)" : "var(--ink)",
+                          }}
+                        >
+                          {left === null ? "—" : left}
+                        </span>
+                        <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+                          {t("inviteMembers.seatFreeWord")}
+                        </span>
+                      </div>
+                      {/* Chỉ dòng phụ khi CẦN nói thêm: danh sách đang dán cần bao
+                          nhiêu suất, hoặc lý do con số trống rỗng. Không kể "đã dùng
+                          x/y" — người dùng chỉ cần biết còn lại mấy suất. */}
+                      {(need > 0 || left === null) && (
+                        <div
+                          style={{
+                            marginTop: 7,
+                            fontFamily: "var(--font-mono)",
+                            fontSize: 10.5,
+                            whiteSpace: "nowrap",
+                            fontWeight: need > 0 ? 600 : 400,
+                            color:
+                              short > 0
+                                ? "var(--danger)"
+                                : need > 0
+                                  ? "var(--ink-2)"
+                                  : "var(--ink-3)",
+                          }}
+                        >
+                          {left === null
+                            ? t("inviteMembers.seatTotalUnknown")
+                            : short > 0
+                              ? t("inviteMembers.seatShortN", { n: short })
+                              : t("inviteMembers.seatNeedN", { n: need })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
             {/* body 2 cột */}
             <div
@@ -814,7 +942,7 @@ export default function InviteMembers() {
                             busy={bulkInvite.isPending}
                             usedText={usedText}
                             seatLabel={seatLabel}
-                            seatShort={seatInfo(selectedWs).short > 0}
+                            seatAlarm={seatAlarm(selectedWs)}
                             onWs={(v) =>
                               setWorkspaceByEmail((w) => ({
                                 ...w,
@@ -913,18 +1041,18 @@ export default function InviteMembers() {
                                 seatTitle;
                               // Suất trống KHÔNG đủ cho danh sách đang dán → nhãn đỏ:
                               // mời tiếp là extension đi mua thêm suất bằng tiền thật.
+                              const alarm = seatAlarm(selectedWs);
                               const seatBadge = seatText ? (
                                 <span
                                   style={{
                                     flex: "none",
                                     fontFamily: "var(--font-mono)",
-                                    fontSize: 10.5,
+                                    fontSize: 11.5,
                                     fontWeight: 600,
-                                    padding: "1px 5px",
+                                    padding: "1px 6px",
                                     borderRadius: 5,
-                                    background:
-                                      info.short > 0 ? "var(--danger-bg)" : "var(--surface-2)",
-                                    color: info.short > 0 ? "var(--danger)" : "var(--ink-3)",
+                                    background: alarm ? "var(--danger-bg)" : "var(--surface-2)",
+                                    color: alarm ? "var(--danger)" : "var(--ink-2)",
                                   }}
                                 >
                                   {seatText}
@@ -1259,7 +1387,7 @@ function MobileInviteCard({
   busy,
   usedText,
   seatLabel,
-  seatShort,
+  seatAlarm,
   onWs,
   onDec,
   onInc,
@@ -1278,8 +1406,8 @@ function MobileInviteCard({
   usedText: (days: number) => string;
   /** Nhãn suất còn trống của 1 không gian ("còn 4" / "hết suất"), "" khi chưa biết tổng. */
   seatLabel: (wsId: string | undefined) => string;
-  /** Suất trống KHÔNG đủ cho danh sách đang dán → tô đỏ nhãn. */
-  seatShort: boolean;
+  /** Hết suất hoặc không đủ cho danh sách đang dán → nhãn suất chuyển đỏ. */
+  seatAlarm: boolean;
   onWs: (v: string) => void;
   onDec: () => void;
   onInc: () => void;
@@ -1440,12 +1568,12 @@ function MobileInviteCard({
                 style={{
                   flex: "none",
                   fontFamily: "var(--font-mono)",
-                  fontSize: 11,
+                  fontSize: 12,
                   fontWeight: 600,
-                  padding: "1px 6px",
+                  padding: "2px 7px",
                   borderRadius: 6,
-                  background: seatShort ? "var(--danger-bg)" : "var(--surface-2)",
-                  color: seatShort ? "var(--danger)" : "var(--ink-3)",
+                  background: seatAlarm ? "var(--danger-bg)" : "var(--surface-2)",
+                  color: seatAlarm ? "var(--danger)" : "var(--ink-2)",
                 }}
               >
                 {seatLabel(selectedWs)}
