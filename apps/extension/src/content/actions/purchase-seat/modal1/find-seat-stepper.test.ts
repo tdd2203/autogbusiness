@@ -171,9 +171,9 @@ describe("findSeatStepper — hộp có 2 loại suất (UI 26/8/2026)", () => {
     expect(findSeatStepper()).toBeNull();
   });
 
-  it("có nhãn 'Cao cấp' nhưng KHÔNG tách được hàng Tiêu chuẩn ⇒ trả null", () => {
-    // Hai nhãn + hai bộ đếm nằm chung MỘT khung phẳng: không khung nào chỉ chứa
-    // riêng hàng Tiêu chuẩn.
+  it("hộp dựng kiểu LƯỚI (ca thật 28/8/2026): ghim theo dòng, không trả null", () => {
+    // Hai nhãn + hai bộ đếm là anh em trong MỘT khung phẳng — không khung nào
+    // bọc riêng hàng Tiêu chuẩn. Đúng hình dạng đã làm chết 16 lệnh mời liền.
     const flat = el("div").add(
       el("span", "Tiêu chuẩn").at(100, 0),
       el("button", "−").at(300, 0),
@@ -183,6 +183,67 @@ describe("findSeatStepper — hộp có 2 loại suất (UI 26/8/2026)", () => {
       el("button", "−").at(300, 100),
       el("div", "0").at(340, 100),
       el("button", "+").at(380, 100),
+    );
+    openModal(flat);
+    const stepper = findSeatStepper()!;
+    expect(stepper).not.toBeNull();
+    expect(stepper.read()).toBe(152);
+    expect(stepper.scope).toBe("standard_row");
+    // Cặp nút phải là cặp CÙNG DÒNG với 152, không vắt sang hàng Cao cấp.
+    expect((stepper.getIncrementButton()! as unknown as E).getBoundingClientRect().top).toBe(0);
+    expect((stepper.getDecrementButton()! as unknown as E).getBoundingClientRect().top).toBe(0);
+  });
+
+  it("lưới phẳng, hàng Cao cấp đứng TRƯỚC ⇒ vẫn ghim đúng hàng Tiêu chuẩn", () => {
+    const flat = el("div").add(
+      el("span", "Cao cấp").at(100, 0),
+      el("button", "−").at(300, 0),
+      el("div", "0").at(340, 0),
+      el("button", "+").at(380, 0),
+      el("span", "Tiêu chuẩn").at(100, 100),
+      el("button", "−").at(300, 100),
+      el("div", "152").at(340, 100),
+      el("button", "+").at(380, 100),
+    );
+    openModal(flat);
+    const stepper = findSeatStepper()!;
+    expect(stepper.read()).toBe(152);
+    expect((stepper.getIncrementButton()! as unknown as E).getBoundingClientRect().top).toBe(100);
+  });
+
+  it("nhãn nằm trong thẻ CÓ CON (gộp với giá) vẫn ghim được hàng", () => {
+    // "<div>Tiêu chuẩn<span>260.500 đ/tháng</span></div>" — chữ "Tiêu chuẩn"
+    // không phải leaf, bản cũ bỏ sót cả hai nhãn rồi dừng.
+    const titled = (label: string, price: string, top: number) =>
+      el("div").add(el("span", label).at(100, top), el("span", price).at(180, top));
+    const flat = el("div").add(
+      titled("Tiêu chuẩn", "260.500 đ/tháng", 0),
+      el("button", "−").at(300, 0),
+      el("div", "152").at(340, 0),
+      el("button", "+").at(380, 0),
+      titled("Cao cấp", "3.245.000 đ/tháng", 100),
+      el("button", "−").at(300, 100),
+      el("div", "0").at(340, 100),
+      el("button", "+").at(380, 100),
+    );
+    openModal(flat);
+    const stepper = findSeatStepper()!;
+    expect(stepper.read()).toBe(152);
+    expect(stepper.scope).toBe("standard_row");
+  });
+
+  it("hai bộ đếm đều nằm ngang hàng nhãn Tiêu chuẩn ⇒ KHÔNG đoán, trả null", () => {
+    // Không tách được hàng nào theo dòng thì thà dừng còn hơn bấm nhầm loại
+    // suất đắt gấp 12 lần.
+    const flat = el("div").add(
+      el("span", "Tiêu chuẩn").at(100, 0),
+      el("span", "Cao cấp").at(100, 0),
+      el("button", "−").at(300, 0),
+      el("div", "152").at(340, 0),
+      el("button", "+").at(380, 0),
+      el("button", "−").at(500, 0),
+      el("div", "0").at(540, 0),
+      el("button", "+").at(580, 0),
     );
     openModal(flat);
     expect(findSeatStepper()).toBeNull();

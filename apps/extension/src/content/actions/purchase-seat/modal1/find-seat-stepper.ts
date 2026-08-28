@@ -25,10 +25,28 @@ import { findUserCountInput } from "./find-user-count-input";
  *   1. GHIM vào hàng "Tiêu chuẩn" — tìm nhãn loại suất, lấy khung của riêng
  *      hàng đó (khung nào chứa cả nhãn loại khác thì KHÔNG nhận), rồi chỉ dò
  *      nút trong khung ấy;
- *   2. Ghim không được mà hộp lại có NHIỀU bộ đếm (đọc ra nhiều con số khác
- *      nhau) ⇒ trả null, KHÔNG bấm gì cả. Task dừng với thông báo rõ còn hơn
- *      bấm mù vào một hàng không biết là hàng nào.
+ *   2. Khung không tách được thì GHIM THEO DÒNG (xem bên dưới);
+ *   3. Cả hai đường đều không chốt được mà hộp lại có NHIỀU bộ đếm ⇒ trả null,
+ *      KHÔNG bấm gì cả. Task dừng với thông báo rõ còn hơn bấm mù vào một hàng
+ *      không biết là hàng nào.
  * Hộp chỉ có MỘT loại suất (workspace UI cũ) thì hành vi y như trước.
+ *
+ * ⚠️ VÌ SAO CÓ THÊM ĐƯỜNG "GHIM THEO DÒNG" (ca thật 28/8/2026)
+ *
+ * 16 lệnh mời phải mua bù suất chết liên tiếp với cùng một câu: "không thấy bộ
+ * đếm số suất của hàng Tiêu chuẩn". Nguyên nhân: bước 1 đòi tìm được một KHUNG
+ * chỉ chứa riêng hàng Tiêu chuẩn, mà hộp của ChatGPT dựng kiểu lưới — nhãn và
+ * bộ đếm của cả hai hàng là anh em trong CÙNG một khung, không có khung con nào
+ * bọc riêng từng hàng. Không khung nào tách được ⇒ luồng mua dừng hẳn dù hộp
+ * hoàn toàn bình thường.
+ *
+ * Ghim theo dòng không phụ thuộc cách lồng thẻ: con số của hàng nào thì nằm
+ * NGANG HÀNG với nhãn của hàng đó trên màn hình. Chọn bộ đếm gần nhãn "Tiêu
+ * chuẩn" hơn mọi nhãn loại khác, và chỉ nhận khi có ĐÚNG MỘT bộ đếm như vậy.
+ *
+ * Ghim sai vẫn KHÔNG mất tiền: sau khi bấm "+", thẻ tóm tắt của hộp phải nói
+ * "Thêm N suất Tiêu chuẩn" — dính chữ "Cao cấp" là `detectMixedSeatTypes` chặn
+ * lại trước cả nút "Tiếp tục", và hộp "Xem lại giao dịch mua" còn chặn lần nữa.
  */
 /** Bộ đếm đang đứng ở hàng loại suất nào. */
 export type SeatStepperScope = "standard_row" | "single";
@@ -122,6 +140,29 @@ function isDecrementLabelled(btn: HTMLElement): boolean {
 }
 
 /**
+ * Ứng viên nút của bộ đếm trong `root`. Nút mang chữ hành động ("Tiếp tục",
+ * "Quay lại"...) bị loại ngay từ đây.
+ *
+ * `loose` mở rộng sang `<div role="button">` — CHỈ dùng làm lượt vét khi lượt
+ * chặt không thấy nút nào. Bật sẵn thì mọi thứ bấm được trong hộp đều thành ứng
+ * viên, dễ đẻ ra một "bộ đếm" thứ hai không có thật, mà hộp một loại suất lại
+ * đòi đúng MỘT bộ đếm ⇒ hỏng cả đường đang chạy tốt.
+ */
+function stepperButtons(root: HTMLElement, loose = false): HTMLElement[] {
+  const sel = loose ? 'button, [role="button"]' : "button";
+  return Array.from(root.querySelectorAll<HTMLElement>(sel)).filter(
+    (b) => isVisible(b) && !isActionButton(b),
+  );
+}
+
+/** Tâm theo chiều dọc, hoặc null khi element chưa có layout. */
+function centerY(el: HTMLElement): number | null {
+  const r = el.getBoundingClientRect();
+  if (r.width <= 0 && r.height <= 0) return null;
+  return r.top + r.height / 2;
+}
+
+/**
  * Tìm element chỉ chứa con số (không có element con) nằm GIỮA 2 nút.
  *
  * Vì sao phải "giữa": modal còn in "47 người dùng · 46/47 đã gán" ngay dưới bộ
@@ -178,9 +219,9 @@ function readoutBetween(
  */
 function collectTextSteppers(root: HTMLElement): Located[] {
   const found: Located[] = [];
-  const buttons = Array.from(
-    root.querySelectorAll<HTMLButtonElement>("button"),
-  ).filter((b) => isVisible(b) && !isActionButton(b));
+  // Lượt chặt trước, không đủ nút thì mới vét sang `[role="button"]`.
+  let buttons = stepperButtons(root);
+  if (buttons.length < 2) buttons = stepperButtons(root, true);
   if (buttons.length < 2) return found;
 
   // Ưu tiên cặp nhận diện được bằng nhãn; không có nhãn thì xét mọi cặp liền kề
@@ -243,23 +284,120 @@ function collectTextSteppers(root: HTMLElement): Located[] {
  * ghim được hàng nào ⇒ luồng mua dừng hẳn dù UI vẫn bình thường.
  */
 const SEAT_ROW_LABELS: Array<{ standard: boolean; re: RegExp }> = [
-  { standard: true, re: /^(tieu chuan|standard|标准)\b/ },
-  { standard: false, re: /^(cao cap|premium|高级)\b/ },
+  // Chặn hậu tố bằng "không phải chữ cái" chứ không phải `\b`: khi ChatGPT dán
+  // nhãn liền giá trong một node ("Tiêu chuẩn260.500 đ/tháng") thì giữa "n" và
+  // "2" KHÔNG có ranh giới từ, `\b` trượt và không ghim được hàng nào.
+  { standard: true, re: /^(tieu chuan|standard|标准)(?!\p{L})/u },
+  { standard: false, re: /^(cao cap|premium|高级)(?!\p{L})/u },
 ];
 
 type RowLabel = { standard: boolean; el: HTMLElement };
 
-/** Các nhãn loại suất (leaf) có trong hộp. */
+/**
+ * Các nhãn loại suất có trong hộp — mỗi nhãn lấy element SÂU NHẤT còn khớp.
+ *
+ * Trước đây chỉ nhận leaf (element không có con). Cách đó bỏ sót ca ChatGPT bọc
+ * nhãn chung với giá trong một thẻ ("<div>Tiêu chuẩn<span>260.500 đ/tháng</span>
+ * </div>"): leaf duy nhất là cái giá, còn chữ "Tiêu chuẩn" nằm ở thẻ CÓ con nên
+ * không nhãn nào được nhận, và luồng mua dừng dù hộp bình thường.
+ */
 function findRowLabels(dialog: HTMLElement): RowLabel[] {
   const out: RowLabel[] = [];
   for (const el of Array.from(dialog.querySelectorAll<HTMLElement>("*"))) {
-    if (el.children.length !== 0) continue;
     const text = normalizeMatchText(el.textContent ?? "");
     if (!text || text.length > 40) continue;
     const hit = SEAT_ROW_LABELS.find((l) => l.re.test(text));
     if (hit) out.push({ standard: hit.standard, el });
   }
-  return out;
+  // Cả thẻ cha lẫn thẻ con cùng khớp một nhãn → giữ thẻ con. Giữ cả hai thì
+  // `rowContainerFor` leo từ thẻ cha (đã nằm sẵn ở tầng cao) và dễ chạm phải
+  // nhãn loại khác ngay bước đầu.
+  return out.filter((l) => !out.some((o) => o !== l && l.el.contains(o.el)));
+}
+
+/**
+ * Bộ đếm của hàng "Tiêu chuẩn", ghim theo VỊ TRÍ TRÊN MÀN HÌNH.
+ *
+ * Dùng khi hộp dựng kiểu lưới: nhãn và bộ đếm của mọi hàng là anh em trong cùng
+ * một khung nên `rowContainerFor` không tách được hàng nào. Con số của hàng nào
+ * vẫn nằm ngang hàng với nhãn của hàng đó, nên "gần nhãn Tiêu chuẩn hơn mọi
+ * nhãn khác" là dấu hiệu chắc chắn — và chỉ nhận khi có ĐÚNG MỘT bộ đếm như vậy.
+ *
+ * Không có layout (môi trường test / element đang ẩn) → xét theo thứ tự DOM:
+ * nhãn đứng gần nhất TRƯỚC con số phải là nhãn "Tiêu chuẩn".
+ */
+function pinStandardByRow(
+  dialog: HTMLElement,
+  candidates: Located[],
+  standard: HTMLElement,
+  others: HTMLElement[],
+): Located | null {
+  const sy = centerY(standard);
+  const oys = others.map(centerY);
+  if (sy !== null && oys.every((y) => y !== null)) {
+    const near = candidates.filter((c) => {
+      const cy = centerY(c.readEl as HTMLElement);
+      if (cy === null) return false;
+      const dStd = Math.abs(cy - sy);
+      return (oys as number[]).every((oy) => dStd < Math.abs(cy - oy));
+    });
+    return near.length === 1 ? near[0] : null;
+  }
+
+  const order = Array.from(dialog.querySelectorAll<HTMLElement>("*"));
+  const labels = [standard, ...others];
+  const nearestLabelBefore = (el: HTMLElement): HTMLElement | null => {
+    const at = order.indexOf(el);
+    if (at < 0) return null;
+    let best: HTMLElement | null = null;
+    let bestAt = -1;
+    for (const l of labels) {
+      const li = order.indexOf(l);
+      if (li >= 0 && li < at && li > bestAt) {
+        best = l;
+        bestAt = li;
+      }
+    }
+    return best;
+  };
+  const near = candidates.filter(
+    (c) => nearestLabelBefore(c.readEl as HTMLElement) === standard,
+  );
+  return near.length === 1 ? near[0] : null;
+}
+
+/**
+ * Chốt lại cặp nút "−"/"+" cho ĐÚNG con số đã ghim: nút gần nhất bên trái và
+ * bên phải, cùng dòng với con số.
+ *
+ * `collectTextSteppers` ghép nút theo khung chung, mà trong hộp dựng kiểu lưới
+ * thì khung chung của mọi cặp nút đều là cả cái lưới — cặp nó giữ lại có thể
+ * vắt qua hai hàng. Bấm nút của hàng khác không mất tiền (số hàng Tiêu chuẩn
+ * không nhúc nhích → luồng mua tự dừng) nhưng là một lần hỏng vô cớ.
+ */
+function alignButtonsToReadout(dialog: HTMLElement, loc: Located): Located {
+  const r = (loc.readEl as HTMLElement).getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0) return loc;
+  const cx = r.left + r.width / 2;
+  const cy = r.top + r.height / 2;
+
+  let left: { el: HTMLElement; x: number } | null = null;
+  let right: { el: HTMLElement; x: number } | null = null;
+  for (const b of stepperButtons(dialog)) {
+    const br = b.getBoundingClientRect();
+    if (br.width <= 0 || br.height <= 0) continue;
+    const by = br.top + br.height / 2;
+    // Khác dòng thì bỏ — nới bằng đúng chiều cao con số cho dịu chênh lệch nhỏ.
+    if (Math.abs(by - cy) > r.height) continue;
+    const bx = br.left + br.width / 2;
+    if (bx < cx && (!left || bx > left.x)) left = { el: b, x: bx };
+    if (bx > cx && (!right || bx < right.x)) right = { el: b, x: bx };
+  }
+  if (!left || !right) return loc;
+  // Hai bên đảo vai (nút trái mang nhãn "tăng") ⇒ không hiểu được hàng này,
+  // giữ nguyên cặp cũ chứ không đoán.
+  if (isIncrementLabelled(left.el) || isDecrementLabelled(right.el)) return loc;
+  return { ...loc, incEl: right.el, decEl: left.el };
 }
 
 /**
@@ -274,7 +412,7 @@ function rowContainerFor(
   let node: HTMLElement | null = label.parentElement;
   for (let i = 0; i < 6 && node; i++) {
     if (others.some((o) => node!.contains(o))) return null;
-    if (node.querySelectorAll("button").length >= 2) return node;
+    if (stepperButtons(node).length >= 2) return node;
     node = node.parentElement;
   }
   return null;
@@ -294,11 +432,20 @@ function locateInDialog(dialog: HTMLElement): Located | null {
   // Có nhãn của loại suất KHÁC ⇒ hộp nhiều loại ⇒ BẮT BUỘC ghim hàng Tiêu chuẩn.
   if (others.length > 0) {
     if (!standard) return null;
+
+    // Đường 1: khung của riêng hàng Tiêu chuẩn (hộp dựng theo hàng lồng nhau).
     const row = rowContainerFor(standard.el, others);
-    if (!row) return null;
-    const inRow = collectTextSteppers(row);
-    if (inRow.length !== 1) return null;
-    return { ...inRow[0], scope: "standard_row" };
+    if (row) {
+      const inRow = collectTextSteppers(row);
+      if (inRow.length === 1) return { ...inRow[0], scope: "standard_row" };
+    }
+
+    // Đường 2: ghim theo dòng (hộp dựng kiểu lưới — ca thật 28/8/2026).
+    const all = collectTextSteppers(dialog);
+    if (all.length === 0) return null;
+    const pinned = pinStandardByRow(dialog, all, standard.el, others);
+    if (!pinned) return null;
+    return alignButtonsToReadout(dialog, { ...pinned, scope: "standard_row" });
   }
 
   const all = collectTextSteppers(dialog);
@@ -391,4 +538,31 @@ export function findSeatStepper(): SeatStepper | null {
     source: cached.source,
     scope: cached.scope,
   };
+}
+
+/**
+ * Mô tả ngắn gọn hộp đang mở — dán vào thông báo lỗi khi KHÔNG ghim được bộ đếm.
+ *
+ * Vì sao cần: ca 28/8/2026 chết 16 lệnh liền với đúng một câu "không thấy bộ
+ * đếm", mà câu đó không nói được hộp đang trông ra sao nên phải lần mò trong
+ * code. Vài con số này (mấy hộp đang mở, nhận ra nhãn nào, đọc ra mấy bộ đếm)
+ * là đủ để biết ChatGPT đổi chỗ nào.
+ */
+export function describeSeatModal(): string {
+  const dialogs = openDialogs();
+  if (dialogs.length === 0) return "không có hộp nào đang mở";
+  return dialogs
+    .map((d, i) => {
+      const labels = findRowLabels(d).map(
+        (l) =>
+          `${l.standard ? "Tiêu chuẩn" : "loại khác"}="${(l.el.textContent ?? "").trim().slice(0, 30)}"`,
+      );
+      const counts = collectTextSteppers(d).map((s) => readLocated(s) ?? "?");
+      return (
+        `hộp#${i + 1}: ${stepperButtons(d).length} nút bộ đếm, ` +
+        `nhãn [${labels.join(", ") || "không nhận ra nhãn nào"}], ` +
+        `bộ đếm đọc ra [${counts.join(", ") || "không có"}]`
+      );
+    })
+    .join(" | ");
 }

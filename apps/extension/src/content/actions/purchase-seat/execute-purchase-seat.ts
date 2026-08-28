@@ -59,7 +59,11 @@ import {
 import { executePaymentChainOnly } from "./execute-payment-chain-only";
 import { closeSeatModal } from "./modal1/close-seat-modal";
 import { findContinueButton } from "./modal1/find-continue-button";
-import { findSeatStepper, type SeatStepper } from "./modal1/find-seat-stepper";
+import {
+  describeSeatModal,
+  findSeatStepper,
+  type SeatStepper,
+} from "./modal1/find-seat-stepper";
 import {
   detectMixedSeatTypes,
   extractAdditionalSeatCountFromModal,
@@ -388,7 +392,8 @@ export async function executePurchaseSeat(
           `Đã bấm 'Quản lý số suất' nhưng không thấy bộ đếm số suất của hàng ` +
             `"Tiêu chuẩn" sau ${MODAL_OPEN_TIMEOUT_MS / 1000}s. Hộp nay có MỘT bộ đếm cho ` +
             `MỖI loại suất (Tiêu chuẩn / Cao cấp) — không ghim chắc được hàng Tiêu chuẩn thì ` +
-            `KHÔNG bấm, vì suất Cao cấp đắt hơn 12 lần. Có thể ChatGPT lại đổi UI hộp 'Quản lý suất'.`,
+            `KHÔNG bấm, vì suất Cao cấp đắt hơn 12 lần. Có thể ChatGPT lại đổi UI hộp 'Quản lý suất'. ` +
+            `Hộp đang mở: ${describeSeatModal()}`,
         ),
       };
     }

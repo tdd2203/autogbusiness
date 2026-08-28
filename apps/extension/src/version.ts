@@ -16,7 +16,7 @@
  * Popup hiển thị VERSION prominent + cho phép expand changelog.
  */
 
-export const VERSION = "0.13.19";
+export const VERSION = "0.13.20";
 
 export type ChangelogEntry = {
   version: string;
@@ -34,6 +34,21 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.13.20",
+    date: "2026-08-28",
+    kind: "fix",
+    summary:
+      "Mời thiếu suất: nhận lại được bộ đếm hàng Tiêu chuẩn, hết cảnh dừng ngay ở hộp 'Quản lý suất'.",
+    details: [
+      "Từ sáng 28/8, mọi lệnh mời phải mua bù suất đều chết ở cùng một chỗ: hộp 'Quản lý suất' mở ra bình thường nhưng extension báo 'không thấy bộ đếm số suất của hàng Tiêu chuẩn'. 16 lệnh liên tiếp, không lệnh nào mời được ai.",
+      "Nguyên nhân: bản 0.13.17 chỉ dám bấm khi tìm được một khung bọc RIÊNG hàng Tiêu chuẩn, mà ChatGPT dựng hộp kiểu lưới — nhãn và bộ đếm của cả hai hàng nằm chung một khung, không có khung riêng nào để tìm.",
+      "Nay ghim hàng theo VỊ TRÍ trên màn hình: con số nào nằm ngang hàng với nhãn 'Tiêu chuẩn' thì đó là bộ đếm cần bấm, không phụ thuộc cách ChatGPT lồng thẻ. Vẫn chỉ bấm khi có đúng một bộ đếm thoả, mập mờ là dừng.",
+      "Nhận cả nhãn dán liền giá trong một thẻ ('Tiêu chuẩn260.500 đ/tháng') — kiểu này trước đây cũng làm trượt cả hai nhãn.",
+      "Chốt an toàn tiền giữ nguyên: bấm nhầm hàng vẫn bị chặn bởi thẻ tóm tắt 'Thêm N suất Tiêu chuẩn' và hộp 'Xem lại giao dịch mua' trước khi trừ tiền.",
+      "Khi vẫn không ghim được, thông báo lỗi giờ kèm mô tả hộp đang mở (mấy nút, nhãn nào, đọc ra số nào) để khỏi phải mò. Thêm 4 test.",
+    ],
+  },
   {
     version: "0.13.19",
     date: "2026-08-26",
