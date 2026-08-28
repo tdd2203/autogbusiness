@@ -14,6 +14,7 @@ import { useReinvite } from "../hooks/useReinvite";
 import { reinviteBatch } from "../hooks/useReinviteBatch";
 import { handleCommandBan } from "../lib/commandBan";
 import { triggerExtensionRun } from "../hooks/useExtensionTrigger";
+import { invalidateWorkspaceSeats } from "../hooks/useWorkspaceSeats";
 import OrderQrModal from "../components/OrderQrModal";
 import type { OrderQr } from "../lib/wallet";
 import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
@@ -272,6 +273,9 @@ export default function Members() {
     if (justFinished.length > 0) {
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
       qc.invalidateQueries({ queryKey: ["member-stats", workspaceId] });
+      // Mọi task vừa xong ở đây đều đổi số người trong workspace → làm mới nguồn
+      // suất dùng chung để trang Mời/danh sách không gian cùng thấy con số mới.
+      invalidateWorkspaceSeats(qc);
       for (const task of justFinished) {
         const typeLabel = t(`taskType.${task.type}`);
         if (task.status === "COMPLETED") {

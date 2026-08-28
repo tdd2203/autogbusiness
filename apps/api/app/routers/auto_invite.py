@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.deps import get_session, require_permission
 from app.models import Member, User, Workspace, WorkspaceAssignment
 from app.permissions import Permission
+from app.services import seats
 
 router = APIRouter(prefix="/api/v1/auto-invite", tags=["auto-invite"])
 
@@ -63,16 +64,6 @@ def _resolve_workspace(db: Session, user: User) -> Workspace | None:
     return ws[0] if ws else None
 
 
-def _seat_used_map(db: Session, workspace_ids: list) -> dict:
-    """workspace_id (str) -> số member CHƯA bị gỡ (khớp cách hiển thị seat_used)."""
-    if not workspace_ids:
-        return {}
-    rows = db.execute(
-        select(Member.workspace_id, func.count())
-        .where(Member.workspace_id.in_(workspace_ids), Member.status != "removed")
-        .group_by(Member.workspace_id)
-    ).all()
-    return {str(wid): int(n) for wid, n in rows}
 
 
 @router.get("/target", response_model=dict)
@@ -88,20 +79,9 @@ def get_target_workspace(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Bạn chưa được cấp không gian làm việc nào.",
         )
-    # Ghế đã dùng = số member CHƯA bị gỡ (khớp cách hiển thị seat_used ở list workspace).
-    seat_used = int(
-        db.execute(
-            select(func.count())
-            .select_from(Member)
-            .where(Member.workspace_id == ws.id, Member.status != "removed")
-        ).scalar_one()
-    )
-    return {
-        "workspace_id": str(ws.id),
-        "name": ws.name,
-        "seat_used": seat_used,
-        "seat_total": ws.seat_total,
-    }
+    # Suất lấy từ nguồn dùng chung `app.services.seats` — cùng con số với list
+    # workspace, `GET /workspaces/seats` và thống kê thành viên.
+    return seats.seat_snapshot(db, [ws])[0]
 
 
 @router.get("/targets", response_model=dict)
@@ -113,18 +93,12 @@ def get_target_workspaces(
     `all_workspaces`. Trang Mời thành viên chọn ngẫu nhiên 1 phần tử cho mỗi email mới.
     Danh sách rỗng → chưa được cấp không gian nào (FE hiện thông báo)."""
     workspaces = _resolve_eligible_workspaces(db, user)
-    seat_used = _seat_used_map(db, [w.id for w in workspaces])
     return {
         "all_workspaces": bool(user.invite_all_workspaces) and not user.is_super_admin,
-        "workspaces": [
-            {
-                "workspace_id": str(w.id),
-                "name": w.name,
-                "seat_used": seat_used.get(str(w.id), 0),
-                "seat_total": w.seat_total,
-            }
-            for w in workspaces
-        ],
+        # Suất kèm ở đây chỉ để tương thích người gọi cũ và cho lần vẽ ĐẦU TIÊN.
+        # Danh sách đích được cache 5′ ở FE (cấu hình ít đổi) nên KHÔNG được coi
+        # đây là nguồn suất — trang Mời đọc suất tươi từ `GET /workspaces/seats`.
+        "workspaces": seats.seat_snapshot(db, workspaces),
     }
 
 

@@ -209,6 +209,24 @@ class WorkspaceOut(BaseModel):
     updated_at: datetime
 
 
+class WorkspaceSeatsOut(BaseModel):
+    """Ảnh chụp SUẤT của 1 workspace — payload của `GET /workspaces/seats`.
+
+    Cố tình mỏng (không kèm hoá đơn/cấu hình) vì dashboard poll nhịp ngắn vào
+    endpoint này để mọi chỗ hiện suất cùng đọc một con số tươi.
+
+    - `seat_total` = số scrape từ ChatGPT, `None` khi workspace chưa từng sync.
+    - `seat_used`  = ĐẾM LẠI trong DB (active + pending), luôn đúng thời gian thực.
+    - `seat_left`  = còn trống, `None` khi chưa biết tổng (không đoán bừa là 0).
+    """
+
+    workspace_id: UUID
+    name: str
+    seat_total: int | None
+    seat_used: int
+    seat_left: int | None
+
+
 class BillingInvoice(BaseModel):
     """Một dòng trong bảng "Hoá đơn" trên /admin/billing.
 
@@ -350,6 +368,9 @@ class WorkspaceMemberStats(BaseModel):
     pending: int
     seat_total: int | None
     seat_used: int | None
+    # Suất còn TRỐNG (None khi chưa biết tổng) — cùng công thức với
+    # `WorkspaceSeatsOut.seat_left` để trang thành viên và trang Mời không lệch nhau.
+    seat_left: int | None = None
     own_count: int
 
 

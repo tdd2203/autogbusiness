@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -36,7 +36,7 @@ from app.deps import (
 from app.models import Invite, Member, QueueItem, User, Workspace
 from app.permissions import Permission
 from app.routers.wallet._shared import get_payment_settings
-from app.services import payment_flow, wallet_service
+from app.services import payment_flow, seats, wallet_service
 from app.sse import publish_task_event
 from app.schemas import (
     MemberBulkInviteIn,
@@ -56,9 +56,9 @@ from ._shared import (
 )
 
 
-# Cho phép invite vượt seat_total tối đa +50% (overcommit). Vượt ngưỡng này thì
-# chặn và yêu cầu admin mở thêm seat. Đổi hệ số ở đây nếu muốn nới/siết.
-SEAT_OVERCOMMIT_RATIO = 1.5
+# Hệ số overcommit sống ở `app.services.seats` (nguồn suất dùng chung). Giữ alias
+# ở đây cho người gọi cũ; đổi giá trị thì đổi bên đó.
+SEAT_OVERCOMMIT_RATIO = seats.SEAT_OVERCOMMIT_RATIO
 
 
 # ── Core dùng chung: tạo member/queue/invite (KHÔNG trừ phí, KHÔNG commit) ─────
@@ -458,26 +458,10 @@ def _seat_hint(db: Session, workspace: Workspace, emails: list[str]) -> dict:
     Cả ba đều là gợi ý, không phải chân lý: extension chỉ bỏ qua hộp khi khoảng
     thừa tính từ đây còn dư so với số suất cần, còn lại vẫn mở hộp đọc tận nơi.
     """
-    lowered = [e.strip().lower() for e in emails if e]
-    occupied_stmt = (
-        select(func.count())
-        .select_from(Member)
-        .where(Member.workspace_id == workspace.id, Member.status != "removed")
-    )
-    pending_stmt = (
-        select(func.count())
-        .select_from(Member)
-        .where(Member.workspace_id == workspace.id, Member.status == "pending")
-    )
-    if lowered:
-        occupied_stmt = occupied_stmt.where(Member.email.notin_(lowered))
-        pending_stmt = pending_stmt.where(Member.email.notin_(lowered))
-    occupied = int(db.execute(occupied_stmt).scalar_one())
-    pending = int(db.execute(pending_stmt).scalar_one())
     return {
         "total": workspace.seat_total,
-        "occupied": occupied,
-        "pending": pending,
+        "occupied": seats.seat_used(db, workspace.id, exclude_emails=emails),
+        "pending": seats.pending_count(db, workspace.id, exclude_emails=emails),
     }
 
 
@@ -763,15 +747,7 @@ def _assert_seat_available(
     """
     if user.is_super_admin or workspace.seat_total is None:
         return
-    effective_used = (
-        db.execute(
-            select(func.count(Member.id)).where(
-                Member.workspace_id == workspace.id,
-                Member.status == "active",
-            )
-        ).scalar_one()
-        or 0
-    )
+    effective_used = seats.active_used(db, workspace.id)
     seat_cap = int(workspace.seat_total * SEAT_OVERCOMMIT_RATIO)
     if effective_used + additional > seat_cap:
         free = max(seat_cap - effective_used, 0)

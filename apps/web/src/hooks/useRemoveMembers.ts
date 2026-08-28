@@ -13,6 +13,7 @@
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { invalidateWorkspaceSeats } from "./useWorkspaceSeats";
 import { handleCommandBan } from "../lib/commandBan";
 import { useT } from "../i18n";
 import { toast } from "../components/Toast";
@@ -37,6 +38,8 @@ export function useRemoveMembers(
       // → member bị xoá biến mất ngay, KHỎI reload tay. (bulkRemoveSelected đã làm;
       // remove đơn trước đây sót → xoá xong list không tự cập nhật.)
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      // Số người trong workspace vừa đổi → làm mới nguồn suất dùng chung.
+      invalidateWorkspaceSeats(qc);
       qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
       triggerExtensionRun();
     },
@@ -56,6 +59,8 @@ export function useRemoveMembers(
       opts?.onBulkRemoveCleared?.();
       qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      // Số người trong workspace vừa đổi → làm mới nguồn suất dùng chung.
+      invalidateWorkspaceSeats(qc);
       triggerExtensionRun();
     },
     onError: (e) => {
@@ -78,6 +83,8 @@ export function useRemoveMembers(
       toast.success(t("member.cleanupExpiredOk", { n: resp.count }));
       qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      // Số người trong workspace vừa đổi → làm mới nguồn suất dùng chung.
+      invalidateWorkspaceSeats(qc);
     },
     onError: (e) => {
       const msg = e instanceof Error ? e.message : String(e);

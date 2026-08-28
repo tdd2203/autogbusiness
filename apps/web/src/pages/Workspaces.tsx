@@ -5,6 +5,7 @@ import { api, ApiError } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
 import { useAuth } from "../hooks/useAuth";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { invalidateWorkspaceSeats, useSeatMap } from "../hooks/useWorkspaceSeats";
 import { triggerExtensionRun } from "../hooks/useExtensionTrigger";
 import { useFormatDate, useT } from "../i18n";
 import {
@@ -45,6 +46,11 @@ export default function Workspaces() {
   const [search, setSearch] = useState("");
   const [assignWs, setAssignWs] = useState<Workspace | null>(null);
 
+  // Suất đọc từ nguồn DÙNG CHUNG (poll 15s) chứ không nằm im trong bản chụp
+  // ["workspaces"] lúc mở trang: extension mời/xoá hay admin khác thao tác thì cột
+  // "Ghế" phải nhảy theo, không bắt F5. Danh sách workspace vẫn giữ nguyên nhịp cũ
+  // (hoá đơn/cấu hình nặng và ít đổi).
+  const { seatMap } = useSeatMap();
   const { data: workspaces = [], isLoading } = useQuery({
     queryKey: ["workspaces"],
     queryFn: () => api<Workspace[]>("/api/v1/workspaces"),
@@ -100,6 +106,9 @@ export default function Workspaces() {
   useEffect(() => {
     if (!showBillingCompletion) return;
     qc.invalidateQueries({ queryKey: ["workspaces"] });
+    // SYNC_BILLING vừa xong = tổng suất (`seat_total`) có thể vừa đổi → kéo lại
+    // nguồn suất dùng chung để mọi trang thấy con số mới ngay.
+    invalidateWorkspaceSeats(qc);
     if (lastBillingTask?.status !== "COMPLETED") return;
     const timer = setTimeout(() => setLastBillingTaskId(null), 10000);
     return () => clearTimeout(timer);
@@ -322,8 +331,9 @@ export default function Workspaces() {
             {filtered.map((ws) => {
               const isSyncing = syncBilling.isPending && syncBillingId === ws.id;
               const unpaid = ws.billing_status === "UNPAID";
-              const used = ws.seat_used ?? 0;
-              const total = ws.seat_total ?? 0;
+              const seats = seatMap.get(ws.id);
+              const used = seats?.seat_used ?? ws.seat_used ?? 0;
+              const total = seats?.seat_total ?? ws.seat_total ?? 0;
               const over = total > 0 && used > total;
               const pct =
                 total > 0 ? Math.max(4, Math.min(100, Math.round((used / total) * 100))) : 0;
@@ -398,7 +408,7 @@ export default function Workspaces() {
                             color: over ? "var(--danger)" : "var(--ink)",
                           }}
                         >
-                          {used}/{ws.seat_total ?? "—"}
+                          {used}/{total > 0 ? total : "—"}
                         </span>
                       </div>
                       <div
@@ -576,7 +586,7 @@ export default function Workspaces() {
                               ).toLocaleString()}`
                         }
                       >
-                        {ws.seat_used ?? 0}/{ws.seat_total ?? "—"}
+                        {`${seatMap.get(ws.id)?.seat_used ?? ws.seat_used ?? 0}/${seatMap.get(ws.id)?.seat_total ?? ws.seat_total ?? "—"}`}
                       </td>
                     )}
                     <td className="cell-muted" style={{ fontSize: 12.5 }}>

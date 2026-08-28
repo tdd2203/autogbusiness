@@ -6,6 +6,7 @@ Docs ghi lịch sử lỗi, business rule và ý tưởng cải tiến — code 
 Endpoints (đăng ký lên router dùng chung từ `_shared`):
   - GET   /whoami          → extension_whoami
   - POST  /extension-info  → update_extension_info
+  - GET   /seats           → list_workspace_seats
   - GET   ""               → list_workspaces
   - POST  ""               → create_workspace
   - GET   /{workspace_id}  → get_workspace
@@ -15,7 +16,7 @@ Endpoints (đăng ký lên router dùng chung từ `_shared`):
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -27,7 +28,6 @@ from app.deps import (
     require_super_admin,
 )
 from app.models import (
-    Member,
     User,
     Workspace,
     WorkspaceAssignment,
@@ -37,9 +37,11 @@ from app.schemas import (
     ExtensionInfoIn,
     WorkspaceCreate,
     WorkspaceOut,
+    WorkspaceSeatsOut,
     WorkspaceUpdate,
     WorkspaceWithKey,
 )
+from app.services import seats
 
 from ._shared import (
     router,
@@ -84,29 +86,46 @@ def update_extension_info(
 def _apply_effective_seat_used(db: Session, workspaces: list[Workspace]) -> None:
     """Ghi đè `seat_used` (chỉ trong-memory, để hiển thị) = số member THẬT trong DB.
 
-    `Workspace.seat_used` scrape từ trang billing ChatGPT chỉ cập nhật khi chạy
-    SYNC_BILLING nên có thể LỆCH CẢ HAI CHIỀU so với DB: cũ/thấp hơn (vừa mời
-    thêm, chưa kịp sync) hoặc cũ/cao hơn (vừa xoá bớt, chưa kịp sync — vd
-    2026-07-08: billing báo 44 trong khi vừa xoá 3 người chỉ còn 41 active thật).
-    Dùng thẳng số DB (luôn đúng thời gian thực) — KHÔNG blend max() với scrape
-    nữa (max() chỉ chặn được chiều thấp, bỏ sót chiều cao). Đồng bộ với
-    `seat_used` của member stats và `effective_used` trong invite.py.
+    Phép đếm nằm ở `app.services.seats` — nguồn suất DÙNG CHUNG của mọi nơi hiển
+    thị (list workspace, /seats, member stats, targets trang Mời). Đừng đếm tay
+    lại ở đây: `Workspace.seat_used` scrape từ trang billing chỉ cập nhật khi chạy
+    SYNC_BILLING nên lệch được CẢ HAI CHIỀU (2026-07-08: billing báo 44 trong khi
+    vừa xoá 3 người chỉ còn 41 thật).
 
     KHÔNG persist: các endpoint GET không commit nên thay đổi này bị rollback khi
-    session đóng. Đếm member non-removed (active + pending) khớp `total` ở stats.
+    session đóng.
     """
     if not workspaces:
         return
-    ws_ids = [ws.id for ws in workspaces]
-    counts = dict(
-        db.execute(
-            select(Member.workspace_id, func.count(Member.id))
-            .where(Member.workspace_id.in_(ws_ids), Member.status != "removed")
-            .group_by(Member.workspace_id)
-        ).all()
-    )
+    counts = seats.seat_used_map(db, [ws.id for ws in workspaces])
     for ws in workspaces:
         ws.seat_used = counts.get(ws.id, 0)
+
+
+@router.get("/seats", response_model=list[WorkspaceSeatsOut])
+def list_workspace_seats(
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> list[dict]:
+    """Ảnh chụp SUẤT của mọi workspace người dùng có thể nhìn/mời vào.
+
+    Endpoint RẺ và chuyên dụng: chỉ 2 truy vấn (danh sách workspace + 1 câu đếm
+    gộp), không kéo theo hoá đơn/cấu hình như `GET /workspaces`. Dashboard poll
+    nhịp ngắn vào đây để mọi chỗ hiện suất (trang Mời, danh sách không gian, thống
+    kê thành viên) cùng đọc MỘT con số và cùng tươi — thay vì mỗi trang tự nhớ một
+    bản chụp lúc mở.
+
+    Phạm vi rộng hơn `GET /workspaces` một chút: user có cờ `invite_all_workspaces`
+    được add email vào MỌI workspace nên phải thấy suất của mọi workspace, dù chưa
+    được gán cái nào.
+    """
+    stmt = select(Workspace).order_by(Workspace.created_at.desc())
+    if not (user.is_super_admin or user.invite_all_workspaces):
+        stmt = stmt.join(
+            WorkspaceAssignment,
+            WorkspaceAssignment.workspace_id == Workspace.id,
+        ).where(WorkspaceAssignment.user_id == user.id)
+    return seats.seat_snapshot(db, list(db.execute(stmt).scalars()))
 
 
 @router.get("", response_model=list[WorkspaceOut])

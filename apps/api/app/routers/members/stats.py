@@ -17,6 +17,7 @@ from app.deps import assert_workspace_access, get_session, require_permission
 from app.models import Member, User
 from app.permissions import Permission
 from app.schemas import MemberOut, SubscriptionCycleOut, WorkspaceMemberStats
+from app.services import seats
 
 from ._shared import router, _get_workspace_or_404, _visibility_filter
 
@@ -48,20 +49,19 @@ def member_stats(
     own_count = _count(
         Member.status != "removed", Member.invited_by_user_id == user.id
     )
+    used = seats.seat_used(db, workspace_id)
     return WorkspaceMemberStats(
         total=active + pending,
         active=active,
         pending=pending,
         seat_total=ws.seat_total,
-        # Dùng THẲNG số member active+pending thật trong DB — KHÔNG blend với
-        # `ws.seat_used` (scrape từ trang billing ChatGPT, chỉ cập nhật khi chạy
-        # SYNC_BILLING) vì scrape có thể lệch CẢ HAI CHIỀU: cũ/THẤP hơn (vừa mời
-        # thêm, chưa kịp sync) hoặc cũ/CAO hơn (vừa xoá bớt, chưa kịp sync). DB
-        # luôn là nguồn thật thời gian thực — max() trước đây chỉ chặn chiều thấp,
-        # bỏ sót chiều cao (2026-07-08: "44/35" trong khi thực tế chỉ còn 41 active
-        # sau khi xoá 3 người, do seat_used scrape cũ chưa refresh). Đồng bộ với
-        # `effective_used` (invite.py) + `_apply_effective_seat_used` (crud.py).
-        seat_used=active + pending,
+        # Số suất đang chiếm lấy từ nguồn DÙNG CHUNG `app.services.seats` (đếm lại
+        # trong DB, KHÔNG blend với cột `ws.seat_used` scrape được — scrape lệch cả
+        # hai chiều, 2026-07-08: "44/35" trong khi thực tế chỉ còn 41). Cùng một
+        # hàm với list workspace, `GET /workspaces/seats` và targets trang Mời nên
+        # bốn chỗ không thể nói bốn con số khác nhau.
+        seat_used=used,
+        seat_left=seats.seat_left(ws.seat_total, used),
         own_count=own_count,
     )
 

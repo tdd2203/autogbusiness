@@ -1436,5 +1436,10 @@
   "inviteMembers.wsFixed": "默认（管理员）",
   "inviteMembers.wsUsedMonths": "已使用 {n} 个月",
   "inviteMembers.wsUsedDays": "已使用 {n} 天",
-  "inviteMembers.wsOption": "{name} · {used}"
+  "inviteMembers.wsOption": "{name} · {used}",
+  "inviteMembers.seatsLeft": "剩 {n}",
+  "inviteMembers.seatsNone": "无空位",
+  "inviteMembers.seatsHint": "剩余 {left} 个空位 · 此列表需要 {need} 个新席位",
+  "inviteMembers.seatsUnknownHint": "尚未获知总席位数（该工作区未同步账单）",
+  "inviteMembers.seatShortage": "{name}：需要 {need} 个新席位，但只剩 {left} 个 — 需另购 {buy} 个席位"
 }

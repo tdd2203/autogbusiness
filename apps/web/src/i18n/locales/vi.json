@@ -1436,5 +1436,10 @@
   "inviteMembers.wsFixed": "Mặc định (admin)",
   "inviteMembers.wsUsedMonths": "Đã dùng {n} tháng",
   "inviteMembers.wsUsedDays": "Đã dùng {n} ngày",
-  "inviteMembers.wsOption": "{name} · {used}"
+  "inviteMembers.wsOption": "{name} · {used}",
+  "inviteMembers.seatsLeft": "còn {n}",
+  "inviteMembers.seatsNone": "hết suất",
+  "inviteMembers.seatsHint": "Còn {left} suất trống · danh sách này cần {need} suất mới",
+  "inviteMembers.seatsUnknownHint": "Chưa biết tổng suất (không gian chưa đồng bộ thanh toán)",
+  "inviteMembers.seatShortage": "{name}: cần {need} suất mới nhưng chỉ còn {left} — sẽ phải mua thêm {buy} suất"
 }

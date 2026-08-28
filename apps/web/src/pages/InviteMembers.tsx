@@ -18,6 +18,7 @@ import { useIsMobile } from "../hooks/useIsMobile";
 import { useAuth } from "../hooks/useAuth";
 import { parseEmailsFromText } from "../lib/emailParser";
 import { useAutoInviteTargets, useEmailHistory } from "../hooks/useAutoInvite";
+import { invalidateWorkspaceSeats, useSeatMap } from "../hooks/useWorkspaceSeats";
 import InviteWorkspaceConfigModal from "../components/InviteWorkspaceConfigModal";
 import { useExtensionStatus } from "../hooks/useExtensionTrigger";
 import { queuePollInterval } from "../lib/queuePolling";
@@ -355,6 +356,9 @@ export default function InviteMembers() {
       else if (invited > 0) toast.success(t("invite.resultQueued", { n: invited }));
       qc.invalidateQueries({ queryKey: ["invite-queue", workspaceId] });
       qc.invalidateQueries({ queryKey: ["members", workspaceId, "with-removed"] });
+      // Vừa mời xong = suất trống vừa đổi → kéo lại ngay, đừng bắt người dùng nhìn
+      // con số cũ tới hết nhịp tim 15s.
+      invalidateWorkspaceSeats(qc);
       if (order) setQrOrder(order);
     },
     onError: (e) => {
@@ -436,6 +440,58 @@ export default function InviteMembers() {
       ? t("inviteMembers.wsUsedMonths", { n: months })
       : t("inviteMembers.wsUsedDays", { n: days });
   };
+  /**
+   * Suất còn trống của từng không gian — nguồn DÙNG CHUNG `useWorkspaceSeats`
+   * (poll 15s + invalidate sau mỗi hành động), KHÔNG lấy `seat_used` kèm trong
+   * `/auto-invite/targets` vì danh sách đích cache 5′ nên số suất ở đó thiu.
+   */
+  const { seatMap } = useSeatMap();
+  /**
+   * Danh sách đang dán CẦN bao nhiêu suất MỚI ở mỗi không gian, và còn bao nhiêu.
+   *
+   * "Suất mới" = email chưa giữ suất nào ở ĐÚNG không gian đích đó. Email đang là
+   * thành viên (`active`) hay đang chờ nhận lời mời (`pending`) ở chính không gian
+   * đó đã nằm trong `seat_used` rồi — đếm thêm là báo thiếu suất oan, người dùng
+   * tưởng sắp bị mua thêm suất bằng tiền thật. Mirror `_count_new_invite_seats` +
+   * cách đếm `seat_used` của backend.
+   */
+  const seatPlan = (() => {
+    // Tra theo CẶP (email, workspace) chứ không qua `membersByEmail` (khoá chỉ có
+    // email, nhiều workspace đè lên nhau): một email có bản ghi `removed` ở ws này
+    // và bản ghi đang sống ở ws kia là chuyện thường.
+    const holders = new Set(
+      members
+        .filter((m) => m.status !== "removed")
+        .map((m) => `${m.email.toLowerCase()}|${m.workspace_id}`),
+    );
+    const need = new Map<string, number>();
+    for (const e of entries) {
+      const ws = targetWsId(e.email);
+      if (!ws) continue;
+      if (!holders.has(`${e.email.toLowerCase()}|${ws}`))
+        need.set(ws, (need.get(ws) ?? 0) + 1);
+    }
+    return need;
+  })();
+  /** Suất của 1 không gian + phần thiếu so với danh sách đang dán.
+   * `left = null` ⇒ chưa từng đồng bộ tổng suất → KHÔNG kết luận thiếu/đủ. */
+  const seatInfo = (wsId: string | undefined) => {
+    const row = wsId ? seatMap.get(wsId) : undefined;
+    const left = row?.seat_left ?? null;
+    const need = wsId ? (seatPlan.get(wsId) ?? 0) : 0;
+    return { left, need, short: left === null ? 0 : Math.max(need - left, 0) };
+  };
+  /** Các không gian trong danh sách đang dán mà suất trống KHÔNG đủ → footer cảnh báo. */
+  const shortages = [...seatPlan.keys()]
+    .map((wsId) => ({ wsId, name: seatMap.get(wsId)?.name ?? "", ...seatInfo(wsId) }))
+    .filter((x) => x.short > 0);
+  /** Nhãn suất cạnh tên không gian: "còn 4" / "hết suất" / "" khi chưa biết tổng. */
+  const seatLabel = (wsId: string | undefined) => {
+    const { left } = seatInfo(wsId);
+    if (left === null) return "";
+    return left > 0 ? t("inviteMembers.seatsLeft", { n: left }) : t("inviteMembers.seatsNone");
+  };
+
   const canSubmit = !!workspaceId && entries.length > 0 && !bulkInvite.isPending;
 
   return (
@@ -450,6 +506,7 @@ export default function InviteMembers() {
             setMonthsByEmail({});
             setWorkspaceByEmail({});
             qc.invalidateQueries({ queryKey: ["invite-queue", workspaceId] });
+            invalidateWorkspaceSeats(qc);
           }}
         />
       )}
@@ -756,6 +813,8 @@ export default function InviteMembers() {
                             selectedWs={selectedWs}
                             busy={bulkInvite.isPending}
                             usedText={usedText}
+                            seatLabel={seatLabel}
+                            seatShort={seatInfo(selectedWs).short > 0}
                             onWs={(v) =>
                               setWorkspaceByEmail((w) => ({
                                 ...w,
@@ -825,21 +884,52 @@ export default function InviteMembers() {
                           </div>
 
                           {/* workspace: chip + select (khi có ≥2 lựa chọn) / chữ
-                              tĩnh. Hiện CHỈ tên không gian; "đã dùng X tháng" (email
-                              cũ) ở tooltip. Ẩn hẳn cột khi màn hình rất hẹp (compact). */}
+                              tĩnh. Hiện tên không gian + SUẤT CÒN TRỐNG (để biết
+                              trước khi add); "đã dùng X tháng" (email cũ) ở tooltip.
+                              Ẩn hẳn cột khi màn hình rất hẹp (compact). */}
                           {!compact &&
                             (() => {
                               const opts = wsOptionsFor(row.email);
                               const sel = opts.find((o) => o.id === selectedWs);
+                              const info = seatInfo(selectedWs);
+                              const seatText = seatLabel(selectedWs);
+                              const seatTitle =
+                                info.left === null
+                                  ? t("inviteMembers.seatsUnknownHint")
+                                  : t("inviteMembers.seatsHint", {
+                                      left: info.left,
+                                      need: info.need,
+                                    });
                               const selTitle =
-                                sel === undefined
+                                (sel === undefined
                                   ? t("inviteMembers.colWorkspace")
                                   : sel.usageDays === undefined
                                     ? sel.name
                                     : t("inviteMembers.wsOption", {
                                         name: sel.name,
                                         used: usedText(sel.usageDays),
-                                      });
+                                      })) +
+                                " · " +
+                                seatTitle;
+                              // Suất trống KHÔNG đủ cho danh sách đang dán → nhãn đỏ:
+                              // mời tiếp là extension đi mua thêm suất bằng tiền thật.
+                              const seatBadge = seatText ? (
+                                <span
+                                  style={{
+                                    flex: "none",
+                                    fontFamily: "var(--font-mono)",
+                                    fontSize: 10.5,
+                                    fontWeight: 600,
+                                    padding: "1px 5px",
+                                    borderRadius: 5,
+                                    background:
+                                      info.short > 0 ? "var(--danger-bg)" : "var(--surface-2)",
+                                    color: info.short > 0 ? "var(--danger)" : "var(--ink-3)",
+                                  }}
+                                >
+                                  {seatText}
+                                </span>
+                              ) : null;
                               // Chỉ 1 không gian khả dĩ → chữ tĩnh (không dropdown
                               // rườm rà). ≥2 mới cho chọn bằng select.
                               if (opts.length <= 1) {
@@ -857,6 +947,7 @@ export default function InviteMembers() {
                                     >
                                       {sel?.name ?? opts[0]?.name ?? "—"}
                                     </span>
+                                    {seatBadge}
                                   </div>
                                 );
                               }
@@ -898,11 +989,16 @@ export default function InviteMembers() {
                                             : usedText(o.usageDays)
                                         }
                                       >
-                                        {o.name}
+                                        {/* Suất trống ngay trong lựa chọn: đổi không
+                                            gian là biết ngay chỗ nào còn chỗ. */}
+                                        {seatLabel(o.id)
+                                          ? `${o.name} · ${seatLabel(o.id)}`
+                                          : o.name}
                                       </option>
                                     ))}
                                   </select>
                                   <span style={{ color: "var(--ink-3)", fontSize: 9 }}>▾</span>
+                                  {seatBadge}
                                 </div>
                               );
                             })()}
@@ -1055,6 +1151,22 @@ export default function InviteMembers() {
                     ? "…"
                     : formatVnd(feePreview.data?.total ?? 0),
                 })}
+                {/* Cảnh báo THIẾU SUẤT: mời tiếp thì extension phải mua thêm suất
+                    trên ChatGPT bằng tiền thật (giá do ChatGPT quyết) — nói trước
+                    để người dùng còn kịp bớt email hoặc đổi không gian. */}
+                {shortages.map((x) => (
+                  <div
+                    key={x.wsId}
+                    style={{ color: "var(--danger)", marginTop: 4, fontWeight: 600 }}
+                  >
+                    {t("inviteMembers.seatShortage", {
+                      name: x.name,
+                      need: x.need,
+                      left: x.left ?? 0,
+                      buy: x.short,
+                    })}
+                  </div>
+                ))}
               </div>
               <div style={{ display: "flex", gap: 9 }}>
                 <button
@@ -1146,6 +1258,8 @@ function MobileInviteCard({
   selectedWs,
   busy,
   usedText,
+  seatLabel,
+  seatShort,
   onWs,
   onDec,
   onInc,
@@ -1162,6 +1276,10 @@ function MobileInviteCard({
   selectedWs: string | undefined;
   busy: boolean;
   usedText: (days: number) => string;
+  /** Nhãn suất còn trống của 1 không gian ("còn 4" / "hết suất"), "" khi chưa biết tổng. */
+  seatLabel: (wsId: string | undefined) => string;
+  /** Suất trống KHÔNG đủ cho danh sách đang dán → tô đỏ nhãn. */
+  seatShort: boolean;
   onWs: (v: string) => void;
   onDec: () => void;
   onInc: () => void;
@@ -1294,7 +1412,7 @@ function MobileInviteCard({
                       value={o.id}
                       title={o.usageDays === undefined ? undefined : usedText(o.usageDays)}
                     >
-                      {o.name}
+                      {seatLabel(o.id) ? `${o.name} · ${seatLabel(o.id)}` : o.name}
                     </option>
                   ))}
                 </select>
@@ -1315,6 +1433,24 @@ function MobileInviteCard({
                 {selectedOpt?.name ?? wsOptions[0]?.name ?? "—"}
               </span>
             )}
+            {/* Suất còn trống của không gian đang chọn — đỏ khi không đủ cho
+                danh sách đang dán (mời tiếp = mua thêm suất bằng tiền thật). */}
+            {seatLabel(selectedWs) ? (
+              <span
+                style={{
+                  flex: "none",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  padding: "1px 6px",
+                  borderRadius: 6,
+                  background: seatShort ? "var(--danger-bg)" : "var(--surface-2)",
+                  color: seatShort ? "var(--danger)" : "var(--ink-3)",
+                }}
+              >
+                {seatLabel(selectedWs)}
+              </span>
+            ) : null}
           </div>
         </div>
         <div style={{ minWidth: 0 }}>

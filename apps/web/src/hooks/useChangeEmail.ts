@@ -12,6 +12,7 @@
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { invalidateWorkspaceSeats } from "./useWorkspaceSeats";
 import { handleCommandBan } from "../lib/commandBan";
 import { useT } from "../i18n";
 import { toast } from "../components/Toast";
@@ -37,6 +38,8 @@ export function useChangeEmail(workspaceId: string | undefined) {
     onSuccess: (m) => {
       toast.success(t("member.changeEmailOk", { email: m.email }));
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      // Số người trong workspace vừa đổi → làm mới nguồn suất dùng chung.
+      invalidateWorkspaceSeats(qc);
       // Trang "Email đã thêm" (AddedEmails) dùng ["added-members"] — làm mới để
       // đổi email từ menu ⋯ ở dòng cũng hiện ngay, khỏi reload tay.
       qc.invalidateQueries({ queryKey: ["added-members"] });

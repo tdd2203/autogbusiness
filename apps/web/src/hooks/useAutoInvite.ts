@@ -11,8 +11,12 @@ import { api } from "../lib/api";
 export type AutoInviteTarget = {
   workspace_id: string;
   name: string;
+  /** ⚠️ Ba trường suất này chỉ dùng cho lần vẽ ĐẦU TIÊN. Danh sách đích được cache
+   * 5′ (cấu hình ít đổi) nên suất ở đây thiu rất nhanh — chỗ nào hiển thị suất phải
+   * đọc `useWorkspaceSeats` (nguồn dùng chung, poll 15s + invalidate theo hành động). */
   seat_used: number;
   seat_total: number | null;
+  seat_left: number | null;
 };
 
 export function useAutoInviteTarget() {

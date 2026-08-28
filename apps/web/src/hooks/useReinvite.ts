@@ -11,6 +11,7 @@
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
+import { invalidateWorkspaceSeats } from "./useWorkspaceSeats";
 import { getQrOrder, type OrderQr } from "../lib/wallet";
 import { handleCommandBan } from "../lib/commandBan";
 import { useT } from "../i18n";
@@ -37,6 +38,8 @@ export function useReinvite(
     onSuccess: (m) => {
       toast.success(t("member.reinviteQueued", { email: m.email }));
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
+      // Số người trong workspace vừa đổi → làm mới nguồn suất dùng chung.
+      invalidateWorkspaceSeats(qc);
       qc.invalidateQueries({ queryKey: ["added-members"] });
       qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
       qc.invalidateQueries({ queryKey: ["recent-tasks-global"] });
