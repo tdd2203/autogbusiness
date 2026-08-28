@@ -780,6 +780,12 @@ function buildMemberQueueMap(events: Decorated[]): Map<string, QueueRef[]> {
     const qid = e.data?.queue_item_id;
     if (typeof qid !== "string" || e.target_type !== "MEMBER" || !e.target_id)
       continue;
+    /* "Đã tham gia (qua đồng bộ)" là KẾT QUẢ, không phải một lệnh — nó không được
+       tự làm mốc để chính nó ghép vào. Từ 28/8/2026 sự kiện này mang
+       `queue_item_id` của lệnh ĐỒNG BỘ; để nó vào bản đồ thì lúc đi tìm "lệnh mời
+       gần nhất" nó luôn nhặt trúng chính mình (lệch 0 giây) và không lời mời nào
+       còn nhận được bằng chứng đã tham gia của mình nữa. */
+    if (opOf(e.action) === "MEMBER_SYNC_PROMOTED_ACTIVE") continue;
     const ts = new Date(e.timestamp).getTime();
     if (Number.isNaN(ts)) continue;
     const ref: QueueRef = { qid, ts, impGroup: e.impGroup };
@@ -819,6 +825,16 @@ function orderIdOf(e: Decorated): string | null {
 function groupKeyFor(e: Decorated, memberMap: Map<string, QueueRef[]>): string {
   if (e.target_type === "QUEUE_ITEM" && e.target_id) return "q:" + e.target_id;
   const qid = e.data?.queue_item_id;
+  /* "Đã tham gia (qua đồng bộ)" nay MANG `queue_item_id` của lệnh đồng bộ (API
+     28/8/2026). Nhưng nếu email đó vừa được MỜI xong thì chỗ đứng đúng của nó
+     vẫn là lệnh mời — dán vào lệnh đồng bộ là tách lời mời khỏi kết quả của
+     chính nó. Nên với riêng op này: thử ghép lệnh mời TRƯỚC, không có mới rơi
+     về lệnh đồng bộ (nhờ vậy 12 email của một mẻ nằm chung MỘT dòng thay vì 12
+     dòng — ảnh user 28/8/2026 mốc 15:38). */
+  if (opOf(e.action) === "MEMBER_SYNC_PROMOTED_ACTIVE") {
+    const glued = glueToNearbyCommand(e, memberMap);
+    if (glued) return glued;
+  }
   if (typeof qid === "string") return "q:" + qid;
   /* Hoá đơn QR CHƯA gắn được task (lệnh gia hạn/đổi hạn không đi qua hàng đợi, hoặc
      hoá đơn chưa trả xong) — "tạo lệnh" + "thanh toán thành công" vẫn là MỘT việc.
@@ -826,17 +842,27 @@ function groupKeyFor(e: Decorated, memberMap: Map<string, QueueRef[]>): string {
      cả cụm về thẳng nhóm của lệnh mời. */
   const oid = orderIdOf(e);
   if (oid) return "o:" + oid;
-  const op = opOf(e.action);
-  if (e.target_type === "MEMBER" && e.target_id && QUEUE_ORPHAN_GLUE_OPS.has(op)) {
-    const refs = memberMap.get(e.target_id);
-    const ts = new Date(e.timestamp).getTime();
-    // "Đã tham gia (qua đồng bộ)" chỉ nối vào lệnh MỜI của chính member đó.
-    const onlyImpGroup = op === "MEMBER_SYNC_PROMOTED_ACTIVE" ? "invite" : null;
-    const near =
-      refs && !Number.isNaN(ts) ? nearestQueueRef(refs, ts, onlyImpGroup) : null;
-    if (near) return "q:" + near;
-  }
+  const glued = glueToNearbyCommand(e, memberMap);
+  if (glued) return glued;
   return "s:" + e.id;
+}
+
+/** Sự kiện mồ côi (không mang task) ghép vào lệnh gần nhất của chính member đó. */
+function glueToNearbyCommand(
+  e: Decorated,
+  memberMap: Map<string, QueueRef[]>,
+): string | null {
+  const op = opOf(e.action);
+  if (!(e.target_type === "MEMBER" && e.target_id && QUEUE_ORPHAN_GLUE_OPS.has(op))) {
+    return null;
+  }
+  const refs = memberMap.get(e.target_id);
+  const ts = new Date(e.timestamp).getTime();
+  // "Đã tham gia (qua đồng bộ)" chỉ nối vào lệnh MỜI của chính member đó.
+  const onlyImpGroup = op === "MEMBER_SYNC_PROMOTED_ACTIVE" ? "invite" : null;
+  const near =
+    refs && !Number.isNaN(ts) ? nearestQueueRef(refs, ts, onlyImpGroup) : null;
+  return near ? "q:" + near : null;
 }
 
 function makeGroup(key: string, evs: Decorated[]): Group {
@@ -1644,7 +1670,86 @@ function isFailed(g: Group): boolean {
 /* Câu tóm tắt 1 dòng cho thao tác nghiệp vụ quan trọng (gỡ/mời/gia hạn/đổi hạn/
    thanh toán): gộp hành động + đối tượng + workspace + ghi chú ngữ cảnh. Khi THẤT
    BẠI thì lý do do huy hiệu Kết quả thể hiện (tránh lặp). Sự kiện thường → null. */
-function summarize(g: Group): string | null {
+/** Số nguyên đầu tiên đọc được ở khoá `key` trong các sự kiện của nhóm. */
+function firstNum(evs: Decorated[], key: string): number | null {
+  for (const e of evs) {
+    const v = e.data?.[key];
+    if (typeof v === "number") return v;
+  }
+  return null;
+}
+
+/** Danh sách email đầu tiên đọc được ở khoá `key`. */
+function firstEmailList(evs: Decorated[], key: string): string[] {
+  for (const e of evs) {
+    const v = e.data?.[key];
+    if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
+  }
+  return [];
+}
+
+/** Op chỉ xuất hiện trong lệnh đồng bộ — dùng để nhận ra nhóm đồng bộ. */
+const SYNC_MARKER_OPS = new Set([
+  "WORKSPACE_SYNC_QUEUED",
+  "MEMBER_BULK_UPSERT",
+  "MEMBER_SYNC_PROMOTED_ACTIVE",
+]);
+
+/**
+ * Câu tóm tắt cho LỆNH ĐỒNG BỘ — trả lời đúng ba câu hỏi user hỏi 28/8/2026:
+ * email nào đã vào nhóm, thiếu bao nhiêu, lệch bao nhiêu.
+ *
+ * Trước đây mỗi email được đồng bộ là một dòng nhật ký riêng: một mẻ 12 email đẻ
+ * ra 12 dòng "Đã tham gia (qua đồng bộ)" giống hệt nhau, đọc không ra việc gì.
+ * Nay cả mẻ về MỘT dòng (xem `groupKeyFor`) và dòng đó phải tự nói hết.
+ *
+ * Trả `null` khi nhóm không phải lệnh đồng bộ.
+ */
+function syncSummary(g: Group): string | null {
+  const isSync = g.events.some((e) => {
+    const op = opOf(e.action);
+    if (SYNC_MARKER_OPS.has(op)) return true;
+    // QUEUE_PICKED:SYNC_DATA / QUEUE_UPDATED:SYNC_MEMBERS_BATCH ...
+    const sub = e.action.split(":")[1];
+    return op.startsWith("QUEUE_") && !!sub && sub.startsWith("SYNC_");
+  });
+  if (!isSync) return null;
+
+  const parts: string[] = [];
+  const joined = firstEmailList(g.events, "promoted_emails");
+  const promoted = firstNum(g.events, "promoted_active") ?? joined.length;
+  if (promoted > 0) {
+    parts.push(`${promoted} email đã vào nhóm${joined.length ? `: ${listEmails(joined)}` : ""}`);
+  }
+
+  const created = firstNum(g.events, "created");
+  if (created && created > 0) parts.push(`${created} email mới ghi nhận`);
+
+  // Thiếu = hệ thống có, ChatGPT không còn. Ở đây là dấu hiệu SAI LỆCH, không
+  // phải việc đã làm — nên tách hẳn ra sau dấu gạch để mắt bắt được ngay.
+  const missing =
+    (firstNum(g.events, "removed_missing") ?? 0) + (firstNum(g.events, "fake_removed") ?? 0);
+  const expected = firstNum(g.events, "expected_total");
+  const total = firstNum(g.events, "total");
+  const warns: string[] = [];
+  if (missing > 0) warns.push(`${missing} email ChatGPT không còn`);
+  if (expected != null && total != null && expected !== total && total > 0) {
+    warns.push(`lệch tổng: ChatGPT ${expected}, hệ thống ${total}`);
+  }
+
+  if (!parts.length && !warns.length) return null;
+  const head = parts.length ? parts.join(" · ") : "không có thay đổi";
+  return warns.length ? `${head} — ${warns.join(" · ")}` : head;
+}
+
+/** Gộp email thành chuỗi ngắn, quá `max` thì cắt và ghi "+n". */
+function listEmails(emails: string[], max = 4): string {
+  const head = emails.slice(0, max).join(", ");
+  return emails.length > max ? `${head} +${emails.length - max}` : head;
+}
+
+// Export cho unit test tóm tắt nhóm (AuditLogs.sync-grouping.test.ts).
+export function summarize(g: Group): string | null {
   const who = g.emails[0];
   const more = g.emails.length > 1 ? ` (+${g.emails.length - 1})` : "";
   const ws = g.workspaceName ?? "";
@@ -1652,6 +1757,14 @@ function summarize(g: Group): string | null {
   const reason = isFailed(g)
     ? null
     : (firstStr(g.events, "error_message") ?? firstStr(g.events, "reason"));
+  // Lệnh đồng bộ không thuộc nhóm nghiệp vụ nào (impGroup = null) nên rơi thẳng
+  // xuống `default` và trả null ⇒ dòng chỉ còn cái tiêu đề trơ "Đồng bộ workspace".
+  // Chặn trước ở đây để nó tự nói được đã thêm ai, thiếu ai.
+  const sync = syncSummary(g);
+  if (sync) {
+    const wsPart = ws ? ` · ${ws}` : "";
+    return `${g.title || "Đồng bộ workspace"}${wsPart} — ${sync}`;
+  }
   let head: string | null = null;
   switch (g.impGroup) {
     case "remove":

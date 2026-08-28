@@ -1550,7 +1550,15 @@ def update_task(
                         result="COMPLETED",
                         target_type="MEMBER",
                         target_id=str(member.id),
-                        data={"email": target_email, "found_in": found_in},
+                        # `queue_item_id`: để nhật ký gom MỌI email của CÙNG một
+                        # lệnh đồng bộ về MỘT dòng. Thiếu trường này thì mỗi email
+                        # thành một dòng riêng — mẻ 12 email đẻ 12 dòng (ảnh user
+                        # 28/8/2026, mốc 15:38).
+                        data={
+                            "email": target_email,
+                            "found_in": found_in,
+                            "queue_item_id": str(item.id),
+                        },
                         commit=False,
                     )
                     promoted_active_emails.append(target_email)
@@ -1619,7 +1627,13 @@ def update_task(
                     result="COMPLETED",
                     target_type="MEMBER",
                     target_id=str(member.id),
-                    data={"email": email, "found_in": found_in, "batch": True},
+                    # Xem ghi chú `queue_item_id` ở nhánh trên.
+                    data={
+                        "email": email,
+                        "found_in": found_in,
+                        "batch": True,
+                        "queue_item_id": str(item.id),
+                    },
                     commit=False,
                 )
                 promoted_active_emails.append(email)
