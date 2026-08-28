@@ -5,6 +5,19 @@ import { EMAIL_FULL_RE, extractSingleEmail, findEmailTextNode } from "./row-extr
 import { findJoinedAtInRow } from "./row-extractors/joined-at";
 import { findLicenseTypeInRow } from "./row-extractors/license-type";
 import { findNameInRow } from "./row-extractors/name";
+import { findRoleInRow } from "./row-extractors/role";
+
+/**
+ * Vai trò của 1 row.
+ *
+ * `findRoleInRow` so KHỚP CHÍNH XÁC nhãn của từng ô (direct text) nên không thể
+ * nhặt nhầm chữ trong tên/email. `parseChatGPTRole` trên `row.textContent` là
+ * so CHỨA trên cả dòng — "admin" trong địa chỉ mail cũng thành vai trò admin —
+ * nên chỉ dùng làm lưới đỡ khi cách chính xác không đọc được nhãn nào.
+ */
+function readRole(row: HTMLElement) {
+  return findRoleInRow(row) ?? parseChatGPTRole(row.textContent ?? null);
+}
 
 /**
  * Đếm số email-format text nodes trong subtree (không bao gồm root chính nó
@@ -41,7 +54,7 @@ export function scrapeAllRows(): ScrapedMember[] {
       members.push({
         email: found.email,
         name: findNameInRow(row, found.email),
-        chatgpt_role: parseChatGPTRole(row.textContent ?? null),
+        chatgpt_role: readRole(row),
         license_type: findLicenseTypeInRow(row),
         status: "active",
         joined_at: findJoinedAtInRow(row),
@@ -98,7 +111,7 @@ export function scrapeAllRows(): ScrapedMember[] {
     members.push({
       email,
       name: findNameInRow(row, email),
-      chatgpt_role: parseChatGPTRole(row.textContent ?? null),
+      chatgpt_role: readRole(row),
       license_type: findLicenseTypeInRow(row),
       status: "active",
       joined_at: findJoinedAtInRow(row),

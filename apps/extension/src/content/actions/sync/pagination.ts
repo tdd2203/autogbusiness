@@ -73,6 +73,48 @@ function pickByAriaLabel(buttons: HTMLElement[]): {
   return { prev, next };
 }
 
+/**
+ * Chữ của ô "Đã gán 243/250" trên hàng thẻ suất — CÙNG DẠNG "N/M" với chỉ số
+ * trang. Trang Thành viên in hàng thẻ đó ngay phía trên bảng, nên bộ dò phân
+ * trang phải loại nó ra, kẻo `goToFirstPage` đi bấm nút "Quản lý số suất" và
+ * nghĩ mình đang ở trang 243/250. Con số lớn hiện được `MAX_PAGINATION_PAGES`
+ * chặn hộ, nhưng workspace nhỏ ("60/62") thì lọt thẳng.
+ */
+const SEAT_BADGE_RE = /da\s*gan|assigned|已分配|su[aâ]t|seats?|席位/i;
+
+/** Bao nhiêu ký tự quanh neo còn được coi là "ngữ cảnh gần" để soi. */
+const CONTEXT_MAX_CHARS = 120;
+
+function fold(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/đ/g, "d")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+/**
+ * Đoạn chữ này là ngữ cảnh của ô SUẤT chứ không phải thanh phân trang.
+ * Xuất khẩu để test được mà không cần dựng DOM.
+ */
+export function isSeatContext(text: string): boolean {
+  return text.length <= CONTEXT_MAX_CHARS && SEAT_BADGE_RE.test(fold(text));
+}
+
+/** Neo này thực ra nằm trong ô "Đã gán N/M" của thẻ suất chứ không phải thanh trang. */
+function looksLikeSeatBadge(anchor: Element): boolean {
+  let el: Element | null = anchor;
+  for (let up = 0; up < 3 && el; up++) {
+    const text = (el.textContent ?? "").trim();
+    // Chỉ soi ngữ cảnh GẦN: leo cao lên nữa là trúng cả trang (trang Thành viên
+    // nào cũng có chữ "Suất Tiêu chuẩn") → chặn nhầm luôn thanh phân trang thật.
+    if (text.length > CONTEXT_MAX_CHARS) break;
+    if (isSeatContext(text)) return true;
+    el = el.parentElement;
+  }
+  return false;
+}
+
 /** Dựng PaginationState từ một phần tử "neo" (chứa chỉ số trang) + giá trị N/M. */
 function buildState(
   anchor: Element,
@@ -87,6 +129,13 @@ function buildState(
     current < 1 ||
     current > total
   ) {
+    return null;
+  }
+
+  if (looksLikeSeatBadge(anchor)) {
+    console.log(
+      `[autogpt-sync] bỏ qua "${current}/${total}" — đây là ô suất, không phải chỉ số trang`,
+    );
     return null;
   }
 
