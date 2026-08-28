@@ -369,6 +369,10 @@ REMOVED_REASON_INVITE_FAILED = "invite_failed"  # lời mời không vào đư�
 REMOVED_REASON_SYNC_MISSING = "sync_missing"  # đồng bộ không còn thấy trong workspace
 REMOVED_REASON_EMAIL_CHANGED = "email_changed"  # đổi sang email khác (email cũ rời)
 REMOVED_REASON_TRANSFERRED = "subscription_transferred"  # chuyển hạn sang email khác
+# Mời hỏng vì PHẢI MUA SUẤT mà mua không được: KHÔNG hoàn tiền, giữ kỳ đã trả gắn
+# vào chính email đó ⇒ mời lại email đó MIỄN PHÍ (chốt user 2026-08-28). Khác
+# `invite_failed` ở chỗ tiền vẫn nằm với email, không quay về ví.
+REMOVED_REASON_SEAT_CREDIT = "invite_seat_credit"
 
 
 class Member(Base):

@@ -29,6 +29,7 @@ from app.models import (
     REMOVED_REASON_EMAIL_CHANGED,
     REMOVED_REASON_EXPIRED,
     REMOVED_REASON_INVITE_FAILED,
+    REMOVED_REASON_SEAT_CREDIT,
     REMOVED_REASON_INVITE_REVOKED,
     AuditLog,
     Invite,
@@ -173,6 +174,10 @@ def reconcile_failed_invite(
          mời trước đó cùng email đang kẹt "chờ xác minh"
          (`_refund_stranded_deferred_fees` — ca thật 22/8/2026).
 
+    NGOẠI LỆ `NOT_ENOUGH_SEATS` (chốt user 28/8/2026): KHÔNG hoàn tiền, thay vào đó
+    giữ bản ghi lại làm phiếu đã-trả-tiền của email → mời lại email đó miễn phí. Xem
+    khối `seat_credit_emails` bên dưới và `_keep_seat_credit_members`.
+
     KHÔNG commit — caller commit (completion: cuối update_task; execution: sau vòng
     lặp stuck_tasks).
     """
@@ -189,6 +194,50 @@ def reconcile_failed_invite(
         task_emails = set()
 
     now_terminal = datetime.now(timezone.utc)
+
+    # ── PHẢI MUA SUẤT MÀ MUA KHÔNG ĐƯỢC ⇒ GIỮ TIỀN, MỜI LẠI MIỄN PHÍ ─────────
+    #
+    # Luật tiền do user chốt 28/8/2026: *"mời mà còn seat thì hoàn tiền, mời mà
+    # phải mua seat thì add lại miễn phí đối với email đó"*.
+    #
+    # Vì sao không hoàn tiền cho ca này cho xong: hoàn về VÍ thì khoản đó lập tức
+    # bị lượt mời sau tiêu mất, nên người dùng vẫn phải nạp lại đúng số tiền để
+    # mời lại chính email vừa hỏng. Chiều 28/8 workspace GPT1 đi đúng vòng đó 5
+    # lần liền (`tranbanien123`, `ngocvu14.3.2001`, `lphg2509`): trừ → hoàn → trừ
+    # → hoàn, mà không ai được thêm vào đội.
+    #
+    # Giữ tiền GẮN VỚI EMAIL thì khoản đã trả không đi đâu được: bản ghi ở lại với
+    # nguyên `subscription_end_at`, và luật "mời lại còn hạn thì miễn phí" (có sẵn
+    # từ 14/7, xem `perform_invite_core`) tự lo phần còn lại — không phát sinh khái
+    # niệm mới, không có đường tính phí nào phải sửa.
+    #
+    # CHỈ áp cho `NOT_ENOUGH_SEATS` — lời mời hỏng vì lý do khác (UI đổi, timeout,
+    # ChatGPT từ chối) vẫn hoàn tiền như cũ.
+    #
+    # BẤT BIẾN: giữ tiền ⇔ giữ được PHIẾU gắn với email. Phiếu chính là
+    # `subscription_end_at` còn ở tương lai trên bản ghi — không có nó thì lần mời
+    # sau vẫn bị tính phí, tiền giữ lại thành tiền nuốt không. Nên email nào không
+    # có hạn còn sống (mời "vô thời hạn": `months=None` ⇒ `subscription_end_at`
+    # NULL mà phí vẫn thu tối thiểu 1 tháng) thì HOÀN TIỀN như cũ.
+    seat_credit_emails: set[str] = set()
+    if error_code == "NOT_ENOUGH_SEATS" and task_emails:
+        seat_credit_emails = {
+            row.lower()
+            for row in db.execute(
+                select(Member.email).where(
+                    Member.workspace_id == workspace_id,
+                    Member.email.in_(sorted(task_emails)),
+                    Member.status == "pending",
+                    Member.joined_at.is_(None),
+                    Member.subscription_end_at.isnot(None),
+                    Member.subscription_end_at > now_terminal,
+                )
+            )
+            .scalars()
+            .all()
+        }
+    refund_emails = sorted(task_emails - seat_credit_emails)
+
     # 1. Timeline: chấm thất bại cho MỌI member còn sống của task (TRƯỚC khi xoá).
     for email in sorted(task_emails):
         member = db.execute(
@@ -228,8 +277,15 @@ def reconcile_failed_invite(
     )
     emails_to_delete = [inv.email.lower() for inv in invites]
 
-    # 3. Hoàn toàn bộ phí invite_fee của task.
-    refunded = wallet_service.refund_invite(db, item.id, emails=None)
+    # 3. Hoàn phí invite_fee của task — TRỪ những email được giữ tiền theo phiếu.
+    #    `emails=[]` ⇒ không hoàn đồng nào, `InviteRefund` khi đó falsy nên bước void
+    #    kỳ và bước dò nợ hoàn-phí bên dưới tự đứng im — giữ đúng bất biến của file
+    #    này: KHÔNG hoàn tiền ⇒ KHÔNG void kỳ.
+    refunded = (
+        wallet_service.refund_invite(db, item.id, emails=None)
+        if not seat_credit_emails
+        else wallet_service.refund_invite(db, item.id, emails=refund_emails)
+    )
 
     # 3b. …VÀ phí còn treo của lời mời TRƯỚC ĐÓ cùng email (đường "chờ xác minh").
     #     Phí đi theo TASK nhưng kết luận "hỏng" đi theo EMAIL — task này vừa chốt
@@ -237,11 +293,19 @@ def reconcile_failed_invite(
     #     làm ở đây thì resolver 20′ sẽ bỏ qua vĩnh viễn (member vừa bị xoá ở bước 2
     #     + audit FAILED vừa ghi ở bước 1 khớp đúng 2 điều kiện SKIP của nó) — ca
     #     thật 22/8/2026, xem docstring `_refund_stranded_deferred_fees`.
-    stranded = _refund_stranded_deferred_fees(
-        db,
-        workspace_id=workspace_id,
-        emails=task_emails,
-        exclude_item_id=item.id,
+    #     Ca giữ tiền theo email cũng KHÔNG đụng khoản treo đó: hoàn nó về ví sẽ
+    #     kéo theo void kỳ của chính email đang được giữ tiền (`void_refunded_invite_periods`
+    #     void theo `refunded.emails`) — mất luôn cái "còn hạn" làm nên lần mời lại
+    #     miễn phí. Khoản treo ở lại cùng email, đúng tinh thần của luật này.
+    stranded = (
+        None
+        if not refund_emails
+        else _refund_stranded_deferred_fees(
+            db,
+            workspace_id=workspace_id,
+            emails=set(refund_emails),
+            exclude_item_id=item.id,
+        )
     )
     if stranded:
         refunded = wallet_service.InviteRefund(
@@ -271,13 +335,30 @@ def reconcile_failed_invite(
     #    được hoàn lượt này (vd kỳ kế thừa từ lần ĐỔI EMAIL) ⇒ bản ghi đó chỉ chuyển
     #    `removed`, không xoá — kẻo mất trắng lịch sử tiền.
     if emails_to_delete:
-        _delete_phantom_members(
-            db,
-            workspace_id=workspace_id,
-            emails=emails_to_delete,
-            now=now_terminal,
-            queue_item_id=item.id,
-        )
+        # GIỮ bản ghi của email được giữ tiền: nó đang ôm `subscription_end_at` của
+        # kỳ vừa trả, mà chính mốc đó làm nên lần mời lại miễn phí. Xoá đi là tiền
+        # đã trừ biến mất không còn dấu vết nào.
+        keep = [e for e in emails_to_delete if e in seat_credit_emails]
+        drop = [e for e in emails_to_delete if e not in seat_credit_emails]
+        if keep:
+            _keep_seat_credit_members(
+                db,
+                workspace_id=workspace_id,
+                workspace_name=workspace_name,
+                emails=keep,
+                now=now_terminal,
+                item_id=item.id,
+            )
+        if drop:
+            _delete_phantom_members(
+                db,
+                workspace_id=workspace_id,
+                emails=drop,
+                now=now_terminal,
+                queue_item_id=item.id,
+            )
+        # Lời mời KHÔNG tồn tại trên ChatGPT (chưa bấm gửi được vì thiếu suất) →
+        # dòng Invite phải đi trong cả hai ca, kẻo nó treo mãi "đang chờ".
         db.execute(
             delete(Invite).where(
                 Invite.queue_item_id == item.id,
@@ -410,6 +491,79 @@ def _email_change_target_emails(db: Session, queue_item_id: str | UUID) -> set[s
             if isinstance(value, str) and value.strip():
                 out.add(value.strip().lower())
     return out
+
+
+def _keep_seat_credit_members(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    workspace_name: str,
+    emails: list[str],
+    now: datetime,
+    item_id: UUID,
+) -> list[str]:
+    """Mời hỏng vì THIẾU SUẤT: giữ bản ghi lại làm "phiếu đã trả tiền" của email đó.
+
+    Bản ghi chuyển `removed` + `removed_reason='invite_seat_credit'` nhưng GIỮ
+    NGUYÊN `subscription_end_at` và các chu kỳ đã thanh toán. Hai hệ quả, cả hai
+    đều là hành vi có sẵn chứ không phải luật mới:
+      · `perform_invite_core` thấy `removed` + còn hạn ⇒ mời lại KHÔNG tính phí,
+        cửa sổ hạn giữ nguyên (luật "mời lại còn hạn thì miễn phí", 14/7/2026);
+      · `removed` nên nó không nằm trong danh sách sống, không chiếm suất, không
+        kéo `_auto_buy_seats_for_pending` đi mua bù cho một lời mời không tồn tại.
+
+    Chỉ đụng bản ghi "ma" (`pending` + chưa từng tham gia) của chính task này —
+    y hệt phạm vi của `_delete_phantom_members`, chỉ khác là giữ thay vì xoá.
+
+    Trả về các email đã giữ. KHÔNG commit.
+    """
+    if not emails:
+        return []
+    rows = (
+        db.execute(
+            select(Member).where(
+                Member.workspace_id == workspace_id,
+                Member.email.in_([e.lower() for e in emails]),
+                Member.status == "pending",
+                Member.joined_at.is_(None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    kept: list[str] = []
+    for m in rows:
+        m.status = "removed"
+        m.removed_at = now
+        m.removed_reason = REMOVED_REASON_SEAT_CREDIT
+        db.add(m)
+        kept.append(m.email)
+        log_event(
+            db,
+            actor_type="SYSTEM",
+            actor_label=f"workspace:{workspace_name}",
+            action="MEMBER_INVITE_SEAT_CREDIT",
+            result="SUCCESS",
+            target_type="MEMBER",
+            target_id=str(m.id),
+            data={
+                "email": m.email,
+                "queue_item_id": str(item_id),
+                "workspace_id": str(workspace_id),
+                "subscription_end_at": (
+                    m.subscription_end_at.isoformat()
+                    if m.subscription_end_at
+                    else None
+                ),
+                "note": (
+                    "Mời hỏng vì workspace hết suất và mua bù không được. KHÔNG hoàn "
+                    "tiền — khoản đã trả ở lại với email này, mời lại email này sẽ "
+                    "miễn phí trong thời hạn đã trả."
+                ),
+            },
+            commit=False,
+        )
+    return kept
 
 
 def _delete_phantom_members(

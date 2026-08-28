@@ -168,6 +168,7 @@
   "removedReason.sync_missing": "同步未找到",
   "removedReason.email_changed": "已更换邮箱",
   "removedReason.subscription_transferred": "有效期已转移",
+  "removedReason.invite_seat_credit": "席位不足 — 重新邀请免费",
   "removedReason.unknown": "未知",
   "metrics.totalMembers": "成员总数",
   "metrics.activeMembers": "活跃成员",

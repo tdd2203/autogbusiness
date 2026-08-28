@@ -142,6 +142,9 @@ const IMP_OP_GROUP: Record<string, ImpGroup> = {
   // tra chạy nhầm tab "Lời mời"). Cặp đôi với MEMBER_SYNC_PROMOTED_ACTIVE nên để
   // cùng nhóm mời — admin phải thấy ở tab "Chính".
   MEMBER_ACTIVE_DOWNGRADED_PENDING: "invite",
+  // Mời hỏng vì hết suất → giữ tiền, mời lại email đó miễn phí. Thuộc vòng đời mời
+  // và có tiền đi kèm ⇒ phải nằm tab "Chính".
+  MEMBER_INVITE_SEAT_CREDIT: "invite",
 };
 
 /** Nhóm nghiệp vụ quan trọng của 1 action (null = không quan trọng). */
@@ -394,6 +397,7 @@ const ACT_TITLE: Record<string, string> = {
   MEMBER_RECONCILE_SKIPPED: "Bỏ qua đối soát",
   MEMBER_SYNC_MISMATCH: "Lệch số lượng sau đồng bộ",
   MEMBER_ACTIVE_DOWNGRADED_PENDING: "Trả về chờ tham gia (đồng bộ)",
+  MEMBER_INVITE_SEAT_CREDIT: "Hết suất — giữ tiền, mời lại miễn phí",
   MEMBER_PAYMENT_MARKED: "Đánh dấu đã thanh toán",
   MEMBER_PAYMENT_REQUESTED: "Yêu cầu thanh toán",
   MEMBER_SUBSCRIPTION_RENEWED: "Gia hạn gói thành viên",

@@ -168,6 +168,7 @@
   "removedReason.sync_missing": "Đồng bộ không thấy",
   "removedReason.email_changed": "Đổi sang email khác",
   "removedReason.subscription_transferred": "Chuyển hạn sang email khác",
+  "removedReason.invite_seat_credit": "Hết suất — mời lại miễn phí",
   "removedReason.unknown": "Không rõ",
   "metrics.totalMembers": "Tổng thành viên",
   "metrics.activeMembers": "Đang active",

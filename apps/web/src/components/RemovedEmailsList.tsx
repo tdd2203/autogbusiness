@@ -19,6 +19,9 @@ const REASON_BADGE: Record<string, string> = {
   sync_missing: "badge badge-neutral badge-plain",
   email_changed: "badge badge-neutral badge-plain",
   subscription_transferred: "badge badge-neutral badge-plain",
+  // Mời hỏng vì hết suất: tiền KHÔNG hoàn mà ở lại với email, mời lại miễn phí →
+  // đây là tin tốt cho người dùng, không phải mất mát ⇒ màu thông tin.
+  invite_seat_credit: "badge badge-info badge-plain",
 };
 
 /**

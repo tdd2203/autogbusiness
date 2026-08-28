@@ -17,6 +17,13 @@ repo là PUBLIC:
 
 Mặt còn lại phải giữ nguyên: phí của lời mời ĐÃ ĐI ĐƯỢC (email được verify / member
 đang `active`) TUYỆT ĐỐI không được hoàn ké theo — xem test cuối file.
+
+⚠️ CẬP NHẬT 28/8/2026 — ca thật dùng mã `NOT_ENOUGH_SEATS`, nhưng mã đó nay đi
+đường riêng: hết suất thì GIỮ tiền và để lại phiếu dùng được cho chính email đó
+(`test_invite_seat_credit.py`). Bất biến của file này không đổi và cũng không hề
+phụ thuộc mã lỗi — nó nói: **chốt hỏng cho một email thì không được vừa giữ tiền
+vừa xoá sạch dấu vết của email đó**. Nên ở đây dùng một mã lỗi trước-lúc-bấm-Gửi
+khác (`UI_ELEMENT_NOT_FOUND`) để tiếp tục khoá đúng đường hoàn phí mồ côi.
 """
 
 import uuid
@@ -129,7 +136,7 @@ def test_failed_reinvite_also_refunds_stranded_deferred_fee(
     item_b = _reinvite_item(client, sub["token"], ws["id"], member_id)
     assert item_b != item_a
     assert wallet_of(client, sub["token"])["balance"] == 0, "mời lại còn hạn = miễn phí"
-    _fail(client, key, item_b, error_code="NOT_ENOUGH_SEATS")
+    _fail(client, key, item_b, error_code="UI_ELEMENT_NOT_FOUND")
 
     # 4. Chốt hỏng cho EMAIL đó ⇒ khoản treo của task A phải quay về ví.
     assert wallet_of(client, sub["token"])["balance"] == FEE, (
@@ -144,7 +151,7 @@ def test_failed_reinvite_also_refunds_stranded_deferred_fee(
     assert refunds[0]["ref_id"] == item_a, "phải hoàn đúng khoản của task A"
 
     # 5. Idempotent: chốt lại lần nữa không được hoàn thêm đồng nào.
-    _fail(client, key, item_b, error_code="NOT_ENOUGH_SEATS")
+    _fail(client, key, item_b, error_code="UI_ELEMENT_NOT_FOUND")
     assert wallet_of(client, sub["token"])["balance"] == FEE
 
 
