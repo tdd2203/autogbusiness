@@ -10,14 +10,9 @@ import {
   sleep,
   waitFor,
 } from "../../human";
-import {
-  INVITE_ERROR_HINTS,
-  INVITE_SUCCESS_TOAST_PATTERNS,
-  findControlByKey,
-} from "../../i18n-ui";
+import { INVITE_ERROR_HINTS, findControlByKey } from "../../i18n-ui";
 import { reportProgress } from "../../progress";
 import { SELECTORS, TEXT_FALLBACKS } from "../../selectors";
-import { querySelectorFirst } from "../../human";
 import { normalizeForMatch } from "../purchase-seat/modal2/money";
 import { clickAddMoreIfNeeded } from "./click-add-more";
 import {
@@ -32,8 +27,12 @@ import {
 } from "./finders/find-email-input";
 import { findInviteOpenButton } from "./finders/find-invite-open-button";
 import { findInviteSubmitButton } from "./finders/find-submit-button";
+import {
+  findInviteSuccessToastText,
+  isInviteDialogOpen,
+} from "./invite-success-toast";
 import { setRole } from "./set-role";
-import { inviteVerifyTimeoutMs } from "./verify-wait";
+import { VERIFY_TOAST_GRACE_MS, inviteVerifyTimeoutMs } from "./verify-wait";
 
 /**
  * Nhãn nút "MUA suất và gửi lời mời" — nút CUỐI của hộp "Xem lại giao dịch mua"
@@ -438,7 +437,15 @@ export async function executeInviteInner(
     true,
   );
 
-  // 7. Verify success — chờ toast hoặc dialog đóng.
+  // 7. Verify success — chờ hộp thoại ĐÓNG HẲN, rồi mới lấy toast xác nhận.
+  //
+  // Chốt user 28/8/2026: "phải chờ cái tab này tắt hoàn toàn, có thông báo đã mời
+  // thành công thì mới check ở Lời mời đang chờ xử lý". Bản cũ dừng chờ khi thấy
+  // MỘT TRONG HAI (toast HOẶC dialog đóng) — nút "Đang gửi lời mời..." còn quay mà
+  // đã bỏ đi quét tab, hoặc dialog vừa đóng trước khi toast kịp vẽ nên bằng chứng
+  // tụt xuống mức YẾU rồi báo hỏng oan. Giờ điều kiện là ĐÓNG HẲN, đóng rồi vẫn
+  // nán `VERIFY_TOAST_GRACE_MS` cho toast kịp hiện.
+  //
   // Phân biệt HAI mức bằng chứng (user 2026-08-04) thay vì gộp làm một:
   //   - "toast": ChatGPT NÓI RÕ đã gửi lời mời (khớp INVITE_SUCCESS_TOAST_PATTERNS)
   //     → bằng chứng MẠNH, background dựa vào đây để KHÔNG kết luận hỏng chỉ vì tab
@@ -446,21 +453,51 @@ export async function executeInviteInner(
   //   - "dialog_closed": dialog đóng nhưng không đọc được chữ xác nhận → bằng chứng
   //     YẾU (dialog cũng có thể đóng vì lý do khác).
   let submitEvidence: "toast" | "dialog_closed" = "dialog_closed";
+  let toastText: string | null = null;
+  let dialogClosedAt = 0;
   try {
     await waitFor(() => {
-      const toast = querySelectorFirst(SELECTORS.inviteSuccessToast);
-      const toastText = (toast?.textContent ?? "").toLowerCase();
-      if (
-        toastText &&
-        INVITE_SUCCESS_TOAST_PATTERNS.some((p) => toastText.includes(p))
-      ) {
-        submitEvidence = "toast";
-        return toast;
+      // Toast là thứ CHỚP TẮT — đọc được lần nào thì giữ luôn, đừng đọc lại ở
+      // vòng poll sau rồi kết luận "không có".
+      if (!toastText) toastText = findInviteSuccessToastText();
+      if (isInviteDialogOpen()) return null; // hộp còn mở = ChatGPT còn đang gửi
+      if (!dialogClosedAt) dialogClosedAt = Date.now();
+      if (!toastText && Date.now() - dialogClosedAt < VERIFY_TOAST_GRACE_MS) {
+        return null; // đóng rồi nhưng nán thêm để lấy bằng chứng MẠNH
       }
-      const dialogClosed = !document.querySelector('[role="dialog"]');
-      return dialogClosed ? document.body : null;
-    }, verifyTimeoutMs);
+      return document.body;
+    }, verifyTimeoutMs + VERIFY_TOAST_GRACE_MS);
+    submitEvidence = toastText ? "toast" : "dialog_closed";
   } catch {
+    // Hộp chưa đóng nhưng ChatGPT ĐÃ nói "đã mời" → lời mời đi rồi, hộp chỉ chậm
+    // đóng. Báo hỏng ở đây là dựng lại đúng ca 26/8/2026 (suýt hoàn 1.650.000đ oan).
+    if (toastText) {
+      console.log(
+        `[autogpt-invite] hộp chưa đóng sau ${Math.round(verifyTimeoutMs / 1000)}s ` +
+          `nhưng đã đọc được toast xác nhận: "${toastText}" → coi như đã gửi.`,
+      );
+      await reportProgress(
+        taskId,
+        {
+          phase: "submit-done",
+          message: `ChatGPT xác nhận đã mời (${emails.length} email) — hộp thoại chậm đóng.`,
+          current: emails.length,
+          total: emails.length,
+        },
+        true,
+      );
+      return {
+        ok: true,
+        data: {
+          emails,
+          count: emails.length,
+          role,
+          awaiting_reload_verify: true,
+          submit_evidence: "toast",
+          dialog_still_open: true,
+        },
+      };
+    }
     // Check xem có error message trong dialog không (vd email đã tồn tại)
     const dialogText = document.querySelector('[role="dialog"]')?.textContent ?? "";
     const errHints = INVITE_ERROR_HINTS;
@@ -470,7 +507,7 @@ export async function executeInviteInner(
       error_code: "VERIFY_FAILED",
       error_message: matchedHint
         ? `ChatGPT báo lỗi trong dialog: "${matchedHint}". Có thể email đã được mời/tồn tại.`
-        : `Đã submit nhưng không thấy toast thành công và dialog không đóng sau ${Math.round(verifyTimeoutMs / 1000)}s (${emails.length} email). ` +
+        : `Đã submit nhưng hộp thoại không đóng và không đọc được thông báo mời thành công sau ${Math.round((verifyTimeoutMs + VERIFY_TOAST_GRACE_MS) / 1000)}s (${emails.length} email). ` +
           `Dialog text: "${dialogText.slice(0, 200)}"`,
       data: {
         // ⚠️ Cú click "Gửi lời mời" ĐÃ XẢY RA (ở trên) trước khi vào vòng chờ xác

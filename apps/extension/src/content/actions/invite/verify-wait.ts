@@ -49,3 +49,18 @@ export function inviteVerifyTimeoutMs(emailCount: number): number {
   const ms = VERIFY_WAIT_BASE_MS + (count - 1) * VERIFY_WAIT_PER_EMAIL_MS;
   return Math.min(ms, VERIFY_WAIT_MAX_MS);
 }
+
+/**
+ * Sau khi hộp thoại Mời ĐÓNG HẲN, nán lại chừng này chờ toast xác nhận kịp hiện.
+ *
+ * Chốt user 28/8/2026: "phải chờ cái tab này tắt hoàn toàn, có thông báo đã mời
+ * thành công thì mới check xem đã mời được chưa ở Lời mời đang chờ xử lý".
+ * Bản cũ dừng chờ ngay khi THẤY MỘT TRONG HAI (toast HOẶC dialog đóng) nên hay
+ * rơi vào hai ca xấu:
+ *   - dialog vừa đóng, toast chưa kịp vẽ → bằng chứng tụt xuống mức YẾU
+ *     ("dialog_closed"), rồi tab "Lời mời" chưa index kịp ⇒ báo hỏng oan;
+ *   - toast hiện lúc hộp còn đang gửi dở mẻ → bỏ đi quét tab quá sớm.
+ * Giờ điều kiện là ĐÓNG HẲN, và đóng rồi vẫn nán thêm khoảng này để lấy bằng
+ * chứng mạnh. Chỉ tốn thêm vài giây cho mỗi lệnh mời.
+ */
+export const VERIFY_TOAST_GRACE_MS = 4_000;
