@@ -15,11 +15,108 @@
 import { describe, expect, it } from "vitest";
 import {
   canDeriveTotalAfterPurchase,
+  headroomFromPage,
   headroomWithoutModal,
   totalFromPageCardsAfterPurchase,
   type SeatHint,
 } from "./ensure-seats";
 import { parseSeatCards } from "../purchase-seat/read-seat-cards";
+
+/**
+ * ══ LUỒNG ĐÃ CHỐT — TEST KHOÁ, ĐỪNG SỬA NẾU CHƯA HỎI USER (28/8/2026) ═══════
+ *
+ * Ảnh user gửi 28/8/2026 (GPT1):
+ *   tiêu đề       "Business · 253 thành viên"
+ *   thẻ suất      Suất Tiêu chuẩn 270, Đã gán 253/270 · Suất Cao cấp 0, Đã gán 0/0
+ *   tab Lời mời   7 dòng, tất cả loại "Tiêu chuẩn"
+ *
+ * Kết luận user chốt: 253 + 7 = 260 đang chiếm trên 270 suất ⇒ CÒN 10 CHỖ ⇒
+ * mời thêm được, KHÔNG mua gì.
+ *
+ * Đổi bất kỳ vế nào của phép tính này là đổi chỗ TIÊU TIỀN THẬT.
+ */
+const GPT1_28_8 = parseSeatCards(
+  "Suất Tiêu chuẩn Đã gán 253/270 270 Suất Cao cấp Đã gán 0/0 0",
+);
+/** Số in ở tiêu đề trang cùng thời điểm. */
+const GPT1_28_8_MEMBERS = 253;
+/** Số dòng đếm được ở tab "Lời mời đang chờ xử lý". */
+const GPT1_28_8_PENDING = 7;
+
+describe("headroomFromPage — LUỒNG CHỐT: thành viên + thẻ suất + tab Lời mời", () => {
+  it("ẢNH USER 28/8/2026: 253 đã gán + 7 lời mời chờ / 270 suất ⇒ còn 10, mời không mua", () => {
+    const r = headroomFromPage(
+      1,
+      GPT1_28_8,
+      GPT1_28_8_MEMBERS,
+      GPT1_28_8_PENDING,
+    );
+    expect(r.total).toBe(270);
+    expect(r.assigned).toBe(253);
+    expect(r.pending).toBe(7);
+    expect(r.free).toBe(10);
+    expect(r.enough).toBe(true);
+  });
+
+  it("mời được ĐÚNG 10 người, người thứ 11 phải mua bù", () => {
+    const at = (need: number) =>
+      headroomFromPage(need, GPT1_28_8, GPT1_28_8_MEMBERS, GPT1_28_8_PENDING)
+        .enough;
+    expect(at(10)).toBe(true);
+    expect(at(11)).toBe(false);
+  });
+
+  it("KHÔNG đòi dư thêm 1 suất: mọi số đều vừa đọc trên ChatGPT", () => {
+    // Khác `headroomWithoutModal` (đòi dư 1 vì `seat_total` của DB có thể cũ).
+    const tight = parseSeatCards("Suất Tiêu chuẩn Đã gán 269/270 270");
+    expect(headroomFromPage(1, tight, 269, 0).free).toBe(1);
+    expect(headroomFromPage(1, tight, 269, 0).enough).toBe(true);
+  });
+
+  it("lời mời đang chờ LÀ NỢ SUẤT — trừ đúng như người đã tham gia", () => {
+    // Bỏ quên 7 lời mời chờ thì tưởng còn 17 chỗ. Ca CHATGPT PRO 24/8/2026 cho
+    // thấy chiều ngược lại: "60/60 đã gán" mà vẫn treo 1 lời mời chưa ai nhận.
+    expect(headroomFromPage(1, GPT1_28_8, 253, 0).free).toBe(17);
+    expect(headroomFromPage(17, GPT1_28_8, 253, 7).enough).toBe(false);
+  });
+
+  it("suất Cao cấp CỘNG GỘP vào tổng (user chốt 28/8/2026)", () => {
+    const mixed = parseSeatCards(
+      "Suất Tiêu chuẩn Đã gán 250/250 250 Suất Cao cấp Đã gán 3/20 20",
+    );
+    const r = headroomFromPage(1, mixed, 253, 0);
+    expect(r.total).toBe(270);
+    expect(r.assigned).toBe(253);
+    expect(r.free).toBe(17);
+  });
+
+  it("đã gán lấy bên LỚN HƠN giữa thẻ suất và số thành viên ở tiêu đề", () => {
+    // Một bên vừa được vẽ lại trước bên kia → lấy bên lớn, thà mở hộp thừa.
+    expect(headroomFromPage(1, GPT1_28_8, 258, 7).assigned).toBe(258);
+    expect(headroomFromPage(1, GPT1_28_8, 258, 7).free).toBe(5);
+    expect(headroomFromPage(1, GPT1_28_8, null, 7).assigned).toBe(253);
+  });
+
+  it("KHÔNG đếm được lời mời chờ → không kết luận gì, caller phải rơi về lưới đỡ", () => {
+    const r = headroomFromPage(1, GPT1_28_8, GPT1_28_8_MEMBERS, null);
+    expect(r.enough).toBe(false);
+    expect(r.free).toBeNull();
+  });
+
+  it("KHÔNG đọc được thẻ suất → không kết luận gì", () => {
+    const r = headroomFromPage(1, null, GPT1_28_8_MEMBERS, 7);
+    expect(r.enough).toBe(false);
+    expect(r.free).toBeNull();
+  });
+
+  it("workspace ÂM CHỖ → chỗ trống kẹp sàn 0, không bao giờ nói 'đủ'", () => {
+    // CHATGPT PRO 24/8/2026: 60/60 đã gán + 1 lời mời chờ.
+    const full = parseSeatCards("Suất Tiêu chuẩn Đã gán 60/60 60");
+    const r = headroomFromPage(1, full, 60, 1);
+    expect(r.free).toBe(0);
+    expect(r.enough).toBe(false);
+  });
+});
 
 /** GPT1 lúc 04:44 24/8/2026: 151 suất, 148 active + 1 chờ = 149 chưa bị gỡ. */
 const GPT1: SeatHint = { total: 151, occupied: 149 };

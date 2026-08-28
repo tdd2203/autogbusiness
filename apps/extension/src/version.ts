@@ -12,11 +12,17 @@
  *   2. Prepend 1 entry mới ở đầu `CHANGELOG` (most recent first)
  *   3. Build lại extension, reload trong chrome://extensions
  *
+ * Cách viết 1 entry (popup là chỗ user đọc, không phải nhật ký dev):
+ *   - `summary`: 1 câu, tối đa ~70 ký tự, nói kết quả user thấy được
+ *   - `details`: tối đa 4 gạch đầu dòng, mỗi dòng 1 ý (~140 ký tự)
+ *   - Không ghi số test, tên file, tên hàm — user không dùng tới
+ *
  * Manifest tự đọc VERSION từ file này — KHÔNG cần sửa manifest.ts.
- * Popup hiển thị VERSION prominent + cho phép expand changelog.
+ * Popup chỉ mở sẵn mục mới nhất, các bản cũ thu gọn còn 1 dòng và
+ * chỉ hiện 8 mục đầu, phần còn lại nằm sau nút "Xem thêm".
  */
 
-export const VERSION = "0.13.20";
+export const VERSION = "0.14.3";
 
 export type ChangelogEntry = {
   version: string;
@@ -35,18 +41,73 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: "0.14.3",
+    date: "2026-08-28",
+    kind: "fix",
+    summary: "Mời: luôn đếm suất tận nơi và báo số về bảng điều khiển.",
+    details: [
+      "Mỗi lệnh mời đọc số thành viên, hàng thẻ suất rồi sang tab 'Lời mời đang chờ' đếm từng dòng, thay vì tin số cũ của bảng điều khiển khi thấy còn dư nhiều.",
+      "Số suất đọc được không còn bị mất trên đường về: bước F5 kiểm chứng lời mời trước đây ghi đè sạch, nên mua thêm suất mà bảng điều khiển vẫn đứng yên.",
+      "Ví dụ: 270 suất, 253 đã gán, 7 lời mời đang chờ thì còn 10 chỗ — mời tiếp, không mua gì.",
+    ],
+  },
+  {
+    version: "0.14.2",
+    date: "2026-08-28",
+    kind: "fix",
+    summary: "Đồng bộ: không còn báo 'đã tham gia' cho lời mời đang chờ.",
+    details: [
+      "Lệnh kiểm tra đã tham gia chỉ bấm sang tab 'Người dùng' rồi làm luôn, không soát lại. Tab ChatGPT còn kẹt ở 'Lời mời đang chờ xử lý' thì ô lọc tìm thấy chính lời mời đó và báo về là đã tham gia.",
+      "Sai một lần là kẹt luôn: mọi lần đồng bộ sau đều bị chặn hạ cấp, nên bảng điều khiển đếm dư mãi (244 trong khi ChatGPT có 243).",
+      "Nay bắt buộc kiểm chứng địa chỉ trang trước khi kết luận; còn kẹt tab lời mời thì báo lỗi chứ không đoán.",
+      "Tên thành viên hết bị lấy nhầm nhãn 'Tiêu chuẩn' hay chữ viết tắt trong ô avatar.",
+    ],
+  },
+  {
+    version: "0.14.1",
+    date: "2026-08-28",
+    kind: "fix",
+    summary: "Mua suất: chờ nút 'Quản lý số suất' hiện ra rồi mới bỏ cuộc.",
+    details: [
+      "Chiều 28/8 một lệnh mua suất tự động chết ngay bước đầu, báo không tìm thấy nút 'Quản lý số suất' dù nút vẫn nằm cạnh '+ Mời thành viên'.",
+      "Nguyên nhân: luồng mua chỉ nhìn trang đúng một lần sau khi mở, trang nạp chậm hơn là trượt hẳn.",
+      "Nay dò lại trong 6 giây như bước kiểm suất trước khi mời vẫn làm. Trang nạp nhanh thì không tốn thêm giây nào.",
+    ],
+  },
+  {
+    version: "0.14.0",
+    date: "2026-08-28",
+    kind: "feature",
+    summary: "Gộp nhiều lệnh cùng loại trong một workspace, chạy gọn một lượt.",
+    details: [
+      "Nhiều lệnh mời (hoặc gỡ, thu hồi) đang chờ cùng một workspace được gộp lại, chạy trong một lần mở tab thay vì mỗi lệnh một vòng.",
+      "Chỉ gộp lệnh cùng loại và cùng vai trò, không cần nằm liền nhau. Mời tối đa 10 lệnh / 25 email, gỡ và thu hồi tối đa 5 lệnh.",
+      "Chỉ gộp khi workspace còn đủ suất trống nên mẻ gộp không bao giờ kéo theo việc mua suất; thiếu chỗ thì lệnh đó chạy lượt sau.",
+      "Mỗi lệnh vẫn tự báo kết quả riêng: một email hỏng không kéo theo email khác, tiền của từng lời mời không xê dịch.",
+    ],
+  },
+  {
+    version: "0.13.21",
+    date: "2026-08-28",
+    kind: "fix",
+    summary: "Mời xong phải thấy hộp thoại đóng hẳn mới đi kiểm tra tab Lời mời.",
+    details: [
+      "Trước đây chỉ cần một trong hai dấu hiệu (đọc được dòng xác nhận, hoặc hộp biến mất) là bỏ đi kiểm tra, nút còn đang quay đã chuyển tab.",
+      "Nay bắt buộc hộp đóng hẳn, đóng rồi còn chờ thêm 4 giây cho dòng 'Đã mời N users tham gia ...' kịp hiện.",
+      "Đọc dòng xác nhận bằng cách quét mọi vùng thông báo của trang, không dừng ở banner tín dụng đứng trước nó.",
+      "ChatGPT đã báo đã mời thì tính là gửi được dù hộp chậm đóng, hết cảnh báo hỏng oan cho mẻ đã gửi thật.",
+    ],
+  },
+  {
     version: "0.13.20",
     date: "2026-08-28",
     kind: "fix",
-    summary:
-      "Mời thiếu suất: nhận lại được bộ đếm hàng Tiêu chuẩn, hết cảnh dừng ngay ở hộp 'Quản lý suất'.",
+    summary: "Mua bù suất: tìm lại được bộ đếm hàng Tiêu chuẩn trong hộp Quản lý suất.",
     details: [
-      "Từ sáng 28/8, mọi lệnh mời phải mua bù suất đều chết ở cùng một chỗ: hộp 'Quản lý suất' mở ra bình thường nhưng extension báo 'không thấy bộ đếm số suất của hàng Tiêu chuẩn'. 16 lệnh liên tiếp, không lệnh nào mời được ai.",
-      "Nguyên nhân: bản 0.13.17 chỉ dám bấm khi tìm được một khung bọc RIÊNG hàng Tiêu chuẩn, mà ChatGPT dựng hộp kiểu lưới — nhãn và bộ đếm của cả hai hàng nằm chung một khung, không có khung riêng nào để tìm.",
-      "Nay ghim hàng theo VỊ TRÍ trên màn hình: con số nào nằm ngang hàng với nhãn 'Tiêu chuẩn' thì đó là bộ đếm cần bấm, không phụ thuộc cách ChatGPT lồng thẻ. Vẫn chỉ bấm khi có đúng một bộ đếm thoả, mập mờ là dừng.",
-      "Nhận cả nhãn dán liền giá trong một thẻ ('Tiêu chuẩn260.500 đ/tháng') — kiểu này trước đây cũng làm trượt cả hai nhãn.",
-      "Chốt an toàn tiền giữ nguyên: bấm nhầm hàng vẫn bị chặn bởi thẻ tóm tắt 'Thêm N suất Tiêu chuẩn' và hộp 'Xem lại giao dịch mua' trước khi trừ tiền.",
-      "Khi vẫn không ghim được, thông báo lỗi giờ kèm mô tả hộp đang mở (mấy nút, nhãn nào, đọc ra số nào) để khỏi phải mò. Thêm 4 test.",
+      "Từ sáng 28/8 mọi lệnh mời phải mua bù suất đều dừng ở cùng chỗ: hộp mở ra bình thường nhưng báo không thấy bộ đếm hàng Tiêu chuẩn.",
+      "Nguyên nhân: bản trước chỉ bấm khi tìm được khung bọc riêng của hàng Tiêu chuẩn, mà ChatGPT dựng hộp kiểu lưới nên không có khung riêng.",
+      "Nay ghim hàng theo vị trí trên màn hình: con số nằm ngang hàng với nhãn Tiêu chuẩn là bộ đếm cần bấm. Mập mờ vẫn dừng.",
+      "Chốt an toàn tiền giữ nguyên: thẻ tóm tắt và hộp xem lại giao dịch vẫn chặn trước khi trừ tiền.",
     ],
   },
   {

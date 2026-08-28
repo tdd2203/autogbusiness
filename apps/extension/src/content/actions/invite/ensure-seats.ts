@@ -11,6 +11,26 @@
  *
  * Workspace CHƯA được ChatGPT bật UI mới (không có nút "Quản lý số suất") →
  * bỏ qua toàn bộ bước này, mời y như trước.
+ *
+ * ══ THỨ TỰ ĐÃ CHỐT, ĐỪNG ĐỔI NẾU CHƯA HỎI (user 28/8/2026) ══════════════════
+ *
+ *   1. Đọc "Business · N thành viên" trên tab "Người dùng".
+ *   2. Đọc hàng thẻ suất: Tiêu chuẩn + Cao cấp, mỗi thẻ một cặp "đã gán/tổng".
+ *      Hai loại CỘNG GỘP (user chốt) — tổng = Σ, đã gán = Σ.
+ *   3. Sang tab "Lời mời đang chờ xử lý", ĐẾM TỪNG DÒNG. LUÔN LUÔN, kể cả khi
+ *      trông có vẻ còn thừa mênh mông.
+ *   4. còn trống = tổng − (đã gán + lời mời chờ). Đủ → mời thẳng. Thiếu → mới
+ *      mở hộp "Quản lý suất" để mua bù.
+ *
+ * Ca mẫu để đối chiếu (GPT1, 28/8/2026): 270 suất, đã gán 253, 7 lời mời chờ ⇒
+ * đang chiếm 260 ⇒ còn 10 chỗ ⇒ mời thêm, KHÔNG mua gì. Test khoá con số này
+ * nằm trong `seat-headroom.test.ts`.
+ *
+ * Vì sao bước 3 KHÔNG được bỏ qua để chạy nhanh: số lời mời chờ của dashboard
+ * luôn trễ một nhịp so với ChatGPT (sáng 28/8/2026 DB ghi 250 active + 10 chờ
+ * trong khi ChatGPT đang 253 + 7). Quyết định TIÊU TIỀN không được dựa vào bản
+ * sao khi bản gốc chỉ cách một cú click. Đọc tận nơi cũng là thứ duy nhất làm
+ * `workspace.seat_total` tươi lại — backend cố ý bỏ qua mọi số suy từ hint.
  */
 
 import { sleep } from "../../human";
@@ -129,6 +149,10 @@ function membersListReady(): boolean {
 
 
 /**
+ * ⚠️ LƯỚI ĐỠ, KHÔNG còn là đường chính (từ 28/8/2026). Chỉ chạy khi bước ĐẾM
+ * LỜI MỜI TẬN NƠI thất bại — không vào được tab, hoặc danh sách nhiều trang.
+ * Đường chính là `headroomFromPage`, toàn bộ bằng số đọc trên ChatGPT.
+ *
  * Chắc chắn còn thừa chỗ chưa? Chỉ dựa vào những gì ĐỌC ĐƯỢC MÀ KHÔNG mở hộp:
  * số thành viên in trên trang + cặp số dashboard gửi kèm.
  *
@@ -178,6 +202,59 @@ export function headroomWithoutModal(
     return { enough: false, total, occupied: null, free: null, source };
   const free = total - occupied;
   return { enough: free >= need + SEAT_HINT_SPARE, total, occupied, free, source };
+}
+
+/**
+ * CHỖ TRỐNG THẬT tính TOÀN BỘ bằng số ĐỌC TẬN NƠI trên ChatGPT — đường quyết
+ * định chính của bước chốt suất (user chốt 28/8/2026).
+ *
+ * Ba con số, tất cả đều của ChatGPT, không con nào của dashboard:
+ *
+ *   thẻ suất trên tab "Người dùng"   →  tổng = Σ total, đã gán = Σ assigned
+ *   "Business · 253 thành viên"      →  cận dưới của số người đã tham gia
+ *   tab "Lời mời đang chờ xử lý"     →  nợ suất, đếm từng dòng
+ *
+ * Ca mẫu (GPT1, 28/8/2026): 270 suất, đã gán 253, 7 lời mời chờ ⇒ đang chiếm
+ * 260 ⇒ còn 10 chỗ ⇒ mời thêm được, KHÔNG mua gì.
+ *
+ * `assigned` lấy bên LỚN HƠN giữa ô "Đã gán" và số thành viên in ở tiêu đề: hai
+ * số này cùng nguồn ChatGPT và bình thường bằng nhau, lệch là một bên vừa được
+ * vẽ lại trước bên kia. Lấy bên lớn thì cùng lắm là mở hộp thừa; lấy bên nhỏ là
+ * mời vào chỗ không có.
+ *
+ * KHÔNG có "dư thêm 1 cho chắc" như `headroomWithoutModal`: khoản dư đó sinh ra
+ * vì `seat_total` của dashboard có thể cũ. Ở đây mọi số đều vừa đọc trên trang
+ * nên `free >= need` là đủ — đúng như nhánh đọc trong hộp "Quản lý suất" vẫn làm.
+ *
+ * @param pendingScanned số lời mời đang chờ ĐẾM ĐƯỢC trên ChatGPT (đã loại email
+ *   của chính lệnh này). `null` = không đếm được ⇒ KHÔNG kết luận gì, caller
+ *   phải rơi về lưới đỡ.
+ * @returns `free === null` nghĩa là đường này không kết luận được.
+ */
+export function headroomFromPage(
+  need: number,
+  cards: SeatCardsReading | null,
+  pageMembers: number | null,
+  pendingScanned: number | null,
+): {
+  enough: boolean;
+  total: number | null;
+  assigned: number | null;
+  pending: number | null;
+  free: number | null;
+} {
+  if (!cards || pendingScanned === null) {
+    return { enough: false, total: null, assigned: null, pending: null, free: null };
+  }
+  const assigned = Math.max(cards.assigned, pageMembers ?? 0);
+  const free = freeSeatsWithPendingDebt(cards.total, assigned, pendingScanned);
+  return {
+    enough: free >= need,
+    total: cards.total,
+    assigned,
+    pending: pendingScanned,
+    free,
+  };
 }
 
 /**
@@ -253,25 +330,89 @@ export async function ensureSeatsForInvite(
     await sleep(1200);
   }
 
-  // ── ĐƯỜNG TẮT: thừa chỗ rõ ràng thì mời thẳng, KHÔNG mở hộp ─────────────
-  // Mở hộp "Quản lý suất" trước mỗi lần mời là chỗ hỏng nhiều nhất của luồng mời
-  // (24/8/2026: 8 task chết liên tiếp — 4 ca hộp không mở sau 15s, 4 ca bộ đếm
-  // lệch dòng tỉ lệ — trong khi workspace thừa suất). Trang đã in sẵn "146 thành
-  // viên"; dashboard gửi kèm tổng suất + số member chưa bị gỡ. Hai số đó nói còn
-  // dư thì không có lý do gì đụng vào hộp.
-  //
-  // Không đủ dư (hoặc dashboard chưa biết tổng suất) → rơi về đếm tận nơi như cũ.
+  // ── BƯỚC 1: SỐ THÀNH VIÊN + THẺ SUẤT, đọc thẳng trên trang ──────────────
+  // Cả hai đều in sẵn trên tab "Người dùng", không tốn cú bấm nào:
+  //   "Business · 253 thành viên"  →  `readMemberCountFromPage`
+  //   "Suất Tiêu chuẩn 270 · Đã gán 253/270"  →  `readSeatCardsFromPage`
   const pageMembers = readMemberCountFromPage();
-  // UI mới (26/8/2026) in sẵn hàng thẻ suất ngay trên tab "Người dùng" — số THẬT
-  // của ChatGPT, đọc không tốn cú bấm nào. Có nó thì đường tắt không còn phải
-  // tin vào `seat_total` của DB (vốn chỉ tươi sau mỗi lần đọc tận nơi).
   const pageCards = readSeatCardsFromPage();
-  const room = headroomWithoutModal(need, seatHint, pageMembers, pageCards);
-  if (room.enough) {
-    const fromPage = room.source === "page_cards" && pageCards !== null;
+
+  // ── BƯỚC 2: ĐẾM LỜI MỜI ĐANG CHỜ TẬN NƠI — LUÔN LUÔN (user chốt 28/8/2026) ─
+  // Trước đây bước này chỉ chạy khi số của dashboard nói "sắp hết chỗ"; dư nhiều
+  // thì mời thẳng bằng số DB. Nhưng DB chỉ là bản sao và luôn trễ một nhịp: sáng
+  // 28/8/2026 GPT1 có 253 người + 7 lời mời chờ trên ChatGPT trong khi DB ghi 250
+  // active + 10 chờ. Quyết định TIÊU TIỀN không được dựa vào bản sao khi bản gốc
+  // chỉ cách một cú click.
+  //
+  // Đọc tận nơi cũng là thứ DUY NHẤT làm dashboard tươi lại: số đọc trên trang
+  // được backend ghi về `workspace.seat_total` (`_absorb_seat_reading`), còn số
+  // tự-xác-nhận-từ-hint thì bị bỏ qua — đúng ra phải thế, kẻo số cũ nuôi số cũ.
+  const scannedPending = await countPendingInvites(inviteEmails);
+  // Quay lại tab "Người dùng": thẻ suất và nút "Quản lý số suất" chỉ có ở đó.
+  await navigateTo(MEMBERS_PATH, membersListReady, 10_000);
+  if (/[?&]tab=(invites|requests)/.test(location.search)) {
+    history.pushState({}, "", MEMBERS_PATH);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await sleep(1200);
+  }
+  // Thẻ suất đọc lại sau khi về tab: lần đọc mới nhất mới là số của thời điểm
+  // quyết định. Không đọc được (SPA chưa vẽ xong) thì giữ lần đọc đầu.
+  const cardsNow = readSeatCardsFromPage() ?? pageCards;
+
+  // ── BƯỚC 3: ĐỦ CHỖ theo số ĐỌC TẬN NƠI → mời thẳng, KHÔNG mở hộp ────────
+  const onPage = headroomFromPage(
+    need,
+    cardsNow,
+    pageMembers,
+    scannedPending.authoritative ? scannedPending.emails.length : null,
+  );
+  if (onPage.enough) {
     console.log(
-      `${LOG} bỏ qua hộp 'Quản lý suất': tổng ${room.total} suất ` +
-        `(${fromPage ? `thẻ trên trang — ${describeSeatCards(pageCards!)}` : "số dashboard"}), ` +
+      `${LOG} đọc tận nơi: ${describeSeatCards(cardsNow!)}; ` +
+        `${onPage.pending} lời mời đang chờ trên ChatGPT → trống ${onPage.free}, ` +
+        `cần ${need}. Mời thẳng, không mở hộp 'Quản lý suất'.`,
+    );
+    return {
+      ok: true,
+      skipped: false,
+      data: {
+        // Số ĐỌC TẬN NƠI → backend được phép ghi về workspace.
+        seat_check: "ok_page_cards",
+        seat_total: onPage.total,
+        seat_assigned: onPage.assigned,
+        seat_free: onPage.free,
+        seat_free_raw: cardsNow!.free,
+        seat_needed: need,
+        seat_pending_debt: onPage.pending,
+        seat_pending_source: "chatgpt_tab",
+        seat_pending_scanned: onPage.pending,
+        seat_pending_hint: seatHint?.pending ?? null,
+        seat_page_members: pageMembers,
+        seat_hint_occupied: seatHint?.occupied ?? null,
+        seat_source: "page_cards",
+        seat_cards: cardsNow!.cards,
+        // Lượt ĐỌC KIỂM sau khi background tải lại trang: suất đã mua ở lượt
+        // trước, phải ghi nhận để dashboard không tưởng lệnh này mua 0 suất.
+        seat_purchased: opts.alreadyPurchased ?? 0,
+      },
+    };
+  }
+
+  // ── LƯỚI ĐỠ: đếm tận nơi KHÔNG xong (không vào được tab / danh sách nhiều
+  // trang) mà số dashboard nói còn dư hẳn → vẫn được mời thẳng như trước.
+  // Chỉ chạy khi bước đọc tận nơi thất bại: `onPage.free === null`. Đủ chỗ theo
+  // số đọc tận nơi đã trả ở trên; THIẾU chỗ theo số đọc tận nơi thì phải xuống
+  // nhánh mua, không được để số DB rộng rãi hơn lật ngược kết luận.
+  const room =
+    onPage.free === null
+      ? headroomWithoutModal(need, seatHint, pageMembers, cardsNow)
+      : { enough: false, total: null, occupied: null, free: null, source: null };
+  if (room.enough) {
+    const fromPage = room.source === "page_cards" && cardsNow !== null;
+    console.log(
+      `${LOG} KHÔNG đếm được lời mời chờ tận nơi (${scannedPending.reason}) → dùng số ` +
+        `dashboard: tổng ${room.total} suất ` +
+        `(${fromPage ? `thẻ trên trang — ${describeSeatCards(cardsNow!)}` : "số dashboard"}), ` +
         `đang chiếm ${room.occupied} (trang ${pageMembers ?? "?"}, dashboard ` +
         `${seatHint?.occupied ?? "?"}) → trống ${room.free}, cần ${need}. Mời thẳng.`,
     );
@@ -286,14 +427,16 @@ export async function ensureSeatsForInvite(
         seat_total: room.total,
         // Khi số từ thẻ: `assigned` là con số ChatGPT tự khai. Khi từ hint: giữ
         // nguyên hành vi cũ (số đang chiếm suy ra được).
-        seat_assigned: fromPage ? pageCards!.assigned : room.occupied,
+        seat_assigned: fromPage ? cardsNow!.assigned : room.occupied,
         seat_free: room.free,
         seat_needed: need,
         seat_occupied_used: room.occupied,
         seat_page_members: pageMembers,
         seat_hint_occupied: seatHint?.occupied ?? null,
+        seat_pending_source: "dashboard",
+        seat_pending_scan_skipped: scannedPending.reason,
         seat_source: room.source,
-        seat_cards: pageCards?.cards ?? null,
+        seat_cards: cardsNow?.cards ?? null,
         // Lượt ĐỌC KIỂM sau khi background tải lại trang: suất đã mua ở lượt
         // trước, phải ghi nhận để dashboard không tưởng lệnh này mua 0 suất.
         seat_purchased: opts.alreadyPurchased ?? 0,
@@ -301,15 +444,16 @@ export async function ensureSeatsForInvite(
     };
   }
 
-  // ── ĐANG CHẠY SONG SONG mà đường tắt không chốt được → TRẢ KHOÁ, đừng đếm ──
-  // Tới đây nghĩa là số của dashboard KHÔNG đủ để khẳng định còn dư chỗ. Với lệnh
-  // chạy một mình thì đây là lúc mở hộp đếm tận nơi rồi mua bù. Nhưng lệnh này
-  // đang chạy SONG SONG với một lệnh khác (`noPurchase`): số đếm được sẽ CŨ ngay
-  // khi lệnh kia mời xong, và hai luồng cùng mua theo cùng một con số là mua đúp
-  // bằng tiền thật.
+  // ── ĐANG CHẠY SONG SONG mà chưa chốt được đủ chỗ → TRẢ KHOÁ, đừng mở hộp ──
+  // Tới đây nghĩa là số đọc tận nơi (và cả số dashboard) KHÔNG đủ để khẳng định
+  // còn dư chỗ. Với lệnh chạy một mình thì đây là lúc mở hộp "Quản lý suất" rồi
+  // mua bù. Nhưng lệnh này đang chạy SONG SONG với một lệnh khác (`noPurchase`):
+  // số đếm được sẽ CŨ ngay khi lệnh kia mời xong, và hai luồng cùng mua theo cùng
+  // một con số là mua đúp bằng tiền thật.
   //
-  // Dừng ở ĐÂY là chỗ dừng rẻ nhất và sạch nhất: chưa mở hộp nào, chưa bật toggle
-  // nào, chưa bấm gì. Background nâng khoá suất lên độc quyền rồi gọi lại y hệt.
+  // Dừng ở ĐÂY vẫn là chỗ dừng sạch nhất: mới chỉ ĐỌC (thẻ suất + tab lời mời),
+  // chưa mở hộp nào, chưa bật toggle nào, chưa bấm gì đổi trạng thái. Background
+  // nâng khoá suất lên độc quyền rồi gọi lại y hệt.
   if (opts.noPurchase) {
     console.log(
       `${LOG} đang chạy song song mà chỗ trống không chắc (trống ${room.free ?? "?"}, ` +
@@ -331,24 +475,10 @@ export async function ensureSeatsForInvite(
     };
   }
 
-  // ── NỢ SUẤT: đếm TẬN NƠI, đừng tin DB ──────────────────────────────────
-  // Tới đây là đã phải mở hộp "Quản lý suất" rồi — chậm sẵn, nên thêm một cú
-  // click sang tab "Lời mời đang chờ" để đếm cho ĐÚNG là đáng. Dashboard có thể
-  // đang giữ bản ghi "Chờ tham gia" mà lời mời trên ChatGPT đã chết — chiều lệch
-  // đó không tự lành nếu đồng bộ chỉ chạy scope 'members'. Mỗi bản ghi thừa ăn
-  // một suất trong phép tính (xem `count-pending-invites.ts`).
-  //
-  // Đọc không được thì rơi về số của DB: nó đếm THỪA, mà thừa thì cùng lắm là
-  // mở hộp / mua dư một suất, còn thiếu là mời mù vào chỗ không có.
-  const scannedPending = await countPendingInvites(inviteEmails);
-  // Quay lại tab "Người dùng": nút "Quản lý số suất" chỉ có ở đó.
-  await navigateTo(MEMBERS_PATH, membersListReady, 10_000);
-  if (/[?&]tab=(invites|requests)/.test(location.search)) {
-    history.pushState({}, "", MEMBERS_PATH);
-    window.dispatchEvent(new PopStateEvent("popstate"));
-    await sleep(1200);
-  }
-
+  // ── MỞ HỘP "QUẢN LÝ SUẤT" ───────────────────────────────────────────────
+  // Chỉ tới đây mới đụng vào hộp: hoặc thẻ trên trang không đọc được, hoặc số
+  // đọc tận nơi nói THIẾU chỗ và phải mua bù. Nợ suất của lời mời đang chờ đã
+  // đếm tận nơi ở BƯỚC 2 (`scannedPending`) — không đếm lại.
   const check = await checkSeatAvailability();
 
   // ── Workspace UI cũ → giữ nguyên hành vi trước đây ──────────────────────

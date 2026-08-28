@@ -2995,6 +2995,15 @@ async function runOnceOnSlot(
     // PHẢI mang sang response của Phase 2 (xem chỗ gán `response = verifyResp`), nếu
     // không thì `decideInviteOutcome` luôn nhận "unknown".
     const submitEvidence = submitData.submit_evidence;
+    // ⚠️ SỐ SUẤT cũng CHỈ có ở Phase 1 — và `response = verifyResp` bên dưới ghi
+    // đè sạch `data` của Phase 1. Chụp lại ngay đây rồi gắp sang kết quả cuối.
+    //
+    // CA THẬT 28/8/2026 — GPT1: lệnh mời 10:08 về backend TRẮNG mọi trường
+    // `seat_*` nên `_absorb_seat_reading` không có gì để ghi; dashboard đứng ở
+    // 257 suất trong khi ChatGPT đã 270. Đây là nhánh đi của GẦN NHƯ MỌI lệnh
+    // mời (submit xong là F5 verify), nặng hơn hẳn nhánh mời-ngoài-tên-miền vốn
+    // đã được vá bằng đúng cách này (xem `invite-seat-fields.ts`).
+    const seatFieldsFromSubmit = pickSeatFields(submitData);
     // Fallback khi verify không chạy được: submit-OK → COMPLETED với
     // verify_scrape_failed (hành vi cũ); salvage → GIỮ NGUYÊN lỗi gốc (không có
     // bằng chứng invite đã đi thì không được báo thành công).
@@ -3208,6 +3217,20 @@ async function runOnceOnSlot(
           `[autogpt-runner] SALVAGE THÀNH CÔNG: ${verified.length}/${request.emails.length} email xác nhận đã mời dù Phase 1 mất kết nối — báo COMPLETED thay vì FAILED oan.`,
         );
       }
+    }
+
+    // Gắp SỐ SUẤT của Phase 1 sang kết quả cuối — làm SAU cùng để mọi nhánh trên
+    // (verify OK, scrape fail, salvage giữ lỗi gốc) đều mang được số về backend.
+    // Khoá do Phase 2 tự sinh vẫn thắng: nó là lần đọc mới hơn.
+    if (Object.keys(seatFieldsFromSubmit).length > 0) {
+      response = withExtraData(response, seatFieldsFromSubmit);
+      console.log(
+        `[autogpt-runner] invite F5-verify: gắp ${Object.keys(seatFieldsFromSubmit).length} ` +
+          `trường số liệu suất từ Phase 1 sang kết quả cuối ` +
+          `(tổng=${String(seatFieldsFromSubmit.seat_total ?? "?")}, ` +
+          `đã gán=${String(seatFieldsFromSubmit.seat_assigned ?? "?")}, ` +
+          `mua thêm=${String(seatFieldsFromSubmit.seat_purchased ?? 0)})`,
+      );
     }
   }
 
