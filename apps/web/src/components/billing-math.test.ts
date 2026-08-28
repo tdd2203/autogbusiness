@@ -194,6 +194,67 @@ describe("computeBillingCycle", () => {
     expect(c.fullMonthPerSlotWithFee).toBe(row.monthlyPerSeat);
   });
 
+  describe("phí ngân hàng theo % của workspace", () => {
+    // Ca thật GPT1: hoá đơn 43.269.050 đ, phí NH nhập tay 475.960 đ = đúng 1,1%.
+    const REAL = baseInvoice({
+      amount_vnd: 43269050,
+      total_vnd: 43269050,
+      quantity: 151,
+      unit_price_vnd: 260500,
+    });
+
+    it("% thay cho việc gõ số tiền: phí = % × số tiền hoá đơn", () => {
+      const c = computeBillingCycle([REAL], null, TODAY, null, 1.1);
+      expect(c.totalCycleFees).toBe(475960); // khớp số phí thật đã nhập tay
+      expect(c.totalCyclePaidWithFees).toBe(43269050 + 475960);
+      expect(c.feeSeats).toBe(151);
+      expect(c.feePerSeat).toBe(Math.round(475960 / 151));
+    });
+
+    it("% áp cho MỌI hoá đơn, kể cả hoá đơn chưa từng nhập phí tay", () => {
+      const second = baseInvoice({
+        date: "2026-06-26T00:00:00Z",
+        invoice_number: "MSNS6RGC-0025",
+        amount_vnd: 152778,
+        total_vnd: 152778,
+        quantity: 1,
+        unit_price_vnd: null,
+      });
+      const c = computeBillingCycle([REAL, second], null, TODAY, null, 1.1);
+      expect(c.totalCycleFees).toBe(
+        Math.round((43269050 * 1.1) / 100) + Math.round((152778 * 1.1) / 100),
+      );
+    });
+
+    it("có % thì BỎ QUA phí số tiền nhập tay cũ của hoá đơn", () => {
+      const c = computeBillingCycle(
+        [baseInvoice({ service_fee_vnd: 999999 })],
+        null,
+        TODAY,
+        null,
+        1.1,
+      );
+      expect(c.totalCycleFees).toBe(Math.round((10029250 * 1.1) / 100));
+    });
+
+    it("chưa đặt % → vẫn dùng phí nhập tay như trước", () => {
+      const c = computeBillingCycle(
+        [baseInvoice({ service_fee_vnd: 578045 })],
+        null,
+        TODAY,
+        null,
+        null,
+      );
+      expect(c.totalCycleFees).toBe(578045);
+    });
+
+    it("dòng hoá đơn tính cùng một phí với tổng chu kỳ", () => {
+      const c = computeBillingCycle([REAL], null, TODAY, null, 1.1);
+      const row = invoiceSeatPricing(REAL, TODAY, 1.1);
+      expect(c.fullMonthPerSlotWithFee).toBe(row.monthlyPerSeat);
+    });
+  });
+
   it("không có phí → feePerSeat = 0, giá gồm phí = giá gồm VAT", () => {
     const c = computeBillingCycle([baseInvoice()], null, TODAY);
     expect(c.feePerSeat).toBe(0);

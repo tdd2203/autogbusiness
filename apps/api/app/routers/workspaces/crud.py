@@ -201,6 +201,18 @@ def update_workspace(
             changes[field] = {"before": getattr(ws, field), "after": new_val}
             setattr(ws, field, new_val)
 
+    # bank_fee_percent: cho phép cả set lẫn XOÁ (gửi null/0 = bỏ tính phí theo %,
+    # quay lại phí nhập tay từng hoá đơn) → phải đọc theo model_fields_set chứ không
+    # dựa vào "khác None" như vòng lặp trên.
+    if "bank_fee_percent" in body.model_fields_set:
+        new_pct = body.bank_fee_percent or None
+        if new_pct != ws.bank_fee_percent:
+            changes["bank_fee_percent"] = {
+                "before": ws.bank_fee_percent,
+                "after": new_pct,
+            }
+            ws.bank_fee_percent = new_pct
+
     # verified_domain: cho phép cả set lẫn xoá (gửi "" để xoá). Chuẩn hoá trước
     # khi so sánh. Chỉ áp dụng khi client thực sự gửi field này.
     if "verified_domain" in body.model_fields_set:

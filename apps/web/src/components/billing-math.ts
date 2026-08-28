@@ -25,6 +25,32 @@ import type { BillingInvoice } from "../types";
 
 const CYCLE_DAYS = 30;
 
+/** Số tiền THỰC CHUYỂN của 1 hoá đơn (gồm VAT) — gốc để tính phí ngân hàng. */
+export function invoiceBaseVnd(inv: BillingInvoice): number {
+  return inv.total_vnd ?? inv.amount_vnd ?? 0;
+}
+
+/**
+ * Phí ngân hàng hiệu lực của 1 hoá đơn (chốt user 2026-08-27).
+ *
+ * Phí NH luôn là một tỉ lệ % cố định trên số tiền chuyển (ca thật GPT1: 475.960 /
+ * 43.269.050 và 578.045 / 52.549.578 đều đúng 1,1%). Nên workspace nhập % MỘT LẦN
+ * (`bank_fee_percent`) là mọi hoá đơn tự có phí — không phải gõ số tiền cho từng
+ * hoá đơn nữa (gõ sót một dòng là tổng thực trả hụt đúng phần phí đó, im lặng).
+ *
+ * Chưa đặt % → giữ hành vi cũ: dùng `service_fee_vnd` nhập tay của chính hoá đơn.
+ * Bản backend của công thức này ở `apps/api/app/billing_fee.py` — sửa thì sửa cả hai.
+ */
+export function invoiceFeeVnd(
+  inv: BillingInvoice,
+  bankFeePercent: number | null | undefined,
+): number {
+  if (bankFeePercent) {
+    return Math.round((invoiceBaseVnd(inv) * bankFeePercent) / 100);
+  }
+  return inv.service_fee_vnd ?? 0;
+}
+
 export function daysBetween(from: Date, to: Date): number {
   return Math.round((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24));
 }
@@ -91,7 +117,7 @@ export type BillingCycle = {
   totalSeats: number | null;
   /** Tổng ĐÃ CHI trong chu kỳ (gồm VAT) = Σ total của hoá đơn Paid trong chu kỳ. */
   totalCyclePaidWithVat: number | null;
-  /** Tổng PHÍ ngân hàng (nhập tay) của hoá đơn trong chu kỳ. */
+  /** Tổng PHÍ ngân hàng của hoá đơn trong chu kỳ (theo % workspace, fallback nhập tay). */
   totalCycleFees: number | null;
   /** Tổng THỰC TRẢ chu kỳ = totalCyclePaidWithVat + tổng phí ngân hàng. */
   totalCyclePaidWithFees: number | null;
@@ -208,6 +234,9 @@ export function computeBillingCycle(
   /** Số seat HIỆN TẠI (từ tab Kế hoạch) — dùng cho dự kiến/ước tính khi chu kỳ
    * mới chưa có hoá đơn. Bỏ trống → suy từ quantity hoá đơn. */
   seatCount: number | null = null,
+  /** Phí ngân hàng theo % của workspace (vd 1.1). Bỏ trống → dùng phí nhập tay
+   * từng hoá đơn như trước. */
+  bankFeePercent: number | null = null,
 ): BillingCycle {
   const base: BillingCycle = {
     note: "no_invoices",
@@ -357,7 +386,7 @@ export function computeBillingCycle(
       0,
     );
     const totalCycleFees = cycleInvoices.reduce(
-      (sum, inv) => sum + (inv.service_fee_vnd ?? 0),
+      (sum, inv) => sum + invoiceFeeVnd(inv, bankFeePercent),
       0,
     );
     const commonPartial = {
@@ -450,9 +479,10 @@ export function computeBillingCycle(
     (sum, inv) => sum + (inv.total_vnd ?? inv.amount_vnd ?? 0),
     0,
   );
-  // Phí ngân hàng nhập tay (ngoài Stripe) → cộng vào tổng thực trả chu kỳ.
+  // Phí ngân hàng (ngoài Stripe) → cộng vào tổng thực trả chu kỳ. Có % workspace
+  // thì mọi hoá đơn đều có phí; chưa có % thì chỉ hoá đơn nhập tay mới có.
   const totalCycleFees = cycleInvoices.reduce(
-    (sum, inv) => sum + (inv.service_fee_vnd ?? 0),
+    (sum, inv) => sum + invoiceFeeVnd(inv, bankFeePercent),
     0,
   );
   const totalCyclePaidWithFees = totalCyclePaidWithVat + totalCycleFees;
@@ -466,7 +496,7 @@ export function computeBillingCycle(
   let feeSum = 0;
   let feeSeats = 0;
   for (const inv of cycleInvoices) {
-    const fee = inv.service_fee_vnd ?? 0;
+    const fee = invoiceFeeVnd(inv, bankFeePercent);
     if (fee > 0 && inv.quantity != null && inv.quantity > 0) {
       feeSum += fee;
       feeSeats += inv.quantity;
@@ -534,6 +564,8 @@ export type InvoiceSeatPricing = {
 export function invoiceSeatPricing(
   inv: BillingInvoice,
   today: Date = new Date(),
+  /** Phí ngân hàng theo % của workspace (vd 1.1); bỏ trống → phí nhập tay của hoá đơn. */
+  bankFeePercent: number | null = null,
 ): InvoiceSeatPricing {
   const qty = inv.quantity;
   const unit = inv.unit_price_vnd;
@@ -544,8 +576,7 @@ export function invoiceSeatPricing(
     inv.vat_vnd != null && inv.subtotal_vnd
       ? inv.vat_vnd / inv.subtotal_vnd
       : 0.1;
-  const feePerSeat =
-    inv.service_fee_vnd != null ? Math.round(inv.service_fee_vnd / qty) : 0;
+  const feePerSeat = Math.round(invoiceFeeVnd(inv, bankFeePercent) / qty);
   const monthlyPerSeat = Math.round(unit * (1 + vatRate)) + feePerSeat;
 
   let remainingPerSeat: number | null = null;

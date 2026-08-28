@@ -14,7 +14,9 @@ export type BillingInvoice = {
   period_start?: string | null; // ISO date — đầu chu kỳ dịch vụ
   period_end?: string | null; // ISO date — cuối chu kỳ = renewal
   invoice_number?: string | null;
-  // Phí dịch vụ ngân hàng (ngoài Stripe) admin NHẬP TAY — cộng vào tổng thực trả.
+  // Phí dịch vụ ngân hàng (ngoài Stripe) admin NHẬP TAY cho RIÊNG hoá đơn này.
+  // CHỈ còn dùng khi workspace chưa đặt `bank_fee_percent` — có % thì phí mọi hoá
+  // đơn tính theo % (xem `invoiceFeeVnd` trong billing-math.ts).
   service_fee_vnd?: number | null;
 };
 
@@ -37,6 +39,9 @@ export type Workspace = {
   /** Ngôn ngữ giao diện ChatGPT admin của workspace (cấu hình HỆ THỐNG, super-admin
    *  đặt ở Cài đặt). TÁCH khỏi ngôn ngữ HIỂN THỊ dashboard (per-user). */
   chatgpt_locale: "vi" | "en" | "zh";
+  /** Phí ngân hàng theo % số tiền chuyển (vd 1.1 = 1,1%) — nhập MỘT LẦN, áp cho mọi
+   *  hoá đơn của workspace. null = chưa đặt → dùng phí nhập tay từng hoá đơn. */
+  bank_fee_percent: number | null;
   created_at: string;
   updated_at: string;
 };

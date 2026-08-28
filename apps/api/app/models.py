@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Identity,
     Index,
@@ -268,6 +269,12 @@ class Workspace(Base):
     finance_start_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Phí dịch vụ ngân hàng tính theo % số tiền chuyển (vd 1.1 = 1,1%). Nhập MỘT
+    # LẦN cho cả workspace, áp cho MỌI hoá đơn — thay cho việc gõ số tiền phí cho
+    # từng hoá đơn (gõ sót là tổng thực trả + báo cáo CHI hụt im lặng). NULL = chưa
+    # đặt → quay lại dùng `service_fee_vnd` nhập tay trong từng dòng hoá đơn.
+    # Công thức dùng chung ở `app/billing_fee.py`.
+    bank_fee_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Tên miền đã xác minh của workspace (vd "ndaigroup.org") — extension quét 1
     # lần từ /admin/identity rồi lưu. Dùng để quyết định có cần bật toggle "Cho
     # phép lời mời ngoài tên miền" khi invite: nếu MỌI email thuộc domain này thì

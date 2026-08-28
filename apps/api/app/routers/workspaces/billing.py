@@ -349,6 +349,11 @@ def set_invoice_fee(
 ) -> Workspace:
     """Super-admin nhập/xoá phí dịch vụ ngân hàng cho 1 hoá đơn trong chu kỳ.
 
+    ĐƯỜNG LÙI từ 2026-08-27: phí ngân hàng giờ nhập MỘT LẦN theo % cho cả workspace
+    (`Workspace.bank_fee_percent`) — workspace đã đặt % thì giá trị gán ở đây không
+    còn được dùng để tính tiền (xem `app/billing_fee.py`), web cũng khoá ô nhập.
+    Endpoint vẫn giữ cho workspace chưa đặt % và cho dữ liệu cũ.
+
     Phí này KHÔNG scrape được (bank charge ngoài Stripe) nên nhập tay; web cộng vào
     "tổng thực trả chu kỳ". Ghi thẳng vào JSONB `billing_invoices` (không migration);
     được bảo toàn khi extension sync đè (xem merge ở push_billing_sync).

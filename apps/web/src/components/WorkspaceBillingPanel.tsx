@@ -24,6 +24,8 @@ import {
   computeBillingCycle,
   cycleStartFromRenewal,
   daysBetween,
+  invoiceBaseVnd,
+  invoiceFeeVnd,
   invoiceSeatPricing,
   sortInvoicesForDisplay,
 } from "./billing-math";
@@ -43,12 +45,16 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
   const qc = useQueryClient();
   const canEditFee = !!user?.is_super_admin;
   const invoices = workspace.billing_invoices ?? [];
+  // Phí ngân hàng theo % của workspace — nhập MỘT LẦN, áp cho mọi hoá đơn. Còn
+  // null thì mọi phép tính rơi về phí nhập tay từng dòng như trước.
+  const feePercent = workspace.bank_fee_percent ?? null;
 
   const cycle = computeBillingCycle(
     invoices,
     workspace.renewal_date,
     undefined,
     workspace.seat_used ?? workspace.seat_total ?? null,
+    feePercent,
   );
   const {
     note,
@@ -89,6 +95,22 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
       }),
     onSuccess: () => {
       toast.success(t("billing.feeSaved"));
+      qc.invalidateQueries({ queryKey: ["workspace", workspace.id] });
+      qc.invalidateQueries({ queryKey: ["workspaces"] });
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : String(e)),
+  });
+
+  // Nhập/xoá % phí ngân hàng cho CẢ workspace (super-admin). Gửi null = bỏ tính
+  // theo % (quay lại phí nhập tay từng hoá đơn).
+  const pctMut = useMutation({
+    mutationFn: (pct: number | null) =>
+      api(`/api/v1/workspaces/${workspace.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ bank_fee_percent: pct }),
+      }),
+    onSuccess: () => {
+      toast.success(t("billing.bankFeePercentSaved"));
       qc.invalidateQueries({ queryKey: ["workspace", workspace.id] });
       qc.invalidateQueries({ queryKey: ["workspaces"] });
     },
@@ -150,6 +172,15 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
             {t("billing.estimatedBadge")}
           </span>
         )}
+        <BankFeePercent
+          percent={feePercent}
+          canEdit={canEditFee}
+          label={t("billing.bankFeePercentLabel")}
+          placeholder={t("billing.bankFeePercentPlaceholder")}
+          hint={t("billing.bankFeePercentHint")}
+          saving={pctMut.isPending}
+          onSave={(pct) => pctMut.mutate(pct)}
+        />
       </div>
 
       <div
@@ -322,7 +353,9 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
                   monthTooltip={t("billing.colPerSeatMonthTooltip")}
                   remainingTooltip={t("billing.colPerSeatRemainingTooltip")}
                   canEditFee={canEditFee}
+                  feePercent={feePercent}
                   feePlaceholder={t("billing.feePlaceholder")}
+                  feeFromPercentTooltip={t("billing.feeFromPercentTooltip")}
                   savingFee={feeMut.isPending}
                   onSaveFee={(fee) => feeMut.mutate({ inv, fee })}
                 />
@@ -344,7 +377,9 @@ function InvoiceRow({
   monthTooltip,
   remainingTooltip,
   canEditFee,
+  feePercent,
   feePlaceholder,
+  feeFromPercentTooltip,
   savingFee,
   onSaveFee,
 }: {
@@ -356,20 +391,26 @@ function InvoiceRow({
   monthTooltip: string;
   remainingTooltip: string;
   canEditFee: boolean;
+  feePercent: number | null;
   feePlaceholder: string;
+  feeFromPercentTooltip: string;
   savingFee: boolean;
   onSaveFee: (fee: number | null) => void;
 }) {
   const scraped = inv.detail_scraped === true;
   const qty = inv.quantity;
-  // Thực trả = số tiền hoá đơn (gồm VAT) + phí ngân hàng nhập tay. Khớp logic
-  // totalCyclePaidWithFees ở billing-math (ưu tiên total_vnd, fallback amount_vnd).
-  const actual =
-    (inv.total_vnd ?? inv.amount_vnd ?? 0) + (inv.service_fee_vnd ?? 0);
+  // Thực trả = số tiền hoá đơn (gồm VAT) + phí ngân hàng (theo % workspace, fallback
+  // nhập tay). Khớp logic totalCyclePaidWithFees ở billing-math.
+  const fee = invoiceFeeVnd(inv, feePercent);
+  const actual = invoiceBaseVnd(inv) + fee;
   // Giá/seat của RIÊNG hoá đơn này: giá tháng (đơn giá×VAT + phí/seat, loại
   // proration) + giá cho ngày còn lại (÷30, kẹp ≤ giá tháng). Tự tính theo tỉ giá
   // của chính hoá đơn. Cập nhật ngay khi nhập phí NH.
-  const { monthlyPerSeat, remainingPerSeat } = invoiceSeatPricing(inv);
+  const { monthlyPerSeat, remainingPerSeat } = invoiceSeatPricing(
+    inv,
+    undefined,
+    feePercent,
+  );
   return (
     <tr>
       <td>{formatDate(inv.date)}</td>
@@ -415,9 +456,17 @@ function InvoiceRow({
       </td>
       <td style={{ textAlign: "right" }}>
         <FeeCell
-          fee={inv.service_fee_vnd ?? null}
-          canEdit={canEditFee}
+          fee={feePercent ? fee : (inv.service_fee_vnd ?? null)}
+          // Có % cho cả workspace → phí là số TỰ TÍNH, không cho gõ tay từng dòng.
+          canEdit={canEditFee && !feePercent}
           placeholder={feePlaceholder}
+          autoTooltip={
+            feePercent
+              ? feeFromPercentTooltip
+                  .replace("{pct}", String(feePercent))
+                  .replace("{base}", VND.format(invoiceBaseVnd(inv)))
+              : undefined
+          }
           saving={savingFee}
           onSave={onSaveFee}
         />
@@ -450,20 +499,25 @@ function InvoiceRow({
 }
 
 /**
- * Ô nhập phí ngân hàng cho 1 hoá đơn. Super-admin → input số (chấp nhận dấu chấm/
- * phẩy, chỉ giữ chữ số); rỗng = xoá phí. Lưu khi blur/Enter, chỉ gọi API khi đổi.
- * Người không phải super-admin → chỉ xem.
+ * Ô nhập/xem phí ngân hàng của 1 hoá đơn.
+ *
+ * Workspace đã đặt % phí → ô này CHỈ ĐỌC, hiện số tự tính (`autoTooltip` giải
+ * thích công thức) vì phí không còn gõ theo từng hoá đơn nữa. Chưa đặt % và là
+ * super-admin → input số như cũ (chấp nhận dấu chấm/phẩy, chỉ giữ chữ số; rỗng =
+ * xoá phí, lưu khi blur/Enter, chỉ gọi API khi đổi).
  */
 function FeeCell({
   fee,
   canEdit,
   placeholder,
+  autoTooltip,
   saving,
   onSave,
 }: {
   fee: number | null;
   canEdit: boolean;
   placeholder: string;
+  autoTooltip?: string;
   saving: boolean;
   onSave: (fee: number | null) => void;
 }) {
@@ -480,6 +534,7 @@ function FeeCell({
           fontFamily: "var(--font-mono)",
           color: fee != null ? "var(--ink-2)" : "var(--ink-3)",
         }}
+        title={autoTooltip}
       >
         {fee != null ? VND.format(fee) : "—"}
       </span>
@@ -518,6 +573,98 @@ function FeeCell({
         fontFamily: "var(--font-mono)",
       }}
     />
+  );
+}
+
+/**
+ * Ô nhập % phí ngân hàng cho CẢ workspace — nhập một lần, mọi hoá đơn tự có phí.
+ *
+ * Trước đây phí phải gõ theo SỐ TIỀN cho từng hoá đơn: sót một dòng là "tổng thực
+ * trả" và báo cáo CHI hụt đúng phần phí đó mà không có gì báo. Phí ngân hàng vốn
+ * là tỉ lệ cố định (ca thật GPT1 = 1,1%) nên nhập % là đủ.
+ *
+ * Nhận cả "1,1" lẫn "1.1"; rỗng = xoá % (quay lại phí nhập tay từng hoá đơn).
+ */
+function BankFeePercent({
+  percent,
+  canEdit,
+  label,
+  placeholder,
+  hint,
+  saving,
+  onSave,
+}: {
+  percent: number | null;
+  canEdit: boolean;
+  label: string;
+  placeholder: string;
+  hint: string;
+  saving: boolean;
+  onSave: (pct: number | null) => void;
+}) {
+  const [val, setVal] = useState(percent != null ? String(percent) : "");
+  useEffect(() => {
+    setVal(percent != null ? String(percent) : "");
+  }, [percent]);
+
+  if (!canEdit) {
+    if (percent == null) return null;
+    return (
+      <span
+        className="mono"
+        style={{ fontSize: 12, color: "var(--ink-3)", marginLeft: "auto" }}
+        title={hint}
+      >
+        {label}: {percent}%
+      </span>
+    );
+  }
+
+  const commit = () => {
+    const cleaned = val.replace(",", ".").replace(/[^\d.]/g, "");
+    const num = cleaned === "" ? null : Number(cleaned);
+    const next = num == null || !Number.isFinite(num) || num <= 0 ? null : num;
+    if (next === (percent ?? null)) {
+      setVal(percent != null ? String(percent) : "");
+      return;
+    }
+    onSave(next);
+  };
+
+  return (
+    <span
+      className="flex items-center"
+      style={{
+        gap: 6,
+        fontSize: 12,
+        color: "var(--ink-3)",
+        marginLeft: "auto", // dạt về mép phải, tách khỏi tiêu đề + badge
+      }}
+      title={hint}
+    >
+      {label}
+      <input
+        type="text"
+        inputMode="decimal"
+        value={val}
+        placeholder={placeholder}
+        disabled={saving}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        }}
+        className="form-input"
+        style={{
+          width: 64,
+          padding: "2px 6px",
+          fontSize: 12.5,
+          textAlign: "right",
+          fontFamily: "var(--font-mono)",
+        }}
+      />
+      %
+    </span>
   );
 }
 

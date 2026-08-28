@@ -18,8 +18,8 @@ và chi phí trong tháng đó". Không phân bổ theo ngày:
     không phải lúc tiền về. Ngày 13/07/2026 — SePay go-live — có 172 kỳ được chốt
     cùng lúc, trong đó 44,7tr thuộc về tháng 5 và 6; lấy paid_at thì tháng 7 phình
     lên 122tr còn tháng 5, 6 rỗng. start_at là dữ liệu thật, không đổi theo thao tác.
-  - CHI = Σ TRỌN tiền hoá đơn Stripe 'paid' (total_vnd gồm VAT + phí ngân hàng nhập
-    tay) có NGÀY HOÁ ĐƠN nằm trong [from, to] VÀ >= workspace.finance_start_at (mốc
+  - CHI = Σ TRỌN tiền hoá đơn Stripe 'paid' (total_vnd gồm VAT + phí ngân hàng: theo
+    % của workspace nếu đã đặt, không thì phí nhập tay từng hoá đơn) có NGÀY HOÁ ĐƠN nằm trong [from, to] VÀ >= workspace.finance_start_at (mốc
     bắt đầu tính CHI — hoá đơn hệ thống cũ / thanh toán ngoài trước mốc bị loại).
   - LỢI NHUẬN = THU − CHI.
 
@@ -39,6 +39,7 @@ from fastapi import Depends, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.billing_fee import invoice_fee_vnd
 from app.deps import get_session, require_super_admin
 from app.models import Member, User, Workspace
 from app.schemas import (
@@ -168,14 +169,14 @@ def _parse_inv_date(inv: dict, key: str) -> date | None:
         return None
 
 
-def _invoice_cost(inv: dict) -> int:
+def _invoice_cost(inv: dict, bank_fee_percent: float | None = None) -> int:
     """Tiền thực trả cho 1 hoá đơn = total_vnd (gồm VAT) fallback amount_vnd, cộng
-    phí ngân hàng nhập tay (nếu có)."""
+    phí ngân hàng: theo % của workspace nếu đã đặt, không thì phí nhập tay từng
+    dòng (xem `app/billing_fee.py`)."""
     base = inv.get("total_vnd")
     if base is None:
         base = inv.get("amount_vnd")
-    fee = inv.get("service_fee_vnd") or 0
-    return int(base or 0) + int(fee)
+    return int(base or 0) + invoice_fee_vnd(inv, bank_fee_percent)
 
 
 def _unit_price_lookup(paid: list[dict]) -> tuple[dict, list]:
@@ -425,6 +426,7 @@ def financial_report(
         Workspace.billing_invoices,
         Workspace.finance_start_at,
         Workspace.created_at,
+        Workspace.bank_fee_percent,
     ).execution_options(yield_per=_SCAN_CHUNK)
     cost = 0
     cost_missing = 0
@@ -434,7 +436,7 @@ def financial_report(
     # được số ghế·tháng (xem _seat_months_billed), để tử/mẫu cùng một tập hoá đơn.
     billed_seat_months = 0.0
     seat_cost_basis = 0
-    for ws_invoices, ws_finance_start_at, ws_created_at in db.execute(ws_stmt):
+    for ws_invoices, ws_finance_start_at, ws_created_at, ws_fee_pct in db.execute(ws_stmt):
         invoices = ws_invoices or []
         paid = [inv for inv in invoices if inv.get("status") == "paid"]
         if not paid:
@@ -465,7 +467,7 @@ def financial_report(
                 cost_skipped += 1
                 continue
             # TIỀN MẶT: TRỌN tiền hoá đơn vào tháng PHÁT HÀNH, không chia theo ngày.
-            amt = _invoice_cost(inv)
+            amt = _invoice_cost(inv, ws_fee_pct)
             cost += amt
             mk = _month_key(d)
             if mk in cost_by_month:
@@ -581,13 +583,14 @@ def financial_report_cycles(
     # cycles: workspace_id → list[(period_start, period_end, cost, seats_start, seats)]
     cycles: dict[UUID, list[_CycleRow]] = {}
     ws_names: dict[UUID, str] = {}
-    for wid, name, invs, fs, created in db.execute(
+    for wid, name, invs, fs, created, fee_pct in db.execute(
         select(
             Workspace.id,
             Workspace.name,
             Workspace.billing_invoices,
             Workspace.finance_start_at,
             Workspace.created_at,
+            Workspace.bank_fee_percent,
         )
     ):
         ws_names[wid] = name
@@ -616,9 +619,9 @@ def financial_report_cycles(
             qty = int(inv.get("quantity") or 0) or None
             cur = acc.get(pe)
             if cur is None:
-                acc[pe] = [ps, _invoice_cost(inv), qty, qty]
+                acc[pe] = [ps, _invoice_cost(inv, fee_pct), qty, qty]
                 continue
-            cur[1] += _invoice_cost(inv)
+            cur[1] += _invoice_cost(inv, fee_pct)
             if ps < cur[0]:
                 # Hoá đơn mở kỳ (gia hạn) → nó mới là mốc đầu kỳ và số ghế ĐẦU kỳ.
                 cur[0], cur[2] = ps, qty

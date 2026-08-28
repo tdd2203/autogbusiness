@@ -180,6 +180,9 @@ class WorkspaceUpdate(BaseModel):
     # Ngôn ngữ ChatGPT của workspace (super-admin đặt ở Cài đặt). Tách khỏi
     # ngôn ngữ hiển thị dashboard (per-user).
     chatgpt_locale: ChatGPTLocale | None = None
+    # Phí ngân hàng theo % số tiền chuyển (vd 1.1 = 1,1%) — nhập một lần, áp cho
+    # mọi hoá đơn của workspace. Gửi null/0 để xoá (quay lại phí nhập tay/hoá đơn).
+    bank_fee_percent: float | None = Field(default=None, ge=0, le=100)
 
 
 class WorkspaceOut(BaseModel):
@@ -201,6 +204,7 @@ class WorkspaceOut(BaseModel):
     billing_invoices: list[dict] | None = None
     verified_domain: str | None = None
     chatgpt_locale: str = "vi"
+    bank_fee_percent: float | None = None
     created_at: datetime
     updated_at: datetime
 
