@@ -479,7 +479,15 @@ export default function InviteMembers() {
     const row = wsId ? seatMap.get(wsId) : undefined;
     const left = row?.seat_left ?? null;
     const need = wsId ? (seatPlan.get(wsId) ?? 0) : 0;
-    return { left, need, short: left === null ? 0 : Math.max(need - left, 0) };
+    return {
+      left,
+      need,
+      short: left === null ? 0 : Math.max(need - left, 0),
+      // Số suất còn lại SAU KHI mời hết danh sách đang dán — đây mới là con số
+      // người dùng cần: dán thêm 1 email là thấy nó tụt đi 1, dán quá tay thì về 0
+      // kèm phần thiếu. `left` thô chỉ dùng cho tooltip giải thích.
+      after: left === null ? null : Math.max(left - need, 0),
+    };
   };
   /** Các không gian trong danh sách đang dán mà suất trống KHÔNG đủ → footer cảnh báo. */
   const shortages = [...seatPlan.keys()]
@@ -487,9 +495,9 @@ export default function InviteMembers() {
     .filter((x) => x.short > 0);
   /** Nhãn suất cạnh tên không gian: "còn 4" / "hết suất" / "" khi chưa biết tổng. */
   const seatLabel = (wsId: string | undefined) => {
-    const { left } = seatInfo(wsId);
-    if (left === null) return "";
-    return left > 0 ? t("inviteMembers.seatsLeft", { n: left }) : t("inviteMembers.seatsNone");
+    const { after } = seatInfo(wsId);
+    if (after === null) return "";
+    return after > 0 ? t("inviteMembers.seatsLeft", { n: after }) : t("inviteMembers.seatsNone");
   };
   /**
    * Không gian hiện trên DẢI SUẤT ở đầu thẻ: mọi đích được cấp + đích của email cũ
@@ -511,9 +519,14 @@ export default function InviteMembers() {
    * suất còn trống (mời tiếp là extension đi mua thêm suất bằng tiền thật). Chỉ chỗ
    * này mới được tô đỏ — còn lại giữ đơn sắc cho đỡ rối. */
   const seatAlarm = (wsId: string | undefined) => {
-    const { left, short } = seatInfo(wsId);
-    return left !== null && (left === 0 || short > 0);
+    const { after } = seatInfo(wsId);
+    return after === 0;
   };
+
+  /** Tổng suất phải MUA THÊM trên ChatGPT nếu bấm mời ngay bây giờ (cộng mọi không
+   * gian trong danh sách đang dán). >0 nghĩa là lệnh mời sẽ kèm bước mua suất, chạy
+   * lâu hơn hẳn — footer phải nói trước. */
+  const seatToBuy = [...seatPlan.keys()].reduce((n, wsId) => n + seatInfo(wsId).short, 0);
 
   const canSubmit = !!workspaceId && entries.length > 0 && !bulkInvite.isPending;
 
@@ -623,8 +636,9 @@ export default function InviteMembers() {
             </div>
 
             {/* DẢI SUẤT — mỗi không gian một khối số kiểu thẻ tổng quan: nhãn mono +
-                CHỈ số suất còn lại, không kể đã dùng bao nhiêu. Đơn sắc cho đỡ rối,
-                chỉ đỏ khi hết suất hoặc danh sách đang dán vượt suất trống. Nguồn
+                số suất CÒN LẠI SAU KHI mời hết danh sách đang dán (dán thêm email là
+                thấy nó tụt), không kể đã dùng bao nhiêu. Đơn sắc cho đỡ rối, chỉ đỏ
+                khi hết sạch suất. Nguồn
                 `useWorkspaceSeats` (poll 15s) nên số tự nhảy khi extension mời/xoá
                 hay admin khác thao tác ở tab kia. */}
             {seatBarWs.length > 0 && (
@@ -638,7 +652,7 @@ export default function InviteMembers() {
                 }}
               >
                 {seatBarWs.map((w, i) => {
-                  const { left, need, short } = seatInfo(w.id);
+                  const { left, need, short, after } = seatInfo(w.id);
                   const alarm = seatAlarm(w.id);
                   return (
                     <div
@@ -688,7 +702,7 @@ export default function InviteMembers() {
                             color: alarm ? "var(--danger)" : "var(--ink)",
                           }}
                         >
-                          {left === null ? "—" : left}
+                          {after === null ? "—" : after}
                         </span>
                         <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
                           {t("inviteMembers.seatFreeWord")}
@@ -1296,6 +1310,17 @@ export default function InviteMembers() {
                     })}
                   </div>
                 ))}
+                {/* Thiếu suất: extension phải mua thêm trên ChatGPT bằng tiền thật rồi
+                    mới mời được, nên lệnh chạy lâu hơn — nói trước để người dùng khỏi
+                    tưởng treo mà bấm lại. */}
+                {seatToBuy > 0 && (
+                  <>
+                    {" · "}
+                    <span style={{ color: "var(--danger)", fontWeight: 600 }}>
+                      {t("inviteMembers.seatBuyNote", { n: seatToBuy })}
+                    </span>
+                  </>
+                )}
               </div>
               <div style={{ display: "flex", gap: 9 }}>
                 <button

@@ -1444,6 +1444,7 @@
   "inviteMembers.seatTotalUnknown": "尚未同步总席位",
   "inviteMembers.seatNeedN": "需 {n}",
   "inviteMembers.seatShortN": "缺 {n}",
+  "inviteMembers.seatBuyNote": "执行邀请后系统会加购 {n} 个席位 → 过程会比预计多花 1-2 分钟",
   "inviteMembers.seatsUnknownHint": "尚未获知总席位数（该工作区未同步账单）",
   "inviteMembers.seatShortage": "{name}：需要 {need} 个新席位，但只剩 {left} 个 — 需另购 {buy} 个席位"
 }

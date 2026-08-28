@@ -1444,6 +1444,7 @@
   "inviteMembers.seatTotalUnknown": "chưa đồng bộ tổng suất",
   "inviteMembers.seatNeedN": "cần {n}",
   "inviteMembers.seatShortN": "thiếu {n}",
+  "inviteMembers.seatBuyNote": "Hệ thống sẽ mua thêm {n} suất sau khi thực hiện lệnh mời → quá trình sẽ lâu hơn dự kiến 1-2 phút",
   "inviteMembers.seatsUnknownHint": "Chưa biết tổng suất (không gian chưa đồng bộ thanh toán)",
   "inviteMembers.seatShortage": "{name}: cần {need} suất mới nhưng chỉ còn {left} — sẽ phải mua thêm {buy} suất"
 }
