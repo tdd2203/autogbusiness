@@ -28,6 +28,11 @@ export const POST_NAV_RENDER_MS = 2500;
  *
  * Workspace UI cũ THẬT thì phải trả giá bằng đúng chừng này giây mỗi lần mời —
  * đổi lại không bao giờ mời mù nữa. Nút có sẵn (đại đa số) → trả về tức thì.
+ *
+ * 28/8/2026: `execute-purchase-seat.ts` cũng dùng chung ngưỡng này. Trước đó luồng
+ * mua chỉ ngủ cứng `POST_NAV_RENDER_MS` rồi hỏi MỘT lần — task tự sinh lúc 15:39
+ * chết ngay bước đầu ("Không tìm thấy nút 'Quản lý số suất'") dù nút vẫn ở đó.
+ * Hai đường đi tìm cùng một cái nút thì phải kiên nhẫn như nhau.
  */
 export const MANAGE_SEATS_BUTTON_WAIT_MS = 6_000;
 

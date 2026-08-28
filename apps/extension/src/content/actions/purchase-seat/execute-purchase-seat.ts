@@ -36,6 +36,8 @@ import {
   CHARGE_MODAL_TIMEOUT_MS,
   CONFIRM_ENABLE_TIMEOUT_MS,
   CONTINUE_ENABLE_TIMEOUT_MS,
+  MANAGE_SEATS_BUTTON_POLL_MS,
+  MANAGE_SEATS_BUTTON_WAIT_MS,
   MAX_QUANTITY,
   MEMBERS_PATH,
   MEMBERS_SEARCH,
@@ -362,18 +364,36 @@ export async function executePurchaseSeat(
         : `Mở lại 'Quản lý số suất' để bấm lại cho chuẩn (lượt ${attempt})...`,
       1,
     );
-    const manageBtn = findControlByKey(
-      "billing_manage_licenses",
-      TEXT_FALLBACKS.billingManageLicenses,
-      { page: "/admin/members" },
-    );
-    if (!manageBtn) {
+    // DÒ LẠI tới `MANAGE_SEATS_BUTTON_WAIT_MS` chứ KHÔNG hỏi một phát rồi bỏ.
+    //
+    // Ca thật 28/8/2026 15:39 (task tự sinh `auto_pending_seat`, 3 suất): chết ngay
+    // ở đây với "Không tìm thấy nút 'Quản lý số suất'" — chưa kịp mở hộp, chưa đụng
+    // tới bộ đếm. Nút đó render trễ là chuyện đã biết: `check-seat-availability.ts`
+    // dò tới 6s vì đúng ca 22/8/2026 hỏi sớm quá rồi tưởng workspace không có nút.
+    // Luồng mua lại chỉ ngủ cứng `POST_NAV_RENDER_MS` rồi hỏi một lần — trang nạp
+    // chậm hơn chừng đó là trượt hẳn, dù nút vẫn hiện ra ngay sau đó.
+    //
+    // Nút có sẵn (đại đa số) → `waitFor` trả về ngay vòng đầu, không tốn thêm giây nào.
+    let manageBtn: HTMLElement;
+    try {
+      manageBtn = await waitFor(
+        () =>
+          findControlByKey(
+            "billing_manage_licenses",
+            TEXT_FALLBACKS.billingManageLicenses,
+            { page: "/admin/members" },
+          ),
+        MANAGE_SEATS_BUTTON_WAIT_MS,
+        MANAGE_SEATS_BUTTON_POLL_MS,
+      );
+    } catch {
       return {
         kind: "fail",
         response: fail(
           "UI_ELEMENT_NOT_FOUND",
           "Không tìm thấy nút 'Quản lý số suất' trên /admin/members (nút này nằm cạnh " +
-            "'+ Mời thành viên'). Có thể ChatGPT đổi nhãn, hoặc trang chưa render xong. " +
+            `'+ Mời thành viên') sau ${MANAGE_SEATS_BUTTON_WAIT_MS / 1000}s dò lại. ` +
+            "Có thể ChatGPT đổi nhãn, hoặc trang chưa render xong. " +
             `URL hiện tại: ${location.href}`,
         ),
       };
