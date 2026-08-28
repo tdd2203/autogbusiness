@@ -16,6 +16,9 @@ export default function Renewals() {
   const { data: members = [] } = useQuery({
     queryKey: ["added-members", "self"],
     queryFn: () => api<AddedMember[]>("/api/v1/added-members"),
+    // Hạn dùng trôi theo giờ và job nền vẫn xoá/gia hạn trong lúc trang đang mở,
+    // nên danh sách tự nạp lại mỗi phút thay vì đứng im tới lúc F5.
+    refetchInterval: 60_000,
   });
 
   return (

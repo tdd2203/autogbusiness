@@ -101,7 +101,7 @@ describe("buildTxnRows — mời hỏng đã hoàn phí", () => {
 });
 
 /* Giao diện Ví mới (mockup 2026-08-26) xếp lịch sử theo NGÀY, mỗi ngày chốt
-   Nạp/Chi/Seat, và lọc theo "tiền đi đường nào". Khoá luật ở đây vì tổng ngày sai
+   Nạp/Chi/New/Renew, và lọc theo "tiền đi đường nào". Khoá luật ở đây vì tổng ngày sai
    thì user đối soát ra số lệch mà không có cách nào biết. */
 describe("groupRowsByDay — gom theo ngày VN + chip lọc", () => {
   const feeAt = (at: string, email: string) =>
@@ -113,7 +113,7 @@ describe("groupRowsByDay — gom theo ngày VN + chip lọc", () => {
     expect(groupRowsByDay(rows)[0].date).toBe("2026-08-26");
   });
 
-  it("chốt Nạp/Chi/Seat của từng ngày", () => {
+  it("chốt Nạp/Chi/New/Renew của từng ngày", () => {
     const at1 = "2026-08-26T02:00:00Z";
     const at2 = "2026-08-26T03:00:00Z";
     const rows = buildTxnRows([
@@ -124,7 +124,22 @@ describe("groupRowsByDay — gom theo ngày VN + chip lọc", () => {
     const [g] = groupRowsByDay(rows);
     expect(g.topup).toBe(3_300_000);
     expect(g.spend).toBe(2 * FEE);
-    expect(g.seats).toBe(2);
+    expect(g.newSeats).toBe(2);
+    expect(g.renewSeats).toBe(0);
+  });
+
+  it("gia hạn đếm riêng ô Renew, không lẫn vào New", () => {
+    // Ca thật 26/8: 59 lượt mời + 1 lượt gia hạn ⇒ Chi = 60 suất nhưng chỉ 59 email
+    // vào team. Gộp chung một ô "Seat" là con số không giải thích được.
+    const at = "2026-08-26T02:00:00Z";
+    const rows = buildTxnRows([
+      txn({ kind: "renew_fee", amount: -FEE, created_at: at, meta: { email: "r@x.com" } }),
+      feeAt(at, "a@x.com"),
+    ]);
+    const [g] = groupRowsByDay(rows);
+    expect(g.newSeats).toBe(1);
+    expect(g.renewSeats).toBe(1);
+    expect(g.spend).toBe(2 * FEE);
   });
 
   it("trả qua hoá đơn: KHÔNG cộng tiền hoá đơn vào ô Nạp (nó chảy thẳng vào phí)", () => {
@@ -156,7 +171,7 @@ describe("groupRowsByDay — gom theo ngày VN + chip lọc", () => {
     const [g] = groupRowsByDay(rows, { showVoided: true });
     expect(g.rows).toHaveLength(1);
     expect(g.spend).toBe(0);
-    expect(g.seats).toBe(0);
+    expect(g.newSeats).toBe(0);
     // Chip "Trừ số dư ví" không được kéo lượt hỏng vào — nó không phải dòng tiền.
     expect(groupRowsByDay(rows, { showVoided: true, channel: "wallet" })).toHaveLength(0);
   });
@@ -246,7 +261,7 @@ describe("buildTxnCsv — xuất báo cáo đối soát", () => {
     ]);
     const lines = buildTxnCsv(groupRowsByDay(rows, { showVoided: true })).split("\n");
     expect(lines).toHaveLength(2);
-    expect(lines[1]).toContain("Mời hỏng (đã hoàn phí);a@x.com;0;");
+    expect(lines[1]).toContain("Lỗi mời (đã hoàn phí);a@x.com;0;");
   });
 });
 

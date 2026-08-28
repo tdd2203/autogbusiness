@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { vnDateKey } from "../lib/wallet-history";
 import { useT } from "../i18n";
@@ -29,6 +29,22 @@ type AuditLog = {
  * ------------------------------------------------------------------ */
 /** Số dòng nhật ký mỗi lượt tải; nút "xem thêm" tải tiếp một lô cũ hơn. */
 const AUDIT_PAGE_SIZE = 200;
+/** Gõ đủ ngần này ký tự mới hỏi server — 1 ký tự thì lọc tại chỗ cho nhẹ. */
+const AUDIT_SEARCH_MIN = 2;
+/** Nhịp hỏi "có gì mới chưa" khi đang mở trang (chỉ 1 dòng id + giờ, rất nhẹ). */
+const AUDIT_HEAD_POLL_MS = 15_000;
+/** Đã lật quá ngần này lô thì ngừng tự làm mới (xem lịch sử cũ, refetch quá nặng). */
+const LIVE_MAX_PAGES = 2;
+
+/** Giá trị chậm nhịp — gõ tới đâu bắn request tới đó thì mỗi phím là một lượt gọi. */
+function useDebounced(value: string, ms: number): string {
+  const [slow, setSlow] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setSlow(value), ms);
+    return () => clearTimeout(id);
+  }, [value, ms]);
+  return slow;
+}
 
 type Cat = "security" | "member" | "billing" | "queue";
 
@@ -2261,6 +2277,8 @@ type AuditListProps = {
   onOpenPayments: (ref: string) => void;
   /** Ngày đang xem (null = mọi ngày) — chỉ dùng cho lời nhắn khi rỗng. */
   day: string | null;
+  /** Từ khoá đang tìm trên server (null = không tìm) — cũng chỉ để nói khi rỗng. */
+  searchQ: string | null;
   /** Còn nhật ký cũ hơn chưa tải (trang trước trả về đủ một lô). */
   hasMore: boolean;
   loadingMore: boolean;
@@ -2275,6 +2293,7 @@ function AuditTable({
   isLoading,
   onOpenPayments,
   day,
+  searchQ,
   hasMore,
   loadingMore,
   onMore,
@@ -2555,9 +2574,11 @@ function AuditTable({
                 fontSize: 14,
               }}
             >
-              {day
-                ? t("audit.emptyDay", { date: vnDateLabel(day) })
-                : t("audit.emptyFiltered")}
+              {searchQ
+                ? t("audit.emptySearch", { q: searchQ })
+                : day
+                  ? t("audit.emptyDay", { date: vnDateLabel(day) })
+                  : t("audit.emptyFiltered")}
             </div>
           )}
         </div>
@@ -2574,6 +2595,7 @@ function AuditCards({
   isLoading,
   onOpenPayments,
   day,
+  searchQ,
   hasMore,
   loadingMore,
   onMore,
@@ -2748,9 +2770,11 @@ function AuditCards({
             borderRadius: 16,
           }}
         >
-          {day
-            ? t("audit.emptyDay", { date: vnDateLabel(day) })
-            : t("audit.emptyFiltered")}
+          {searchQ
+            ? t("audit.emptySearch", { q: searchQ })
+            : day
+              ? t("audit.emptyDay", { date: vnDateLabel(day) })
+              : t("audit.emptyFiltered")}
         </div>
       )}
     </div>
@@ -2778,10 +2802,6 @@ export default function AuditLogs() {
       return `&before=${encodeURIComponent(tail.timestamp)}&before_id=${tail.id}`;
     },
   });
-  const rows = useMemo(
-    () => (logs.data?.pages ?? []).flat(),
-    [logs.data],
-  );
   // Hai tab: "main" = 3 nhóm user quan tâm (bảo mật · thành viên · thanh toán —
   // chốt 2026-08-26), "other" = phần còn lại (hàng đợi/đồng bộ, ví ngoài lệnh,
   // cấu hình, thao tác thành viên khác) tự chia nhóm phụ. Bỏ tab "Tất cả": hợp
@@ -2794,9 +2814,68 @@ export default function AuditLogs() {
   const [otherCat, setOtherCat] = useState<OtherBucket | null>(null); // chip trong tab Khác
   // Lọc theo MÃ HOÁ ĐƠN: bấm mã trên lệnh mời/gia hạn → chỉ còn dòng tiền của lệnh đó.
   const [payRef, setPayRef] = useState<string | null>(null);
+  // TÌM KIẾM CHỦ ĐỘNG (user 2026-08-27: "tìm kiếm chủ động thì phải hiển thị ra chứ
+  // không phải chỉ tìm trong danh sách hiện tại"). Ô tìm KHÔNG lọc mấy dòng đang giữ
+  // trong trang nữa mà hỏi thẳng server trên toàn bộ nhật ký, nên hàng khớp nằm ở
+  // ngày nào / lô cũ nào cũng hiện ra. Đổi lại, khi đang tìm thì bộ lọc ngày và bộ
+  // lọc tab/chip bị bỏ qua — tìm ra rồi mà tab đang bật giấu đi thì lại y như cũ.
   const [search, setSearch] = useState("");
+  const q = useDebounced(search.trim(), 300);
+  const searching = q.length >= AUDIT_SEARCH_MIN;
+  const searchLogs = useInfiniteQuery({
+    queryKey: ["audit-logs", "search", q],
+    enabled: searching,
+    initialPageParam: "",
+    queryFn: ({ pageParam }) =>
+      api<AuditLog[]>(
+        `/api/v1/audit-logs?limit=${AUDIT_PAGE_SIZE}&q=${encodeURIComponent(q)}${pageParam}`,
+      ),
+    getNextPageParam: (last) => {
+      if (last.length < AUDIT_PAGE_SIZE) return undefined;
+      const tail = last[last.length - 1];
+      return `&before=${encodeURIComponent(tail.timestamp)}&before_id=${tail.id}`;
+    },
+  });
+  /* Nguồn dòng đang hiển thị: kết quả tìm khi đang tìm, còn lại là nhật ký thường. */
+  const feed = searching ? searchLogs : logs;
+  const rows = useMemo(() => (feed.data?.pages ?? []).flat(), [feed.data]);
   // Ngày đang xem; null = mọi ngày. Mở trang là đứng ở HÔM NAY (chốt 2026-08-26).
   const [day, setDay] = useState<string | null>(vnToday());
+
+  /* TỰ LÀM MỚI khi đang ngồi xem: nhật ký sinh ra từ extension, lịch chạy nền và
+     admin khác, nên trước đây mở trang rồi để đó là số liệu đứng im tới lúc F5
+     (chỉ quay lại tab mới nạp). Không poll thẳng danh sách vì mỗi lô 200 dòng và
+     react-query refetch TẤT CẢ lô đã tải; thay vào đó hỏi /head (1 dòng id + giờ)
+     mỗi 15s, khác dòng đầu đang hiện mới tải lại thật. Đang tìm kiếm hoặc đang
+     xem ngày cũ thì thôi — tải lại cũng không đổi cái đang nhìn. Đã lật quá
+     LIVE_MAX_PAGES lô thì cũng dừng: lúc đó người dùng đang lần về quá khứ, refetch
+     vừa nặng vừa làm danh sách nhảy. */
+  const loadedPages = logs.data?.pages.length ?? 1;
+  // Tên biến tránh trùng class css trong index.css: tailwind quét chuỗi thô trong
+  // mã nguồn nên tên trùng (kèm dấu chấm than của phủ định) đẻ thêm quy tắc rác.
+  const autoRefresh =
+    !searching && (day === null || day === vnToday()) && loadedPages <= LIVE_MAX_PAGES;
+  const head = useQuery({
+    queryKey: ["audit-logs", "head"],
+    queryFn: () => api<{ id: string | null }>("/api/v1/audit-logs/head"),
+    enabled: autoRefresh,
+    retry: false,
+    // Hỏi hụt (API chưa có /head, rớt mạng) thì thôi hẳn — không nã lỗi mỗi 15s.
+    refetchInterval: (query) => (query.state.error ? false : AUDIT_HEAD_POLL_MS),
+  });
+  const newestId = head.data?.id ?? null;
+  const shownId = logs.data?.pages[0]?.[0]?.id ?? null;
+  const refetchLogs = logs.refetch;
+  /* Mốc đã xử lý — mỗi id mới chỉ kéo lại danh sách ĐÚNG MỘT LẦN. Thiếu chốt này
+     thì với sub-admin, một sự kiện của người khác (họ không được nhìn) sẽ khiến
+     "mới nhất" mãi mãi khác dòng đầu → refetch lặp vô tận. */
+  const handledHead = useRef<string | null>(null);
+  useEffect(() => {
+    if (!autoRefresh || !newestId || !shownId) return;
+    if (newestId === shownId || handledHead.current === newestId) return;
+    handledHead.current = newestId;
+    void refetchLogs();
+  }, [autoRefresh, newestId, shownId, refetchLogs]);
 
   const decorated: Decorated[] = useMemo(() => {
     const qmap = buildQueueEmailMap(rows);
@@ -2870,8 +2949,11 @@ export default function AuditLogs() {
      đếm theo đây: đổi ngày thì số đổi, còn bấm qua lại giữa các chip thì không —
      đúng ý "số trên chip không nhảy" của bản trước. */
   const groups = useMemo(
-    () => (day ? allGroups.filter((g) => vnDateKey(g.latestTs) === day) : allGroups),
-    [allGroups, day],
+    () =>
+      day && !searching
+        ? allGroups.filter((g) => vnDateKey(g.latestTs) === day)
+        : allGroups,
+    [allGroups, day, searching],
   );
 
   /* Chọn một ngày cũ hơn phần đã tải ⇒ tự lật tiếp các lô cho tới khi chạm ngày
@@ -2880,11 +2962,19 @@ export default function AuditLogs() {
      thêm nên vòng này luôn dừng. */
   const oldestLoaded = rows.length ? vnDateKey(rows[rows.length - 1].timestamp) : null;
   useEffect(() => {
+    if (searching) return; // đang tìm thì bỏ lọc ngày, không phải lật tới ngày nào cả
     if (!day || oldestLoaded === null) return;
     if (day > oldestLoaded) return; // ngày đã nằm trong phần tải rồi
     if (!logs.hasNextPage || logs.isFetchingNextPage) return;
     void logs.fetchNextPage();
-  }, [day, oldestLoaded, logs.hasNextPage, logs.isFetchingNextPage, logs.fetchNextPage]);
+  }, [
+    searching,
+    day,
+    oldestLoaded,
+    logs.hasNextPage,
+    logs.isFetchingNextPage,
+    logs.fetchNextPage,
+  ]);
 
   const mainCounts = useMemo(() => {
     const by: Record<MainBucket, number> = { security: 0, member: 0, billing: 0 };
@@ -2898,7 +2988,11 @@ export default function AuditLogs() {
   const activeBucket = bucket && mainCounts[bucket] > 0 ? bucket : null;
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    // Đang tìm trên server: trả gì hiện nấy. Lọc lại theo tab/chip ở đây là đúng lỗi
+    // cũ — tìm ra kết quả nhưng tab "Chính" hoặc chip đang bật nuốt mất.
+    if (searching) return groups;
+    // Mới gõ 1 ký tự (chưa đủ để hỏi server) thì vẫn lọc tại chỗ cho đỡ giật.
+    const local = search.trim().toLowerCase();
     return groups.filter((g) => {
       // Tab Chính = nhóm thuộc ít nhất 1 trong 3 chip; tab Khác = phần còn lại,
       // lọc tiếp theo nhóm phụ. Mã hoá đơn (nếu có) lọc CHỒNG lên trên.
@@ -2910,15 +3004,15 @@ export default function AuditLogs() {
         if (otherCat && g.otherBucket !== otherCat) return false;
       }
       if (payRef && !g.payRefs.includes(payRef)) return false;
-      if (q) {
+      if (local) {
         const hay = `${g.title} ${g.emails.join(" ")} ${g.events
           .map((e) => `${e.action} ${e.actor_label ?? ""} ${e.target_id ?? ""}`)
           .join(" ")}`.toLowerCase();
-        if (!hay.includes(q)) return false;
+        if (!hay.includes(local)) return false;
       }
       return true;
     });
-  }, [groups, view, activeBucket, otherCat, payRef, search]);
+  }, [groups, view, activeBucket, otherCat, payRef, search, searching]);
 
   const total = groups.length;
   // Số trên chip đếm theo TOÀN BỘ nhật ký (không theo bộ lọc đang bật) → bấm qua
@@ -2969,6 +3063,7 @@ export default function AuditLogs() {
   const openPayments = (ref: string) => {
     const hits = groups.filter((g) => g.payRefs.includes(ref));
     const billing = hits.filter((g) => g.buckets.includes("billing"));
+    setSearch(""); // lọc theo mã là bộ lọc tại chỗ — đang tìm server thì nó bị bỏ qua
     setView("main");
     setBucket(billing.length ? "billing" : null);
     setOtherCat(null);
@@ -2978,7 +3073,9 @@ export default function AuditLogs() {
 
   return (
     <div className="page-fade">
-      <DayPicker day={day} onPick={setDay} />
+      {/* Đang tìm thì kết quả đến từ MỌI ngày — để thanh ngày đứng đó chỉ gây hiểu
+          nhầm là đang xem một ngày. Xoá tìm kiếm là nó trở lại đúng ngày cũ. */}
+      {!searching && <DayPicker day={day} onPick={setDay} />}
 
       {/* Dải tóm tắt — đếm theo NGÀY ĐANG XEM */}
       <div className="metrics" style={{ marginBottom: 24 }}>
@@ -3025,80 +3122,124 @@ export default function AuditLogs() {
         className="flex flex-wrap items-center gap-2"
         style={{ marginBottom: 16 }}
       >
-        {/* 2 tab: Chính (bảo mật · thành viên · thanh toán) · Khác (phần còn lại) */}
-        <Chip
-          active={view === "main"}
-          onClick={() => goTab("main")}
-          label={t("audit.tab.main")}
-          count={importantCount}
-        />
-        <Chip
-          active={view === "other"}
-          onClick={() => goTab("other")}
-          label={t("audit.tab.other")}
-          count={otherCount}
-        />
-        {/* Nhóm phụ của tab đang xem (bấm lại để bỏ lọc). */}
-        {(view === "main"
-          ? MAIN_BUCKETS.some((b) => mainCounts[b] > 0)
-          : OTHER_BUCKETS.some((b) => otherCounts[b] > 0)) && (
+        {/* Đang tìm: thay dãy tab/chip bằng một dòng nói rõ đang tìm gì, tìm ở đâu
+            (toàn bộ nhật ký, mọi ngày) và ra bao nhiêu — kèm nút xoá tìm kiếm. */}
+        {searching ? (
           <div
-            style={{
-              width: 1,
-              height: 24,
-              background: "var(--border-strong)",
-              margin: "0 4px",
-            }}
-          />
-        )}
-        {view === "main"
-          ? MAIN_BUCKETS.filter((b) => mainCounts[b] > 0).map((b) => (
-              <Chip
-                key={b}
-                active={activeBucket === b}
-                onClick={() => {
-                  setBucket((prev) => (prev === b ? null : b));
-                  setPayRef(null);
-                }}
-                label={t(`audit.cat.${b}`)}
-                count={mainCounts[b]}
-              />
-            ))
-          : OTHER_BUCKETS.filter((b) => otherCounts[b] > 0).map((b) => (
-              <Chip
-                key={b}
-                active={otherCat === b}
-                onClick={() =>
-                  setOtherCat((prev) => (prev === b ? null : b))
-                }
-                label={t(`audit.other.${b}`)}
-                count={otherCounts[b]}
-              />
-            ))}
-        {/* Đang lọc theo mã hoá đơn — nói rõ đang xem tiền của lệnh nào + nút bỏ lọc. */}
-        {payRef && (
-          <button
-            type="button"
-            onClick={() => setPayRef(null)}
-            title={t("audit.payRefClear")}
             style={{
               display: "inline-flex",
               alignItems: "center",
-              gap: 7,
-              fontSize: 12,
-              fontWeight: 600,
-              fontFamily: "var(--font-mono)",
+              gap: 10,
+              fontSize: 12.5,
               color: "var(--ink)",
               background: "var(--surface-2)",
               border: "1px solid var(--border-strong)",
               borderRadius: 999,
-              padding: "5px 11px",
-              cursor: "pointer",
+              padding: "6px 12px",
             }}
           >
-            {t("audit.payRefFilter", { code: shortRef(payRef) })}
-            <span style={{ color: "var(--ink-3)", fontSize: 13 }}>✕</span>
-          </button>
+            <span>
+              {searchLogs.isLoading
+                ? t("audit.searchRunning", { q })
+                : t("audit.searchResult", { q, n: filtered.length })}
+            </span>
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--ink-3)",
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+              }}
+            >
+              {t("audit.searchClear")} ✕
+            </button>
+          </div>
+        ) : (
+          <>
+          {/* 2 tab: Chính (bảo mật · thành viên · thanh toán) · Khác (phần còn lại) */}
+          <Chip
+            active={view === "main"}
+            onClick={() => goTab("main")}
+            label={t("audit.tab.main")}
+            count={importantCount}
+          />
+          <Chip
+            active={view === "other"}
+            onClick={() => goTab("other")}
+            label={t("audit.tab.other")}
+            count={otherCount}
+          />
+          {/* Nhóm phụ của tab đang xem (bấm lại để bỏ lọc). */}
+          {(view === "main"
+            ? MAIN_BUCKETS.some((b) => mainCounts[b] > 0)
+            : OTHER_BUCKETS.some((b) => otherCounts[b] > 0)) && (
+            <div
+              style={{
+                width: 1,
+                height: 24,
+                background: "var(--border-strong)",
+                margin: "0 4px",
+              }}
+            />
+          )}
+          {view === "main"
+            ? MAIN_BUCKETS.filter((b) => mainCounts[b] > 0).map((b) => (
+                <Chip
+                  key={b}
+                  active={activeBucket === b}
+                  onClick={() => {
+                    setBucket((prev) => (prev === b ? null : b));
+                    setPayRef(null);
+                  }}
+                  label={t(`audit.cat.${b}`)}
+                  count={mainCounts[b]}
+                />
+              ))
+            : OTHER_BUCKETS.filter((b) => otherCounts[b] > 0).map((b) => (
+                <Chip
+                  key={b}
+                  active={otherCat === b}
+                  onClick={() =>
+                    setOtherCat((prev) => (prev === b ? null : b))
+                  }
+                  label={t(`audit.other.${b}`)}
+                  count={otherCounts[b]}
+                />
+              ))}
+          {/* Đang lọc theo mã hoá đơn — nói rõ đang xem tiền của lệnh nào + nút bỏ lọc. */}
+          {payRef && (
+            <button
+              type="button"
+              onClick={() => setPayRef(null)}
+              title={t("audit.payRefClear")}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 7,
+                fontSize: 12,
+                fontWeight: 600,
+                fontFamily: "var(--font-mono)",
+                color: "var(--ink)",
+                background: "var(--surface-2)",
+                border: "1px solid var(--border-strong)",
+                borderRadius: 999,
+                padding: "5px 11px",
+                cursor: "pointer",
+              }}
+            >
+              {t("audit.payRefFilter", { code: shortRef(payRef) })}
+              <span style={{ color: "var(--ink-3)", fontSize: 13 }}>✕</span>
+            </button>
+          )}
+          </>
         )}
         <div style={{ flex: 1 }} />
         <SearchInput
@@ -3114,24 +3255,30 @@ export default function AuditLogs() {
           filtered={filtered}
           expanded={expanded}
           setExpanded={setExpanded}
-          isLoading={logs.isLoading}
+          isLoading={feed.isLoading}
           onOpenPayments={openPayments}
-          day={day}
-          hasMore={day ? false : logs.hasNextPage}
-          loadingMore={logs.isFetchingNextPage}
-          onMore={() => logs.fetchNextPage()}
+          day={searching ? null : day}
+          searchQ={searching ? q : null}
+          hasMore={
+            searching ? searchLogs.hasNextPage : day ? false : logs.hasNextPage
+          }
+          loadingMore={feed.isFetchingNextPage}
+          onMore={() => feed.fetchNextPage()}
         />
       ) : (
         <AuditTable
           filtered={filtered}
           expanded={expanded}
           setExpanded={setExpanded}
-          isLoading={logs.isLoading}
+          isLoading={feed.isLoading}
           onOpenPayments={openPayments}
-          day={day}
-          hasMore={day ? false : logs.hasNextPage}
-          loadingMore={logs.isFetchingNextPage}
-          onMore={() => logs.fetchNextPage()}
+          day={searching ? null : day}
+          searchQ={searching ? q : null}
+          hasMore={
+            searching ? searchLogs.hasNextPage : day ? false : logs.hasNextPage
+          }
+          loadingMore={feed.isFetchingNextPage}
+          onMore={() => feed.fetchNextPage()}
         />
       )}
       <div
@@ -3139,7 +3286,8 @@ export default function AuditLogs() {
         style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 14 }}
       >
         {t("audit.countLabel", { shown: filtered.length, total })}
-        {!day && logs.hasNextPage && ` · ${t("audit.moreHint")}`}
+        {(searching ? searchLogs.hasNextPage : !day && logs.hasNextPage) &&
+          ` · ${t("audit.moreHint")}`}
       </div>
     </div>
   );

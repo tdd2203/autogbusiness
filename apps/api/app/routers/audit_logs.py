@@ -2,15 +2,47 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import Select, and_, func, or_, select
+from pydantic import BaseModel
+from sqlalchemy import Select, Text, and_, cast, func, or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.deps import get_session, require_permission
-from app.models import AuditLog, Member, QueueItem, User, Workspace
+from app.models import AuditLog, Member, PaymentOrder, QueueItem, User, Workspace
 from app.permissions import Permission
 from app.schemas import AuditLogOut
 
 router = APIRouter(prefix="/api/v1/audit-logs", tags=["audit"])
+
+
+class AuditLogHeadOut(BaseModel):
+    """Mốc nhật ký mới nhất — beacon cho trang Nhật ký tự làm mới.
+
+    Trang mở lâu thì các sự kiện chạy nền (extension, hệ thống, admin khác) không
+    tự hiện ra. Poll thẳng danh sách thì tốn: mỗi lô 200 dòng, và với sub-admin
+    còn phải quét 3000 dòng để lọc quyền nhìn. Endpoint này chỉ trả id + timestamp
+    của dòng MỚI NHẤT (không lọc quyền — chỉ là mã đổi/không đổi, không kèm nội
+    dung), web so với dòng đầu đang hiện, khác mới tải lại thật.
+    """
+
+    id: UUID | None = None
+    timestamp: datetime | None = None
+
+
+@router.get("/head", response_model=AuditLogHeadOut)
+def audit_log_head(
+    db: Session = Depends(get_session),
+    user: User = Depends(require_permission(Permission.AUDIT_LOG_VIEW)),
+) -> AuditLogHeadOut:
+    """Dòng nhật ký mới nhất (chỉ id + thời điểm) để web biết có gì mới hay chưa."""
+    row = db.execute(
+        select(AuditLog.id, AuditLog.timestamp)
+        .order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
+        .limit(1)
+    ).first()
+    if row is None:
+        return AuditLogHeadOut()
+    return AuditLogHeadOut(id=row[0], timestamp=row[1])
 
 
 def _workspace_id_of(log: AuditLog) -> str | None:
@@ -85,6 +117,23 @@ def _queue_item_id_of(log: AuditLog) -> str | None:
         return qid
     if log.target_type == "QUEUE_ITEM" and log.target_id:
         return log.target_id
+    return None
+
+
+def _order_id_of(log: AuditLog) -> str | None:
+    """id hoá đơn QR (`payment_orders.id`) mà dòng log này nói tới.
+
+    Hai dòng tiền của một hoá đơn neo theo hai kiểu khác nhau:
+      • `PAYMENT_ORDER_CREATED` → target_type=PAYMENT_ORDER, target_id = id hoá đơn
+      • `WALLET_ORDER_CREDITED` → data.ref_type='order', data.ref_id = id hoá đơn
+    """
+    if log.target_type == "PAYMENT_ORDER" and log.target_id:
+        return log.target_id
+    d = log.data or {}
+    if d.get("ref_type") == "order":
+        ref = d.get("ref_id")
+        if isinstance(ref, str) and ref:
+            return ref
     return None
 
 
@@ -206,6 +255,56 @@ def _before_cursor(
     )
 
 
+# TÌM KIẾM — số id gián tiếp (member / queue item khớp từ khoá) tối đa nhét vào một
+# truy vấn. Mỗi id đẻ thêm một điều kiện OR nên phải chặn, kẻo gõ "@" là kéo cả bảng
+# members vào câu WHERE.
+_SEARCH_MAX_IDS = 60
+
+
+def _like_escape(q: str) -> str:
+    """Thoát ký tự đại diện của LIKE — gõ "%" hay "_" phải là ký tự thường."""
+    return q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _search_clause(db: Session, q: str) -> "ColumnElement[bool]":
+    """Điều kiện cho ô tìm kiếm — quét TOÀN BỘ nhật ký trong DB, không phải chỉ phần
+    UI đang giữ (user 2026-08-27: "tìm kiếm chủ động thì phải hiển thị ra chứ không
+    phải chỉ tìm trong danh sách hiện tại").
+
+    Bốn cột text bắt được phần lớn: hành động, người thực hiện, target_id và cả cục
+    `data` (email, mã hoá đơn, số tiền…). Nhưng có hai chỗ email KHÔNG hề nằm trong
+    dòng log: dòng chỉ ghi `member_id` (email suy lúc đọc từ bảng members) và dòng
+    chỉ ghi `queue_item_id` (email nằm trong payload task). Tra ngược hai bảng đó ra
+    id rồi tìm id trong log — không làm thì gõ email sẽ KHÔNG thấy chính việc mời /
+    gỡ của email ấy, đúng cái làm người dùng tưởng nhật ký trống.
+    """
+    like = f"%{_like_escape(q.lower())}%"
+    data_text = cast(AuditLog.data, Text)
+    conds = [
+        func.lower(AuditLog.action).like(like, escape="\\"),
+        func.lower(AuditLog.actor_label).like(like, escape="\\"),
+        func.lower(AuditLog.target_id).like(like, escape="\\"),
+        func.lower(data_text).like(like, escape="\\"),
+    ]
+    ids: list[str] = []
+    for mid in db.execute(
+        select(Member.id)
+        .where(func.lower(Member.email).like(like, escape="\\"))
+        .limit(_SEARCH_MAX_IDS)
+    ).scalars():
+        ids.append(str(mid))
+    for qid in db.execute(
+        select(QueueItem.id)
+        .where(func.lower(cast(QueueItem.payload, Text)).like(like, escape="\\"))
+        .limit(_SEARCH_MAX_IDS)
+    ).scalars():
+        ids.append(str(qid))
+    if ids:
+        conds.append(AuditLog.target_id.in_(ids))
+        conds.extend(data_text.like(f"%{i}%") for i in ids)
+    return or_(*conds)
+
+
 @router.get("", response_model=list[AuditLogOut])
 def list_audit_logs(
     db: Session = Depends(get_session),
@@ -215,6 +314,7 @@ def list_audit_logs(
     actor_type: str | None = Query(default=None),
     before: datetime | None = Query(default=None),
     before_id: UUID | None = Query(default=None),
+    q: str | None = Query(default=None, max_length=200),
 ) -> list[AuditLogOut]:
     """Một TRANG nhật ký, mới→cũ. `before`/`before_id` = con trỏ (dòng cuối của
     trang trước) để trang sau tải tiếp phần cũ hơn. Trả về ÍT HƠN `limit` dòng
@@ -224,6 +324,10 @@ def list_audit_logs(
         base = base.where(AuditLog.action == action)
     if actor_type:
         base = base.where(AuditLog.actor_type == actor_type)
+    # Ô tìm kiếm của UI: lọc ngay ở DB rồi mới phân trang, nên kết quả đến từ MỌI
+    # ngày / mọi lô — không phụ thuộc người dùng đã bấm "xem thêm" bao nhiêu lần.
+    if q and q.strip():
+        base = base.where(_search_clause(db, q.strip()))
 
     if user.is_super_admin:
         rows = list(
@@ -294,6 +398,41 @@ def list_audit_logs(
         for mid, memail in db.execute(mem_stmt).all():
             member_emails[str(mid)] = memail
 
+    # HOÁ ĐƠN QR → TASK ĐÃ THỰC THI. Một lượt "ví thiếu → quét QR → mời" đẻ ra 3 chỗ
+    # ghi: `PAYMENT_ORDER_CREATED` (tạo lệnh), `WALLET_ORDER_CREDITED` (tiền vào ví)
+    # và cụm sự kiện của task mời. Hai dòng đầu KHÔNG mang `queue_item_id` nên UI gom
+    # nhóm theo task không nhặt được → cùng MỘT việc hiện thành 3 dòng rời (user
+    # 2026-08-26). `payment_orders.queue_item_id` mới là liên kết thật (đặt lúc thực
+    # thi). Phân giải lúc ĐỌC → gộp được cả nhật ký CŨ, không cần migration và không
+    # phải sửa dòng đã ghi.
+    order_ids: set[UUID] = set()
+    for r in rows:
+        if _queue_item_id_of(r):
+            continue
+        oid = _order_id_of(r)
+        if oid:
+            try:
+                order_ids.add(UUID(oid))
+            except ValueError:
+                pass
+    order_queue: dict[str, str] = {}
+    if order_ids:
+        for oid, qid in db.execute(
+            select(PaymentOrder.id, PaymentOrder.queue_item_id).where(
+                PaymentOrder.id.in_(order_ids),
+                PaymentOrder.queue_item_id.is_not(None),
+            )
+        ).all():
+            order_queue[str(oid)] = str(qid)
+
+    def _resolved_queue_id(log: AuditLog) -> str | None:
+        """queue_item_id của dòng log — kể cả khi chỉ suy ra được qua hoá đơn."""
+        qid = _queue_item_id_of(log)
+        if qid:
+            return qid
+        oid = _order_id_of(log)
+        return order_queue.get(oid) if oid else None
+
     # Suy email từ payload QueueItem khi audit chỉ có queue_item_id / QUEUE_ITEM
     # (REVOKE_INVITES_QUEUED cũ chỉ lưu count; QUEUE_PICKED không mang email).
     queue_ids: set[UUID] = set()
@@ -301,7 +440,7 @@ def list_audit_logs(
         d = r.data or {}
         if _emails_in_log_data(d):
             continue
-        qid = _queue_item_id_of(r)
+        qid = _resolved_queue_id(r)
         if qid:
             try:
                 queue_ids.add(UUID(qid))
@@ -326,6 +465,10 @@ def list_audit_logs(
         o.workspace_name = names.get(wid) if wid else None
         d = dict(r.data or {})
         mutated = False
+        row_qid = _resolved_queue_id(r)
+        if row_qid and not _queue_item_id_of(r):
+            d["queue_item_id"] = row_qid
+            mutated = True
         if d.get("member_ids") and not d.get("emails"):
             resolved = [
                 member_emails[str(m)]
@@ -344,7 +487,7 @@ def list_audit_logs(
             d["email"] = member_emails[r.target_id]
             mutated = True
         if not _emails_in_log_data(d):
-            qid = _queue_item_id_of(r)
+            qid = row_qid
             if qid and qid in queue_emails:
                 d["emails"] = queue_emails[qid]
                 if len(queue_emails[qid]) == 1:

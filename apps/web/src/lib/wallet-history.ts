@@ -210,10 +210,18 @@ export function rowSpend(row: TxnRow): number {
   return row.txns.reduce((s, t) => (FEE_KINDS.has(t.kind) ? s - t.amount : s), 0);
 }
 
-/** Số suất (email) tính phí trong dòng — lượt hỏng không tính. */
-export function rowSeats(row: TxnRow): number {
+/** Số suất MỜI MỚI tính phí trong dòng — lượt lỗi mời không tính. */
+export function rowNewSeats(row: TxnRow): number {
   if (row.type !== "group") return 0;
-  return row.txns.filter((t) => FEE_KINDS.has(t.kind)).length;
+  return row.txns.filter((t) => t.kind === "invite_fee").length;
+}
+
+/** Số suất GIA HẠN tính phí trong dòng. Tách khỏi mời mới vì gia hạn tốn tiền mà
+ *  KHÔNG thêm email nào vào team — gộp chung làm số "Seat" lệch với thẻ "Mời hôm
+ *  nay" mà không ai giải thích được (user 2026-08-26). */
+export function rowRenewSeats(row: TxnRow): number {
+  if (row.type !== "group") return 0;
+  return row.txns.filter((t) => t.kind === "renew_fee").length;
 }
 
 /** Tiền NẠP qua chuyển khoản trong dòng (không tính tiền hoá đơn chảy thẳng vào phí). */
@@ -228,7 +236,10 @@ export type DayGroup = {
   rows: TxnRow[];
   topup: number;
   spend: number;
-  seats: number;
+  /** Suất mời MỚI (`invite_fee`). */
+  newSeats: number;
+  /** Suất GIA HẠN (`renew_fee`). */
+  renewSeats: number;
 };
 
 /**
@@ -261,13 +272,14 @@ export function groupRowsByDay(
     if (at == null) {
       at = groups.length;
       index.set(date, at);
-      groups.push({ date, rows: [], topup: 0, spend: 0, seats: 0 });
+      groups.push({ date, rows: [], topup: 0, spend: 0, newSeats: 0, renewSeats: 0 });
     }
     const g = groups[at];
     g.rows.push(row);
     g.topup += rowTopup(row);
     g.spend += rowSpend(row);
-    g.seats += rowSeats(row);
+    g.newSeats += rowNewSeats(row);
+    g.renewSeats += rowRenewSeats(row);
   }
   // Yêu cầu rút gối ngày (giữ hôm nay, duyệt hôm sau) được xếp theo mốc GIỮ nên có
   // thể rơi vào nhóm ngày cũ hơn dòng đứng trước ⇒ sắp lại nhóm mới→cũ cho chắc.
@@ -311,7 +323,7 @@ const CHANNEL_LABEL: Record<TxnChannel, string> = {
   wallet: "Trừ số dư ví",
   invoice: "Thanh toán trực tiếp",
   in: "Tiền vào",
-  voided: "Mời hỏng (đã hoàn phí)",
+  voided: "Lỗi mời (đã hoàn phí)",
 };
 
 function csvCell(v: string | number): string {

@@ -5,6 +5,7 @@
  * Mọi mutation invalidate ["wallet"] để UI đọc bản sống (không reload tay) —
  * theo memory `mutation-must-refresh-ui`.
  */
+import { useEffect, useRef } from "react";
 import {
   keepPreviousData,
   useInfiniteQuery,
@@ -33,6 +34,9 @@ import type {
 
 // ── User: số dư + lịch sử ───────────────────────────────────────────────────
 
+/** Nhịp hỏi số dư khi đang mở ví/modal mời — payload chỉ vài con số nên rất nhẹ. */
+const WALLET_POLL_MS = 30_000;
+
 export function useWallet() {
   const { user } = useAuth();
   const enabled = !!user?.wallet_beta || !!user?.is_super_admin;
@@ -41,7 +45,34 @@ export function useWallet() {
     queryFn: () => api<Wallet>("/api/v1/wallet"),
     enabled,
     refetchOnWindowFocus: true,
+    // Tiền vào từ NGOÀI tab này (SePay báo có, phí mời trừ lúc task chạy nền,
+    // super-admin điều chỉnh) nên số dư phải tự nhích, không chờ F5 hay đổi tab.
+    refetchInterval: WALLET_POLL_MS,
   });
+}
+
+/**
+ * Ví "sống": số dư đổi ⇒ kéo lại lịch sử + tổng kết ngày.
+ *
+ * Chỉ số dư mới đáng poll (vài con số); lịch sử và tổng kết ngày nặng hơn nhiều nên
+ * chỉ nạp lại KHI số dư/tạm giữ thật sự đổi — lúc đó chắc chắn có bút toán mới.
+ * Gọi một lần ở trang Ví.
+ */
+export function useWalletLive() {
+  const qc = useQueryClient();
+  const { data } = useWallet();
+  const sig = data ? `${data.balance}|${data.held}|${data.total}` : null;
+  const seen = useRef<string | null>(null);
+  useEffect(() => {
+    if (!sig) return;
+    if (seen.current === null || seen.current === sig) {
+      seen.current = sig;
+      return;
+    }
+    seen.current = sig;
+    qc.invalidateQueries({ queryKey: ["wallet", "transactions"] });
+    qc.invalidateQueries({ queryKey: ["wallet", "daily-summary"] });
+  }, [sig, qc]);
 }
 
 /** Số bút toán xin mỗi lượt gọi API (mới→cũ). */

@@ -7,7 +7,7 @@
  *   • Hai thẻ chốt SỐ CỦA NGÀY ở trên (mời được bao nhiêu / tiêu bao nhiêu, kèm
  *     thanh tỉ lệ hoá-đơn ↔ trừ-ví).
  *   • Lịch sử chiếm cột rộng bên trái: chip lọc theo "tiền đi đường nào", thanh
- *     chọn ngày, và mỗi ngày một tiêu đề chốt Nạp/Chi/Seat.
+ *     chọn ngày, và mỗi ngày một tiêu đề chốt Nạp/Chi/New/Renew.
  *   • Cột phải gộp SỐ DƯ + Nạp/Rút vào MỘT thẻ có tab, dưới cùng là bảng giải
  *     thích cách tính phí.
  * Ngày chọn ở thanh lịch sử cũng là ngày của hai thẻ trên — trước đây trang có
@@ -18,6 +18,7 @@ import {
   useCreateWithdrawal,
   useWallet,
   useWalletDailySummary,
+  useWalletLive,
   useWalletTransactions,
 } from "../hooks/useWallet";
 import { formatVnd, TXN_KIND_LABEL } from "../lib/wallet";
@@ -95,12 +96,16 @@ const PAGE_ROWS = 25;
 
 export default function Wallet() {
   const { data: wallet, isLoading } = useWallet();
+  // Số dư tự nhích 30s/lần; đổi số ⇒ lịch sử + tổng kết ngày nạp lại theo.
+  useWalletLive();
   const [topupAmount, setTopupAmount] = useState<number | null>(null);
   const [reconcileOpen, setReconcileOpen] = useState(false);
 
   const today = vnToday();
-  /** null = xem mọi ngày. Hai thẻ trên luôn chốt số của `day ?? hôm nay`. */
-  const [day, setDay] = useState<string | null>(null);
+  /** Ngày đang xem; null = xem mọi ngày (nút "Tất cả"). Mặc định là HÔM NAY —
+   *  mở ví ra là thấy ngay việc của hôm nay, không phải lọc lại (user 2026-08-26).
+   *  Hai thẻ trên chốt số của `day ?? hôm nay` nên luôn khớp với danh sách. */
+  const [day, setDay] = useState<string | null>(today);
   // Ngày đang chọn được xin THẲNG ở server (không lọc trên trang đầu 100 dòng nữa) —
   // nếu không thì ngày cũ nào nằm ngoài 100 bút toán gần nhất sẽ hiện rỗng như thể
   // lịch sử đã mất (user 2026-08-26).
@@ -235,7 +240,14 @@ export default function Wallet() {
                 style={{ width: 20, border: "none", background: "transparent", fontSize: 13, color: "var(--ink-3)", cursor: "pointer", padding: 0 }}
               />
             </label>
-            <button onClick={() => { setDay(null); setLimit(PAGE_ROWS); }} style={{ ...chip, ...(day ? null : chipOn) }}>
+            {/* Công tắc, không phải nút một chiều: đang xem "tất cả các ngày" mà bấm lại
+                thì về HÔM NAY. Trước đây bấm lần hai không làm gì, muốn quay lại phải
+                mở lịch chọn tay giữa một danh sách dài (user 2026-08-27: "khó nhìn"). */}
+            <button
+              onClick={() => { setDay(day ? null : today); setLimit(PAGE_ROWS); }}
+              title={day ? "Xem tất cả các ngày" : "Bấm lại để về hôm nay"}
+              style={{ ...chip, ...(day ? null : chipOn) }}
+            >
               Tất cả
             </button>
           </div>
@@ -458,14 +470,16 @@ function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace, hi
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: ".08em", color: "var(--ink-2)" }}>
               {g.date === today ? `HÔM NAY · ${vnDateLabel(g.date)}` : vnDateLabel(g.date)}
             </span>
-            {/* Màn hẹp: cho ba con số xuống dòng chứ không để nguyên một dải nowrap
-                rồi bị thẻ (overflow hidden) cắt cụt mất ô "Seat". */}
+            {/* Màn hẹp: cho các con số xuống dòng chứ không để nguyên một dải nowrap
+                rồi bị thẻ (overflow hidden) cắt cụt mất ô cuối. */}
             <span style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 12, color: "var(--ink-2)" }}>
               <DayStat label="Nạp" value={formatVnd(g.topup)} />
               <span style={{ width: 1, height: 11, background: "var(--border-strong)" }} />
               <DayStat label="Chi" value={formatVnd(g.spend)} />
               <span style={{ width: 1, height: 11, background: "var(--border-strong)" }} />
-              <DayStat label="Seat" value={String(g.seats)} />
+              <DayStat label="New" value={String(g.newSeats)} />
+              <span style={{ width: 1, height: 11, background: "var(--border-strong)" }} />
+              <DayStat label="Renew" value={String(g.renewSeats)} />
             </span>
           </div>
           {g.rows.map((r) => <HistoryRow key={rowKey(r)} row={r} trace={trace} />)}
@@ -505,7 +519,7 @@ const FACE: Record<string, RowFace> = {
   invoice: { icon: "≡", iconBg: "var(--surface-2)", iconFg: "var(--ink-2)", tag: "Thanh toán trực tiếp", tagBg: "var(--surface-2)", tagFg: "var(--ink-2)" },
   refund: { icon: "↺", iconBg: "var(--success-bg)", iconFg: "var(--success)", tag: "Hoàn phí", tagBg: "var(--success-bg)", tagFg: "var(--success)" },
   topup: { icon: "+", iconBg: "var(--ink)", iconFg: "var(--surface)", tag: "Nạp tiền", tagBg: "var(--surface-2)", tagFg: "var(--ink-2)" },
-  voided: { icon: "×", iconBg: "var(--danger-bg)", iconFg: "var(--danger)", tag: "Mời hỏng", tagBg: "var(--danger-bg)", tagFg: "var(--danger)" },
+  voided: { icon: "×", iconBg: "var(--danger-bg)", iconFg: "var(--danger)", tag: "Lỗi mời", tagBg: "var(--danger-bg)", tagFg: "var(--danger)" },
   withdraw: { icon: "↑", iconBg: "var(--surface-2)", iconFg: "var(--ink-2)", tag: "Rút tiền", tagBg: "var(--surface-2)", tagFg: "var(--ink-2)" },
   adjust: { icon: "±", iconBg: "var(--info-bg)", iconFg: "var(--info)", tag: "Điều chỉnh", tagBg: "var(--info-bg)", tagFg: "var(--info)" },
 };
@@ -533,7 +547,7 @@ function HistoryRow({ row, trace }: { row: TxnRow; trace: RefundTrace }) {
 /** Nhãn công tắc: gộp "lượt mời hỏng" và "khoản hoàn đã tiêu hết" cho gọn. */
 function hiddenLabel(voided: number, settled: number): string {
   const parts: string[] = [];
-  if (voided > 0) parts.push(`${voided} lượt mời hỏng`);
+  if (voided > 0) parts.push(`${voided} lượt lỗi mời`);
   if (settled > 0) parts.push(`${settled} khoản hoàn đã dùng hết`);
   return parts.join(" & ");
 }
@@ -548,12 +562,12 @@ function RefundCreditRow({ row, usage }: { row: Extract<TxnRow, { type: "group" 
   const [open, setOpen] = useState(false);
   const left = usage.total - usage.used;
   const t = row.txns[0];
-  const who = usage.emails.length === 1 ? usage.emails[0] : `${usage.emails.length} email hỏng`;
+  const who = usage.emails.length === 1 ? usage.emails[0] : `${usage.emails.length} email lỗi mời`;
   return (
     <RowShell
       face={FACE.refund}
-      title={`Hoàn tiền mời hỏng · ${usage.emails.length} email`}
-      meta={`Hoàn từ ${who} · đã trả qua QR nhưng mời hỏng nên tiền ở lại trong ví`}
+      title={`Hoàn tiền lỗi mời · ${usage.emails.length} email`}
+      meta={`Hoàn từ ${who} · đã trả qua QR nhưng lỗi mời nên tiền ở lại trong ví`}
       note={
         left <= 0
           ? `Đã dùng hết cho lượt mời sau — khoản này triệt tiêu, không phải tiền mới.`
@@ -682,7 +696,7 @@ function FeeRow({ row, fees, funding }: { row: Extract<TxnRow, { type: "group" }
   const finalBalance = Math.min(...row.txns.map((t) => t.balance_after));
   const notes = [
     row.voidedCount > 0
-      ? `Cùng lượt này có ${row.voidedCount} email hỏng, đã hoàn phí (không tính vào số bên phải).`
+      ? `Cùng lượt này có ${row.voidedCount} email lỗi mời, đã hoàn phí (không tính vào số bên phải).`
       : null,
     funding ? fundingNote(funding) : null,
   ].filter(Boolean);
@@ -730,7 +744,7 @@ function fundingNote(funding: RefundSource[]): string {
   if (funding.length === 1) {
     return `Dùng tiền hoàn từ email ${funding[0].email} (${formatVnd(total)}).`;
   }
-  return `Dùng tiền hoàn từ ${funding.length} email hỏng trước đó (${formatVnd(total)}).`;
+  return `Dùng tiền hoàn từ ${funding.length} email lỗi mời trước đó (${formatVnd(total)}).`;
 }
 
 /**
@@ -744,7 +758,7 @@ function VoidedRow({ pairs }: { pairs: VoidedPair[] }) {
   return (
     <RowShell
       face={FACE.voided}
-      title={`Mời hỏng · ${pairs.length} email`}
+      title={`Lỗi mời · ${pairs.length} email`}
       meta={`Đã trừ ${formatVnd(fee)} rồi hoàn lại đủ · không mất tiền`}
       at={stamp(pairs[0].fee.created_at)}
       amount="0 ₫"
@@ -798,7 +812,7 @@ function SingleRow({ t, stranded }: { t: WalletTxn; stranded: number }) {
     : t.kind === "topup"
       ? "Nạp tiền vào ví"
       : t.kind === "invite_refund"
-        ? "Hoàn phí mời hỏng"
+        ? "Hoàn phí lỗi mời"
         : (TXN_KIND_LABEL[t.kind] ?? t.kind);
   const reason = t.meta?.reason ? String(t.meta.reason) : null;
   const email = t.meta?.email ? String(t.meta.email) : null;
@@ -806,7 +820,7 @@ function SingleRow({ t, stranded }: { t: WalletTxn; stranded: number }) {
   // (phí hoàn về) — nói thẳng, đừng để trơ dòng "+X" không đầu không cuối.
   const strandedNote =
     t.kind === "order_topup" && stranded > 0
-      ? `Lượt mời cùng lúc bị hỏng, phí đã hoàn — ${formatVnd(stranded)} ở lại trong ví.`
+      ? `Lượt mời cùng lúc bị lỗi, phí đã hoàn — ${formatVnd(stranded)} ở lại trong ví.`
       : null;
   const notes = [
     isDupInvoice && dupRef ? `Hoá đơn ${dupRef}. Số tiền đã được cộng vào ví.` : null,
