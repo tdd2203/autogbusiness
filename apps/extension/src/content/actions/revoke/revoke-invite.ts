@@ -35,6 +35,7 @@ import { dbLabelsFor, reportLabelMismatch } from "../../../shared/ui-labels";
 import { findRowMenuButton } from "../member-row";
 import { waitForChatGptCommit } from "../dialog-commit";
 import { locatePendingRow } from "./locate-pending-row";
+import { verifyInviteGone } from "./verify-invite-gone";
 
 const LOG = "[autogpt-revoke]";
 
@@ -51,11 +52,16 @@ const CONFIRM_DIALOG_WAIT_MS = 3_000;
 const COMMIT_TIMEOUT_MS = 30_000;
 /** Để ChatGPT refetch list 1 nhịp sau khi dialog đóng rồi mới tra lại. */
 const VERIFY_SETTLE_MS = 2000;
-/** Số lần tra lại tab Lời mời + khoảng cách giữa 2 lần. */
-const VERIFY_ATTEMPTS = 3;
-const VERIFY_GAP_MS = 3000;
-/** Ngân sách xác minh mặc định khi caller không cấp (revoke lẻ 1 email). */
-const VERIFY_DEFAULT_BUDGET_MS = 25_000;
+/**
+ * Ngân sách xác minh mặc định khi caller không cấp (thu hồi lẻ 1 email).
+ *
+ * 25s → 60s (ca ickj886@gmail.com 27/8/2026): ChatGPT còn trả về dòng đã thu hồi
+ * thêm ~34 giây mới chịu bỏ (cùng độ trễ mà lệnh gỡ đã đo được từ 12/7/2026, nên
+ * gỡ để trần 60s). Cửa sổ 25s cũ — thực tế chỉ dùng hết 12-17s vì mỗi lần tra
+ * quá nhanh — đóng sổ ngay giữa khoảng ChatGPT chưa cập nhật ⇒ thu hồi trót lọt
+ * bị chốt là hỏng. Xem `verify-invite-gone.ts`.
+ */
+const VERIFY_DEFAULT_BUDGET_MS = 60_000;
 
 /** Có thể có confirm dialog hoặc không — tuỳ ChatGPT. */
 export type RevokeResult = {
@@ -216,38 +222,39 @@ export async function revokeInvite(
     };
   }
 
-  // ---- (2) QUÉT LẠI XÁC NHẬN ----------------------------------------------
+  // ---- (2) HỎI LẠI CHATGPT ĐỂ XÁC NHẬN ------------------------------------
   // Dialog đóng = ChatGPT NHẬN lệnh, KHÔNG bảo đảm đã thu hồi server-side (đúng
   // bài học của REMOVE: dialog đóng → báo COMPLETED → invite VẪN còn → DB lệch).
-  // Quét lại bằng CHÍNH đường định vị chuẩn (`locatePendingRow`: 1 trang → quét
-  // vị trí, nhiều trang → ô "Search for invites") để lần tra sau là dữ liệu MỚI
-  // của ChatGPT chứ không phải DOM cũ còn treo.
   //
-  // Tab Lời mời cũng eventual-consistent → tra tối đa 3 lần, cách nhau 3s, trong
-  // ngân sách `verifyBudgetMs` caller cấp (batch nhiều email phải chia nhau 150s
-  // của task). Còn thấy row = thu hồi CHƯA có hiệu lực → ok:false để backend giữ
-  // nguyên trạng thái và retry, thà báo chưa-xong còn hơn báo xong GIẢ.
+  // Mỗi vòng tra phải là một lần HỎI MỚI (xoá ô tìm kiếm → chờ danh sách đầy lại
+  // → gõ lại email), và phải đủ HAI vòng độc lập cùng không thấy mới dám kết
+  // luận. Bản trước tra 3 lần bằng `locatePendingRow`, mà đường đó quét thẳng
+  // DOM đang hiển thị khi danh sách gọn một trang — ba lần tra là đọc lại cùng
+  // một dữ liệu cũ, ChatGPT chưa hề bị hỏi lại. Chi tiết + ca thật:
+  // `verify-invite-gone.ts`.
   await sleep(VERIFY_SETTLE_MS); // để ChatGPT refetch list 1 nhịp trước khi tra
-  const deadline = Date.now() + Math.max(VERIFY_GAP_MS, verifyBudgetMs);
-  for (let attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt++) {
-    const still = await locatePendingRow(email);
-    if (!still) {
-      console.log(`${LOG} OK email=${email} (đã biến mất khỏi tab Lời mời)`);
-      return { email, ok: true };
-    }
-    console.log(
-      `${LOG} xác minh lần ${attempt}/${VERIFY_ATTEMPTS}: ${email} VẪN còn trên tab Lời mời`,
-    );
-    if (attempt >= VERIFY_ATTEMPTS || Date.now() + VERIFY_GAP_MS >= deadline) break;
-    await sleep(VERIFY_GAP_MS);
+  const deadline = Date.now() + Math.max(10_000, verifyBudgetMs);
+  const absence = await verifyInviteGone(email, deadline);
+  if (absence.outcome === "gone") {
+    console.log(`${LOG} OK email=${email} (đã biến mất khỏi tab Lời mời)`);
+    return { email, ok: true };
   }
-
+  if (absence.outcome === "still_there") {
+    return {
+      email,
+      ok: false,
+      reason:
+        `Đã click thu hồi ${email} (dialog đã tắt hẳn) nhưng hỏi lại ChatGPT vẫn ` +
+        `thấy lời mời trên tab "Lời mời đang chờ xử lý" → thu hồi CHƯA có hiệu ` +
+        "lực (ChatGPT chặn/lỗi quyền). Cần thu hồi thủ công hoặc chờ retry.",
+    };
+  }
   return {
     email,
     ok: false,
     reason:
-      `Đã click thu hồi ${email} (dialog đã tắt hẳn) nhưng lời mời VẪN còn trên ` +
-      `tab "Lời mời đang chờ xử lý" sau ${VERIFY_ATTEMPTS} lần tra → thu hồi CHƯA ` +
-      "có hiệu lực (ChatGPT chặn/lỗi quyền). Cần thu hồi thủ công hoặc chờ retry.",
+      `Đã click thu hồi ${email} (dialog đã tắt hẳn) nhưng KHÔNG kiểm chứng được ` +
+      `lời mời đã biến mất chưa (${absence.reason}) → giữ nguyên trạng thái, sẽ ` +
+      "thử lại ở lần sau thay vì đánh dấu đã thu hồi khi chưa chắc.",
   };
 }

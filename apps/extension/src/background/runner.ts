@@ -43,8 +43,20 @@ import {
   type SeatLease,
 } from "./seat-gate";
 import { decideInviteOutcome, type SubmitEvidence } from "./invite-outcome";
+import {
+  readMergedTasks,
+  splitResponseForTask,
+  taskForMergedEntry,
+} from "./merged-report";
 import { waitForFreshContent } from "./content-ready";
 import { shouldSalvageInvite } from "./invite-salvage";
+import {
+  buildRemoveSalvageResponse,
+  buildRevokeSalvageResponse,
+  classifyAbsence,
+  shouldSalvageDestructive,
+  type AbsenceEvidence,
+} from "./destructive-salvage";
 
 const RATE_LIMIT = {
   /** Min delay giữa 2 task bất kỳ (anti-detection). 5000→2000→1200→840 (-30%). */
@@ -133,6 +145,15 @@ const VERIFY_BUDGET_MS = 30_000;
 const MAX_VERIFY_RELOADS = 3;
 
 /**
+ * Trần riêng cho lượt Phase 2b (CHECK_ACTIVE_AFTER_INVITE). Từ 29/8/2026 bước
+ * này tra TỪNG email bằng ô "Lọc theo tên" và chờ list load xong mới sang email
+ * kế (~5-7s/email) thay vì scroll-scan trượt trên list virtualized, nên 60s của
+ * `VERIFY_ROUNDTRIP_TIMEOUT_MS` cắt ngang từ email thứ tám trở đi. Content tự
+ * chốt ở ngân sách 100s; để trần ngoài rộng hơn một nhịp cho nó kịp trả lời.
+ */
+const CHECK_ACTIVE_TIMEOUT_MS = 120_000;
+
+/**
  * Hard-cap cho PHASE 1 (round-trip background→content `sendToContent`) THEO LOẠI
  * task. v0.7.17 (2026-06-18) — fix bug "Mời thành viên kẹt IN_PROGRESS 343s rồi
  * TIMEOUT".
@@ -190,6 +211,32 @@ const CONTENT_TIMEOUTS: Record<string, number> = {
 };
 /** Backend default 300s (5') → 270s. */
 const DEFAULT_CONTENT_TIMEOUT_MS = 270_000;
+
+/**
+ * Loại lệnh mà MẺ GỘP chạy tuần tự từng email (mỗi email một vòng lọc → menu →
+ * xác nhận). Ngưỡng `CONTENT_TIMEOUTS` của chúng phải nhân theo số lệnh trong mẻ.
+ */
+const MERGE_SEQUENTIAL_TYPES = new Set(["REMOVE_MEMBER", "REVOKE_INVITES"]);
+
+/**
+ * Số lượt việc TUẦN TỰ mà một lệnh phải làm — dùng để nhân ngưỡng thời gian.
+ *
+ * Thường là số lệnh trong mẻ gộp. Nhưng `REVOKE_INVITES` còn một đường nữa:
+ * dashboard phát hiện lời mời lạ rồi gửi MỘT lệnh mang nhiều email
+ * (`payload.emails`, xem `workspaces/triggers.py`). Lệnh đó không phải mẻ gộp
+ * nên trước đây hệ số là 1, trong khi content vẫn phải thu hồi tuần tự từng lời
+ * mời — mà mỗi lời mời nay còn phải hỏi lại ChatGPT tới 60s để không kết luận
+ * vội (xem `revoke/verify-invite-gone.ts`). Không đếm số email ở đây thì chính
+ * đồng hồ này cắt ngang lệnh đang chạy thật.
+ */
+function sequentialUnits(task: QueueItem): number {
+  const merged = readMergedTasks(task.payload).length;
+  const raw = (task.payload ?? {}).emails;
+  const emails = Array.isArray(raw)
+    ? raw.filter((e) => typeof e === "string" && e.includes("@")).length
+    : 0;
+  return Math.max(1, merged, task.type === "REVOKE_INVITES" ? emails : 0);
+}
 
 /**
  * Promise.race với timeout. Reject `Error("timeout:<label>")` nếu `p` không
@@ -954,12 +1001,21 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
         reinvite: p.reinvite === true,
       };
     }
-    case "REMOVE_MEMBER":
+    case "REMOVE_MEMBER": {
+      // MẺ GỘP: backend gửi `emails` = email của CẢ MẺ (payload lệnh lẻ chỉ có
+      // `email`). Content gỡ tuần tự từng email trong cùng một lượt vào tab
+      // "Người dùng" — xem `content/actions/remove/execute-remove-batch.ts`.
+      const rawEmails = p.emails;
+      const emails = Array.isArray(rawEmails)
+        ? rawEmails.filter((e): e is string => typeof e === "string")
+        : [];
       return {
         kind: "REMOVE_MEMBER",
         taskId: task.id,
-        email: String(p.email ?? ""),
+        email: String(p.email ?? emails[0] ?? ""),
+        ...(emails.length > 1 ? { emails } : {}),
       };
+    }
     case "EXPORT_MEMBER_DATA":
     case "DELETE_MEMBER_DATA":
       return {
@@ -1799,6 +1855,235 @@ async function reportToBackend(
   }
 }
 
+/**
+ * Báo kết quả cho MỌI lệnh trong MẺ GỘP — mỗi lệnh nhận đúng phần của mình.
+ *
+ * Mẻ gộp chỉ là chuyện của lúc CHẠY: backend vẫn giữ mỗi lệnh là một đơn vị
+ * riêng (tiền của lời mời trỏ vào đúng lệnh sinh ra nó, bản ghi lời mời cũng
+ * vậy). Nên ở đây tách kết quả rồi PATCH lần lượt, y như khi từng lệnh chạy một
+ * mình — `queue/completion.py` không cần biết mẻ gộp tồn tại.
+ *
+ * Một lệnh báo lỗi mạng KHÔNG được chặn các lệnh còn lại: lệnh nào không PATCH
+ * được sẽ nằm IN_PROGRESS rồi bị backend dọn theo ngưỡng treo (lời mời đi đường
+ * hoãn-phán-xử, không mất tiền) — nhưng đừng để nó kéo theo cả mẻ.
+ */
+async function reportBatchToBackend(
+  config: ExtensionConfig,
+  task: QueueItem,
+  response: ExecuteActionResponse,
+): Promise<void> {
+  const merged = readMergedTasks(task.payload);
+  if (merged.length === 0) {
+    await reportToBackend(config, task, response);
+    return;
+  }
+  console.log(
+    `[autogpt-merge] báo kết quả mẻ gộp ${task.type}: ${merged.length} lệnh ` +
+      `(${merged.map((m) => `${m.id.slice(0, 8)}:${m.emails.length}`).join(", ")})`,
+  );
+  for (const entry of merged) {
+    try {
+      await reportToBackend(
+        config,
+        taskForMergedEntry(task, entry),
+        splitResponseForTask(task.type, entry, response),
+      );
+    } catch (e) {
+      console.warn(
+        `[autogpt-merge] không báo được kết quả cho lệnh ${entry.id} trong mẻ:`,
+        e,
+      );
+    }
+  }
+}
+
+/**
+ * PATCH cùng một kết quả cho mọi lệnh trong mẻ (dry-run, không mở được tab,
+ * loại lệnh chưa support…). Những ca này xảy ra TRƯỚC khi chạm vào ChatGPT nên
+ * mọi lệnh trong mẻ chịu chung một số phận.
+ */
+async function updateMergedTasks(
+  config: ExtensionConfig,
+  task: QueueItem,
+  body: {
+    status: "COMPLETED" | "FAILED";
+    result?: Record<string, unknown> | null;
+    error_code?: string | null;
+    error_message?: string | null;
+  },
+): Promise<void> {
+  const merged = readMergedTasks(task.payload);
+  const ids = merged.length > 0 ? merged.map((m) => m.id) : [task.id];
+  for (const id of ids) {
+    try {
+      await updateTask(config, id, body);
+    } catch (e) {
+      console.warn(`[autogpt-merge] PATCH lệnh ${id} thất bại:`, e);
+    }
+  }
+}
+
+/**
+ * Quay lại ChatGPT ĐỌC XEM email còn trong workspace không — dùng khi lệnh gỡ /
+ * thu hồi chết kiểu vô định (mất kênh, quá hạn) nên không nghe được câu trả lời.
+ *
+ * F5 tab để ChatGPT nạp lại danh sách TỪ SERVER (không đọc cache React Query),
+ * rồi soi HAI tab bằng đúng hai lượt read-only sẵn có:
+ *   - `VERIFY_PENDING_INVITE` → còn ở tab "Lời mời đang chờ xử lý" không.
+ *   - `CHECK_ACTIVE_AFTER_INVITE` → còn ở tab "Người dùng" không (tra từng email
+ *     bằng ô lọc, tự báo `inconclusive_emails` khi ô lọc không kết luận nổi).
+ *
+ * Trả `null` khi còn chưa F5/inject nổi — lúc đó không có bằng chứng nào cả,
+ * caller giữ nguyên lỗi gốc.
+ */
+async function collectAbsenceEvidence(
+  config: ExtensionConfig,
+  taskId: string,
+  tabId: number,
+  emails: string[],
+): Promise<AbsenceEvidence | null> {
+  await reportRunnerProgress(config, taskId, {
+    phase: "f5-verify",
+    message:
+      "Mất liên lạc với trang giữa chừng — F5 rồi soi lại ChatGPT xem lệnh đã có hiệu lực chưa...",
+  });
+  let readyTabId = tabId;
+  try {
+    const prevLoadId = await readContentLoadId(tabId);
+    try {
+      await chrome.tabs.reload(tabId);
+      await waitForTabComplete(tabId, 15_000);
+    } catch (e) {
+      // Tab chết hẳn (đúng thứ hay xảy ra khi kênh đứt) → khỏi ngồi chờ nó load,
+      // để `ensureContentInjected` dựng lại tab ở Step 3 NUCLEAR.
+      console.warn(
+        `[autogpt-salvage] reload tab ${tabId} lỗi (tab có thể đã đóng): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+    const ready = await ensureContentInjected(tabId);
+    if (!ready.ok) {
+      console.warn("[autogpt-salvage] không inject lại được content → không phân xử");
+      return null;
+    }
+    readyTabId = ready.tabId;
+    if (
+      readyTabId === tabId &&
+      !(await ensureFreshContentAfterNav(readyTabId, prevLoadId))
+    ) {
+      // Trang CŨ vẫn đang trả lời: soi trên DOM cũ là đọc lại đúng cái danh sách
+      // trước lúc thao tác → kết luận sai cả hai chiều. Thà không phân xử.
+      console.warn("[autogpt-salvage] chưa chắc trang mới đã tiếp quản → không phân xử");
+      return null;
+    }
+  } catch (e) {
+    console.warn("[autogpt-salvage] chuẩn bị tab để phân xử lỗi:", e);
+    return null;
+  }
+
+  const ev: AbsenceEvidence = {
+    stillPending: [],
+    pendingUnusable: true,
+    stillActive: [],
+    activeInconclusive: [],
+    activeUnusable: true,
+  };
+
+  try {
+    const pendingResp = (await withTimeout(
+      chrome.tabs.sendMessage(readyTabId, {
+        kind: "VERIFY_PENDING_INVITE",
+        taskId,
+        emails,
+        role: "member",
+      } satisfies ExecuteActionRequest),
+      VERIFY_ROUNDTRIP_TIMEOUT_MS,
+      "salvage-verify-pending",
+    )) as ExecuteActionResponse;
+    if (pendingResp?.ok) {
+      const d = (pendingResp.data as Record<string, unknown>) ?? {};
+      if (d.verify_scrape_failed !== true) {
+        ev.pendingUnusable = false;
+        ev.stillPending = Array.isArray(d.verified_emails)
+          ? (d.verified_emails as string[])
+          : [];
+      }
+    }
+  } catch (e) {
+    console.warn("[autogpt-salvage] soi tab Lời mời lỗi:", e);
+  }
+
+  try {
+    const activeResp = (await withTimeout(
+      chrome.tabs.sendMessage(readyTabId, {
+        kind: "CHECK_ACTIVE_AFTER_INVITE",
+        taskId,
+        emails,
+      } satisfies ExecuteActionRequest),
+      CHECK_ACTIVE_TIMEOUT_MS,
+      "salvage-check-active",
+    )) as ExecuteActionResponse;
+    if (activeResp?.ok) {
+      const d = (activeResp.data as Record<string, unknown>) ?? {};
+      ev.activeUnusable = false;
+      ev.stillActive = Array.isArray(d.active_emails)
+        ? (d.active_emails as string[])
+        : [];
+      ev.activeInconclusive = Array.isArray(d.inconclusive_emails)
+        ? (d.inconclusive_emails as string[])
+        : [];
+    }
+  } catch (e) {
+    console.warn("[autogpt-salvage] soi tab Người dùng lỗi:", e);
+  }
+
+  console.log("[autogpt-salvage] bằng chứng đọc được:", ev);
+  return ev;
+}
+
+/**
+ * Phân xử lệnh GỠ / THU HỒI chết kiểu vô định. Trả kết quả MỚI khi ChatGPT xác
+ * nhận email đã rời workspace, còn lại giữ nguyên lỗi gốc.
+ *
+ * Ranh giới "vô định vs hỏng thật" và cách dựng kết quả nằm ở
+ * `destructive-salvage.ts` (có test) — ở đây chỉ điều khiển tab.
+ */
+async function salvageDestructiveTask(
+  config: ExtensionConfig,
+  task: QueueItem,
+  tabId: number,
+  emails: string[],
+  original: ExecuteActionResponse,
+): Promise<ExecuteActionResponse> {
+  if (emails.length === 0) return original;
+  console.warn(
+    `[autogpt-salvage] ${task.type} chết kiểu vô định (${
+      (original as { error_code?: string }).error_code
+    }) — hỏi lại ChatGPT thay vì báo hỏng ngay.`,
+  );
+  const ev = await collectAbsenceEvidence(config, task.id, tabId, emails);
+  if (!ev) return original;
+  const verdict = classifyAbsence(emails, ev);
+  const salvaged =
+    task.type === "REVOKE_INVITES"
+      ? buildRevokeSalvageResponse(emails, verdict, original)
+      : buildRemoveSalvageResponse(emails, verdict, original);
+  if (salvaged === original) {
+    console.warn(
+      `[autogpt-salvage] KHÔNG có bằng chứng email nào đã rời (còn: ${
+        verdict.present.join(", ") || "-"
+      }; chưa rõ: ${verdict.unknown.join(", ") || "-"}) → giữ kết luận hỏng.`,
+    );
+  } else {
+    console.log(
+      `[autogpt-salvage] ${verdict.gone.length}/${emails.length} email xác nhận đã rời ChatGPT ` +
+        "dù mất liên lạc giữa chừng — báo thành công thay vì hỏng oan.",
+    );
+  }
+  return salvaged;
+}
+
 async function applyRateLimit(): Promise<void> {
   const sinceLast = Date.now() - state.lastTaskAt;
   if (state.lastTaskAt > 0 && sinceLast < RATE_LIMIT.betweenTasksMs) {
@@ -2160,7 +2445,7 @@ async function runOnceOnSlot(
     console.log(
       `[autogpt-runner] DRY-RUN: bỏ qua thao tác thật cho ${task.type} ${task.id}`,
     );
-    await updateTask(config, task.id, {
+    await updateMergedTasks(config, task, {
       status: "COMPLETED",
       result: {
         dry_run: true,
@@ -2198,7 +2483,7 @@ async function runOnceOnSlot(
   const request = taskToRequest(task);
   if (!request) {
     console.warn(`[autogpt-runner] task type chưa support: ${task.type}`);
-    await updateTask(config, task.id, {
+    await updateMergedTasks(config, task, {
       status: "FAILED",
       error_code: "UNKNOWN",
       error_message: `Loại task chưa support: ${task.type}`,
@@ -2230,7 +2515,7 @@ async function runOnceOnSlot(
     console.warn(
       "[autogpt-runner] NOT_LOGGED_IN_CHATGPT — không mở được admin tab (chưa login ChatGPT trong browser này)",
     );
-    await updateTask(config, task.id, {
+    await updateMergedTasks(config, task, {
       status: "FAILED",
       error_code: "NOT_LOGGED_IN_CHATGPT",
       error_message:
@@ -2354,7 +2639,16 @@ async function runOnceOnSlot(
   // lazy-cleanup. KHÔNG dọn phantom ở đây: không chắc invite đã gửi hay chưa
   // (content có thể submit trước khi context chết) → để FAILED → backend phantom
   // cleanup (completion.py Case 1) hoặc SYNC_DATA định kỳ tự reconcile.
-  const phase1Timeout = CONTENT_TIMEOUTS[task.type] ?? DEFAULT_CONTENT_TIMEOUT_MS;
+  // MẺ GỘP làm việc TUẦN TỰ từng email (gỡ, thu hồi) thì tốn xấp xỉ n lần một
+  // lệnh lẻ → nhân ngưỡng lên, không thì đồng hồ này cắt ngang mẻ đang chạy thật.
+  // Lời mời KHÔNG nhân: cả mẻ chỉ là MỘT lần mở hộp mời + một vòng xác minh.
+  // Cùng luật với `merged_threshold_factor` bên backend (queue/execution.py) —
+  // extension vẫn phải nổ TRƯỚC backend để báo lỗi rõ ràng thay vì bị dọn.
+  const phase1Timeout =
+    (CONTENT_TIMEOUTS[task.type] ?? DEFAULT_CONTENT_TIMEOUT_MS) *
+    (MERGE_SEQUENTIAL_TYPES.has(task.type)
+      ? sequentialUnits(task)
+      : 1);
   const phase1TabId = tab.id;
   const dispatchPhase1 = async (): Promise<ExecuteActionResponse> => {
     console.log(`[autogpt-runner] sending ${request.kind} to content script...`);
@@ -3146,7 +3440,7 @@ async function runOnceOnSlot(
                 taskId: task.id,
                 emails: stillUnverified,
               } satisfies ExecuteActionRequest),
-              VERIFY_ROUNDTRIP_TIMEOUT_MS,
+              CHECK_ACTIVE_TIMEOUT_MS,
               "check-active-after-invite",
             )) as ExecuteActionResponse;
             if (activeResp?.ok) {
@@ -3155,11 +3449,20 @@ async function runOnceOnSlot(
                   | {
                       active_members?: Array<Record<string, unknown>>;
                       active_emails?: string[];
+                      inconclusive_emails?: string[];
                     }
                   | undefined) ?? {};
               const activeEmails = (adata.active_emails ?? []).map((e) =>
                 e.toLowerCase(),
               );
+              const inconclusive = adata.inconclusive_emails ?? [];
+              if (inconclusive.length > 0) {
+                console.warn(
+                  `[autogpt-runner] Phase 2b: ${inconclusive.length} email KHÔNG tra được ở tab Người dùng ` +
+                    `(ô lọc không phản hồi / hết ngân sách) — giữ nguyên unverified:`,
+                  inconclusive,
+                );
+              }
               if (activeEmails.length > 0) {
                 const activeSet = new Set(activeEmails);
                 const d = response.data as Record<string, unknown>;
@@ -3240,7 +3543,36 @@ async function runOnceOnSlot(
     }
   }
 
-  await reportToBackend(config, task, response);
+  // ─── PHÂN XỬ LỆNH GỠ / THU HỒI CHẾT VÔ ĐỊNH ──────────────────────────────
+  // Kênh background↔content đứt giữa chừng thì ta KHÔNG nghe được câu trả lời
+  // của ChatGPT — mà "không nghe được" khác hẳn "ChatGPT nói hỏng". Trước đây
+  // chỗ này báo FAILED thẳng nên mới có cảnh ChatGPT hiện thông báo xoá xong,
+  // quay về dashboard lại thấy lệnh đỏ (ca hungnd.aii 29/8/2026 lúc 11:58, và mẻ
+  // gỡ 3 email lúc 10:56 cùng ngày — cùng một chuỗi lỗi Chrome).
+  //
+  // Lời mời đã đi đường này từ v0.10.1 (`invite-salvage.ts`). Nay gỡ/thu hồi
+  // cũng vậy: F5 rồi soi lại hai tab, có bằng chứng email đã rời mới báo xong.
+  if (
+    !response.ok &&
+    (task.type === "REVOKE_INVITES" || task.type === "REMOVE_MEMBER") &&
+    shouldSalvageDestructive(response)
+  ) {
+    const salvageEmails =
+      request.kind === "REVOKE_INVITES"
+        ? request.emails
+        : request.kind === "REMOVE_MEMBER"
+          ? (request.emails ?? [request.email]).filter(Boolean)
+          : [];
+    response = await salvageDestructiveTask(
+      config,
+      task,
+      tab.id,
+      salvageEmails,
+      response,
+    );
+  }
+
+  await reportBatchToBackend(config, task, response);
 
   // STALE_BUILD: task vừa được mark FAILED (immediate, không kẹt 5 phút). Giờ
   // self-heal reload EXTENSION để Chrome nạp build mới từ đĩa → task kế chạy được

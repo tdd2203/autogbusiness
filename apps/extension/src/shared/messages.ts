@@ -96,7 +96,21 @@ export type ExecuteActionRequest =
    * hoàn 340.000đ oan). Xem `content/actions/external-invites/execute-set-toggle.ts`.
    */
   | { kind: "SET_EXTERNAL_INVITES"; taskId: string; enabled: boolean }
-  | { kind: "REMOVE_MEMBER"; taskId: string; email: string }
+  | {
+      kind: "REMOVE_MEMBER";
+      taskId: string;
+      email: string;
+      /**
+       * MẺ GỘP (backend `services/task_merge.py`): nhiều lệnh gỡ cùng workspace
+       * đang chờ được chạy trong MỘT lượt — cùng một tab, cùng một lần vào tab
+       * "Người dùng", chỉ lặp lại phần lọc-menu-xác nhận cho từng email.
+       *
+       * Thiếu/1 phần tử → lệnh gỡ lẻ như cũ. Có >1 → content trả
+       * `data.results: Array<{email, ok, ...}>` để background báo kết quả về CHO
+       * TỪNG LỆNH (mỗi lệnh vẫn tự chốt số phận của mình ở backend).
+       */
+      emails?: string[];
+    }
   | {
       /** 2 mục MỚI trong menu "..." của member ĐÃ THAM GIA (ChatGPT 2026-08):
        * "Xuất dữ liệu" và "Xoá dữ liệu". Cùng luồng (lọc email → menu → dialog),

@@ -9,7 +9,7 @@ import {
   executeCheckActiveAfterInvite,
 } from "./actions/invite";
 import { executeSetExternalInvites } from "./actions/external-invites/execute-set-toggle";
-import { executeRemove } from "./actions/remove";
+import { executeRemove, executeRemoveBatch } from "./actions/remove";
 import { executeMemberData } from "./actions/member-data";
 import { executeSyncMember, executeSyncMembersBatch } from "./actions/sync-member";
 import { executeChangeRole } from "./actions/change-role";
@@ -118,7 +118,12 @@ async function dispatch(
     case "CHECK_ACTIVE_AFTER_INVITE":
       return executeCheckActiveAfterInvite(msg.taskId, msg.emails);
     case "REMOVE_MEMBER":
-      return executeRemove(msg.taskId, msg.email);
+      // MẺ GỘP: nhiều lệnh gỡ cùng workspace chạy trong một lượt (xem
+      // `execute-remove-batch.ts`). Một email → giữ nguyên đường lệnh lẻ để kết
+      // quả trả về đúng hình dạng cũ (`data.verified/absent`).
+      return msg.emails && msg.emails.length > 1
+        ? executeRemoveBatch(msg.taskId, msg.emails)
+        : executeRemove(msg.taskId, msg.emails?.[0] ?? msg.email);
     case "EXPORT_MEMBER_DATA":
       return executeMemberData(msg.taskId, msg.email, "export");
     case "DELETE_MEMBER_DATA":

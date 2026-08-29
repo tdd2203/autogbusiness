@@ -15,8 +15,8 @@ Endpoints (đăng ký lên router dùng chung từ `_shared`):
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
-from sqlalchemy import or_, select
+from fastapi import Depends, HTTPException, Query, status
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -26,6 +26,7 @@ from app.deps import (
 )
 from app.models import QueueItem, Workspace, WorkspaceSettings
 from app.schemas import QueueOut, QueueProgressUpdate
+from app.services import task_merge
 
 from ._shared import router
 from .completion import defer_unverified_invite, reconcile_failed_invite
@@ -86,8 +87,57 @@ def stuck_verdict(
     return False, "alive", silent_sec, total_sec
 
 
+# Loại lệnh mà MẺ GỘP làm việc TUẦN TỰ từng email (gỡ từng người, thu hồi từng
+# lời mời) ⇒ mẻ n lệnh tốn xấp xỉ n lần thời gian. Ngưỡng treo phải nhân theo,
+# không thì mẻ đang chạy thật bị dọn giữa chừng.
+#
+# INVITE_MEMBER CỐ Ý không nằm ở đây: gộp lời mời là gộp vào MỘT lần mở hộp mời,
+# thời gian gần như không đổi dù 1 hay 5 email. Nhân ngưỡng cho nó chỉ khiến một
+# mẻ mời CHẾT phải nằm chờ gấp mấy lần trước khi được dọn — mà dọn muộn là tiền
+# của đại lý về ví muộn.
+_MERGE_SEQUENTIAL_TYPES = frozenset({"REMOVE_MEMBER", "REVOKE_INVITES"})
+
+
+def merged_threshold_factor(item: QueueItem) -> int:
+    """Hệ số nhân ngưỡng treo cho lệnh chạy tuần tự nhiều lượt (1 = một lượt).
+
+    Hai nguồn, lấy cái lớn hơn:
+
+    * `merged_size` — ghi lúc pick lên CẢ lệnh dẫn đầu lẫn lệnh được gộp, nên
+      lệnh nào trong mẻ cũng có cùng hệ số.
+    * số email trong `payload.emails` của `REVOKE_INVITES` — dashboard phát hiện
+      lời mời lạ thì gửi MỘT lệnh mang nhiều email (`workspaces/triggers.py`).
+      Lệnh đó không phải mẻ gộp nhưng extension vẫn thu hồi tuần tự từng lời
+      mời, và từ 29/8/2026 mỗi lời mời còn phải hỏi lại ChatGPT tới 60s trước khi
+      dám kết luận (ca ickj886@gmail.com: thu hồi trót lọt mà bị chốt là hỏng vì
+      đóng sổ ở giây thứ 12-17). Giữ hệ số 1 cho nó thì ngưỡng 3 phút dọn đúng
+      lệnh đang chạy thật.
+    """
+    if item.type not in _MERGE_SEQUENTIAL_TYPES:
+        return 1
+    factor = 1
+    raw = (item.payload or {}).get("merged_size")
+    if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1:
+        factor = raw
+    if item.type == "REVOKE_INVITES":
+        emails = (item.payload or {}).get("emails")
+        if isinstance(emails, list):
+            factor = max(
+                factor,
+                sum(1 for e in emails if isinstance(e, str) and "@" in e),
+            )
+    return min(max(factor, 1), task_merge.MAX_MERGED_TASKS)
+
+
 @router.get("/next", response_model=QueueOut | None)
 def pick_next(
+    merge: bool = Query(
+        False,
+        description=(
+            "Extension có biết chạy MẺ GỘP không (`merged_tasks` trong payload). "
+            "Bản cũ không gửi cờ này → backend không bao giờ gộp cho nó."
+        ),
+    ),
     db: Session = Depends(get_session),
     workspace: Workspace = Depends(require_extension_workspace),
 ) -> QueueItem | None:
@@ -159,12 +209,15 @@ def pick_next(
             t.picked_at,
             t.progress,
             now,
-            STUCK_THRESHOLDS.get(t.type, DEFAULT_STUCK_THRESHOLD),
+            STUCK_THRESHOLDS.get(t.type, DEFAULT_STUCK_THRESHOLD)
+            * merged_threshold_factor(t),
         )
         if verdict:
             stuck_tasks.append((t, reason, silent_sec, total_sec))
     for stuck, reason, silent_sec, age_sec in stuck_tasks:
-        threshold = STUCK_THRESHOLDS.get(stuck.type, DEFAULT_STUCK_THRESHOLD)
+        threshold = STUCK_THRESHOLDS.get(
+            stuck.type, DEFAULT_STUCK_THRESHOLD
+        ) * merged_threshold_factor(stuck)
         threshold_min = int(threshold.total_seconds() // 60)
         stuck.status = "FAILED"
         stuck.error_code = "TIMEOUT"
@@ -256,8 +309,9 @@ def pick_next(
     )
     if not item:
         return None
+    picked_at = datetime.now(timezone.utc)
     item.status = "IN_PROGRESS"
-    item.picked_at = datetime.now(timezone.utc)
+    item.picked_at = picked_at
     db.add(item)
     log_event(
         db,
@@ -269,8 +323,79 @@ def pick_next(
         target_id=str(item.id),
         commit=False,
     )
+
+    # ---- GỘP LỆNH CÙNG LOẠI ĐANG CHỜ (user 2026-08-28) ----
+    # Kéo thêm các lệnh CÙNG LOẠI, cùng workspace, đang PENDING vào chạy một lượt
+    # với lệnh vừa pick. Luật gộp + điều kiện suất nằm ở `services/task_merge.py`.
+    #
+    # Hai điều bất di bất dịch ở đây:
+    #   1. Chỉ gộp khi extension NÓI là biết chạy mẻ (`?merge=1`). Bản cũ nhận mẻ
+    #      sẽ chỉ báo kết quả cho lệnh dẫn đầu → các lệnh còn lại kẹt IN_PROGRESS
+    #      tới lúc bị dọn vì treo.
+    #   2. Payload TRONG DB của từng lệnh KHÔNG bị trộn email của nhau. Danh sách
+    #      gộp chỉ nằm trong RESPONSE (`merged_tasks`); mỗi lệnh vẫn tự báo kết
+    #      quả của chính nó nên tiền/bản ghi/hoàn phí không xê dịch một ly.
+    merged_payload: dict | None = None
+    if merge and item.type in task_merge.MERGEABLE_TYPES:
+        plan = task_merge.plan_merge(db, item, workspace)
+        if plan:
+            size = len(plan.tasks)
+            child_ids = [str(t.id) for t in plan.followers]
+            for follower in plan.followers:
+                follower.status = "IN_PROGRESS"
+                follower.picked_at = picked_at
+                follower.payload = {
+                    **(follower.payload or {}),
+                    "merged_into": str(item.id),
+                    "merged_size": size,
+                }
+                # Đóng dấu nhịp sống ngay từ lúc pick: lệnh được gộp không tự báo
+                # tiến độ, nhịp của nó do lệnh dẫn đầu bơm sang (`update_progress`).
+                follower.progress = {
+                    **(follower.progress or {}),
+                    "at": picked_at.isoformat(),
+                    "merged_into": str(item.id),
+                }
+                db.add(follower)
+                log_event(
+                    db,
+                    actor_type="EXTENSION",
+                    actor_label=f"workspace:{workspace.name}",
+                    action=f"QUEUE_PICKED:{follower.type}",
+                    result="PENDING",
+                    target_type="QUEUE_ITEM",
+                    target_id=str(follower.id),
+                    data={"merged_into": str(item.id)},
+                    commit=False,
+                )
+            item.payload = {
+                **(item.payload or {}),
+                "merged_children": child_ids,
+                "merged_size": size,
+            }
+            db.add(item)
+            log_event(
+                db,
+                actor_type="EXTENSION",
+                actor_label=f"workspace:{workspace.name}",
+                action=f"QUEUE_MERGED:{item.type}",
+                result="PENDING",
+                target_type="QUEUE_ITEM",
+                target_id=str(item.id),
+                data={
+                    "merged_task_ids": child_ids,
+                    "merged_size": size,
+                    "emails": plan.emails,
+                    "seat_need": plan.seat_need,
+                    "seat_free": plan.seat_free,
+                },
+                commit=False,
+            )
+            merged_payload = task_merge.merged_response_payload(db, item, plan, workspace)
+
     db.commit()
     db.refresh(item)
+    response_payload = merged_payload if merged_payload is not None else None
     # ---- DRY-RUN: báo extension BỎ QUA thao tác thật ----
     # `dry_run_mode` nằm ở bảng WorkspaceSettings (không có row = mặc định False).
     # Đính cờ vào payload của RESPONSE để extension short-circuit task phá huỷ
@@ -278,7 +403,9 @@ def pick_next(
     # vào DB — payload gốc của task giữ nguyên (nguồn sự thật không đổi).
     settings = db.get(WorkspaceSettings, workspace.id)
     if settings is not None and settings.dry_run_mode:
-        item.payload = {**(item.payload or {}), "dry_run": True}
+        response_payload = {**(response_payload or item.payload or {}), "dry_run": True}
+    if response_payload is not None:
+        item.payload = response_payload
         db.expunge(item)
     return item
 
@@ -303,9 +430,39 @@ def update_progress(
         )
     item.progress = _merge_progress_history(item.progress, body.progress)
     db.add(item)
+    _beat_merged_children(db, item)
     db.commit()
     db.refresh(item)
     return item
+
+
+def _beat_merged_children(db: Session, leader: QueueItem) -> None:
+    """Bơm NHỊP SỐNG của lệnh dẫn đầu sang các lệnh đang được gộp cùng nó.
+
+    Lệnh được gộp không tự gửi tick nào (extension chỉ báo tiến độ theo lệnh dẫn
+    đầu), nên nếu không có chỗ này thì `pick_next` nhìn chúng như đang IM LẶNG từ
+    lúc pick và sẽ dọn chúng khi mẻ chạy dài — giết oan lệnh đang chạy thật, đúng
+    lớp lỗi đã xảy ra ngày 26/8/2026 với lệnh mời phải mua suất.
+
+    Chỉ chạm `progress.at` (dấu nhịp), KHÔNG đụng `phase`/`history` của lệnh đó —
+    lịch sử pha là của riêng từng lệnh. KHÔNG commit: caller commit.
+    """
+    child_ids = (leader.payload or {}).get("merged_children")
+    if not isinstance(child_ids, list) or not child_ids:
+        return
+    db.execute(
+        text(
+            """
+            UPDATE queue_items
+               SET progress = jsonb_set(
+                       COALESCE(progress, '{}'::jsonb), '{at}', to_jsonb(CAST(:at AS text))
+                   )
+             WHERE id = ANY(CAST(:ids AS uuid[]))
+               AND status = 'IN_PROGRESS'
+            """
+        ),
+        {"at": datetime.now(timezone.utc).isoformat(), "ids": [str(i) for i in child_ids]},
+    )
 
 
 # Trần số mốc phase giữ lại trong progress.history (1 task không có lý do vượt
