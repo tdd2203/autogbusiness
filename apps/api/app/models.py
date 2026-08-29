@@ -797,13 +797,13 @@ class WalletTransaction(Base):
     user_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    # topup | order_topup | invite_fee | invite_refund | renew_fee | withdraw_hold |
-    # withdraw_settle | withdraw_refund | adjust
+    # topup | order_topup | invite_fee | invite_refund | renew_fee | cycle_fee |
+    # withdraw_hold | withdraw_settle | withdraw_refund | adjust
     kind: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
     amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
     balance_after: Mapped[int] = mapped_column(BigInteger, nullable=False)
     held_after: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
-    # topup | order | invite | renew | withdrawal | null
+    # topup | order | invite | renew | cycle | withdrawal | null
     ref_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
     ref_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     meta: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -883,7 +883,7 @@ class PaymentOrder(Base):
         PG_UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True
     )
     ref_code: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    # invite | renew
+    # invite | renew | subscription | cycle
     kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     amount_vnd: Mapped[int] = mapped_column(BigInteger, nullable=False)
     # pending | paid | cancelled | expired

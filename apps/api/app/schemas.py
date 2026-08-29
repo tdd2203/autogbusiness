@@ -654,6 +654,18 @@ class MemberMarkPaidIn(BaseModel):
     paid: bool = True
 
 
+class MemberPayCyclesIn(BaseModel):
+    """Đại lý TỰ TRẢ tiền cho kỳ chưa thanh toán (ví trước, QR sau).
+
+    Khác `MemberRequestPaymentIn` ở chỗ đây là TIỀN THẬT: ví đủ → trừ ví + kỳ thành
+    'paid' ngay; ví thiếu → 402 kèm QR, webhook nhận tiền mới đánh dấu. Nhận theo
+    CHU KỲ (cycle_ids) hoặc theo email (member_ids — áp mọi kỳ còn nợ). Cần ≥1.
+    """
+
+    member_ids: list[UUID] = Field(default_factory=list, max_length=500)
+    cycle_ids: list[UUID] = Field(default_factory=list, max_length=1000)
+
+
 class MemberExpiryItem(BaseModel):
     """1 dòng cập nhật hạn dùng: member nào → ngày hết hạn mới (đã resolve sẵn).
 

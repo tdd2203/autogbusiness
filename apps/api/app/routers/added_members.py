@@ -17,16 +17,19 @@ from sqlalchemy.orm import Session, selectinload
 from app.audit import log_event
 from app.deps import get_current_user, get_session
 from app.models import REMOVED_REASON_EMAIL_CHANGED, AuditLog, Member, MemberSubscriptionCycle, User
+from app.routers.wallet._shared import get_payment_settings
 from app.schemas import (
     AddedMemberOut,
     MemberBulkSetExpiryIn,
     MemberMarkPaidIn,
+    MemberPayCyclesIn,
     MemberRequestPaymentIn,
     MemberRevokeOwnerIn,
     MemberTransferOwnerIn,
     PaymentRequestNotice,
     SubscriptionCycleOut,
 )
+from app.services import payment_flow, wallet_service
 
 router = APIRouter(prefix="/api/v1/added-members", tags=["added-members"])
 
@@ -567,6 +570,278 @@ def mark_members_paid(
         )
         db.commit()
     return {"count": updated, "paid": body.paid}
+
+
+# ── Đại lý TỰ TRẢ kỳ còn nợ (ví trước, QR sau) ───────────────────────────────
+#
+# Vì sao có đường này (user 2026-08-29): tab "Email đã add" trước đây chỉ có nút
+# "Thanh toán" GỬI YÊU CẦU cho super-admin bấm "Xác nhận" — không đồng nào chạy.
+# Với đại lý đã bật Ví thì đó là ghi sổ danh dự: 7 email của hdh2102 lọt vào diện
+# hoàn phí mù 28-29/8 (mời đi thật, chốt hỏng oan, hoàn tiền, sync dựng lại bản ghi
+# không mang ký ức tiền) — bấm "Xác nhận" là đóng dấu ĐÃ TRẢ trong khi két rỗng.
+# Nay bấm "Thanh toán" = TRẢ THẬT: ví đủ trừ thẳng, thiếu thì ra hoá đơn QR.
+#
+# KHÔNG đẩy ví xuống âm: đó chính là lý do `reconcile._flag_refunded_while_in_team`
+# từ chối tự trừ. Đường QR giải quyết cùng vấn đề mà không cần bút toán tay.
+
+
+class _PayTarget:
+    """1 email + các kỳ SẼ trả lượt này + số tiền của email đó.
+
+    `cycles` rỗng = dữ liệu cũ không có chu kỳ → trả thẳng ở cấp member (1 tháng).
+    """
+
+    __slots__ = ("member", "cycles", "fee")
+
+    def __init__(self, member: Member, cycles: list[MemberSubscriptionCycle], fee: int) -> None:
+        self.member = member
+        self.cycles = cycles
+        self.fee = fee
+
+
+def _payable_targets(
+    db: Session,
+    user: User,
+    member_ids: list[UUID],
+    cycle_ids: list[UUID],
+    default_fee: int,
+) -> list[_PayTarget]:
+    """Gom kỳ ĐƯỢC PHÉP trả của `user` từ (cycle_ids ∪ mọi kỳ nợ của member_ids).
+
+    Nhận cả kỳ 'requested' (đã lỡ gửi yêu cầu duyệt) — bấm "Thanh toán" thay cho việc
+    ngồi chờ, không bắt rút yêu cầu trước. Bỏ qua kỳ 'paid' và email không thuộc mình
+    → gửi id lạ chỉ là no-op, không phải lỗi. Phí = đơn giá/tháng × số tháng của kỳ.
+    """
+    by_member: dict[UUID, list[MemberSubscriptionCycle]] = {}
+    members: dict[UUID, Member] = {}
+
+    def owns(member: Member) -> bool:
+        return member.invited_by_user_id == user.id
+
+    for cycle in _load_cycles_with_member(db, cycle_ids):
+        member = cycle.member
+        if member is None or not owns(member) or cycle.payment_status == "paid":
+            continue
+        members[member.id] = member
+        by_member.setdefault(member.id, []).append(cycle)
+
+    legacy: dict[UUID, Member] = {}
+    if member_ids:
+        rows = db.execute(
+            select(Member)
+            .options(selectinload(Member.subscription_cycles))
+            .where(Member.id.in_(member_ids))
+        ).scalars()
+        for member in rows:
+            if not owns(member):
+                continue
+            members[member.id] = member
+            if member.subscription_cycles:
+                have = {c.id for c in by_member.get(member.id, [])}
+                for cycle in member.subscription_cycles:
+                    if cycle.payment_status != "paid" and cycle.id not in have:
+                        by_member.setdefault(member.id, []).append(cycle)
+            elif member.payment_status != "paid":
+                legacy[member.id] = member
+
+    targets: list[_PayTarget] = []
+    for member_id, cycles in by_member.items():
+        member = members[member_id]
+        fee = sum(
+            payment_flow.effective_fee_for_months(
+                member.fee_vnd, user, default_fee, c.months
+            )
+            for c in cycles
+        )
+        targets.append(_PayTarget(member, cycles, int(fee)))
+    for member_id, member in legacy.items():
+        if member_id in by_member:
+            continue
+        fee = payment_flow.effective_fee_for_months(member.fee_vnd, user, default_fee, 1)
+        targets.append(_PayTarget(member, [], int(fee)))
+    return targets
+
+
+def settle_cycle_payment(
+    db: Session,
+    user: User,
+    targets: list["_PayTarget"],
+    now: datetime,
+) -> tuple[int, int]:
+    """Trừ ví rồi đánh dấu ĐÃ THANH TOÁN. Trả (số kỳ, tổng tiền đã trừ).
+
+    MỘT bút toán `cycle_fee` cho MỖI email (ref_id = member_id) — đúng hình dạng mà
+    panel "Dòng tiền của email" đã biết đọc. Trừ tiền TRƯỚC khi đánh dấu: thiếu số dư
+    thì `InsufficientBalance` ném ra, transaction rollback, không kỳ nào bị đóng dấu
+    trả oan. Caller commit.
+    """
+    count = 0
+    charged = 0
+    for target in targets:
+        if target.fee > 0:
+            wallet_service.charge_cycle(
+                db,
+                user,
+                target.member.id,
+                target.fee,
+                email=target.member.email,
+                cycle_ids=[str(c.id) for c in target.cycles],
+            )
+            charged += target.fee
+        if target.cycles:
+            for cycle in target.cycles:
+                cycle.payment_status = "paid"
+                cycle.paid_at = now
+                cycle.paid_marked_by_id = user.id
+                count += 1
+        else:
+            # Dữ liệu cũ không có chu kỳ (đúng hình dạng của 7 email 28-29/8: bản ghi
+            # do sync dựng lại, có hạn dùng mà không kỳ nào). Đóng dấu thẳng ở cấp
+            # member và XOÁ dấu vết chờ duyệt — đã trả tiền rồi thì không còn yêu cầu
+            # nào treo. `_recompute_member_payment_status` không đụng tới ca này
+            # (không có kỳ thì nó return sớm) nên phải dọn ở đây.
+            target.member.payment_status = "paid"
+            target.member.paid_at = now
+            target.member.paid_marked_by_id = user.id
+            target.member.payment_requested_at = None
+            target.member.payment_requested_by_id = None
+            count += 1
+        _recompute_member_payment_status(target.member)
+    return count, charged
+
+
+def replay_cycle_order(db: Session, user: User, payload: dict, now: datetime) -> int:
+    """Thực thi hoá đơn QR `kind='cycle'` sau khi webhook đã nạp tiền vào ví.
+
+    Dựng lại danh sách kỳ TỪ ĐẦU theo id trong payload (không tin số tiền đã chốt lúc
+    tạo hoá đơn): trong lúc chờ chuyển khoản, kỳ có thể đã được super-admin xác nhận
+    hoặc email đã bị gỡ → tính lại thì chỉ thu đúng phần còn nợ. Không còn gì để trả
+    → 0, tiền QR ở lại ví (không mất). Gọi từ `sepay_integration._fulfill_order`.
+    """
+    settings_row = get_payment_settings(db)
+    default_fee = int(settings_row.invite_fee_vnd or 0)
+    targets = _payable_targets(
+        db,
+        user,
+        [UUID(str(m)) for m in (payload.get("member_ids") or [])],
+        [UUID(str(c)) for c in (payload.get("cycle_ids") or [])],
+        default_fee,
+    )
+    if not targets:
+        return 0
+    count, charged = settle_cycle_payment(db, user, targets, now)
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.email,
+        action="MEMBER_PAYMENT_PAID",
+        result="OK",
+        target_type="MEMBER",
+        target_id=str(targets[0].member.id) if len(targets) == 1 else None,
+        data={
+            "count": count,
+            "charged_vnd": charged,
+            "via": "order",
+            "member_ids": [str(t.member.id) for t in targets],
+        },
+        commit=False,
+    )
+    return count
+
+
+@router.post("/pay", response_model=dict)
+def pay_member_cycles(
+    body: MemberPayCyclesIn,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Trả tiền THẬT cho kỳ chưa thanh toán của email mình đã add.
+
+    Ví đủ → trừ ví ngay, kỳ thành 'paid' (không cần super-admin duyệt). Ví thiếu →
+    tạo hoá đơn QR (`kind='cycle'`) + HTTP 402; webhook SePay nhận đủ tiền mới đánh
+    dấu (xem `replay_cycle_order`). Chỉ đại lý đã bật Ví: super-admin không bị tính
+    phí nên vẫn dùng `/mark-paid`, đại lý chưa bật Ví vẫn dùng `/request-payment`.
+    """
+    if not payment_flow.is_chargeable_user(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Chỉ tài khoản đã bật Ví mới thanh toán trực tiếp được. "
+                "Hãy gửi yêu cầu duyệt thanh toán."
+            ),
+        )
+    now = datetime.now(timezone.utc)
+    settings_row = get_payment_settings(db)
+    default_fee = int(settings_row.invite_fee_vnd or 0)
+    targets = _payable_targets(db, user, body.member_ids, body.cycle_ids, default_fee)
+    if not targets:
+        return {"count": 0, "charged_vnd": 0}
+
+    total = sum(t.fee for t in targets)
+    if payment_flow.decide_payment(db, user, total) == payment_flow.DEFER:
+        if not payment_flow.bank_configured(settings_row):
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "code": "INSUFFICIENT_BALANCE",
+                    "message": (
+                        "Số dư Ví không đủ và chưa cấu hình thanh toán QR. "
+                        "Vui lòng nạp thêm."
+                    ),
+                    "required": total,
+                },
+            )
+        order = payment_flow.create_order(
+            db,
+            user,
+            kind="cycle",
+            amount=total,
+            payload={
+                "cycle_ids": [str(c.id) for t in targets for c in t.cycles],
+                "member_ids": [str(t.member.id) for t in targets if not t.cycles],
+            },
+        )
+        log_event(
+            db,
+            actor_type="ADMIN",
+            actor_id=user.id,
+            actor_label=user.email,
+            action="PAYMENT_ORDER_CREATED",
+            result="PENDING",
+            target_type="PAYMENT_ORDER",
+            target_id=str(order.id),
+            data={
+                "kind": "cycle",
+                "amount_vnd": total,
+                "count": sum(len(t.cycles) or 1 for t in targets),
+                "ref_code": order.ref_code,
+            },
+            commit=False,
+        )
+        db.commit()
+        payment_flow.raise_payment_required(settings_row, order)
+
+    count, charged = settle_cycle_payment(db, user, targets, now)
+    log_event(
+        db,
+        actor_type="ADMIN",
+        actor_id=user.id,
+        actor_label=user.email,
+        action="MEMBER_PAYMENT_PAID",
+        result="OK",
+        target_type="MEMBER",
+        target_id=str(targets[0].member.id) if len(targets) == 1 else None,
+        data={
+            "count": count,
+            "charged_vnd": charged,
+            "via": "wallet",
+            "member_ids": [str(t.member.id) for t in targets],
+        },
+        commit=False,
+    )
+    db.commit()
+    return {"count": count, "charged_vnd": charged}
 
 
 @router.post("/bulk-set-expiry", response_model=dict)

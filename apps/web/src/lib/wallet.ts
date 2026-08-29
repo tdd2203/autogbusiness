@@ -18,6 +18,7 @@ export type WalletTxnKind =
   | "invite_fee"
   | "invite_refund"
   | "renew_fee"
+  | "cycle_fee"
   | "withdraw_hold"
   | "withdraw_settle"
   | "withdraw_refund"
@@ -196,11 +197,11 @@ export type Topup = {
   paid_at: string | null;
 };
 
-/** Hoá đơn QR trả trong lỗi 402 PAYMENT_QR_REQUIRED (mời/gia hạn khi ví thiếu). */
+/** Hoá đơn QR trả trong lỗi 402 PAYMENT_QR_REQUIRED (mời/gia hạn/trả kỳ khi ví thiếu). */
 export type OrderQr = {
   id: string;
   ref_code: string;
-  kind: "invite" | "renew" | "subscription";
+  kind: "invite" | "renew" | "subscription" | "cycle";
   amount_vnd: number;
   status: string;
   note: string;
@@ -216,7 +217,7 @@ export type OrderQr = {
 export type PaymentOrder = {
   id: string;
   ref_code: string;
-  kind: "invite" | "renew" | "subscription";
+  kind: "invite" | "renew" | "subscription" | "cycle";
   amount_vnd: number;
   status: "pending" | "paid" | "cancelled" | "expired";
   paid_amount_vnd: number | null;
@@ -384,6 +385,7 @@ export const TXN_KIND_LABEL: Record<WalletTxnKind, string> = {
   invite_fee: "Phí mời",
   invite_refund: "Hoàn phí mời",
   renew_fee: "Phí gia hạn",
+  cycle_fee: "Phí kỳ còn nợ",
   withdraw_hold: "Giữ rút tiền",
   withdraw_settle: "Rút tiền (đã chi)",
   withdraw_refund: "Hoàn rút tiền",

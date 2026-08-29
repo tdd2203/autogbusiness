@@ -1,5 +1,5 @@
 /**
- * OrderQrModal — hiển thị QR hoá đơn MỜI/GIA HẠN khi ví không đủ (feature 003,
+ * OrderQrModal — hiển thị QR hoá đơn MỜI/GIA HẠN/TRẢ KỲ khi ví không đủ (feature 003,
  * user 2026-07-13: "ví trước, QR sau"). Hoá đơn đã được BE tạo (mã ORDER); modal
  * chỉ hiện QR + nội dung CK và POLL trạng thái tới khi "đã thanh toán" → BE tự thực
  * thi mời/gia hạn. Khớp giao diện `TopupModal` (VietQR/napas).
@@ -33,9 +33,17 @@ export default function OrderQrModal({
       ? "Thanh toán mời thành viên"
       : order.kind === "subscription"
         ? "Thanh toán đổi hạn"
-        : "Thanh toán gia hạn";
+        : order.kind === "cycle"
+          ? "Thanh toán kỳ còn nợ"
+          : "Thanh toán gia hạn";
   const actionWord =
-    order.kind === "invite" ? "mời" : order.kind === "subscription" ? "đổi hạn" : "gia hạn";
+    order.kind === "invite"
+      ? "mời"
+      : order.kind === "subscription"
+        ? "đổi hạn"
+        : order.kind === "cycle"
+          ? "ghi nhận đã thanh toán"
+          : "gia hạn";
 
   // ── Đếm ngược 10 phút: mã QR chỉ tồn tại 10 phút (user 2026-07-14) ─────────
   const EXPIRE_MS = 10 * 60 * 1000;

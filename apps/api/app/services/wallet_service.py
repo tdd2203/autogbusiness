@@ -302,6 +302,49 @@ def charge_renew(
     )
 
 
+def charge_cycle(
+    db: Session,
+    user: User,
+    member_id: UUID,
+    fee: int,
+    *,
+    email: str | None = None,
+    cycle_ids: list[str] | None = None,
+) -> WalletTransaction:
+    """Trừ phí CHU KỲ CÒN NỢ (1 giao dịch `cycle_fee`, amount = -fee).
+
+    Khác `charge_invite`/`charge_renew` ở chỗ dịch vụ ĐÃ GIAO rồi mới thu: đại lý bấm
+    "Thanh toán" trên tab Email đã add cho kỳ còn `unpaid`. Ca sinh ra nó (28-29/8/2026):
+    lời mời đi thật nhưng bị chốt hỏng oan → hoàn phí → lần đồng bộ sau dựng lại bản
+    ghi member KHÔNG mang theo ký ức nào về tiền, nên kỳ nằm đó `unpaid` mà ví đã
+    nhận lại tiền. Trả kỳ đó = thu lại đúng khoản ấy, không phải gia hạn thêm tháng.
+
+    Ví khoá dòng, thiếu → `InsufficientBalance` (không ghi gì). `ref_id = member_id`
+    (giống `renew_fee`) để panel dòng tiền của email bắt được khoản này.
+    """
+    fee = int(fee)
+    wallet = _lock_wallet(db, user.id)
+    if wallet.balance < fee:
+        raise InsufficientBalance(available=wallet.balance, requested=fee)
+    meta = {"member_id": str(member_id), "email": email, "fee": fee}
+    if cycle_ids:
+        meta["cycle_ids"] = list(cycle_ids)
+    return _write_txn(
+        db,
+        wallet,
+        kind="cycle_fee",
+        amount=-fee,
+        ref_type="cycle",
+        ref_id=str(member_id),
+        meta=meta,
+        actor_id=user.id,
+        actor_type="ADMIN",
+        actor_label=user.email,
+        action="WALLET_CYCLE_CHARGED",
+        audit_data={"member_id": str(member_id), "email": email, "fee": fee},
+    )
+
+
 class InviteRefund:
     """Kết quả 1 lượt `refund_invite`: hoàn BAO NHIÊU và hoàn CHO NHỮNG EMAIL NÀO.
 

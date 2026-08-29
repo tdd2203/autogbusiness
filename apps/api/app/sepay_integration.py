@@ -357,6 +357,16 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
         order.member_id = member.id
         order.fulfilled_at = now
         db.flush()
+    elif order.kind == "cycle":
+        # Trả kỳ CÒN NỢ của email đã add (nút "Thanh toán" tab Email đã add). Không
+        # tạo/đổi gì trên ChatGPT — chỉ thu tiền + đóng dấu kỳ đã trả. Tính lại danh
+        # sách kỳ tại thời điểm này: kỳ có thể đã được xác nhận trong lúc chờ chuyển
+        # khoản → thu đúng phần còn nợ, không còn gì thì tiền QR ở lại ví.
+        from app.routers.added_members import replay_cycle_order
+
+        replay_cycle_order(db, user, payload, now)
+        order.fulfilled_at = now
+        db.flush()
     else:
         raise ValueError(f"unknown order kind {order.kind!r}")
 

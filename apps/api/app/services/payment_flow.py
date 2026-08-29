@@ -8,6 +8,9 @@ Quy tắc (chốt bởi user):
   - Ví THIẾU/không có → tạo `PaymentOrder` (mã ORDER) + trả QR; CHỜ thanh toán rồi
     webhook mới thực thi mời/gia hạn (xem sepay_integration.handle_order).
 
+Từ 2026-08-29 dùng chung cả cho `kind='cycle'` — đại lý trả KỲ CÒN NỢ của email đã
+add (dịch vụ đã giao rồi mới thu), xem added_members.pay_member_cycles.
+
 Module này CHỈ lo cơ chế tiền (quyết định trừ/def, tạo order, dựng QR). Logic tạo
 member/queue (perform_invite_core) và gia hạn (perform_renew_core) nằm ở router
 tương ứng để webhook replay dùng chung.
@@ -151,7 +154,9 @@ def build_order_qr(settings_row: PaymentSettings, order: PaymentOrder) -> dict:
 
 def raise_payment_required(settings_row: PaymentSettings, order: PaymentOrder) -> None:
     """Ném HTTP 402 `PAYMENT_QR_REQUIRED` kèm QR — client mở modal QR + poll order."""
-    what = "gia hạn" if order.kind == "renew" else "mời"
+    what = {"renew": "gia hạn", "subscription": "đổi hạn", "cycle": "trả kỳ"}.get(
+        order.kind, "mời"
+    )
     raise HTTPException(
         status_code=status.HTTP_402_PAYMENT_REQUIRED,
         detail={

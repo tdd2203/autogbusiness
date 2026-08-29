@@ -119,16 +119,32 @@ export default function AddedEmails() {
   // Email đang mở modal "Thông báo" — lấy link gửi cho khách để họ nhận nhắc gia hạn
   // của đúng email đó. Có mặt ngay sau khi mời thành công (email vào danh sách này).
   const [notifyMember, setNotifyMember] = useState<AddedMember | null>(null);
-  // Mời lại email HẾT HẠN + ví thiếu → QR thanh toán.
-  const [reinviteQr, setReinviteQr] = useState<OrderQr | null>(null);
+  // Ví thiếu tiền → QR thanh toán. Dùng chung cho mời lại email hết hạn và cho
+  // nút "Thanh toán" kỳ còn nợ (hoá đơn kind='cycle').
+  const [qrOrder, setQrOrder] = useState<OrderQr | null>(null);
 
-  const { requestPayment, markPaid, transferOwner } = useAddedEmails({
+  const { payCycles, requestPayment, markPaid, transferOwner } = useAddedEmails({
     onCleared: () => setSelected(new Set()),
+    onPaymentRequired: (order) => setQrOrder(order),
   });
+
+  // Đại lý đã bật Ví: bấm "Thanh toán" là TRẢ TIỀN THẬT (trừ ví, thiếu thì ra QR) —
+  // kỳ tự thành "đã thanh toán", không phải chờ super-admin bấm xác nhận. Đại lý
+  // chưa bật Ví giữ đường cũ: gửi yêu cầu duyệt. Vì sao đổi (user 2026-08-29): ca
+  // hoàn phí mù 28-29/8 đẩy 7 email đã giao dịch vụ về diện "chưa thanh toán"; bấm
+  // "Xác nhận" chỉ đóng dấu đã trả trong khi không đồng nào về két.
+  const chargeable = !!user?.wallet_beta && !isSuper;
+  const payAction = {
+    isPending: chargeable ? payCycles.isPending : requestPayment.isPending,
+    run: (vars: { ids?: string[]; cycleIds?: string[] }) =>
+      chargeable
+        ? payCycles.mutate(vars)
+        : requestPayment.mutate({ ...vars, requested: true }),
+  };
   // Thao tác theo dòng (Đồng bộ / Thu hồi / Xoá / Mời lại) — workspaceId truyền theo
   // từng lời gọi vì mỗi email có thể thuộc workspace khác nhau. Xem useAddedMemberActions.
   const rowActions = useAddedMemberActions({
-    onPaymentRequired: (order) => setReinviteQr(order),
+    onPaymentRequired: (order) => setQrOrder(order),
   });
 
   // Super-admin: danh sách tài khoản phụ để xem riêng từng người.
@@ -415,6 +431,7 @@ export default function AddedEmails() {
   // Đang chạy 1 thao tác hàng loạt bất kỳ → khoá select để tránh bấm chồng.
   const bulkBusy =
     markPaid.isPending ||
+    payCycles.isPending ||
     requestPayment.isPending ||
     transferOwner.isPending ||
     rowActions.bulkSync.isPending ||
@@ -467,8 +484,7 @@ export default function AddedEmails() {
           label: t("addedEmails.requestPayment"),
           icon: ICON_PAYMENT,
           disabled: bulkBusy,
-          onClick: () =>
-            requestPayment.mutate({ ids: selectedIds, requested: true }),
+          onClick: () => payAction.run({ ids: selectedIds }),
         },
     // Chuyển chủ nhanh (chỉ super-admin) — áp cho cả 2 tab.
     ...(isSuper
@@ -795,12 +811,12 @@ export default function AddedEmails() {
         />
       )}
 
-      {/* Mời lại email HẾT HẠN + ví thiếu → QR thanh toán; quét xong tự thực thi. */}
-      {reinviteQr && (
+      {/* Ví thiếu (mời lại email hết hạn / trả kỳ còn nợ) → QR; quét xong tự thực thi. */}
+      {qrOrder && (
         <OrderQrModal
-          order={reinviteQr}
-          onClose={() => setReinviteQr(null)}
-          onPaid={() => setReinviteQr(null)}
+          order={qrOrder}
+          onClose={() => setQrOrder(null)}
+          onPaid={() => setQrOrder(null)}
         />
       )}
 
@@ -1113,7 +1129,8 @@ export default function AddedEmails() {
                     m={m}
                     isSuper={isSuper}
                     markPaid={markPaid}
-                    requestPayment={requestPayment}
+                    payAction={payAction}
+                    chargeable={chargeable}
                     t={t}
                     formatDate={formatDate}
                   />
@@ -1224,7 +1241,8 @@ export default function AddedEmails() {
                         m={m}
                         isSuper={isSuper}
                         markPaid={markPaid}
-                        requestPayment={requestPayment}
+                        payAction={payAction}
+                        chargeable={chargeable}
                         t={t}
                         formatDate={formatDate}
                       />
@@ -1317,19 +1335,27 @@ function PaymentCell({
   m,
   isSuper,
   markPaid,
-  requestPayment,
+  payAction,
+  chargeable,
   t,
   formatDate,
 }: {
   m: AddedMember;
   isSuper: boolean;
   markPaid: AddedEmailsMutations["markPaid"];
-  requestPayment: AddedEmailsMutations["requestPayment"];
+  /** Nút "Thanh toán" của đại lý: trả thật (ví Ví) hoặc gửi yêu cầu duyệt. */
+  payAction: { isPending: boolean; run: (v: { ids?: string[]; cycleIds?: string[] }) => void };
+  /** Đại lý đã bật Ví → bấm là trừ tiền thật, trả được cả kỳ đã lỡ gửi yêu cầu. */
+  chargeable: boolean;
   t: ReturnType<typeof useT>;
   formatDate: ReturnType<typeof useFormatDate>;
 }) {
   const cycles: SubscriptionCycle[] = m.cycles ?? [];
-  const busy = markPaid.isPending || requestPayment.isPending;
+  const busy = markPaid.isPending || payAction.isPending;
+  // Kỳ nào đại lý còn bấm được: trả tiền thật thì cả kỳ đang chờ duyệt cũng trả được
+  // (khỏi phải rút yêu cầu trước); gửi yêu cầu thì chỉ kỳ chưa gửi.
+  const payable = (status: string) =>
+    chargeable ? status !== "paid" : status === "unpaid";
 
   // Member chưa có chu kỳ nào (mời sau migration, chưa từng gia hạn): dùng trạng
   // thái thanh toán CẤP MEMBER + nút inline theo member_ids (giống nút bulk-select
@@ -1355,14 +1381,12 @@ function PaymentCell({
                 {t("addedEmails.confirmShort")}
               </button>
             )
-          : m.payment_status === "unpaid" && (
+          : payable(m.payment_status) && (
               <button
                 className="btn btn-sm btn-primary"
                 style={{ padding: "0 6px", fontSize: 11 }}
                 disabled={busy}
-                onClick={() =>
-                  requestPayment.mutate({ ids: [m.id], requested: true })
-                }
+                onClick={() => payAction.run({ ids: [m.id] })}
               >
                 {t("addedEmails.requestShort")}
               </button>
@@ -1394,14 +1418,12 @@ function PaymentCell({
                 {t("addedEmails.confirmShort")}
               </button>
             )
-          : c.payment_status === "unpaid" && (
+          : payable(c.payment_status) && (
               <button
                 className="btn btn-sm btn-primary"
                 style={{ padding: "0 6px", fontSize: 11 }}
                 disabled={busy}
-                onClick={() =>
-                  requestPayment.mutate({ cycleIds: [c.id], requested: true })
-                }
+                onClick={() => payAction.run({ cycleIds: [c.id] })}
               >
                 {t("addedEmails.requestShort")}
               </button>
@@ -1418,7 +1440,7 @@ function PaymentCell({
   const allPaid = paid.length === total;
   // Nút gộp bám vai trò: sub-admin gửi yêu cầu mọi kỳ CHƯA gửi; super-admin xác nhận
   // mọi kỳ ĐANG CHỜ. Chỉ 1 nút để bảng gọn (xử lý lẻ từng kỳ ở modal).
-  const actionable = isSuper ? requested : unpaid;
+  const actionable = isSuper ? requested : cycles.filter((c) => payable(c.payment_status));
 
   return (
     <div
@@ -1473,10 +1495,7 @@ function PaymentCell({
                       cycleIds: actionable.map((c) => c.id),
                       paid: true,
                     })
-                  : requestPayment.mutate({
-                      cycleIds: actionable.map((c) => c.id),
-                      requested: true,
-                    })
+                  : payAction.run({ cycleIds: actionable.map((c) => c.id) })
               }
             >
               {isSuper
