@@ -1354,6 +1354,7 @@
   "memberLog.action.MEMBER_EXPIRY_BULK_REQUESTED": "批量申请修改有效期",
   "memberLog.action.MEMBER_ADD_DATE_CORRECTED": "修改续订日期",
   "memberLog.field.renewAt": "续订日期",
+  "memberLog.field.workspace": "工作区",
   "memberLog.field.role": "角色",
   "memberLog.field.subscriptionEnd": "有效期",
   "memberLog.field.months": "月数",

@@ -1353,6 +1353,7 @@
   "memberLog.action.MEMBER_EXPIRY_BULK_SET": "Cập nhật hạn (hàng loạt)",
   "memberLog.action.MEMBER_EXPIRY_BULK_REQUESTED": "Yêu cầu đổi hạn (hàng loạt)",
   "memberLog.action.MEMBER_ADD_DATE_CORRECTED": "Sửa ngày gia hạn",
+  "memberLog.field.workspace": "Workspace",
   "memberLog.field.role": "Vai trò",
   "memberLog.field.subscriptionEnd": "Hạn dùng",
   "memberLog.field.renewAt": "Ngày gia hạn",

@@ -28,7 +28,7 @@ import { useAuth } from "../hooks/useAuth";
 import { useCorrectAddDate } from "../hooks/useSubscriptionApprovals";
 import { useSetMemberFee, useWalletAdminUsers, usePaymentSettings } from "../hooks/useWallet";
 import { formatVnd } from "../lib/wallet";
-import type { AddedMember, Member, MemberLog } from "../types";
+import type { AddedMember, Member, MemberLog, Workspace } from "../types";
 
 /** ISO → giá trị cho <input type="datetime-local"> ("YYYY-MM-DDTHH:mm", giờ địa phương). */
 function toLocalInputValue(iso: string | null | undefined): string {
@@ -177,6 +177,22 @@ const MODAL_TIMELINE_ACTIONS = new Set([
   "MEMBER_SUBSCRIPTION_TRANSFERRED",
 ]);
 
+// Dòng phải nói RÕ NƠI xảy ra: MỜI vào workspace nào, GỠ/XOÁ khỏi workspace nào.
+// Timeline trộn được log của NHIỀU workspace (chuỗi đổi email dẫn sang không gian
+// khác), nên thiếu chip này thì hai dòng liền nhau không phân biệt được nơi chốn
+// (user 29/8/2026). Mọi action ở đây đều ghi `data.workspace_id` ở backend.
+const WORKSPACE_CHIP_ACTIONS = new Set([
+  "MEMBER_INVITE_QUEUED",
+  "MEMBER_BULK_INVITE_QUEUED",
+  "MEMBER_REMOVE_QUEUED",
+  "MEMBER_BULK_REMOVE_QUEUED",
+  "MEMBER_EXPIRED_REMOVE_QUEUED",
+  "MEMBER_REMOVED_SYNCED",
+  "MEMBER_INVITE_REVOKED",
+  "MEMBER_REMOVE_STUCK",
+  "MEMBER_REMOVE_FAKE_DETECTED",
+]);
+
 const PAYMENT_BADGE: Record<string, string> = {
   unpaid: "badge badge-neutral",
   requested: "badge badge-warning",
@@ -282,9 +298,24 @@ function describeLog(
   derivedOwnerFrom: string | null | undefined,
   t: TFn,
   formatDateTime: (d: string) => string,
+  wsName: (id: unknown) => string | null,
 ): LogSeg[] {
   const data = (log.data ?? {}) as Record<string, unknown>;
   const segs: LogSeg[] = [];
+
+  // Chip "Workspace" mở đầu dòng mời/gỡ (xem WORKSPACE_CHIP_ACTIONS). Tên tra từ
+  // `data.workspace_id`; log cũ thiếu khoá đó hoặc tra không ra tên thì BỎ chip —
+  // thà thiếu còn hơn đoán bừa workspace đang mở (log của member cũ trong chuỗi
+  // đổi email có thể thuộc workspace khác) hay phơi UUID ra cho người đọc.
+  if (WORKSPACE_CHIP_ACTIONS.has(log.action)) {
+    const ws = wsName(data.workspace_id);
+    if (ws)
+      segs.push({
+        kind: "single",
+        label: t("memberLog.field.workspace"),
+        value: ws,
+      });
+  }
 
   // Chuyển chủ sở hữu (hàng loạt): chủ cũ khác nhau tuỳ member → hiện "a → b".
   // Ưu tiên chủ cũ lưu sẵn trong entries[] (log mới, khớp theo member_id). Log CŨ
@@ -1369,6 +1400,25 @@ function MemberDetailView({
       ),
   });
 
+  // Tên workspace cho timeline (id → tên). Dùng CHUNG queryKey ["workspaces"] với
+  // các màn khác nên mở modal thường ăn cache, không đẻ thêm request.
+  const { data: workspaceList } = useQuery({
+    queryKey: ["workspaces"],
+    queryFn: () => api<Workspace[]>("/api/v1/workspaces"),
+    staleTime: 5 * 60_000,
+  });
+  const wsNameOf = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const w of workspaceList ?? []) map.set(w.id, w.name);
+    // Sub-admin bị gỡ khỏi workspace vẫn xem được log email mình mời, nhưng GET
+    // /workspaces không trả workspace đó nữa → vá bằng tên đi kèm hàng member
+    // (tab "Email đã add" trả `workspace_name`).
+    const own = (member as Partial<AddedMember>).workspace_name;
+    if (own && !map.has(member.workspace_id)) map.set(member.workspace_id, own);
+    return (id: unknown): string | null =>
+      typeof id === "string" && id ? (map.get(id) ?? null) : null;
+  }, [workspaceList, member]);
+
   // Dòng tiền của email (sổ cái ví + hoá đơn QR) — xem members/payments.md.
   const { data: payments } = useQuery({
     queryKey: ["member-payments", workspaceId, member.id],
@@ -2349,6 +2399,7 @@ function MemberDetailView({
                       ownerFromById.get(log.id),
                       t,
                       formatDateTime,
+                      wsNameOf,
                     );
                     // Lệnh mời: dùng trạng thái CUỐI (verified/failed) nếu đã có,
                     // nếu chưa thì giữ result gốc (PENDING).

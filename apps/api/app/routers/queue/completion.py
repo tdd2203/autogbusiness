@@ -1603,6 +1603,10 @@ def update_task(
                 db.add(member)
                 remove_data: dict = {
                     "email": target_email,
+                    # Timeline chi tiết thành viên hiện chip "Workspace" cho dòng
+                    # gỡ/xoá — log này có lúc đứng MỘT MÌNH (dòng *_REMOVE_QUEUED
+                    # không nằm trong kết quả) nên phải tự mang nơi gỡ.
+                    "workspace_id": str(workspace.id),
                     "queue_item_id": str(item.id),
                 }
                 # Gỡ theo đường nào: "clicked" = tìm thấy row → click xoá → poll thấy
