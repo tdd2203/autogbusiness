@@ -34,12 +34,13 @@ from __future__ import annotations
 
 from datetime import date as date_type
 from datetime import datetime, time, timedelta, timezone
+from uuid import UUID
 
 from fastapi import Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.deps import get_session, require_wallet_enabled
+from app.deps import get_session, require_super_admin, require_wallet_enabled
 from app.models import Member, User, WalletTransaction
 from app.schemas import WalletDailyKindOut, WalletDailySummaryOut
 
@@ -59,14 +60,10 @@ def _fee_email(row) -> str:
     return str(meta.get("email") or "").lower()
 
 
-@router.get("/daily-summary", response_model=WalletDailySummaryOut)
-def daily_summary(
-    date: date_type | None = Query(
-        None, description="Ngày cần xem (YYYY-MM-DD, giờ VN). Bỏ trống = hôm nay."
-    ),
-    db: Session = Depends(get_session),
-    user: User = Depends(require_wallet_enabled),
-) -> WalletDailySummaryOut:
+def _summary_for(db: Session, user_id: UUID, date: date_type | None) -> WalletDailySummaryOut:
+    """Thân chung của báo cáo ngày. Tách ra vì trang Quản trị Ví hiện ĐÚNG giao diện
+    trang Ví cho tài khoản người khác — hai thẻ tổng kết ngày phải tính y hệt, không
+    được chép lại một bản gần giống rồi lệch số (user 2026-08-29)."""
     target = date or datetime.now(VN_TZ).date()
     start = datetime.combine(target, time.min, tzinfo=VN_TZ)
     end = start + timedelta(days=1)
@@ -76,7 +73,7 @@ def daily_summary(
     member_rows = db.execute(
         select(Member.status, func.count())
         .where(
-            Member.invited_by_user_id == user.id,
+            Member.invited_by_user_id == user_id,
             added_at >= start,
             added_at < end,
         )
@@ -99,7 +96,7 @@ def daily_summary(
             WalletTransaction.seq,
         )
         .where(
-            WalletTransaction.user_id == user.id,
+            WalletTransaction.user_id == user_id,
             WalletTransaction.created_at >= start,
             WalletTransaction.created_at < end,
         )
@@ -149,7 +146,7 @@ def daily_summary(
             for e, seq in db.execute(
                 select(email_col, func.min(WalletTransaction.seq))
                 .where(
-                    WalletTransaction.user_id == user.id,
+                    WalletTransaction.user_id == user_id,
                     WalletTransaction.kind.in_(_FEE_KINDS),
                     WalletTransaction.reversed.is_(False),
                     # Chặn trên = hết ngày đang xem: báo cáo ngày cũ không được đổi
@@ -206,3 +203,27 @@ def daily_summary(
         refund_total=total("invite_refund"),
         by_kind=by_kind,
     )
+
+
+@router.get("/daily-summary", response_model=WalletDailySummaryOut)
+def daily_summary(
+    date: date_type | None = Query(
+        None, description="Ngày cần xem (YYYY-MM-DD, giờ VN). Bỏ trống = hôm nay."
+    ),
+    db: Session = Depends(get_session),
+    user: User = Depends(require_wallet_enabled),
+) -> WalletDailySummaryOut:
+    return _summary_for(db, user.id, date)
+
+
+@router.get("/admin/users/{user_id}/daily-summary", response_model=WalletDailySummaryOut)
+def admin_daily_summary(
+    user_id: UUID,
+    date: date_type | None = Query(
+        None, description="Ngày cần xem (YYYY-MM-DD, giờ VN). Bỏ trống = hôm nay."
+    ),
+    db: Session = Depends(get_session),
+    _: User = Depends(require_super_admin),
+) -> WalletDailySummaryOut:
+    """Cùng báo cáo ngày, nhưng cho MỘT tài khoản bất kỳ (super-admin)."""
+    return _summary_for(db, user_id, date)
