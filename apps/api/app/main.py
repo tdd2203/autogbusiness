@@ -27,7 +27,7 @@ from app.routers.members._shared import (
     SUBSCRIPTION_GRACE_AFTER_EXPIRY,
     _has_open_remove_task,
 )
-from app.routers.queue.completion import fail_deferred_invite
+from app.routers.queue.completion import enqueue_sync_probe, fail_deferred_invite
 from app.routers.members.remove import _build_removal_task
 from app.sse import publish_task_event
 from app.routers import (
@@ -139,6 +139,10 @@ _purge_lock = threading.Lock()
 # defer) để chừa thời gian ChatGPT index + 1 vòng sync. Nếu lỡ chốt oan lời mời THẬT
 # đã vào ChatGPT: sync kế tiếp thấy "rogue pending" → extension auto-revoke (tự lành).
 STALE_PENDING_INVITE_WINDOW = timedelta(minutes=20)
+# Treo "chờ xác minh" quá lâu mà CHƯA có lượt đồng bộ nào đi xem (extension tắt, tab
+# ChatGPT hỏng…) → kêu MỘT tiếng lên Nhật ký cho admin xử tay. Vẫn KHÔNG tự hoàn phí:
+# xem khối "chặn hoàn phí mù" trong `_resolve_stale_pending_invites_once`.
+STALE_INVITE_BLIND_ESCALATE = timedelta(hours=6)
 _stale_invite_lock = threading.Lock()
 
 # Retention audit log (yêu cầu user 2026-07-12): sự kiện QUAN TRỌNG (thay đổi
@@ -473,6 +477,32 @@ def _enqueue_expired_removals_once() -> None:
         _expire_lock.release()
 
 
+def _batch_verified_siblings(db, queue_item_id: str, email: str) -> list[str]:
+    """Email CÙNG MỘT MẺ MỜI đã được xác minh (audit `MEMBER_INVITE_VERIFIED` mang
+    cùng `queue_item_id`), bỏ chính email đang xét.
+
+    Mời một mẻ là MỘT thao tác trên ChatGPT: dialog nhận cả danh sách rồi gửi một
+    lần, nên mẻ đi được thì đi cả mẻ. Danh sách trả về không rỗng = có bằng chứng
+    DƯƠNG rằng cú gửi ấy trót lọt."""
+    rows = (
+        db.execute(
+            select(AuditLog.data).where(
+                AuditLog.action == "MEMBER_INVITE_VERIFIED",
+                AuditLog.data["queue_item_id"].astext == queue_item_id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    out = {
+        str((d or {}).get("email") or "").lower()
+        for d in rows
+    }
+    out.discard("")
+    out.discard(email.lower())
+    return sorted(out)
+
+
 def _resolve_stale_pending_invites_once() -> None:
     """Chốt các lời mời KẸT LIMBO: extension đã báo COMPLETED-unverified rồi được guard
     10 phút "defer to sync", nhưng quá `STALE_PENDING_INVITE_WINDOW` vẫn CHƯA có xác
@@ -511,6 +541,13 @@ def _resolve_stale_pending_invites_once() -> None:
             resolved = 0
             # Số email được GỠ khỏi limbo bằng bằng chứng đồng bộ (không hoàn phí).
             confirmed = 0
+            # Số email GIỮ NGUYÊN vì chưa ai đi xem (chặn hoàn phí mù) + số mẻ sync
+            # vừa xếp để đi xem, gom theo workspace.
+            blind = 0
+            probed = 0
+            # Số email GIỮ LẠI vì cùng mẻ mời với email đã xác minh (không hoàn phí).
+            held = 0
+            blind_by_ws: dict[UUID, list[str]] = {}
             for ev in events:
                 mid = ev.target_id
                 if not mid or mid in seen:
@@ -598,6 +635,151 @@ def _resolve_stale_pending_invites_once() -> None:
                 if open_invite is not None:
                     continue
 
+                # ── CHƯA AI ĐI XEM ⇒ KHÔNG ĐƯỢC CHỐT HỎNG (chặn hoàn phí mù) ────
+                # Tới đây nghĩa là nhánh bằng chứng DƯƠNG ở trên không nổ. Có hai
+                # ca hoàn toàn khác nhau, trước đây bị gộp làm một rồi hoàn phí cả
+                # hai:
+                #   (a) đã có lượt sync SAU mốc hoãn mà KHÔNG thấy email đâu
+                #       (`sync_missing_at` mới hơn mốc) → bằng chứng ÂM thật, chốt
+                #       hỏng là đúng;
+                #   (b) CHƯA từng có lượt sync nào sau mốc hoãn → không ai đi xem,
+                #       chốt hỏng chỉ là đoán. Hết 20′ không phải bằng chứng.
+                #
+                # CA THẬT 28-29/8/2026: mời 8 email, extension timeout 300s ở Phase
+                # A' nên quét tab Lời mời chỉ ra 1/8; 7 email kia bị hoãn rồi 62′
+                # sau resolver hoàn phí + xoá bản ghi — trong khi cả 7 ĐANG ở trong
+                # team thật. Auto-sync 1 lần/ngày nên nhánh bằng chứng dương không
+                # bao giờ kịp nổ. Tổng 12 email, 3.960.000đ hoàn oan, dịch vụ vẫn
+                # giao. Giả định tự lành ghi ở `STALE_PENDING_INVITE_WINDOW` ("sync
+                # kế tiếp thấy rogue pending → auto-revoke") cũng sai nốt: email đã
+                # ACTIVE thì không còn là rogue pending, không ai thu hồi.
+                #
+                # Nay ca (b) KHÔNG chốt: xếp mẻ sync đi xem rồi để tick sau xử. Giam
+                # tiền thêm vài phút là chuyện sửa được bằng một cú hoàn tay; hoàn
+                # phí + xoá bản ghi một lời mời THÀNH CÔNG thì phải truy thu từng
+                # khách. Xem [[hoan-phi-mu-khi-mời-khong-kiem-chung]].
+                looked_after_defer = (
+                    member.last_synced_at is not None
+                    and member.last_synced_at > ev.timestamp
+                ) or (
+                    member.sync_missing_at is not None
+                    and member.sync_missing_at > ev.timestamp
+                )
+                if not looked_after_defer:
+                    # Gom theo workspace rồi xếp MỘT mẻ ở cuối tick: `enqueue_sync_probe`
+                    # dedup theo workspace, gọi ngay trong vòng lặp thì email đầu tiên
+                    # chiếm mất mẻ và 7 email còn lại của cùng mẻ mời không có tên
+                    # trong payload — đúng kiểu bỏ sót đã gây ra ca này.
+                    blind_by_ws.setdefault(member.workspace_id, []).append(email)
+                    blind += 1
+                    # Mù quá lâu = extension không chạy/không quét tới email này.
+                    # Kêu MỘT lần cho admin nhìn thấy trên Nhật ký, vẫn KHÔNG hoàn
+                    # phí: người xử lý tay quyết định đúng hơn một cái đồng hồ.
+                    if now - ev.timestamp >= STALE_INVITE_BLIND_ESCALATE:
+                        escalated = db.execute(
+                            select(AuditLog.id)
+                            .where(
+                                AuditLog.action == "MEMBER_INVITE_UNVERIFIABLE",
+                                AuditLog.target_type == "MEMBER",
+                                AuditLog.target_id == mid,
+                                AuditLog.timestamp > ev.timestamp,
+                            )
+                            .limit(1)
+                        ).first()
+                        if escalated is None:
+                            log_event(
+                                db,
+                                actor_type="SYSTEM",
+                                actor_label="system:stale-invite-resolver",
+                                action="MEMBER_INVITE_UNVERIFIABLE",
+                                result="ERROR",
+                                target_type="MEMBER",
+                                target_id=mid,
+                                data={
+                                    "email": email,
+                                    "workspace_id": str(member.workspace_id),
+                                    "queue_item_id": (ev.data or {}).get(
+                                        "queue_item_id"
+                                    ),
+                                    "deferred_at": ev.timestamp.isoformat(),
+                                    "blind_hours": round(
+                                        (now - ev.timestamp).total_seconds() / 3600, 1
+                                    ),
+                                    "note": (
+                                        "Lời mời treo 'chờ xác minh' quá lâu mà CHƯA "
+                                        "có lượt đồng bộ nào đi xem — hệ thống KHÔNG "
+                                        "tự hoàn phí để tránh hoàn oan lời mời đã đi "
+                                        "thật. Mở ChatGPT kiểm tra email này: đã vào "
+                                        "team thì bấm Đồng bộ, chưa vào thì hoàn phí "
+                                        "tay."
+                                    ),
+                                },
+                                commit=False,
+                            )
+                    continue
+
+                # ── CẢ MẺ ĐI ĐƯỢC THÌ KHÔNG LỖI LẺ MỘT EMAIL ────────────────────
+                # Mời một mẻ là MỘT lần bấm gửi: 16 email vào được mà email thứ
+                # 17 hỏng RIÊNG là chuyện không xảy ra (user 29/8/2026). Cái
+                # thường xảy ra là email đó được CHẤP NHẬN NGAY nên rời tab "Lời
+                # mời" sang tab "Người dùng" — lượt quét chỉ nhìn tab "Lời mời"
+                # thì không thấy, rồi mọi lớp phía sau đọc "không thấy" thành
+                # "hỏng".
+                #
+                # CA THẬT 29/8/2026 (task e3380978, mẻ 17 email): 16 email
+                # VERIFIED lúc 18:11, email còn lại bị hoãn; 42 phút sau resolver
+                # chốt hỏng + hoàn 330.000đ + xoá bản ghi — 5 phút sau đồng bộ
+                # thấy nó ĐANG Ở TRONG TEAM (`MEMBER_REFUND_WHILE_IN_TEAM`), tức
+                # dịch vụ đã giao mà thực thu 0đ, phải truy thu tay.
+                #
+                # Nên: còn anh em cùng mẻ đã xác minh ⇒ GIỮ NGUYÊN, cử người đi
+                # xem, để bằng chứng THẬT quyết. Đồng bộ thấy email → VERIFIED;
+                # đồng bộ quét cả hai tab vẫn không thấy → nhánh
+                # `close_invite_defer_with_missing_evidence` hoàn phí như cũ.
+                # Hết giờ không phải bằng chứng.
+                qid = (ev.data or {}).get("queue_item_id")
+                siblings = _batch_verified_siblings(db, str(qid), email) if qid else []
+                if siblings:
+                    # Kêu MỘT lần cho mỗi mốc hoãn, không lặp mỗi tick.
+                    already_held = db.execute(
+                        select(AuditLog.id)
+                        .where(
+                            AuditLog.action == "MEMBER_INVITE_BATCH_HOLD",
+                            AuditLog.target_type == "MEMBER",
+                            AuditLog.target_id == mid,
+                            AuditLog.timestamp > ev.timestamp,
+                        )
+                        .limit(1)
+                    ).first()
+                    if already_held is None:
+                        log_event(
+                            db,
+                            actor_type="SYSTEM",
+                            actor_label="system:stale-invite-resolver",
+                            action="MEMBER_INVITE_BATCH_HOLD",
+                            result="PENDING",
+                            target_type="MEMBER",
+                            target_id=mid,
+                            data={
+                                "email": email,
+                                "workspace_id": str(member.workspace_id),
+                                "queue_item_id": qid,
+                                "verified_siblings": siblings[:20],
+                                "sibling_count": len(siblings),
+                                "note": (
+                                    "Cùng mẻ mời với email đã xác minh nên lời mời "
+                                    "này coi như đã gửi đi được — KHÔNG hoàn phí "
+                                    "theo đồng hồ. Đang cử đồng bộ đi xem: thấy "
+                                    "trong ChatGPT thì chốt thành công, quét cả hai "
+                                    "tab vẫn không thấy mới hoàn phí."
+                                ),
+                            },
+                            commit=False,
+                        )
+                    blind_by_ws.setdefault(member.workspace_id, []).append(email)
+                    held += 1
+                    continue
+
                 # Ghi FAILED + hoàn phí + void kỳ + xoá phantom — MỘT bản dùng
                 # chung với nhánh "đồng bộ không thấy email" (`completion.py`), để
                 # đường tiền không có hai phiên bản trôi dạt khỏi nhau.
@@ -611,7 +793,13 @@ def _resolve_stale_pending_invites_once() -> None:
                     now=now,
                 )
                 resolved += 1
-            if resolved or confirmed:
+            # Cử người ĐI XEM cho mọi email đang mù — một mẻ/workspace, đủ tên.
+            for ws_id, ws_emails in blind_by_ws.items():
+                if enqueue_sync_probe(db, workspace_id=ws_id, emails=ws_emails):
+                    probed += 1
+            # `blind` cũng phải commit: nhánh đó xếp mẻ sync + có thể ghi audit
+            # MEMBER_INVITE_UNVERIFIABLE. Quên thì tick sau lại mù y hệt.
+            if resolved or confirmed or blind or held:
                 db.commit()
             if resolved:
                 logger.info(
@@ -624,6 +812,19 @@ def _resolve_stale_pending_invites_once() -> None:
                     "[stale-invite] GIỮ NGUYÊN %d lời mời: đồng bộ đã thấy email "
                     "trong ChatGPT sau mốc hoãn (không hoàn phí, không xoá)",
                     confirmed,
+                )
+            if held:
+                logger.info(
+                    "[stale-invite] GIỮ LẠI %d lời mời: cùng mẻ với email đã xác "
+                    "minh ⇒ cả mẻ đã gửi đi được (không hoàn phí, chờ đồng bộ)",
+                    held,
+                )
+            if blind:
+                logger.info(
+                    "[stale-invite] HOÃN TIẾP %d lời mời: chưa lượt đồng bộ nào đi "
+                    "xem sau mốc hoãn → KHÔNG hoàn phí (xếp %d mẻ sync đi kiểm)",
+                    blind,
+                    probed,
                 )
     except Exception as e:  # noqa: BLE001
         logger.warning("[stale-invite] tick failed: %s", e)
