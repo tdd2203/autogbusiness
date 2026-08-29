@@ -197,3 +197,53 @@ def test_ledger_first_date_tracks_earliest_row(client: TestClient, auth_header: 
     day = _events(client, sub["token"])
     assert day["events"] == []
     assert day["ledger_first_date"] == yesterday
+
+
+def test_admin_can_scope_events_to_one_user(client: TestClient, auth_header: dict) -> None:
+    """Admin mở đối soát từ trang ví của một người: chỉ tiền vào của người đó.
+
+    Trước đây trang ví của tuan hiện cả 40 giao dịch trong ngày của mọi tài khoản
+    (user 2026-08-29) — nhìn vào không biết khoản nào là của ai.
+    """
+    set_settings(client, auth_header)
+    a = make_beta_sub(client, auth_header, username="soat9a")
+    b = make_beta_sub(client, auth_header, username="soat9b")
+    admin_token = auth_header["Authorization"].split(" ", 1)[1]
+
+    note_a = client.post(
+        "/api/v1/wallet/topups", json={"amount_vnd": 200_000}, headers=bearer(a["token"])
+    ).json()["note"]
+    note_b = client.post(
+        "/api/v1/wallet/topups", json={"amount_vnd": 300_000}, headers=bearer(b["token"])
+    ).json()["note"]
+    client.post("/webhook/sepay", json=_webhook_body(note_a, 200_000, "SP-SOAT-9A"))
+    client.post("/webhook/sepay", json=_webhook_body(note_b, 300_000, "SP-SOAT-9B"))
+    # Khoản không khớp ai: chỉ được nằm ở bảng tổng, không rơi vào ví ai cả.
+    client.post("/webhook/sepay", json=_webhook_body("chuyen khoan la", 90_000, "SP-SOAT-9C"))
+
+    r = client.get(
+        f"/api/v1/wallet/sepay-events?user_id={a['id']}", headers=bearer(admin_token)
+    )
+    assert r.status_code == 200, r.text
+    scoped = r.json()
+    assert [e["provider_txn_id"] for e in scoped["events"]] == ["SP-SOAT-9A"]
+    assert scoped["received_total"] == 200_000
+    assert scoped["credited_total"] == 200_000
+    assert scoped["is_admin_view"] is False  # đang bó theo một người, không phải bảng tổng
+    assert scoped["can_sync"] == _events(client, admin_token)["can_sync"]
+
+    # Bảng tổng vẫn thấy đủ cả ba khoản.
+    total = _events(client, admin_token)
+    ids = {e["provider_txn_id"] for e in total["events"]}
+    assert {"SP-SOAT-9A", "SP-SOAT-9B", "SP-SOAT-9C"} <= ids
+    assert total["received_total"] >= 590_000
+
+
+def test_non_admin_cannot_scope_to_another_user(client: TestClient, auth_header: dict) -> None:
+    """User thường bịa `user_id` của người khác: bị chặn, không rò tiền vào của ai cả."""
+    set_settings(client, auth_header)
+    a = make_beta_sub(client, auth_header, username="soat10a")
+    b = make_beta_sub(client, auth_header, username="soat10b")
+
+    r = client.get(f"/api/v1/wallet/sepay-events?user_id={a['id']}", headers=bearer(b["token"]))
+    assert r.status_code == 403

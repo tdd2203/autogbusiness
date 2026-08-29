@@ -38,6 +38,30 @@ export type WalletTxn = {
   created_at: string;
 };
 
+/**
+ * Bút toán KÈM dữ liệu đối soát — chỉ endpoint super-admin trả về
+ * (GET /wallet/admin/users/{id}/transactions).
+ *
+ * Trang Ví của người dùng cố ý gom nhóm cho dễ đọc; trang quản trị cần lần được
+ * từ khoản tiền ra tận hoá đơn, lệnh trong hàng đợi và người bấm nút. Backend tra
+ * sẵn ở `_enrich_txns` (routers/wallet/admin.py) để FE khỏi gọi thêm.
+ */
+export type WalletTxnAdmin = WalletTxn & {
+  /** Khoá sắp xếp thật của sổ cái — `created_at` trùng nhau trong cùng transaction. */
+  seq: number;
+  /** Email người bấm nút; null ⇔ hệ thống (webhook ngân hàng, job hoàn phí). */
+  actor_email: string | null;
+  /** Mã in trên nội dung chuyển khoản (mã nạp / mã hoá đơn). */
+  ref_code: string | null;
+  /** Trạng thái của thứ `ref_id` trỏ tới (hoá đơn paid/expired, task COMPLETED…). */
+  ref_status: string | null;
+  queue_item_id: string | null;
+  queue_item_type: string | null;
+  workspace_id: string | null;
+  workspace_name: string | null;
+  member_email: string | null;
+};
+
 /** Báo cáo 1 ngày (giờ VN) của chính user — GET /api/v1/wallet/daily-summary. */
 export type WalletDailyKind = {
   kind: WalletTxnKind | string;
@@ -63,6 +87,12 @@ export type WalletDailySummary = {
   fee_from_invoice: number;
   /** Phần thực chi trừ từ số dư ví. */
   fee_from_balance: number;
+  /** Email vào đội LẦN ĐẦU trong ngày. Đổi email là thay thế nên vẫn tính 1. */
+  added_new_count: number;
+  /** Email CŨ trả tiền tiếp: gia hạn thêm tháng, hoặc hết hạn rồi add lại. */
+  added_renew_count: number;
+  /** Mời lại email còn hạn — miễn phí, không phải add mới lẫn gia hạn. */
+  added_free_reinvite_count: number;
   /** TỔNG lời mời tính phí trong ngày, đếm theo EMAIL (dán 5 email = 5 lời mời). */
   invite_count: number;
   /** Số lượt mời trong ngày bị hỏng và đã hoàn phí (phần KHÔNG thành công). */
@@ -369,6 +399,48 @@ export type FinancialCycle = {
 
 export type FinancialCycles = {
   cycles: FinancialCycle[];
+};
+
+// ── Thống kê email add mới / gia hạn (super-admin) ──────────────────────────
+// ĐƠN VỊ ĐẾM = 1 EMAIL TRONG 1 NGÀY (giờ VN), không phải 1 lượt thao tác. Cùng một
+// email mời đi mời lại nhiều lượt trong ngày vẫn là 1; có lượt nào thành công thì
+// ngày đó tính THÀNH CÔNG. Nhờ vậy cộng các ngày ra đúng tổng kỳ.
+
+export type EmailStatsAgent = {
+  /** null = "Chưa rõ chủ" (không quy được ai bấm mời). */
+  user_id: string | null;
+  username: string | null;
+  email: string | null;
+  new_ok: number;
+  new_failed: number;
+  renew_ok: number;
+  /** Gia hạn chưa có đường hỏng → luôn 0. Giữ cột cho bảng đồng dạng. */
+  renew_failed: number;
+  total: number;
+};
+
+export type EmailStatsDay = {
+  date: string; // "YYYY-MM-DD" (giờ VN)
+  new_ok: number;
+  new_failed: number;
+  renew_ok: number;
+  renew_failed: number;
+  total: number;
+  by_agent: EmailStatsAgent[];
+};
+
+export type EmailStats = {
+  from_date: string;
+  to_date: string;
+  new_ok: number;
+  new_failed: number;
+  renew_ok: number;
+  renew_failed: number;
+  total: number;
+  /** Số email DUY NHẤT chạm tới trong kỳ (1 email add đầu tháng + gia hạn cuối tháng = 2 lượt, 1 email). */
+  unique_emails: number;
+  days: EmailStatsDay[];
+  by_agent: EmailStatsAgent[];
 };
 
 /** Định dạng VND: 100000 → "100.000 ₫". */

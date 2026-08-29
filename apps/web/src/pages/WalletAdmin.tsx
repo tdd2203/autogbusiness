@@ -9,22 +9,19 @@
  * Bảng màu scope cục bộ qua biến --w-* nên không ảnh hưởng phần còn lại của app.
  */
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   useAdjustBalance,
   useAdminWithdrawals,
   usePaymentSettings,
   useReviewWithdrawal,
-  useSetUserFee,
-  useToggleBeta,
   useUpdatePaymentSettings,
   useWalletAdminUsers,
-  useWalletAdminUserTransactions,
 } from "../hooks/useWallet";
-import { formatVnd, TXN_KIND_LABEL, type PaymentSettings, type SepayAuthMethod, type WalletAdminUser, type WalletTxn, type WalletTxnKind, type WithdrawalAdmin } from "../lib/wallet";
-import { pairVoidedInvites } from "../lib/wallet-history";
-import type { VoidedPair } from "../lib/wallet-history";
+import { formatVnd, type PaymentSettings, type SepayAuthMethod, type WalletAdminUser, type WithdrawalAdmin } from "../lib/wallet";
 import { toast } from "../components/Toast";
 import InputModal from "../components/InputModal";
+import SepayReconcileModal from "../components/SepayReconcileModal";
 import { ApiError } from "../lib/api";
 
 // Phương thức xác thực webhook SePay (bỏ OAuth 2.0 theo yêu cầu).
@@ -63,16 +60,26 @@ const softVars = {
 } as React.CSSProperties;
 
 export default function WalletAdmin() {
+  // Đối soát TỔNG (toàn bộ tiền vào trong ngày) ở đây; trang ví của từng người chỉ
+  // đối soát phần của người đó (user 2026-08-29).
+  const [reconcileOpen, setReconcileOpen] = useState(false);
   return (
     <div className="page-fade" style={{ ...softVars, padding: "8px 4px 48px" }}>
       <div style={{ fontSize: 13, color: "var(--w-muted)", fontWeight: 500 }}>
         Tổ chức <span style={{ opacity: 0.55, margin: "0 4px" }}>/</span>
         <span style={{ color: "var(--w-ink)", fontWeight: 600 }}>Quản trị Ví</span>
       </div>
-      <h1 style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-0.02em", color: "var(--w-ink)", margin: "8px 0 4px" }}>Quản trị Ví</h1>
-      <p style={{ margin: "0 0 24px", fontSize: 14, color: "var(--w-muted)", maxWidth: 520 }}>
-        Theo dõi số dư và lịch sử giao dịch ví của mọi tài khoản trong tổ chức.
-      </p>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap", margin: "8px 0 24px" }}>
+        <div style={{ minWidth: 0 }}>
+          <h1 style={{ fontSize: 28, fontWeight: 800, letterSpacing: "-0.02em", color: "var(--w-ink)", margin: "0 0 4px" }}>Quản trị Ví</h1>
+          <p style={{ margin: 0, fontSize: 14, color: "var(--w-muted)", maxWidth: 520 }}>
+            Theo dõi số dư và lịch sử giao dịch ví của mọi tài khoản trong tổ chức.
+          </p>
+        </div>
+        <button onClick={() => setReconcileOpen(true)} style={secondaryBtn}>
+          Đối soát ngân hàng
+        </button>
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) 360px", gap: 22, alignItems: "start" }} className="wallet-admin-grid">
         <UsersCard />
         <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
@@ -80,6 +87,7 @@ export default function WalletAdmin() {
           <WithdrawalsCard />
         </div>
       </div>
+      {reconcileOpen && <SepayReconcileModal onClose={() => setReconcileOpen(false)} />}
     </div>
   );
 }
@@ -88,11 +96,10 @@ export default function WalletAdmin() {
 
 function UsersCard() {
   const { data } = useWalletAdminUsers();
+  const navigate = useNavigate();
   const adjust = useAdjustBalance();
   // Popup 'adjust' = nạp tiền (điều chỉnh số dư).
   const [modal, setModal] = useState<{ kind: "adjust"; user: WalletAdminUser } | null>(null);
-  // Modal chi tiết: lịch sử giao dịch + điều khiển Ví beta / phí mời của 1 user.
-  const [detail, setDetail] = useState<WalletAdminUser | null>(null);
   const [query, setQuery] = useState("");
 
   const filtered = useMemo(() => {
@@ -149,8 +156,8 @@ function UsersCard() {
         <div
           key={u.user_id}
           className="wallet-admin-row"
-          onClick={() => setDetail(u)}
-          title="Xem thông tin & lịch sử giao dịch"
+          onClick={() => navigate(`/admin/wallet/${u.user_id}`)}
+          title="Mở ví của tài khoản này"
           style={{ ...rowGrid, padding: "15px 22px", borderBottom: "1px solid var(--w-line)", cursor: "pointer" }}
         >
           {/* Tài khoản */}
@@ -200,528 +207,10 @@ function UsersCard() {
         />
       )}
 
-      {detail && <DetailModal user={detail} onClose={() => setDetail(null)} />}
     </section>
   );
 }
 
-// ── Modal chi tiết: điều khiển + lịch sử giao dịch ví của 1 user ──────────────
-
-// Nguồn phát sinh (giống trang Ví người dùng). Dạng "<TIỀN ĐI ĐÂU> · <vì sao>":
-// user 2026-08-16 — "Tự động · trừ khi mời thành viên" không cho biết tiền bị trừ
-// từ đâu. Vế đầu LUÔN nói rõ dòng tiền (trừ/cộng/hoàn/giữ ở số dư ví, hay thanh
-// toán thẳng qua hoá đơn) để khớp với dòng gộp (TxnGroupRow), vế sau mới là lý do.
-// Dòng phí ĐƠN LẺ ⇔ không có order_topup cùng created_at ⇒ chắc chắn trừ từ số dư.
-const TXN_SOURCE: Partial<Record<WalletTxnKind, string>> = {
-  topup: "Cộng vào số dư ví · nạp chuyển khoản",
-  invite_fee: "Trừ từ số dư ví · phí mời thành viên",
-  renew_fee: "Trừ từ số dư ví · phí gia hạn thành viên",
-  invite_refund: "Hoàn về số dư ví · mời thành viên thất bại",
-  order_topup: "Cộng vào số dư ví · thanh toán qua hoá đơn",
-  withdraw_hold: "Giữ trong số dư ví · chờ duyệt yêu cầu rút",
-  withdraw_settle: "Chi ra khỏi ví · quản trị đã chuyển tiền rút",
-  withdraw_refund: "Hoàn về số dư ví · từ chối yêu cầu rút",
-  adjust: "Sửa thẳng số dư ví · quản trị điều chỉnh tay",
-};
-
-// Nhóm giao dịch cho bộ lọc chip: nạp / phí / hoàn / khác.
-type TxnCategory = "topup" | "fee" | "refund" | "other";
-function txnCategory(kind: WalletTxnKind): TxnCategory {
-  if (kind === "topup" || kind === "order_topup") return "topup";
-  if (kind === "invite_fee" || kind === "renew_fee" || kind === "withdraw_hold") return "fee";
-  if (kind === "invite_refund" || kind === "withdraw_refund") return "refund";
-  return "other";
-}
-
-// Biểu tượng + màu cho từng dòng giao dịch (khớp mockup: nạp xanh, phí đỏ, hoàn accent).
-function txnVisual(t: WalletTxn): { icon: string; bg: string; color: string } {
-  switch (txnCategory(t.kind)) {
-    case "topup":
-      return { icon: "↓", bg: "var(--w-pos-soft)", color: "var(--w-pos)" };
-    case "fee":
-      return { icon: "↑", bg: "var(--w-neg-soft)", color: "var(--w-neg)" };
-    case "refund":
-      return { icon: "↩", bg: "var(--w-accent-soft)", color: "var(--w-accent)" };
-    default:
-      return t.amount >= 0
-        ? { icon: "⇄", bg: "var(--w-pos-soft)", color: "var(--w-pos)" }
-        : { icon: "⇄", bg: "var(--w-neg-soft)", color: "var(--w-neg)" };
-  }
-}
-
-const CHIPS: { key: TxnCategory | "all"; label: string }[] = [
-  { key: "all", label: "Tất cả" },
-  { key: "topup", label: "Nạp" },
-  { key: "fee", label: "Phí mời" },
-  { key: "refund", label: "Hoàn" },
-];
-
-// ── Gộp giao dịch theo THAO TÁC nguyên tử ────────────────────────────────────
-// Mỗi thao tác ví (mời hàng loạt: 1 order_topup + N phí, hoặc N phí trừ thẳng số
-// dư) đều dùng chung created_at — Postgres now() là HẰNG trong 1 transaction, mà
-// mỗi request = 1 transaction → cùng timestamp ⇔ cùng 1 thao tác. Gộp để hiển thị
-// 1 DÒNG theo action, thay vì tách "nạp qua hoá đơn" rồi trừ N phí: tiền order_topup
-// chỉ ĐI QUA ví để trả ngay cho lệnh, KHÔNG phải nạp thật (chỉ hoàn về ví nếu lỗi).
-type TxnGroup = {
-  key: string;
-  txns: WalletTxn[];
-  category: TxnCategory;
-  /** Có phần tử ⇒ đây là dòng "mời hỏng đã hoàn phí" (khi đó `txns` rỗng). */
-  voided: VoidedPair[];
-  /** Số email hỏng CÙNG mốc — dòng thường ghi chú "cùng lượt này có N email hỏng". */
-  voidedSiblings: number;
-  /** Tiền hoá đơn ở lại ví vì lượt hỏng đã được hoàn phí. */
-  invoiceStranded: number;
-};
-
-/**
- * Gộp theo mốc thời gian, đồng thời TÁCH các lượt mời hỏng đã hoàn đủ phí
- * (`invite_fee` reversed ↔ `invite_refund`) ra nhóm riêng — trang Ví người dùng ẩn
- * mặc định, ở đây cũng vậy cho đồng bộ (user 2026-08-26). Luật ghép cặp dùng chung
- * `pairVoidedInvites` với trang Ví, đừng chép lại ở đây.
- */
-export function groupTxns(all: WalletTxn[]): TxnGroup[] {
-  const pairs = pairVoidedInvites(all);
-  const paired = new Set<string>();
-  for (const [feeId, p] of pairs) {
-    paired.add(feeId);
-    paired.add(p.refund.id);
-  }
-  const byTime = new Map<string, WalletTxn[]>();
-  const voidedByTime = new Map<string, VoidedPair[]>();
-  const invoiceByTime = new Map<string, number>();
-  const order: string[] = [];
-  const touch = (k: string) => {
-    if (!byTime.has(k) && !voidedByTime.has(k)) order.push(k);
-  };
-  for (const t of all) {
-    const pair = pairs.get(t.id);
-    if (pair) {
-      touch(t.created_at);
-      const list = voidedByTime.get(t.created_at);
-      if (list) list.push(pair);
-      else voidedByTime.set(t.created_at, [pair]);
-      continue;
-    }
-    if (paired.has(t.id)) continue; // bút toán hoàn — đã kể trong cặp của phí
-    touch(t.created_at);
-    if (t.kind === "order_topup") {
-      invoiceByTime.set(t.created_at, (invoiceByTime.get(t.created_at) ?? 0) + t.amount);
-    }
-    const list = byTime.get(t.created_at);
-    if (list) list.push(t);
-    else byTime.set(t.created_at, [t]);
-  }
-  const groups: TxnGroup[] = [];
-  for (const k of order) {
-    const voided = voidedByTime.get(k) ?? [];
-    // Lượt hỏng trả qua hoá đơn: tiền hoá đơn đã vào ví rồi phí hoàn về ⇒ ví DÔI RA,
-    // đó không phải khoản triệt tiêu nên dòng hoá đơn vẫn phải hiện, kèm lời giải.
-    const stranded = Math.max(
-      0,
-      Math.min(invoiceByTime.get(k) ?? 0, voided.reduce((n, p) => n - p.fee.amount, 0)),
-    );
-    const txns = byTime.get(k) ?? [];
-    if (txns.length > 0) {
-      const cats = txns.map((t) => txnCategory(t.kind));
-      // Nhóm có phí (mời/gia hạn) → xếp "fee" dù kèm order_topup (order_topup là nguồn
-      // trả, không phải nạp). Nhóm chỉ có order_topup (hoá đơn hết hạn → giữ lại ví) →
-      // vẫn là nạp thật.
-      const category: TxnCategory = cats.includes("fee")
-        ? "fee"
-        : cats.includes("refund")
-          ? "refund"
-          : cats.includes("topup")
-            ? "topup"
-            : "other";
-      groups.push({
-        key: k,
-        txns,
-        category,
-        voided: [],
-        voidedSiblings: voided.length,
-        invoiceStranded: cats.includes("fee") ? 0 : stranded,
-      });
-    }
-    if (voided.length > 0) {
-      groups.push({
-        key: `${k}#voided`,
-        txns: [],
-        category: "refund",
-        voided,
-        voidedSiblings: 0,
-        invoiceStranded: stranded,
-      });
-    }
-  }
-  return groups;
-}
-
-function DetailModal({ user, onClose }: { user: WalletAdminUser; onClose: () => void }) {
-  const { data, isLoading } = useWalletAdminUserTransactions(user.user_id);
-  const { data: settings } = usePaymentSettings();
-  const toggle = useToggleBeta();
-  const setFee = useSetUserFee();
-  const [filter, setFilter] = useState<TxnCategory | "all">("all");
-
-  const all = data?.items ?? [];
-  const groups = useMemo(() => groupTxns(all), [all]);
-  // Lượt mời hỏng đã hoàn đủ phí không làm ví suy chuyển đồng nào → ẩn mặc định như
-  // trang Ví người dùng. Riêng khi bấm chip "Hoàn" thì hiện luôn: admin đang đi tìm
-  // đúng mấy khoản đó, bắt bật thêm một nút nữa là vô duyên.
-  const [showVoided, setShowVoided] = useState(false);
-  const voidedCount = useMemo(() => groups.reduce((n, g) => n + g.voided.length, 0), [groups]);
-  const revealVoided = showVoided || filter === "refund";
-  const shown = (filter === "all" ? groups : groups.filter((g) => g.category === filter)).filter(
-    (g) => revealVoided || g.voided.length === 0,
-  );
-  // 4 con số TÁCH BẠCH để đối soát (user 2026-07-27: "tiền vào phải bằng tiền ra,
-  // điều chỉnh và hoàn tính riêng, không gộp"):
-  //  • TỔNG NẠP  = tiền THẬT vào ví từ webhook ngân hàng: nạp chủ động (topup) +
-  //    thanh toán hoá đơn mời/gia hạn (order_topup — kể cả phần bị trừ phí ngay).
-  //  • TỔNG PHÍ  = phí mời/gia hạn đã trừ (không trừ hoàn — hoàn tính riêng).
-  //  • HOÀN      = tiền hoàn phí trả về ví (tách riêng, KHÔNG cộng vào nạp).
-  //  • ĐIỀU CHỈNH= admin sửa tay (tách riêng, có thể là sửa lỗi; +/−).
-  const { totIn, totOut, totRefund, totAdjust } = useMemo(() => {
-    let tin = 0;
-    let tout = 0;
-    let tref = 0;
-    let tadj = 0;
-    for (const t of all) {
-      if (t.kind === "topup" || t.kind === "order_topup") tin += t.amount;
-      else if (t.kind === "invite_fee" || t.kind === "renew_fee") tout += Math.abs(t.amount);
-      else if (t.kind === "invite_refund" || t.kind === "withdraw_refund") tref += t.amount;
-      else if (t.kind === "adjust") tadj += t.amount;
-    }
-    return { totIn: tin, totOut: tout, totRefund: tref, totAdjust: tadj };
-  }, [all]);
-
-  async function onToggle(enabled: boolean) {
-    try {
-      await toggle.mutateAsync({ userId: user.user_id, enabled });
-      toast.success(enabled ? "Đã bật Ví." : "Đã tắt Ví.");
-    } catch {
-      toast.error("Đổi cờ thất bại.");
-    }
-  }
-  async function saveFee(fee: number | null) {
-    await setFee.mutateAsync({ userId: user.user_id, invite_fee_vnd: fee });
-    toast.success(fee == null ? "Đã về phí mặc định." : `Đã đặt phí ${formatVnd(fee)}.`);
-  }
-
-  return (
-    <div style={backdrop} onClick={onClose}>
-      <div style={{ ...modalPanel, width: 660 }} onClick={(e) => e.stopPropagation()}>
-        <div style={modalHeader}>
-          <Avatar name={user.username} highlight={user.is_super_admin} size={40} />
-          <div style={{ flex: 1, minWidth: 0, lineHeight: 1.35 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--w-ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-              Lịch sử giao dịch — {user.username}
-            </div>
-            <div style={{ fontSize: 13, color: "var(--w-muted)" }}>
-              Số dư hiện tại <b style={{ color: "var(--w-ink)", fontFamily: "var(--font-mono)" }}>{formatVnd(user.balance)}</b>
-              {user.held > 0 ? ` · giữ ${formatVnd(user.held)}` : ""}
-            </div>
-          </div>
-          <button type="button" onClick={onClose} style={closeBtn} aria-label="Đóng">×</button>
-        </div>
-
-        {/* Điều khiển quản trị (chuyển từ bảng vào đây) — ẩn với super-admin */}
-        {!user.is_super_admin && (
-          <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", padding: "14px 24px", borderBottom: "1px solid var(--w-line)", background: "var(--w-bg)" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--w-ink)" }}>Ví</span>
-              <Toggle on={user.wallet_beta} onChange={onToggle} />
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: "auto" }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--w-ink)" }}>Phí mời</span>
-              <FeeCell user={user} defaultFee={settings?.invite_fee_vnd ?? null} onSave={saveFee} />
-            </div>
-          </div>
-        )}
-
-        {/* Tóm tắt dạng ĐẲNG THỨC đối soát (user 2026-07-27): TIỀN VÀO = TIỀN RA + CÒN LẠI
-            → TỔNG NẠP + HOÀN + ĐIỀU CHỈNH = TỔNG PHÍ (+ SỐ DƯ nếu ví còn tiền). HOÀN &
-            ĐIỀU CHỈNH chỉ hiện khi có phát sinh; khi ví về 0 và không rút thì rút gọn
-            thành A + B + C = Tổng phí. */}
-        <div style={{ padding: "16px 24px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <SummaryTile label="TỔNG NẠP" value={`+${formatVnd(totIn)}`} bg="var(--w-pos-soft)" color="var(--w-pos)" />
-            {totRefund !== 0 && (
-              <>
-                <EqOp>+</EqOp>
-                <SummaryTile label="HOÀN" value={`+${formatVnd(totRefund)}`} bg="var(--w-accent-soft)" color="var(--w-accent)" />
-              </>
-            )}
-            {totAdjust !== 0 && (
-              <>
-                <EqOp>{totAdjust >= 0 ? "+" : "−"}</EqOp>
-                <SummaryTile
-                  label="ĐIỀU CHỈNH"
-                  value={`${totAdjust >= 0 ? "+" : "−"}${formatVnd(Math.abs(totAdjust))}`}
-                  bg={totAdjust >= 0 ? "var(--w-pos-soft)" : "var(--w-neg-soft)"}
-                  color={totAdjust >= 0 ? "var(--w-pos)" : "var(--w-neg)"}
-                />
-              </>
-            )}
-            <EqOp>=</EqOp>
-            <SummaryTile label="TỔNG PHÍ" value={`−${formatVnd(totOut)}`} bg="var(--w-neg-soft)" color="var(--w-neg)" />
-            {user.balance !== 0 && (
-              <>
-                <EqOp>+</EqOp>
-                <SummaryTile
-                  label="SỐ DƯ"
-                  value={`${user.balance >= 0 ? "+" : "−"}${formatVnd(Math.abs(user.balance))}`}
-                  bg="var(--w-bg)"
-                  color="var(--w-ink)"
-                />
-              </>
-            )}
-          </div>
-          <div style={{ fontSize: 12, color: "var(--w-muted)", marginTop: 10 }}>
-            Tiền vào (nạp + hoàn + điều chỉnh) đối soát bằng tổng phí đã trừ
-            {user.balance !== 0 ? " + số dư còn lại" : ""} · {all.length} giao dịch
-          </div>
-        </div>
-
-        {/* Bộ lọc chip */}
-        <div style={{ display: "flex", gap: 8, padding: "0 24px 14px", borderBottom: "1px solid var(--w-line)", flexWrap: "wrap" }}>
-          {CHIPS.map((c) => {
-            const on = filter === c.key;
-            return (
-              <button
-                key={c.key}
-                type="button"
-                onClick={() => setFilter(c.key)}
-                style={{
-                  padding: "7px 14px", borderRadius: 999, fontFamily: "inherit", fontSize: 13, fontWeight: 600, cursor: "pointer",
-                  border: `1px solid ${on ? "transparent" : "var(--w-line)"}`,
-                  background: on ? "var(--w-accent)" : "transparent",
-                  color: on ? "var(--w-accent-ink)" : "var(--w-muted)",
-                }}
-              >
-                {c.label}
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Danh sách giao dịch */}
-        <div style={{ overflowY: "auto", padding: "6px 12px 12px" }}>
-          {voidedCount > 0 && (
-            <div
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap",
-                fontSize: 12.5, color: "var(--w-muted)", background: "var(--w-accent-soft)",
-                borderRadius: "var(--w-radius-sm)", padding: "9px 12px", margin: "6px 0 4px",
-              }}
-            >
-              <span>
-                {revealVoided ? "Đang hiện" : "Đã ẩn"} {voidedCount} lượt mời hỏng — phí đã hoàn lại đủ, ví không suy chuyển.
-              </span>
-              {filter !== "refund" && (
-                <button
-                  type="button"
-                  onClick={() => setShowVoided((v) => !v)}
-                  style={{
-                    padding: "5px 12px", borderRadius: 999, border: "1px solid var(--w-line)", background: "transparent",
-                    color: "var(--w-ink)", fontFamily: "inherit", fontSize: 12.5, fontWeight: 600, cursor: "pointer",
-                  }}
-                >
-                  {showVoided ? "Ẩn đi" : "Vẫn xem"}
-                </button>
-              )}
-            </div>
-          )}
-          {isLoading ? (
-            <p style={{ fontSize: 13, color: "var(--w-muted)", padding: "14px 12px" }}>Đang tải…</p>
-          ) : shown.length === 0 ? (
-            <p style={{ fontSize: 13, color: "var(--w-muted)", padding: "14px 12px" }}>Chưa có giao dịch nào.</p>
-          ) : (
-            shown.map((g) => <TxnGroupRow key={g.key} g={g} />)
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SummaryTile({ label, value, bg, color }: { label: string; value: string; bg: string; color: string }) {
-  return (
-    <div style={{ flex: "1 1 130px", minWidth: 120, background: bg, borderRadius: "var(--w-radius-sm)", padding: "12px 14px" }}>
-      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", color }}>{label} <span style={{ opacity: 0.7 }}>(đ)</span></div>
-      <div style={{ fontSize: 16, fontWeight: 800, fontFamily: "var(--font-mono)", color, marginTop: 3, whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{value.replace(/\s*₫/g, "").trim()}</div>
-    </div>
-  );
-}
-
-/** Dấu toán tử (+, −, =) chèn giữa các ô tóm tắt để tạo ĐẲNG THỨC đối soát. */
-function EqOp({ children }: { children: string }) {
-  return (
-    <span style={{ flex: "0 0 auto", fontSize: 18, fontWeight: 800, color: "var(--w-muted)", fontFamily: "var(--font-mono)", padding: "0 1px" }}>
-      {children}
-    </span>
-  );
-}
-
-/** Một dòng giao dịch: ① loại ② nguồn/thành viên/thời gian ③ số tiền + số dư sau. */
-function TxnRow({ t, note }: { t: WalletTxn; note?: string }) {
-  const kindLabel = TXN_KIND_LABEL[t.kind] ?? t.kind;
-  const source = TXN_SOURCE[t.kind];
-  const email = t.meta?.email ? String(t.meta.email) : null;
-  const reason = t.meta?.reason ? String(t.meta.reason) : null;
-  const v = txnVisual(t);
-  const pos = t.amount >= 0;
-  return (
-    <div className="wallet-admin-row" style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: "14px 12px", borderRadius: "var(--w-radius-sm)" }}>
-      <div style={{ width: 34, height: 34, flexShrink: 0, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, background: v.bg, color: v.color }}>{v.icon}</div>
-      <div style={{ flex: 1, minWidth: 0, lineHeight: 1.45 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--w-ink)" }}>{kindLabel}</div>
-        {source && <div style={{ fontSize: 12.5, color: "var(--w-muted)" }}>{source}</div>}
-        {note && <div style={{ fontSize: 12.5, color: "var(--w-muted)", marginTop: 1 }}>{note}</div>}
-        {email && <div style={{ fontSize: 12.5, color: "var(--w-muted)", marginTop: 1 }}>Thành viên: <span style={{ color: "var(--w-ink)", fontWeight: 500 }}>{email}</span></div>}
-        {reason && <div style={{ fontSize: 12.5, color: "var(--w-muted)", marginTop: 1, overflowWrap: "anywhere" }}>Lý do: <span style={{ color: "var(--w-ink)", fontWeight: 500 }}>{reason}</span></div>}
-        <div style={{ fontSize: 11.5, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 3, opacity: 0.85 }}>{new Date(t.created_at).toLocaleString("vi-VN")}</div>
-      </div>
-      <div style={{ textAlign: "right", flexShrink: 0 }}>
-        <div style={{ fontSize: 15, fontWeight: 800, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums", color: pos ? "var(--w-pos)" : "var(--w-neg)" }}>
-          {pos ? "+" : "−"}{formatVnd(Math.abs(t.amount)).replace("-", "")}
-        </div>
-        <div style={{ fontSize: 12, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 2 }}>Còn {formatVnd(t.balance_after)}</div>
-      </div>
-    </div>
-  );
-}
-
-/** Một NHÓM giao dịch. Nhóm 1 txn → hiển thị như cũ. Nhóm nhiều txn (mời/gia hạn
- *  hàng loạt, có/không kèm order_topup) → gộp 1 dòng theo action, bấm để bung chi
- *  tiết từng email. */
-function TxnGroupRow({ g }: { g: TxnGroup }) {
-  const [open, setOpen] = useState(false);
-  if (g.voided.length > 0) return <VoidedInviteRow pairs={g.voided} invoiceStranded={g.invoiceStranded} />;
-
-  // Lượt hỏng đã hoàn hết, chỉ còn bút toán hoá đơn: tiền đó Ở LẠI trong ví, phải nói
-  // ra kẻo trơ một dòng "+X nạp qua hoá đơn" không đầu không cuối.
-  const strandedNote =
-    g.invoiceStranded > 0
-      ? `Lượt mời cùng lúc bị hỏng, phí đã hoàn — ${formatVnd(g.invoiceStranded)} tiền hoá đơn ở lại trong ví.`
-      : undefined;
-  if (g.txns.length === 1) return <TxnRow t={g.txns[0]} note={strandedNote} />;
-
-  const fees = g.txns.filter((t) => t.kind === "invite_fee" || t.kind === "renew_fee");
-  // Nhóm nhiều txn nhưng không phải mời/gia hạn (hiếm) → render từng dòng như cũ.
-  if (fees.length === 0) return <>{g.txns.map((t) => <TxnRow key={t.id} t={t} note={strandedNote} />)}</>;
-
-  const paidViaOrder = g.txns.some((t) => t.kind === "order_topup");
-  const isRenew = fees.every((t) => t.kind === "renew_fee");
-  const spend = fees.reduce((s, t) => s + t.amount, 0); // âm
-  const finalBalance = Math.min(...g.txns.map((t) => t.balance_after));
-  const title = isRenew ? "Gia hạn thành viên" : "Mời thành viên";
-  const created = new Date(g.txns[0].created_at).toLocaleString("vi-VN");
-
-  return (
-    <div>
-      <div
-        className="wallet-admin-row"
-        style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: "14px 12px", borderRadius: "var(--w-radius-sm)", cursor: "pointer" }}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <div style={{ width: 34, height: 34, flexShrink: 0, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, background: "var(--w-neg-soft)", color: "var(--w-neg)" }}>↑</div>
-        <div style={{ flex: 1, minWidth: 0, lineHeight: 1.45 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--w-ink)" }}>
-            {title} · {fees.length} email
-            <span style={{ color: "var(--w-muted)", fontSize: 11, marginLeft: 6, display: "inline-block", transform: open ? "rotate(180deg)" : "none" }}>▾</span>
-          </div>
-          <div style={{ fontSize: 12.5, color: "var(--w-muted)" }}>
-            {paidViaOrder ? "Thanh toán qua hoá đơn · không trừ số dư ví" : "Trừ từ số dư ví"}
-          </div>
-          {g.voidedSiblings > 0 && (
-            <div style={{ fontSize: 12.5, color: "var(--w-muted)" }}>
-              Cùng lượt này có {g.voidedSiblings} email hỏng, đã hoàn phí (không tính vào số bên phải).
-            </div>
-          )}
-          <div style={{ fontSize: 11.5, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 3, opacity: 0.85 }}>{created}</div>
-        </div>
-        <div style={{ textAlign: "right", flexShrink: 0 }}>
-          <div style={{ fontSize: 15, fontWeight: 800, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--w-neg)" }}>
-            −{formatVnd(Math.abs(spend)).replace("-", "")}
-          </div>
-          <div style={{ fontSize: 12, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 2 }}>Còn {formatVnd(finalBalance)}</div>
-        </div>
-      </div>
-      {open && (
-        <div style={{ margin: "0 12px 8px 60px", borderLeft: "2px solid var(--w-line)", paddingLeft: 14, display: "grid", gap: 6 }}>
-          {fees.map((t) => (
-            <div key={t.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12.5 }}>
-              <span style={{ color: "var(--w-muted)", minWidth: 0, overflowWrap: "anywhere" }}>
-                {t.meta?.email ? String(t.meta.email) : t.kind}
-              </span>
-              <span style={{ color: "var(--w-neg)", fontFamily: "var(--font-mono)", flexShrink: 0 }}>
-                −{formatVnd(Math.abs(t.amount)).replace("-", "")}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * Các lượt MỜI HỎNG cùng một lúc: phí trừ rồi hoàn lại đủ ⇒ ví không suy chuyển. Gộp
- * cả cặp vào 1 dòng đặt đúng chỗ lượt mời, thay vì "Phí mời −X" một chỗ và "Hoàn phí
- * mời +X" một chỗ khác để người đối soát tự trừ cho nhau (user 2026-08-26).
- */
-function VoidedInviteRow({ pairs, invoiceStranded }: { pairs: VoidedPair[]; invoiceStranded: number }) {
-  const [open, setOpen] = useState(false);
-  const fee = pairs.reduce((s, p) => s - p.fee.amount, 0); // tổng phí đã trừ (dương)
-  return (
-    <div>
-      <div
-        className="wallet-admin-row"
-        style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: "14px 12px", borderRadius: "var(--w-radius-sm)", cursor: "pointer" }}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <div style={{ width: 34, height: 34, flexShrink: 0, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, background: "var(--w-accent-soft)", color: "var(--w-accent)" }}>↩</div>
-        <div style={{ flex: 1, minWidth: 0, lineHeight: 1.45 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "var(--w-ink)" }}>
-            Mời thất bại · {pairs.length} email · đã hoàn phí
-            <span style={{ color: "var(--w-muted)", fontSize: 11, marginLeft: 6, display: "inline-block", transform: open ? "rotate(180deg)" : "none" }}>▾</span>
-          </div>
-          <div style={{ fontSize: 12.5, color: "var(--w-muted)" }}>
-            Đã trừ {formatVnd(fee)} rồi hoàn lại đủ · ví không suy chuyển
-            {invoiceStranded > 0 && ` · ${formatVnd(invoiceStranded)} tiền hoá đơn ở lại trong ví`}
-          </div>
-          <div style={{ fontSize: 11.5, color: "var(--w-muted)", fontFamily: "var(--font-mono)", marginTop: 3, opacity: 0.85 }}>
-            {new Date(pairs[0].fee.created_at).toLocaleString("vi-VN")}
-          </div>
-        </div>
-        <div style={{ textAlign: "right", flexShrink: 0 }}>
-          <div style={{ fontSize: 12, color: "var(--w-muted)", fontFamily: "var(--font-mono)", textDecoration: "line-through" }}>
-            −{formatVnd(fee).replace("-", "")}
-          </div>
-          <div style={{ fontSize: 15, fontWeight: 800, fontFamily: "var(--font-mono)", fontVariantNumeric: "tabular-nums", color: "var(--w-muted)" }}>0 đ</div>
-        </div>
-      </div>
-      {open && (
-        <div style={{ margin: "0 12px 8px 60px", borderLeft: "2px solid var(--w-line)", paddingLeft: 14, display: "grid", gap: 6 }}>
-          {pairs.map((p) => (
-            <div key={p.fee.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12.5 }}>
-              <span style={{ color: "var(--w-muted)", minWidth: 0, overflowWrap: "anywhere" }}>
-                {p.fee.meta?.email ? String(p.fee.meta.email) : "(không rõ email)"}
-              </span>
-              <span style={{ color: "var(--w-muted)", fontFamily: "var(--font-mono)", flexShrink: 0, whiteSpace: "nowrap" }}>
-                −{formatVnd(Math.abs(p.fee.amount)).replace("-", "")} → hoàn {new Date(p.refund.created_at).toLocaleString("vi-VN")}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Avatar tròn — chữ cái đầu username. Tint theo vị trí (khớp mockup); super-admin nền đậm.
 const TINTS: [string, string][] = [
   ["#eef2ff", "#4f46e5"], ["#e8f6ee", "#0f8a4f"], ["#fff3e6", "#c77a1a"], ["#fde8ef", "#c0397a"],
   ["#e7f0ff", "#2563eb"], ["#f2e8ff", "#7c3aed"], ["#e3f4f1", "#0d9488"], ["#fdeee5", "#c0562b"],
@@ -736,86 +225,6 @@ function Avatar({ name, highlight, size = 36, tintIndex }: { name: string; highl
     <div style={{ width: size, height: size, flexShrink: 0, borderRadius: "50%", background: bg, color, display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.4, fontWeight: 700 }}>
       {(name?.[0] ?? "?").toUpperCase()}
     </div>
-  );
-}
-
-// Toggle switch cho cờ Ví beta.
-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label="Bật/tắt Ví"
-      onClick={() => onChange(!on)}
-      style={{ position: "relative", width: 42, height: 24, borderRadius: 20, border: "none", cursor: "pointer", transition: "background .18s", background: on ? "var(--w-accent)" : "var(--w-line)", padding: 0, flexShrink: 0 }}
-    >
-      <span style={{ position: "absolute", top: 3, left: on ? 21 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left .18s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
-    </button>
-  );
-}
-
-// Ô PHÍ MỜI — sửa nhanh INLINE. Phí MẶC ĐỊNH (hệ thống) hiện MỜ ở placeholder; ô rỗng
-// = dùng mặc định. Gõ số KHÁC mặc định → nút "Lưu" hiện; Enter cũng lưu.
-function FeeCell({
-  user,
-  defaultFee,
-  onSave,
-}: {
-  user: WalletAdminUser;
-  defaultFee: number | null;
-  onSave: (fee: number | null) => Promise<void>;
-}) {
-  const savedOverride = user.invite_fee_vnd; // null = dùng phí mặc định
-  const [val, setVal] = useState(savedOverride == null ? "" : String(savedOverride));
-  const [saving, setSaving] = useState(false);
-
-  const trimmed = val.trim();
-  const parsed = trimmed === "" ? null : Number(trimmed);
-  const valid = parsed == null || (Number.isFinite(parsed) && parsed >= 0);
-  const normalized = parsed != null && defaultFee != null && parsed === defaultFee ? null : parsed;
-  const dirty = valid && normalized !== savedOverride;
-
-  const doSave = async () => {
-    if (!dirty || saving) return;
-    setSaving(true);
-    try {
-      await onSave(normalized);
-    } catch {
-      toast.error("Lưu phí thất bại.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-      <span style={{ position: "relative" }}>
-        <input
-          type="number"
-          min={0}
-          step={1000}
-          inputMode="numeric"
-          placeholder={defaultFee != null ? formatVnd(defaultFee).replace(" ₫", "") : "Mặc định"}
-          value={val}
-          onChange={(e) => setVal(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              void doSave();
-            }
-          }}
-          disabled={saving}
-          style={feeInput}
-        />
-        <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 12, color: "var(--w-muted)", pointerEvents: "none" }}>đ</span>
-      </span>
-      {dirty && (
-        <button type="button" onClick={() => void doSave()} disabled={saving} style={{ ...primaryBtn, padding: "6px 11px", fontSize: 12, whiteSpace: "nowrap" }}>
-          {saving ? "…" : "Lưu"}
-        </button>
-      )}
-    </span>
   );
 }
 
@@ -1168,10 +577,8 @@ const searchInput: React.CSSProperties = { border: "none", outline: "none", back
 
 const statusBadge: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 6, background: "var(--w-pos-soft)", color: "var(--w-pos)", fontSize: 12, fontWeight: 600, padding: "4px 10px", borderRadius: 999 };
 
-const feeInput: React.CSSProperties = { width: 120, padding: "8px 26px 8px 11px", border: "1px solid var(--w-line)", borderRadius: "var(--w-radius-sm)", background: "var(--w-card)", fontSize: 13, fontFamily: "var(--font-mono)", outline: "none", color: "var(--w-ink)", textAlign: "right" };
 const input: React.CSSProperties = { width: "100%", padding: "9px 12px", border: "1px solid var(--w-line)", borderRadius: "var(--w-radius-sm)", fontSize: 13.5, background: "var(--w-card)", color: "var(--w-ink)", fontFamily: "inherit" };
 
-const primaryBtn: React.CSSProperties = { padding: "9px 16px", background: "var(--w-accent)", color: "var(--w-accent-ink)", border: "none", borderRadius: "var(--w-radius-sm)", fontSize: 13.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" };
 const darkBtn: React.CSSProperties = { padding: "13px 16px", background: "var(--w-ink)", color: "#fff", border: "none", borderRadius: "var(--w-radius-sm)", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" };
 const secondaryBtn: React.CSSProperties = { padding: "9px 16px", background: "var(--w-card)", color: "var(--w-ink)", border: "1px solid var(--w-line)", borderRadius: "var(--w-radius-sm)", fontSize: 13.5, fontWeight: 600, cursor: "pointer", flexShrink: 0, fontFamily: "inherit" };
 const softBtn: React.CSSProperties = { border: "1px solid transparent", background: "var(--w-accent-soft)", color: "var(--w-accent)", fontFamily: "inherit", fontSize: 13, fontWeight: 600, padding: "8px 12px", borderRadius: "var(--w-radius-sm)", cursor: "pointer" };

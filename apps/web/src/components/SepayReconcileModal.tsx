@@ -12,6 +12,10 @@
  *
  * Super-admin thấy toàn bộ tiền vào (và có nút kéo sao kê từ API SePay để dựng lại ngày
  * cũ); user thường chỉ thấy giao dịch khớp đúng mã của mình.
+ *
+ * Mở từ trang ví của MỘT tài khoản (`userId`) thì bảng bó về đúng người đó — bảng toàn
+ * bộ tiền vào nằm ở trang Quản trị Ví (user 2026-08-29: đang xem ví của tuan mà hiện
+ * cả 40 giao dịch của mọi người).
  */
 import { useEffect, useRef, useState } from "react";
 import { useSepayDay, useSepaySync } from "../hooks/useWallet";
@@ -53,14 +57,24 @@ function tone(result: string): { fg: string; bg: string; border: string } {
 
 export default function SepayReconcileModal({
   initialDate,
+  highlightTxnId,
+  userId,
+  scopeName,
   onClose,
 }: {
   initialDate?: string;
+  /** Mã giao dịch ngân hàng cần soi — mở từ một dòng ví bên Quản trị Ví: cuộn tới
+   *  đúng khoản đó và viền lại, khỏi phải dò trong ngày mấy chục giao dịch. */
+  highlightTxnId?: string | null;
+  /** Bó bảng về tiền vào của đúng một tài khoản (super-admin). */
+  userId?: string | null;
+  /** Tên hiện ở dòng phụ khi đang bó theo `userId`. */
+  scopeName?: string | null;
   onClose: () => void;
 }) {
   const today = vnToday();
   const [date, setDate] = useState(initialDate ?? today);
-  const { data, isLoading } = useSepayDay(date);
+  const { data, isLoading } = useSepayDay(date, userId ?? null);
   const sync = useSepaySync();
   // Đổi ngày thì cuộn danh sách về đầu: khung cao cố định nên nếu giữ nguyên vị trí
   // cuộn cũ, ngày mới ít giao dịch hơn sẽ mở ra ở giữa chừng (có khi trống trơn).
@@ -68,6 +82,11 @@ export default function SepayReconcileModal({
   useEffect(() => {
     listRef.current?.scrollTo({ top: 0 });
   }, [date]);
+  // Khoản được chỉ đích danh có thể nằm tận cuối ngày → tự cuộn tới sau khi có dữ liệu.
+  const hitRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (highlightTxnId) hitRef.current?.scrollIntoView({ block: "center" });
+  }, [highlightTxnId, data]);
 
   const events = data?.events ?? [];
   const gap = (data?.received_total ?? 0) - (data?.credited_total ?? 0);
@@ -95,7 +114,12 @@ export default function SepayReconcileModal({
               Đối soát ngân hàng
             </div>
             <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginTop: 1 }}>
-              Dữ liệu SePay báo về{data?.is_admin_view ? " — toàn bộ tiền vào" : " — phần của bạn"}
+              Dữ liệu SePay báo về
+              {userId
+                ? ` — phần của ${scopeName || "tài khoản này"}`
+                : data?.is_admin_view
+                  ? " — toàn bộ tiền vào"
+                  : " — phần của bạn"}
             </div>
           </div>
           <button onClick={onClose} style={closeBtn} aria-label="Đóng">✕</button>
@@ -167,6 +191,8 @@ export default function SepayReconcileModal({
                     Sổ mới ghi từ <b>{vnDateLabel(data.ledger_first_date)}</b>, nên ngày này trống
                     là đúng — không phải mất dữ liệu.
                   </>
+                ) : userId ? (
+                  <>Ngày này không có khoản nào vào ví tài khoản này.</>
                 ) : (
                   <>Ngày này ngân hàng không nhận khoản nào.</>
                 )}
@@ -188,8 +214,13 @@ export default function SepayReconcileModal({
 
           {events.map((e) => {
             const t = tone(e.result);
+            const hit = !!highlightTxnId && e.provider_txn_id === highlightTxnId;
             return (
-              <div key={e.id} style={row}>
+              <div
+                key={e.id}
+                ref={hit ? hitRef : undefined}
+                style={hit ? { ...row, padding: "12px 10px", borderRadius: 12, background: "rgba(13,148,136,.08)", boxShadow: "inset 0 0 0 2px rgba(13,148,136,.35)" } : row}
+              >
                 <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
                   <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--ink-3)" }}>{timeOf(e)}</span>
                   <strong style={{ fontSize: 14, fontWeight: 700, color: e.transfer_type === "out" ? "var(--ink-3)" : "var(--ink)" }}>

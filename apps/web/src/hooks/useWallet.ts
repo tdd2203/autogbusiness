@@ -16,6 +16,7 @@ import {
 import { api } from "../lib/api";
 import { useAuth } from "./useAuth";
 import type {
+  EmailStats,
   FinancialCycles,
   FinancialReport,
   PaymentOrder,
@@ -27,7 +28,7 @@ import type {
   Wallet,
   WalletAdminUser,
   WalletDailySummary,
-  WalletTxn,
+  WalletTxnAdmin,
   Withdrawal,
   WithdrawalAdmin,
 } from "../lib/wallet";
@@ -87,18 +88,20 @@ const TXN_PAGE = 100;
  *
  * `fetchNextPage` nối thêm trang cũ hơn; `hasNextPage` = server còn dòng cũ hơn nữa.
  */
-export function useWalletTransactions(day: string | null = null) {
+export function useWalletTransactions(day: string | null = null, userId?: string | null) {
   const { user } = useAuth();
-  const enabled = !!user?.wallet_beta || !!user?.is_super_admin;
+  const enabled = userId ? !!user?.is_super_admin : !!user?.wallet_beta || !!user?.is_super_admin;
   return useInfiniteQuery({
-    queryKey: ["wallet", "transactions", day],
+    queryKey: ["wallet", "transactions", userId ?? "me", day],
     initialPageParam: null as string | null,
     queryFn: ({ pageParam }) => {
       const qs = new URLSearchParams({ limit: String(TXN_PAGE) });
       if (day) qs.set("date", day);
       if (pageParam) qs.set("before_seq", pageParam);
-      return api<{ items: WalletTxn[]; next_cursor: string | null }>(
-        `/api/v1/wallet/transactions?${qs}`,
+      return api<{ items: WalletTxnAdmin[]; next_cursor: string | null }>(
+        userId
+          ? `/api/v1/wallet/admin/users/${userId}/transactions?${qs}`
+          : `/api/v1/wallet/transactions?${qs}`,
       );
     },
     getNextPageParam: (last) => last.next_cursor,
@@ -110,16 +113,22 @@ export function useWalletTransactions(day: string | null = null) {
 /**
  * Đối soát ngân hàng: dữ liệu SePay báo về trong NGÀY (giờ VN).
  *
+ * `userId` = mở từ trang ví của một tài khoản: chỉ lấy tiền vào của đúng người đó.
+ * Bỏ trống thì super-admin thấy toàn bộ tiền vào, user thường thấy phần của mình.
+ *
  * `keepPreviousData`: đổi ngày thì GIỮ số của ngày cũ tới khi ngày mới về, thay vì
  * rơi về undefined một nhịp — nếu không, ba con số trên đầu chớp về 0đ rồi mới nhảy
  * lên giá trị thật, nhìn như đang hỏng (user 2026-08-27).
  */
-export function useSepayDay(date: string, enabled = true) {
+export function useSepayDay(date: string, userId?: string | null, enabled = true) {
   const { user } = useAuth();
-  const allowed = !!user?.wallet_beta || !!user?.is_super_admin;
+  const allowed = userId ? !!user?.is_super_admin : !!user?.wallet_beta || !!user?.is_super_admin;
   return useQuery({
-    queryKey: ["wallet", "sepay-events", date],
-    queryFn: () => api<SepayDay>(`/api/v1/wallet/sepay-events?date=${date}`),
+    queryKey: ["wallet", "sepay-events", userId ?? "all", date],
+    queryFn: () =>
+      api<SepayDay>(
+        `/api/v1/wallet/sepay-events?date=${date}${userId ? `&user_id=${userId}` : ""}`,
+      ),
     enabled: enabled && allowed && !!date,
     placeholderData: keepPreviousData,
     refetchOnWindowFocus: true,
@@ -140,13 +149,17 @@ export function useSepaySync() {
 }
 
 /** Báo cáo trong ngày (giờ VN): email đã thêm + giao dịch. `date` = YYYY-MM-DD. */
-export function useWalletDailySummary(date: string) {
+export function useWalletDailySummary(date: string, userId?: string | null) {
   const { user } = useAuth();
-  const enabled = !!user?.wallet_beta || !!user?.is_super_admin;
+  const enabled = userId ? !!user?.is_super_admin : !!user?.wallet_beta || !!user?.is_super_admin;
   return useQuery({
-    queryKey: ["wallet", "daily-summary", date],
+    queryKey: ["wallet", "daily-summary", userId ?? "me", date],
     queryFn: () =>
-      api<WalletDailySummary>(`/api/v1/wallet/daily-summary?date=${date}`),
+      api<WalletDailySummary>(
+        userId
+          ? `/api/v1/wallet/admin/users/${userId}/daily-summary?date=${date}`
+          : `/api/v1/wallet/daily-summary?date=${date}`,
+      ),
     enabled: enabled && !!date,
     refetchOnWindowFocus: true,
   });
@@ -248,7 +261,7 @@ export function useWalletAdminUserTransactions(userId: string | null) {
   return useQuery({
     queryKey: ["wallet", "admin", "user-transactions", userId],
     queryFn: () =>
-      api<{ items: WalletTxn[] }>(
+      api<{ items: WalletTxnAdmin[] }>(
         `/api/v1/wallet/admin/users/${userId}/transactions?limit=200`,
       ),
     enabled: !!userId && !!user?.is_super_admin,
@@ -329,6 +342,20 @@ export function useFinancialReport(from: string, to: string) {
       api<FinancialReport>(
         `/api/v1/wallet/admin/report?from=${from}&to=${to}`,
       ),
+    enabled: !!user?.is_super_admin && !!from && !!to,
+  });
+}
+
+/**
+ * Thống kê ĐẦU EMAIL (add mới / gia hạn) theo ngày — cùng khoảng với báo cáo tiền.
+ * Đơn vị đếm là 1 email trong 1 ngày, không phải 1 lượt thao tác.
+ */
+export function useEmailStats(from: string, to: string) {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ["wallet", "admin", "report", "emails", from, to],
+    queryFn: () =>
+      api<EmailStats>(`/api/v1/wallet/admin/report/emails?from=${from}&to=${to}`),
     enabled: !!user?.is_super_admin && !!from && !!to,
   });
 }

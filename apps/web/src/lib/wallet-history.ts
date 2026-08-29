@@ -199,6 +199,26 @@ export function vnDateKey(iso: string): string {
   }).format(new Date(iso));
 }
 
+/**
+ * Số dư CHỐT CUỐI NGÀY của từng ngày VN — để lịch sử có một dòng tra soát ở mốc
+ * 23:59:59 thay vì bắt người xem tự cộng trừ cả ngày. Ngày nạp 41.910.000đ mà ô
+ * "đã tiêu" ghi 39.930.000đ thì phần chênh nằm lại trong ví, không nói ra thì
+ * nhìn như thất thoát (user 2026-08-29).
+ *
+ * Lấy `balance_after` của bút toán MỚI NHẤT trong ngày. Dựa vào THỨ TỰ MẢNG (API
+ * trả theo `seq` giảm dần) chứ không so `created_at`: một lượt mời hàng loạt ghi
+ * cả chục bút toán dùng chung một mốc thời gian nên so mốc không biết cái nào
+ * đứng sau. Ngày chỉ tải được một phần vẫn đúng vì lịch sử luôn tải từ mới về cũ.
+ */
+export function closingBalanceByDay(txns: WalletTxn[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const t of txns) {
+    const date = vnDateKey(t.created_at);
+    if (!out.has(date)) out.set(date, t.balance_after);
+  }
+  return out;
+}
+
 function rowAt(row: TxnRow): string {
   if (row.type === "voided") return row.pairs[0].fee.created_at;
   return row.txns[row.txns.length - 1].created_at;
@@ -397,14 +417,14 @@ export type RefundSource = { email: string; amount: number };
 export type RefundTrace = {
   /** Dòng phí trừ ví → các khoản hoàn mà nó tiêu (rỗng ⇒ tiêu tiền nạp thường). */
   funding: Map<TxnRow, RefundSource[]>;
+  /** TỪNG lượt phí (`fee.id`) → khoản hoàn đã nuôi đúng lượt đó. Nhờ vậy chi tiết
+   *  dòng mời viết được "hoàn của email A → email B" ngay trên một dòng, thay vì
+   *  liệt kê email bị trừ ở một khối rồi email đã hoàn ở khối khác (user 2026-08-28:
+   *  "tiền lấy từ các tài khoản sẽ → tài khoản đích nhận, không cần nhiều dòng"). */
+  perFee: Map<string, RefundSource[]>;
   /** Dòng tiền hoàn → đã bị tiêu bao nhiêu trên tổng bao nhiêu, của email nào. */
   usage: Map<TxnRow, { used: number; total: number; emails: string[] }>;
 };
-
-function feeTotalOf(row: TxnRow): number {
-  if (row.type !== "group") return 0;
-  return row.txns.reduce((s, t) => (FEE_KINDS.has(t.kind) ? s - t.amount : s), 0);
-}
 
 /** Gộp nhiều lô cùng email thành một dòng nguồn gốc. */
 function mergeSources(list: RefundSource[]): RefundSource[] {
@@ -429,6 +449,7 @@ export function traceRefundUsage(rows: TxnRow[]): RefundTrace {
   }
 
   const funding = new Map<TxnRow, RefundSource[]>();
+  const perFee = new Map<string, RefundSource[]>();
   const usage = new Map<TxnRow, { used: number; total: number; emails: string[] }>();
   /** Hàng đợi tiền hoàn chưa tiêu, cũ đứng trước. */
   const lots: { row: TxnRow; email: string; remaining: number }[] = [];
@@ -452,24 +473,32 @@ export function traceRefundUsage(rows: TxnRow[]): RefundTrace {
       for (const email of emails) lots.push({ row, email, remaining: per });
     }
 
-    // 2) Lượt mời TRỪ VÍ ăn dần các lô. Lượt trả qua hoá đơn không đụng số dư nên
-    //    không tiêu tiền hoàn.
+    // 2) Lượt mời TRỪ VÍ ăn dần các lô, tính riêng TỪNG lượt phí để biết khoản hoàn
+    //    nào chảy vào email nào. Lượt trả qua hoá đơn không đụng số dư nên không
+    //    tiêu tiền hoàn.
     const viaInvoice = row.txns.some((t) => t.kind === "order_topup");
-    let need = viaInvoice ? 0 : feeTotalOf(row);
-    if (need <= 0) continue;
+    if (viaInvoice) continue;
     const used: RefundSource[] = [];
-    while (need > 0 && lots.length > 0) {
-      const lot = lots[0];
-      const take = Math.min(need, lot.remaining);
-      lot.remaining -= take;
-      need -= take;
-      const u = usage.get(lot.row);
-      if (u) u.used += take;
-      used.push({ email: lot.email, amount: take });
-      if (lot.remaining <= 0) lots.shift();
+    for (const fee of row.txns) {
+      if (!FEE_KINDS.has(fee.kind)) continue;
+      let need = -fee.amount;
+      const mine: RefundSource[] = [];
+      while (need > 0 && lots.length > 0) {
+        const lot = lots[0];
+        const take = Math.min(need, lot.remaining);
+        lot.remaining -= take;
+        need -= take;
+        const u = usage.get(lot.row);
+        if (u) u.used += take;
+        mine.push({ email: lot.email, amount: take });
+        if (lot.remaining <= 0) lots.shift();
+      }
+      if (mine.length === 0) continue;
+      perFee.set(fee.id, mergeSources(mine));
+      used.push(...mine);
     }
     if (used.length > 0) funding.set(row, mergeSources(used));
   }
 
-  return { funding, usage };
+  return { funding, perFee, usage };
 }

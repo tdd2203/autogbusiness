@@ -7,7 +7,8 @@ khách chuyển sai nội dung hoặc lệch số tiền bị webhook từ chố
 
   • `GET  /wallet/sepay-events?date=` — super-admin thấy TOÀN BỘ tiền vào; user thường
     chỉ thấy giao dịch khớp đúng mã nạp/hoá đơn của mình (nội dung CK của người khác
-    không phải chuyện của họ).
+    không phải chuyện của họ). Thêm `user_id=` (super-admin) để bó về đúng một tài
+    khoản, dùng cho trang ví của từng người.
   • `POST /wallet/admin/sepay/sync`  — super-admin kéo sao kê từ API SePay về, dựng lại
     ngày cũ và bắt khoản ngân hàng đã nhận mà webhook không tới.
 """
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 from datetime import date as date_type
 from datetime import datetime
+from uuid import UUID
 
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy import select
@@ -34,12 +36,20 @@ from ._shared import get_payment_settings, router
 @router.get("/sepay-events", response_model=SepayDayOut)
 def sepay_events(
     date: date_type | None = Query(None, description="Ngày cần đối soát (YYYY-MM-DD, giờ VN)."),
+    user_id: UUID | None = Query(
+        None, description="Chỉ xem tiền vào của một tài khoản (super-admin)."
+    ),
     db: Session = Depends(get_session),
     user: User = Depends(require_wallet_enabled),
 ) -> SepayDayOut:
     target = date or datetime.now(sepay_ledger.VN_TZ).date()
     is_admin = bool(user.is_super_admin)
-    rows = sepay_ledger.events_for_day(db, target, user_id=None if is_admin else user.id)
+    # Admin mở đối soát từ trang ví của MỘT người thì chỉ được thấy tiền vào của
+    # người đó — bảng toàn bộ tiền vào nằm ở trang Quản trị Ví (user 2026-08-29).
+    if user_id is not None and not is_admin:
+        raise HTTPException(status_code=403, detail="Chỉ super-admin xem được ví người khác.")
+    scope = user_id if is_admin else user.id
+    rows = sepay_ledger.events_for_day(db, target, user_id=scope)
     has_token = bool(get_settings().sepay_user_api_token)
 
     incoming = [r for r in rows if (r.transfer_type or "in") == "in"]
@@ -61,12 +71,10 @@ def sepay_events(
         credited_count=len(credited),
         pending_count=len(pending),
         empty=not rows,
-        is_admin_view=is_admin,
+        is_admin_view=is_admin and scope is None,
         can_sync=has_token and is_admin,
         sync_needs_token=is_admin and not has_token,
-        ledger_first_date=sepay_ledger.first_recorded_date(
-            db, user_id=None if is_admin else user.id
-        ),
+        ledger_first_date=sepay_ledger.first_recorded_date(db, user_id=scope),
         events=[SepayEventOut.model_validate(r) for r in rows],
     )
 

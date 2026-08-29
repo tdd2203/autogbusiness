@@ -12,6 +12,7 @@ import Renewals from "./pages/Renewals";
 import Notifications from "./pages/Notifications";
 import Wallet from "./pages/Wallet";
 import WalletAdmin from "./pages/WalletAdmin";
+import WalletAdminUser from "./pages/WalletAdminUser";
 import FinancialReport from "./pages/FinancialReport";
 import WorkspaceQueue from "./pages/WorkspaceQueue";
 import WorkspaceBilling from "./pages/WorkspaceBilling";
@@ -135,6 +136,15 @@ export default function App() {
           element={
             <ProtectedRoute requireSuperAdmin>
               <WalletAdmin />
+            </ProtectedRoute>
+          }
+        />
+        {/* Ví của MỘT tài khoản — cùng giao diện trang Ví, xem components/WalletHistory. */}
+        <Route
+          path="admin/wallet/:userId"
+          element={
+            <ProtectedRoute requireSuperAdmin>
+              <WalletAdminUser />
             </ProtectedRoute>
           }
         />
