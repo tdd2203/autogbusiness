@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { buildGroups, importantGroup, otherBucketOf } from "./AuditLogs";
 
-/* Phân tab nhật ký (chốt user 2026-08-26):
-     • tab "Chính" CHỈ có 3 chip — Bảo mật (lịch sử đăng nhập) · Thành viên (lệnh
-       mời/xoá/gia hạn) · Thanh toán (tiền của chính các lệnh đó);
+/* Phân tab nhật ký (chốt user 2026-08-26, sửa 2026-08-30):
+     • tab "Chính" CHỈ có 3 chip — Bảo mật (lịch sử đăng nhập) · Thành viên (ĐÚNG 2
+       lệnh: mời và gia hạn) · Thanh toán (tiền của chính các lệnh đó);
+     • mọi chuyện khác của một email (xoá, hết hạn, đổi chủ, đổi email, đồng bộ)
+       xuống tab "Khác" nhánh "Thành viên";
      • mọi thứ còn lại xuống tab "Khác" và tự chia nhóm phụ;
      • mã hoá đơn trên lệnh mời/gia hạn phải TRÙNG mã trên khoản trừ phí tương ứng
        thì bấm vào mới ra đúng chi tiết thanh toán. */
@@ -163,15 +165,19 @@ describe("tab Chính chỉ gồm 3 nhóm", () => {
     expect(other.otherBucket).toBe("wallet");
   });
 
-  it("gỡ thành viên là lệnh Thành viên, chưa có tiền thì chưa vào Thanh toán", () => {
+  it("gia hạn qua modal đổi hạn (KÉO DÀI) cũng là lệnh Thành viên", () => {
     const g = only([
       ev({
-        id: "rm",
-        action: "MEMBER_REMOVE_QUEUED",
-        result: "PENDING",
-        target_type: "QUEUE_ITEM",
-        target_id: QID,
-        data: { email: EMAIL, task_type: "REMOVE_MEMBER" },
+        id: "ext",
+        action: "MEMBER_SUBSCRIPTION_UPDATED",
+        result: "OK",
+        target_type: "MEMBER",
+        target_id: MEMBER_ID,
+        data: {
+          email: EMAIL,
+          old_end_at: "2026-08-31T07:46:00.000Z",
+          new_end_at: "2026-09-30T07:46:00.000Z",
+        },
       }),
     ]);
     expect(g.buckets).toEqual(["member"]);
@@ -193,6 +199,54 @@ describe("phần còn lại tự phân nhóm ở tab Khác", () => {
     expect(g.otherBucket).toBe("member");
   });
 
+  it("xoá email là chuyện của email, KHÔNG còn chiếm chỗ ở chip Thành viên", () => {
+    const g = only([
+      ev({
+        id: "rm",
+        action: "MEMBER_REMOVE_QUEUED",
+        result: "PENDING",
+        target_type: "QUEUE_ITEM",
+        target_id: QID,
+        data: { email: EMAIL, task_type: "REMOVE_MEMBER" },
+      }),
+    ]);
+    expect(g.buckets).toEqual([]);
+    expect(g.otherBucket).toBe("member");
+  });
+
+  it("RÚT NGẮN hạn là đổi hạn, không phải gia hạn", () => {
+    const g = only([
+      ev({
+        id: "cut",
+        action: "MEMBER_SUBSCRIPTION_UPDATED",
+        result: "OK",
+        target_type: "MEMBER",
+        target_id: MEMBER_ID,
+        data: {
+          email: EMAIL,
+          old_end_at: "2026-09-30T07:46:00.000Z",
+          new_end_at: "2026-08-31T07:46:00.000Z",
+        },
+      }),
+    ]);
+    expect(g.buckets).toEqual([]);
+    expect(g.otherBucket).toBe("member");
+  });
+
+  /* Ngoài mời và gia hạn, cái gì dính tới một email đều về nhánh "Thành viên" —
+     kể cả dòng do đồng bộ sinh ra (user 2026-08-30). Lệnh đồng bộ của cả workspace
+     vẫn ở nhánh "Hàng đợi" (test "nhóm phụ đọc theo lệnh KHỞI TẠO" bên dưới). */
+  it("dòng đồng bộ TRÊN MỘT EMAIL về nhánh Thành viên, không lẫn vào Hàng đợi", () => {
+    for (const action of [
+      "MEMBER_SYNC_MISMATCH",
+      "MEMBER_BULK_UPSERT",
+      "MEMBER_ROLE_SYNCED",
+      "MEMBER_INVITE_CLEANUP",
+      "QUEUE_PICKED:REMOVE_MEMBER",
+    ])
+      expect(otherBucketOf(action)).toBe("member");
+  });
+
   it("nạp ví / rút tiền là tiền NGOÀI lệnh → nhóm Ví", () => {
     for (const action of [
       "WALLET_TOPUP_CREDITED",
@@ -211,7 +265,6 @@ describe("phần còn lại tự phân nhóm ở tab Khác", () => {
     expect(otherBucketOf("WORKSPACE_SYNC_QUEUED")).toBe("queue");
     expect(otherBucketOf("SYNC_MEMBERS_BATCH_QUEUED")).toBe("queue");
     expect(otherBucketOf("QUEUE_TIMEOUT:SYNC_DATA")).toBe("queue");
-    expect(otherBucketOf("MEMBER_SYNC_MISMATCH")).toBe("queue");
     expect(otherBucketOf("UI_LABELS_CALIBRATED")).toBe("queue");
   });
 
@@ -227,7 +280,6 @@ describe("phần còn lại tự phân nhóm ở tab Khác", () => {
      26/8/2026) phải có chỗ đứng — "Linh tinh" chỉ dành cho action tương lai chưa
      kịp xếp, không phải nơi chứa những thứ hay gặp. */
   it("các action ít gặp vẫn vào đúng nhóm, không rơi vào Linh tinh", () => {
-    expect(otherBucketOf("MEMBER_BULK_UPSERT")).toBe("queue"); // bút toán đối soát
     expect(otherBucketOf("WORKSPACE_RENEWAL_DATE_RESTORED")).toBe("config");
     expect(otherBucketOf("WORKSPACE_FINANCE_START_CHANGED")).toBe("wallet");
     expect(otherBucketOf("WORKSPACE_BILLING_INVOICES_PRUNED")).toBe("wallet");

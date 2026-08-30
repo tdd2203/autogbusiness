@@ -415,15 +415,51 @@ def list_audit_logs(
                 pass
     order_queue: dict[str, str] = {}
     order_ref: dict[str, str] = {}
+    # Hoá đơn GIA HẠN/ĐỔI HẠN không đi qua hàng đợi: kết quả của nó là một member
+    # (`payment_orders.member_id`, đặt lúc thực thi). Giữ lại để nối khoản trừ phí.
+    order_member: dict[str, list[tuple[str, datetime]]] = {}
     if order_ids:
-        for oid, qid, ref_code in db.execute(
+        for oid, qid, ref_code, mid, fulfilled in db.execute(
             select(
-                PaymentOrder.id, PaymentOrder.queue_item_id, PaymentOrder.ref_code
+                PaymentOrder.id,
+                PaymentOrder.queue_item_id,
+                PaymentOrder.ref_code,
+                PaymentOrder.member_id,
+                PaymentOrder.fulfilled_at,
             ).where(PaymentOrder.id.in_(order_ids))
         ).all():
             if qid:
                 order_queue[str(oid)] = str(qid)
             order_ref[str(oid)] = ref_code
+            if mid and fulfilled:
+                order_member.setdefault(str(mid), []).append((str(oid), fulfilled))
+
+    def _fee_order_id(log: AuditLog) -> str | None:
+        """Hoá đơn QR mà khoản TRỪ PHÍ này thuộc về.
+
+        Ví thiếu → quét QR gia hạn/đổi hạn đẻ ra 3 dòng cùng một giây: tiền QR vào
+        ví (`WALLET_ORDER_CREDITED`, neo theo id hoá đơn) và phí trừ ra
+        (`WALLET_RENEW_CHARGED`, neo theo `member_id`). Hai khoá khác nhau nên UI
+        gom nhóm coi là hai việc rời (user 2026-08-30). Nối lại qua
+        `payment_orders.member_id` + `fulfilled_at` — liên kết THẬT, không đoán
+        theo thời gian, và gộp được cả nhật ký cũ.
+        """
+        if log.action.split(":")[0] != "WALLET_RENEW_CHARGED":
+            return None
+        mid = (log.data or {}).get("member_id")
+        if not isinstance(mid, str):
+            return None
+        ts = log.timestamp
+        if ts is not None and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        for oid, fulfilled in order_member.get(mid, []):
+            if fulfilled.tzinfo is None:
+                fulfilled = fulfilled.replace(tzinfo=timezone.utc)
+            # Trừ phí chạy TRONG cùng transaction với lúc thực thi hoá đơn; nới 5
+            # phút cho lệch đồng hồ, đủ chặt để hai lần gia hạn cách nhau không lẫn.
+            if ts is not None and abs((ts - fulfilled).total_seconds()) <= 300:
+                return oid
+        return None
 
     def _resolved_queue_id(log: AuditLog) -> str | None:
         """queue_item_id của dòng log — kể cả khi chỉ suy ra được qua hoá đơn."""
@@ -496,7 +532,13 @@ def list_audit_logs(
         if row_qid and not _queue_item_id_of(r):
             d["queue_item_id"] = row_qid
             mutated = True
-        row_ref = _order_ref_code(r, row_qid)
+        row_order = _fee_order_id(r)
+        if row_order and not d.get("order_id"):
+            d["order_id"] = row_order
+            mutated = True
+        row_ref = _order_ref_code(r, row_qid) or (
+            order_ref.get(row_order) if row_order else None
+        )
         if row_ref and not d.get("order_ref_code"):
             d["order_ref_code"] = row_ref
             mutated = True

@@ -160,13 +160,14 @@ export function importantGroup(action: string): ImpGroup | null {
 }
 
 /* ------------------------------------------------------------------
- * PHÂN TAB (chốt user 2026-08-26). Tab "Chính" CHỈ có 3 nhóm:
+ * PHÂN TAB (chốt user 2026-08-26, sửa 2026-08-30). Tab "Chính" CHỈ có 3 nhóm:
  *   • Bảo mật    — lịch sử đăng nhập / mật khẩu của các TÀI KHOẢN quản trị.
- *   • Thành viên — lệnh MỜI · lệnh XOÁ · lệnh GIA HẠN.
+ *   • Thành viên — ĐÚNG 2 việc: lệnh MỜI và lệnh GIA HẠN.
  *   • Thanh toán — TIỀN của chính các lệnh đó: trừ phí mời/gia hạn, hoàn phí,
  *     hoá đơn QR (mã ORDER) trả cho lệnh mời/gia hạn.
- * Mọi thứ còn lại (hàng đợi/đồng bộ, ví ngoài lệnh, cấu hình, thao tác thành viên
- * khác như đổi chủ/đổi hạn) rơi xuống tab "Khác" và TỰ chia nhóm phụ ở đó.
+ * Mọi thứ còn lại rơi xuống tab "Khác" và TỰ chia nhóm phụ ở đó; riêng nhánh
+ * "Thành viên" của tab Khác ôm TẤT CẢ chuyện còn lại của một email — xoá, hết hạn,
+ * thu hồi lời mời, đổi chủ, đổi email, các dòng đồng bộ trên email.
  *
  * Một nhóm được phép thuộc NHIỀU chip cùng lúc: lệnh mời vừa là "Thành viên"
  * (bản thân lệnh) vừa là "Thanh toán" (phí mời nằm CÙNG nhóm nhờ chung
@@ -205,9 +206,38 @@ const AUTH_OPS = new Set([
   "SUPER_ADMIN_SEEDED",
 ]);
 
-/** Lệnh nghiệp vụ được lên tab "Chính" ở chip "Thành viên". `owner`/`sync` KHÔNG
- *  nằm đây (yêu cầu user: chỉ mời · xoá · gia hạn) → rơi xuống tab "Khác". */
-const MEMBER_CMD_GROUPS = new Set<ImpGroup>(["invite", "remove", "renew"]);
+/* Chip "Thành viên" của tab "Chính" CHỈ có 2 việc: LỆNH MỜI và LỆNH GIA HẠN (chốt
+   user 2026-08-30). Mọi chuyện khác của một email — xoá, hết hạn, thu hồi lời mời,
+   đổi chủ, đổi email, đồng bộ — nằm ở tab "Khác" nhánh "Thành viên". Trước đây
+   nhánh ấy gần như rỗng: lệnh xoá bị giữ lại ở tab Chính, còn các dòng đồng bộ
+   trên email thì bị nhánh "Hàng đợi" nuốt. */
+const MAIN_MEMBER_OPS = new Set([
+  "MEMBER_INVITE_QUEUED",
+  "MEMBER_BULK_INVITE_QUEUED",
+  "MEMBER_INVITE_VERIFIED",
+  "MEMBER_INVITE_FAILED",
+  "MEMBER_INVITE_VERIFY_RECONCILE",
+  "MEMBER_SUBSCRIPTION_RENEWED",
+]);
+
+/** Đổi hạn có KÉO DÀI = một lần gia hạn. Nút "Gia hạn" ghi `MEMBER_SUBSCRIPTION_
+ *  RENEWED`, còn modal đổi hạn (và replay sau khi trả QR) ghi `..._UPDATED` — cùng
+ *  là gia hạn thì phải cùng chỗ. Rút ngắn / gỡ hạn / giữ nguyên KHÔNG phải gia hạn
+ *  → xuống tab "Khác" nhánh "Thành viên". */
+function isSubscriptionExtend(data: Record<string, unknown> | null): boolean {
+  const from = Date.parse(String(data?.old_end_at ?? ""));
+  const to = Date.parse(String(data?.new_end_at ?? ""));
+  return !Number.isNaN(from) && !Number.isNaN(to) && to > from;
+}
+
+/** Sự kiện thuộc chip "Thành viên" của tab "Chính" (lệnh mời hoặc lệnh gia hạn). */
+function isMainMemberEvent(e: EventLike): boolean {
+  const [op, sub] = e.action.split(":");
+  if (MAIN_MEMBER_OPS.has(op)) return true;
+  if (op.startsWith("QUEUE_") && sub === "INVITE_MEMBER") return true;
+  if (op === "MEMBER_SUBSCRIPTION_UPDATED") return isSubscriptionExtend(e.data);
+  return false;
+}
 
 /** Tiền CỦA lệnh mời / lệnh gia hạn. Nạp ví, rút, điều chỉnh… là tiền NGOÀI lệnh
  *  → tab "Khác" (nhóm Ví). `WALLET_ORDER_CREDITED` là tiền QR vào ví để trả ngay
@@ -233,13 +263,7 @@ function isPayEvent(e: EventLike): boolean {
 export function mainBucketsOf(evs: EventLike[]): MainBucket[] {
   const out: MainBucket[] = [];
   if (evs.some((e) => AUTH_OPS.has(opOf(e.action)))) out.push("security");
-  if (
-    evs.some((e) => {
-      const g = importantGroup(e.action);
-      return g !== null && MEMBER_CMD_GROUPS.has(g);
-    })
-  )
-    out.push("member");
+  if (evs.some(isMainMemberEvent)) out.push("member");
   if (evs.some(isPayEvent)) out.push("billing");
   return out;
 }
@@ -251,21 +275,26 @@ export function mainBucketsOf(evs: EventLike[]): MainBucket[] {
    rơi hết vào "Linh tinh". */
 const OTHER_WALLET_RE =
   /^(WALLET_|PAYMENT_ORDER_|MEMBER_PAYMENT_|MEMBER_FEE_SET|USER_FEE_SET|WORKSPACE_(INVOICE_FEE|CREDIT_BUDGET|BILLING|FINANCE))/;
-// MEMBER_BULK_UPSERT là bút toán của mẻ đối soát (reconcile.py) — chuyện đồng bộ,
-// không phải thao tác admin lên thành viên.
 const OTHER_QUEUE_RE =
-  /^(QUEUE_|SYNC_|UI_LABEL|AUTO_PURCHASE_SEAT|PURCHASE_SEAT|WORKSPACE_SYNC|MEMBER_SYNC|MEMBER_RECONCILE|MEMBER_INVITE_CLEANUP|MEMBER_BULK_UPSERT|MEMBER_(ROLE|LICENSE_TYPE|USAGE_LIMIT)_SYNCED)/;
+  /^(QUEUE_|SYNC_|UI_LABEL|AUTO_PURCHASE_SEAT|PURCHASE_SEAT|WORKSPACE_SYNC)/;
 const OTHER_CONFIG_RE =
   /^(WORKSPACE_|PAYMENT_SETTINGS|TELEGRAM_|INVITE_ALL_WORKSPACES|MEMBER_NOTIFY_|USER_)/;
-const OTHER_MEMBER_RE = /^(MEMBER_|REVOKE_INVITES)/;
+/* Chuyện của MỘT EMAIL: mọi MEMBER_* (trừ cấu hình thông báo) và thu hồi lời mời.
+   Kể cả các dòng đồng bộ trên email (MEMBER_SYNC_*, MEMBER_BULK_UPSERT, MEMBER_*_
+   SYNCED) — user 2026-08-30: ngoài mời và gia hạn thì cái gì dính tới email đều
+   vào nhánh này. Lệnh đồng bộ của cả workspace vẫn ở nhánh "Hàng đợi" vì nhóm phụ
+   đọc theo action KHỞI TẠO (WORKSPACE_SYNC_QUEUED). */
+const OTHER_MEMBER_RE = /^(MEMBER_(?!NOTIFY_)|REVOKE_INVITES)/;
 
 /** Nhóm phụ trong tab "Khác" cho một action (đã chắc chắn không thuộc tab Chính). */
 export function otherBucketOf(action: string): OtherBucket {
   const op = opOf(action);
   if (OTHER_WALLET_RE.test(op)) return "wallet";
+  // Lệnh xoá/mời đi qua hàng đợi (QUEUE_PICKED:REMOVE_MEMBER…) vẫn là chuyện của
+  // email → nhánh "Thành viên", không rơi vào nhánh "Hàng đợi".
+  if (OTHER_MEMBER_RE.test(op) || importantGroup(action) !== null) return "member";
   if (OTHER_QUEUE_RE.test(op)) return "queue";
   if (OTHER_CONFIG_RE.test(op)) return "config";
-  if (OTHER_MEMBER_RE.test(op)) return "member";
   return "misc";
 }
 
@@ -844,6 +873,12 @@ function orderIdOf(e: Decorated): string | null {
     const ref = e.data?.ref_id;
     if (typeof ref === "string" && ref) return ref;
   }
+  /* Khoản TRỪ PHÍ trả bằng hoá đơn QR neo theo `member_id` nên không có đường về
+     hoá đơn — API suy ra từ `payment_orders.member_id` rồi gắn `order_id` vào đây
+     (user 2026-08-30: "trừ phí gia hạn" và "thanh toán thành công" là MỘT việc,
+     không việc gì phải nằm hai dòng). */
+  const oid = e.data?.order_id;
+  if (typeof oid === "string" && oid) return oid;
   return null;
 }
 

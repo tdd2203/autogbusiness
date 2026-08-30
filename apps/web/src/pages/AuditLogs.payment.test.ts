@@ -139,6 +139,59 @@ describe("gom nhóm hoá đơn QR", () => {
     expect(groups[0].code).toBe("WALLET_ORDER_CREDITED");
   });
 
+  /* Ca thật user 2026-08-30 (brotherhood06022025): gia hạn trả bằng QR ghi 12:16:14
+     "Thanh toán thành công" (neo theo id hoá đơn) và 12:16:14 "Trừ phí gia hạn"
+     (neo theo member_id) — cùng MỘT việc mà nằm hai dòng. API nối lại qua
+     `payment_orders.member_id` rồi rót `order_id` vào khoản trừ phí. */
+  it("khoản trừ phí gia hạn nhập chung dòng với tiền QR của nó", () => {
+    const rows: RawEvent[] = [
+      {
+        id: "fee",
+        timestamp: "2026-08-30T05:16:14.200Z",
+        actor_type: "ADMIN",
+        action: "WALLET_RENEW_CHARGED",
+        result: "SUCCESS",
+        target_type: "WALLET",
+        target_id: "w1",
+        data: {
+          member_id: MEMBER_ID,
+          email: EMAIL,
+          fee: 330000,
+          ref_type: "renew",
+          ref_id: MEMBER_ID,
+          order_id: ORDER_ID,
+        },
+      },
+      {
+        id: "credited",
+        timestamp: "2026-08-30T05:16:14.100Z",
+        actor_type: "SYSTEM",
+        action: "WALLET_ORDER_CREDITED",
+        result: "SUCCESS",
+        target_type: "WALLET",
+        target_id: "w1",
+        data: { kind: "order_topup", ref_type: "order", ref_id: ORDER_ID },
+      },
+      {
+        id: "order",
+        timestamp: "2026-08-30T05:10:00.000Z",
+        actor_type: "ADMIN",
+        action: "PAYMENT_ORDER_CREATED",
+        result: "PENDING",
+        target_type: "PAYMENT_ORDER",
+        target_id: ORDER_ID,
+        data: { kind: "subscription", amount_vnd: 330000 },
+      },
+    ];
+    const groups = buildGroups(decorate(rows));
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe("o:" + ORDER_ID);
+    expect(groups[0].count).toBe(3);
+    expect(groups[0].buckets).toEqual(["billing"]);
+    // Dòng đọc là VIỆC ĐÃ LÀM ("Trừ phí gia hạn"), không phải bước ngân hàng.
+    expect(groups[0].code).toBe("WALLET_RENEW_CHARGED");
+  });
+
   it("hoá đơn chưa trả vẫn đứng riêng một dòng chờ thanh toán", () => {
     const groups = buildGroups(decorate([INVITE_FLOW[4]]));
     expect(groups).toHaveLength(1);

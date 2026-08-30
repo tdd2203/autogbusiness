@@ -1,4 +1,4 @@
-"""Nhật ký: 2 dòng tiền của hoá đơn QR phải trỏ về ĐÚNG task đã thực thi.
+"""Nhật ký: các dòng tiền của hoá đơn QR phải trỏ về ĐÚNG việc đã thực thi.
 
 Ca thật user 2026-08-26: một lượt "ví thiếu → quét QR → mời" hiện thành BA dòng rời
 trên trang nhật ký (tạo lệnh thanh toán · thanh toán thành công · lệnh mời) trong khi
@@ -67,6 +67,78 @@ def test_order_audit_rows_carry_queue_item_id(client: TestClient, auth_header: d
     # Cùng khoá gom nhóm với chính lệnh mời → trang nhật ký hiện 1 dòng, không phải 3.
     invite_log = by_action.get("MEMBER_INVITE_QUEUED")
     assert invite_log and (invite_log.get("data") or {}).get("queue_item_id") == qid
+
+
+def test_renew_fee_row_carries_order_id(client: TestClient, auth_header: dict) -> None:
+    """Khoản TRỪ PHÍ gia hạn phải trỏ về hoá đơn đã trả cho nó (user 2026-08-30).
+
+    Gia hạn không đi qua hàng đợi nên hai dòng tiền cùng một giây neo hai kiểu khác
+    nhau: tiền QR vào ví neo theo id hoá đơn, phí trừ ra neo theo `member_id`. Trang
+    nhật ký gom nhóm theo khoá nên hiện thành hai dòng cho MỘT việc. Liên kết thật
+    là `payment_orders.member_id` — phân giải lúc đọc, áp được cho cả nhật ký cũ.
+    """
+    ws = create_ws(client, auth_header, "Audit Renew WS")
+    sub = make_beta_sub(client, auth_header, username="audrenew", balance=FEE)
+    assign(client, auth_header, ws["id"], sub["id"])
+
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "ord5@example.com", "role": "member"},
+        headers=bearer(sub["token"]),
+    )
+    assert r.status_code == 201, r.text
+    member_id = r.json()["id"]
+
+    rr = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{member_id}/renew",
+        json={"months": 2},
+        headers=bearer(sub["token"]),
+    )
+    assert rr.status_code == 402, rr.text
+    order = rr.json()["detail"]["order"]
+
+    wh = client.post(
+        "/webhook/sepay", json=_webhook_body(order["note"], 2 * FEE, "ORD-AUD-RENEW-1")
+    )
+    assert wh.status_code == 200 and wh.json().get("success") is True
+
+    logs = client.get("/api/v1/audit-logs?limit=200", headers=auth_header).json()
+    by_action = {x["action"]: x for x in logs}
+    fee_row = by_action.get("WALLET_RENEW_CHARGED")
+    assert fee_row, sorted(by_action)
+    data = fee_row.get("data") or {}
+    # Cùng khoá gom nhóm với dòng "Thanh toán thành công" → 1 dòng, không phải 2.
+    assert data.get("order_id") == order["id"]
+    assert data.get("order_ref_code") == order["ref_code"]
+    credited = by_action.get("WALLET_ORDER_CREDITED") or {}
+    assert (credited.get("data") or {}).get("ref_id") == order["id"]
+
+
+def test_wallet_paid_renew_fee_has_no_order_id(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Ví đủ tiền → gia hạn không sinh hoá đơn ⇒ khoản trừ phí không được gán bừa."""
+    ws = create_ws(client, auth_header, "Audit Renew Wallet WS")
+    sub = make_beta_sub(client, auth_header, username="audrnwal", balance=3 * FEE)
+    assign(client, auth_header, ws["id"], sub["id"])
+
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "ord6@example.com", "role": "member"},
+        headers=bearer(sub["token"]),
+    )
+    assert r.status_code == 201, r.text
+    rr = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{r.json()['id']}/renew",
+        json={"months": 1},
+        headers=bearer(sub["token"]),
+    )
+    assert rr.status_code == 200, rr.text
+
+    logs = client.get("/api/v1/audit-logs?limit=200", headers=auth_header).json()
+    fee = next((x for x in logs if x["action"] == "WALLET_RENEW_CHARGED"), None)
+    assert fee, "phải có dòng trừ phí gia hạn"
+    assert not (fee.get("data") or {}).get("order_id")
 
 
 def test_unpaid_order_audit_row_has_no_queue_item(client: TestClient, auth_header: dict) -> None:
