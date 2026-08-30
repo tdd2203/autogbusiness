@@ -325,7 +325,7 @@ function partOf(
   };
 
   if (row.type === "voided") {
-    for (const p of row.pairs) {
+    for (const p of [...row.pairs].reverse()) {
       const c = codeAt(p.fee);
       const email = str(p.fee.meta?.email);
       voided += 1;
@@ -364,7 +364,7 @@ function partOf(
   const merge = orderTotal > 0 && feeTxns.length > 0;
   let leftover = orderTotal;
 
-  for (const t of row.txns) {
+  for (const t of [...row.txns].reverse()) {
     if (merge && t.kind === "order_topup") continue; // đã gán vào dòng phí bên dưới
     const c = codeAt(t);
     const isFee = FEE_KINDS.has(t.kind);
@@ -627,9 +627,17 @@ export function buildWalletReport(input: ReportInput): WalletReport {
     else byDate.set(d, [t]);
   }
 
+  // Báo cáo xếp theo chiều CŨ → MỚI, ngược với màn hình.
+  //
+  // Trên trang Ví thì mới-trước là đúng: mở ra phải thấy việc vừa xảy ra. Nhưng file
+  // xuất ra có cột số dư chạy, mà đọc mới-trước thì số dư TĂNG dần từ trên xuống
+  // trong khi thực tế đang tiêu tiền, và dòng cuối cùng lại là số dư đầu chứ không
+  // phải số dư chốt (user 2026-08-30: "sắp xếp ngược à, cuối cùng lệnh trừ số dư ví
+  // phải bằng 0"). Xuôi thời gian thì Dư trước → Dư sau nối liền mạch xuống tận dòng
+  // cuối, và dòng cộng ngày đặt ngay sau đó chốt đúng con số ấy.
   let no = 0;
-  const days: ReportDay[] = groups.map((g) => {
-    const clusters = clustersOf(g.rows, trace, codes, memberMap);
+  const days: ReportDay[] = [...groups].reverse().map((g) => {
+    const clusters = clustersOf([...g.rows].reverse(), trace, codes, memberMap);
     for (const c of clusters) {
       if (!c.label) continue;
       c.no = no;

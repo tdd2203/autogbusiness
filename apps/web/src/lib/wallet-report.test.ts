@@ -241,7 +241,9 @@ describe("reportCsv", () => {
     expect(lines[0]).toBe(
       "Ngày;Giờ;Lệnh;Nội dung;Kết quả;Email;Tiền vào (đ);Tiền ra (đ);Số dư trước (đ);Số dư sau (đ);Mã hoá đơn;Mã GD SePay;Ghi chú",
     );
-    expect(lines[1]).toContain("#0;Phí mời - Hoá đơn;Thành công;a@x.com;330000;330000;330000;0;ORD1");
+    // Xuôi thời gian: b@x.com bị trừ trước (số dư 660.000 → 330.000), rồi tới a@x.com.
+    expect(lines[1]).toContain("#0;Phí mời - Hoá đơn;Thành công;b@x.com;330000;330000;660000;330000;ORD1");
+    expect(lines[2]).toContain("#0;Phí mời - Hoá đơn;Thành công;a@x.com;330000;330000;330000;0;ORD1");
     // 2 email = 2 dòng. Dòng `order_topup` đã gộp vào dòng phí nên không còn dòng thứ 3.
     expect(lines).toHaveLength(3);
   });
@@ -404,5 +406,39 @@ describe("gộp dòng hoá đơn vào dòng phí", () => {
     // Tổng vào/ra của ngày không đổi so với khi hiện 2 dòng.
     expect(r.days[0].moneyIn).toBe(2 * FEE);
     expect(r.days[0].moneyOut).toBe(FEE);
+  });
+});
+
+/* Thứ tự đọc của file xuất ngược với màn hình: màn hình mới-trước (mở ra thấy việc vừa
+   xảy ra), file cũ-trước để cột số dư nối liền mạch và dòng cuối là số dư CHỐT
+   (user 2026-08-30: "cuối cùng lệnh trừ số dư ví phải bằng 0"). */
+describe("thứ tự xuôi thời gian", () => {
+  function threeDays() {
+    const mk = (d: string, h: string, bal: number, email: string) =>
+      txn({ kind: "invite_fee", amount: -FEE, balance_after: bal, meta: { email }, created_at: `2026-08-${d}T0${h}:00:00Z` });
+    // API trả mới → cũ.
+    return [mk("30", "3", 0, "c@x.com"), mk("30", "2", FEE, "b@x.com"), mk("29", "2", 2 * FEE, "a@x.com")];
+  }
+
+  it("ngày cũ đứng trước ngày mới", () => {
+    const r = report(threeDays());
+    expect(r.days.map((d) => d.date)).toEqual(["2026-08-29", "2026-08-30"]);
+  });
+
+  it("trong ngày, số dư chạy giảm dần xuống dòng cuối", () => {
+    const r = report(threeDays());
+    const day30 = r.days[1].clusters.flatMap((c) => c.entries);
+    expect(day30.map((e) => e.email)).toEqual(["b@x.com", "c@x.com"]);
+    expect(day30.map((e) => e.balanceAfter)).toEqual([FEE, 0]);
+    // Dòng cuối cùng mang đúng số dư chốt của kỳ.
+    expect(day30[day30.length - 1].balanceAfter).toBe(r.closing);
+  });
+
+  it("Dư sau của dòng trên nối đúng Dư trước của dòng dưới", () => {
+    const r = report(threeDays());
+    const all = r.days.flatMap((d) => d.clusters.flatMap((c) => c.entries));
+    for (let i = 1; i < all.length; i++) {
+      expect(all[i].balanceBefore).toBe(all[i - 1].balanceAfter);
+    }
   });
 });
