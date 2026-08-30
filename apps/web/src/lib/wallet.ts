@@ -411,6 +411,18 @@ export type FinancialCycles = {
 // email mời đi mời lại nhiều lượt trong ngày vẫn là 1; có lượt nào thành công thì
 // ngày đó tính THÀNH CÔNG. Nhờ vậy cộng các ngày ra đúng tổng kỳ.
 
+/** Một ô (ngày, loại, email) đã gộp — đúng 1 đơn vị đếm của bảng. */
+export type EmailStatsEmail = {
+  email: string;
+  date: string; // "YYYY-MM-DD" (giờ VN)
+  kind: "new" | "renew";
+  ok: boolean;
+  /** Ô đã bị một lần ĐỔI EMAIL thay tên: `email` là email cuối chuỗi, `old_email`
+   *  là email đứng ở ô lúc đầu. Nhãn: ĐỔI + MỚI (ô add mới), ĐỔI + CŨ (ô gia hạn). */
+  changed?: boolean;
+  old_email?: string | null;
+};
+
 export type EmailStatsAgent = {
   /** null = "Chưa rõ chủ" (không quy được ai bấm mời). */
   user_id: string | null;
@@ -422,6 +434,8 @@ export type EmailStatsAgent = {
   /** Gia hạn chưa có đường hỏng → luôn 0. Giữ cột cho bảng đồng dạng. */
   renew_failed: number;
   total: number;
+  /** Danh sách email đứng sau các con số, số phần tử luôn bằng `total`. */
+  emails: EmailStatsEmail[];
 };
 
 export type EmailStatsDay = {

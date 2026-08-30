@@ -1650,6 +1650,20 @@ class FinancialReportCyclesOut(BaseModel):
 # thì cả ngày đó tính THÀNH CÔNG (chốt user 2026-08-29). Nhờ vậy cộng cột theo
 # ngày ra đúng tổng kỳ, và số ở đây so được với số email thật đã phục vụ.
 
+class EmailStatsEmail(BaseModel):
+    """Một ô (ngày, loại, email) đã gộp — đúng 1 đơn vị đếm của bảng thống kê."""
+
+    email: str
+    date: str  # YYYY-MM-DD (giờ VN)
+    kind: str  # "new" | "renew"
+    ok: bool
+    # Ô này đã bị một lần ĐỔI EMAIL thay tên: `email` là email cuối chuỗi, còn
+    # `old_email` là email đứng ở ô lúc ban đầu. Bảng hiện nhãn ĐỔI + MỚI (ô add
+    # mới) hoặc ĐỔI + CŨ (ô gia hạn).
+    changed: bool = False
+    old_email: str | None = None
+
+
 class EmailStatsAgent(BaseModel):
     """Một đại lý trong 1 ngày (hoặc gộp cả kỳ). user_id=None → 'Chưa rõ chủ'."""
 
@@ -1663,6 +1677,9 @@ class EmailStatsAgent(BaseModel):
     # đồng dạng với add mới và khỏi phải đổi hợp đồng khi có luồng hỏng thật.
     renew_failed: int = 0
     total: int = 0
+    # Danh sách email đứng sau các con số — mở dòng đại lý ra là thấy đúng những
+    # email nào đã cộng vào đó. Số phần tử luôn bằng `total`.
+    emails: list[EmailStatsEmail] = []
 
 
 class EmailStatsDay(BaseModel):

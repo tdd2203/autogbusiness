@@ -208,6 +208,184 @@ def test_attribution_by_agent(client: TestClient, auth_header: dict):
         assert sum(a["total"] for a in d["by_agent"]) == d["total"]
 
 
+def test_agent_rows_carry_the_emails_behind_the_numbers(client: TestClient, auth_header: dict):
+    """Mở dòng đại lý ra phải thấy đúng email nào đã cộng vào con số."""
+    ids = _seed()
+    data = _fetch(client, auth_header)
+    by_id = {a["user_id"]: a for a in data["by_agent"]}
+
+    agent = by_id[ids["agent"]]
+    assert len(agent["emails"]) == agent["total"]
+    assert {(e["email"], e["date"], e["kind"], e["ok"]) for e in agent["emails"]} == {
+        ("e1@x.com", DAY_A.isoformat(), "new", True),
+        ("e3@x.com", DAY_A.isoformat(), "new", True),
+        ("e2@x.com", DAY_A.isoformat(), "new", False),
+        ("e1@x.com", DAY_B.isoformat(), "renew", True),
+    }
+    # Ngày mới nhất lên trước, trong ngày thì email hỏng lên trước.
+    assert agent["emails"][0]["date"] == DAY_B.isoformat()
+    assert agent["emails"][1]["email"] == "e2@x.com"
+
+    # Dòng đại lý trong từng ngày cũng có danh sách, và chỉ có email của ngày đó.
+    for d in data["days"]:
+        for a in d["by_agent"]:
+            assert len(a["emails"]) == a["total"]
+            assert all(e["date"] == d["date"] for e in a["emails"])
+
+
 def test_requires_super_admin(client: TestClient):
     r = client.get(f"/api/v1/wallet/admin/report/emails?from={FROM_Q}&to={TO_Q}")
     assert r.status_code in (401, 403)
+
+
+# ── ĐỔI EMAIL ───────────────────────────────────────────────────────────────
+# Chốt user 2026-08-30: đổi email A→B là THAY TÊN trên đúng một chu kỳ đã bán,
+# không bán thêm ghế nào.
+#   - Ô của A (ngày mời/gia hạn gốc) đổi tên thành email CUỐI chuỗi A→B→C, kèm cờ
+#     `changed` để bảng hiện nhãn ĐỔI + MỚI (ô add mới) / ĐỔI + CŨ (ô gia hạn).
+#   - Lượt mời của B do lần đổi sinh ra KHÔNG đếm thành add mới ngày đổi — đếm là
+#     một ghế ăn hai lượt.
+#   - Chu kỳ của A nằm NGOÀI kỳ báo cáo → 1 dòng ở NGÀY ĐỔI, tính vào gia hạn ✓.
+
+DAY_OLD = _TODAY_VN - timedelta(days=40)  # trước FROM_Q → ngoài kỳ báo cáo
+
+
+def _log_change(db, *, when, old_member, new_member, old_email, new_email, actor_id):
+    ev = AuditLog(
+        timestamp=when,
+        actor_type="ADMIN",
+        actor_id=actor_id,
+        actor_label="t",
+        action="MEMBER_EMAIL_CHANGED",
+        result="PENDING",
+        target_type="MEMBER",
+        target_id=str(new_member),
+        data={
+            "old_email": old_email,
+            "new_email": new_email,
+            "old_member_id": str(old_member),
+        },
+    )
+    db.add(ev)
+    db.flush()
+    return ev
+
+
+def _seed_change():
+    db = SessionLocal()
+    try:
+        ws = Workspace(name="WS_EMAILCHG", extension_api_key="k-emailchg")
+        db.add(ws)
+        agent = _mk_user(db, "agentG")
+        db.flush()
+
+        def member(email):
+            m = Member(
+                workspace_id=ws.id,
+                email=email,
+                status="active",
+                invited_by_user_id=agent.id,
+            )
+            db.add(m)
+            db.flush()
+            return m
+
+        def invited(email, when):
+            m = member(email)
+            _log(db, action="MEMBER_INVITE_VERIFIED", result="COMPLETED", when=when,
+                 email=email, target_id=m.id)
+            return m
+
+        # c1: mời ngày A, ngày B đổi sang c1b → ô ngày A mang tên c1b, ngày B trống.
+        m1 = invited("c1@x.com", _at(DAY_A, 9))
+        m1b = invited("c1b@x.com", _at(DAY_B, 11))
+        _log_change(db, when=_at(DAY_B, 10), old_member=m1.id, new_member=m1b.id,
+                    old_email="c1@x.com", new_email="c1b@x.com", actor_id=agent.id)
+
+        # c2: chuỗi 2 chặng trong cùng ngày B → ô ngày A mang tên chặng CUỐI.
+        m2 = invited("c2@x.com", _at(DAY_A, 9))
+        m2b = invited("c2b@x.com", _at(DAY_B, 11))
+        m2c = invited("c2c@x.com", _at(DAY_B, 13))
+        _log_change(db, when=_at(DAY_B, 10), old_member=m2.id, new_member=m2b.id,
+                    old_email="c2@x.com", new_email="c2b@x.com", actor_id=agent.id)
+        _log_change(db, when=_at(DAY_B, 12), old_member=m2b.id, new_member=m2c.id,
+                    old_email="c2b@x.com", new_email="c2c@x.com", actor_id=agent.id)
+
+        # c3: ô bị thay là GIA HẠN (email đã qua ≥1 chu kỳ) → nhãn ĐỔI + CŨ.
+        m3 = member("c3@x.com")
+        _log(db, action="MEMBER_SUBSCRIPTION_RENEWED", result="OK", when=_at(DAY_A, 9),
+             email="c3@x.com", target_id=m3.id, actor_id=agent.id)
+        m3b = invited("c3b@x.com", _at(DAY_B, 11))
+        _log_change(db, when=_at(DAY_B, 10), old_member=m3.id, new_member=m3b.id,
+                    old_email="c3@x.com", new_email="c3b@x.com", actor_id=agent.id)
+
+        # c4: chu kỳ gốc NGOÀI kỳ báo cáo → không có ô nào để thay tên, lần đổi tự
+        #     dựng 1 dòng ở ngày B và tính vào gia hạn ✓.
+        m4 = invited("c4@x.com", _at(DAY_OLD, 9))
+        m4b = invited("c4b@x.com", _at(DAY_B, 11))
+        _log_change(db, when=_at(DAY_B, 10), old_member=m4.id, new_member=m4b.id,
+                    old_email="c4@x.com", new_email="c4b@x.com", actor_id=agent.id)
+
+        db.commit()
+        return {"agent": str(agent.id)}
+    finally:
+        db.close()
+
+
+def _entries(data: dict) -> dict[tuple[str, str], dict]:
+    """(ngày, email) → ô, gom từ mọi đại lý của tab Theo ngày."""
+    out: dict[tuple[str, str], dict] = {}
+    for day in data["days"]:
+        for row in day["by_agent"]:
+            for e in row["emails"]:
+                out[(day["date"], e["email"])] = e
+    return out
+
+
+def test_email_change_renames_the_slot_of_the_original_day(client, auth_header):
+    _seed_change()
+    got = _entries(_fetch(client, auth_header))
+    da, dbb = DAY_A.isoformat(), DAY_B.isoformat()
+
+    # Ngày A hiện email MỚI của chuỗi, kèm cờ đổi và email gốc để tra ngược.
+    slot = got[(da, "c1b@x.com")]
+    assert slot["kind"] == "new" and slot["ok"] is True
+    assert slot["changed"] is True and slot["old_email"] == "c1@x.com"
+    assert (da, "c1@x.com") not in got
+
+    # Lượt mời của c1b ngày B là phần vật lý của lần đổi → KHÔNG đếm thêm.
+    assert (dbb, "c1b@x.com") not in got
+
+
+def test_email_change_chain_shows_the_last_email(client, auth_header):
+    _seed_change()
+    got = _entries(_fetch(client, auth_header))
+    da, dbb = DAY_A.isoformat(), DAY_B.isoformat()
+    assert got[(da, "c2c@x.com")]["changed"] is True
+    assert (da, "c2@x.com") not in got
+    assert (da, "c2b@x.com") not in got
+    assert (dbb, "c2b@x.com") not in got and (dbb, "c2c@x.com") not in got
+
+
+def test_email_change_on_a_renew_slot_stays_a_renew(client, auth_header):
+    _seed_change()
+    got = _entries(_fetch(client, auth_header))
+    slot = got[(DAY_A.isoformat(), "c3b@x.com")]
+    # Ô gia hạn bị đổi tên vẫn là gia hạn (frontend hiện ĐỔI + CŨ), không hoá add mới.
+    assert slot["kind"] == "renew" and slot["changed"] is True
+    assert slot["old_email"] == "c3@x.com"
+
+
+def test_email_change_outside_the_range_lands_on_the_change_day(client, auth_header):
+    _seed_change()
+    data = _fetch(client, auth_header)
+    got = _entries(data)
+    slot = got[(DAY_B.isoformat(), "c4b@x.com")]
+    assert slot["kind"] == "renew" and slot["ok"] is True and slot["changed"] is True
+    assert slot["old_email"] == "c4@x.com"
+
+    # Tổng kỳ: 2 add mới (c1, c2) + 2 gia hạn (c3 đổi tên, c4 dòng ngày đổi).
+    assert (data["new_ok"], data["new_failed"]) == (2, 0)
+    assert (data["renew_ok"], data["renew_failed"]) == (2, 0)
+    assert data["total"] == 4
+    assert data["unique_emails"] == 4

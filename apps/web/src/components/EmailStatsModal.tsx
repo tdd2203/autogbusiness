@@ -13,14 +13,25 @@
  * MỞ TỪ NÚT RIÊNG, không xếp nối đuôi dưới sổ tiền (chốt user 2026-08-30): bảng
  * theo ngày dài hàng chục dòng, để dưới trang thì mỗi lần xem phải cuộn qua toàn
  * bộ báo cáo tiền. Cùng kiểu modal với "Doanh thu theo đại lý".
+ *
+ * ĐỔI EMAIL KHÔNG PHẢI GHẾ MỚI (chốt user 2026-08-30): backend đã thay tên ô của
+ * email cũ thành email cuối chuỗi A→B→C và bỏ lượt mời của lần đổi. Frontend chỉ
+ * gắn nhãn: ĐỔI + MỚI (ô add mới), ĐỔI + CŨ (ô gia hạn) — nhìn nhãn là biết ngày
+ * đó không bán thêm ghế, chỉ đổi tên chủ ghế.
+ *
+ * BA TẦNG MỞ (chốt user 2026-08-30): ngày → đại lý → DANH SÁCH EMAIL. Con số trần
+ * trụi không tra được, thấy "7 add mới hỏng" thì phải biết hỏng email nào mới đi
+ * chữa được. Danh sách lấy thẳng từ `agent.emails` backend trả, số phần tử luôn
+ * bằng `agent.total` nên không cần cộng lại.
  */
 import { useMemo, useState, type ReactNode } from "react";
 import { useEmailStats } from "../hooks/useWallet";
-import type { EmailStats, EmailStatsAgent, EmailStatsDay } from "../lib/wallet";
+import type { EmailStats, EmailStatsAgent, EmailStatsDay, EmailStatsEmail } from "../lib/wallet";
 
 const FAIL = "#b3261e"; // thất bại
 const NEW = "#3a5bd0"; // add mới (= --perm-member)
 const RENEW = "#a8791f"; // gia hạn
+const CHANGED = "#6b4fbb"; // ô đã bị đổi email thay tên
 
 const WEEKDAY = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
 
@@ -36,7 +47,11 @@ function agentName(a: EmailStatsAgent): string {
   return a.username || a.email || "Chưa rõ chủ";
 }
 
-const COLS = "minmax(120px,1.1fr) 0.85fr 0.85fr 0.85fr 0.85fr 0.8fr";
+function agentKey(a: EmailStatsAgent): string {
+  return a.user_id ?? "unknown";
+}
+
+const COLS = "minmax(200px,1.6fr) 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr";
 
 export function EmailStatsModal({
   from,
@@ -60,16 +75,18 @@ export function EmailStatsModal({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: 32,
+        padding: 24,
         zIndex: 1000,
       }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: 900,
+          // Rộng gần hết màn: danh sách email mở ra cần chỗ xếp nhiều cột, để 900px
+          // thì mỗi hàng chỉ nhét được 2 email và bảng dài lê thê.
+          width: 1320,
           maxWidth: "100%",
-          maxHeight: "86vh",
+          maxHeight: "92vh",
           overflow: "auto",
           background: "var(--surface)",
           borderRadius: 18,
@@ -95,9 +112,11 @@ export function EmailStatsModal({
           <div style={{ fontSize: 16, fontWeight: 700, color: "var(--ink)" }}>
             Thống kê email add mới &amp; gia hạn
           </div>
-          <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginTop: 2, maxWidth: 560 }}>
+          <div style={{ fontSize: 12.5, color: "var(--ink-3)", marginTop: 2, maxWidth: 720 }}>
             Đếm theo ĐẦU EMAIL, mỗi email chỉ tính 1 lần trong 1 ngày — mời đi mời lại vẫn là 1, có lượt
-            nào thành công thì ngày đó tính thành công. {from} → {to}, ngày không có email nào bị ẩn.
+            nào thành công thì ngày đó tính thành công. Đổi email chỉ thay tên trên ô cũ (nhãn ĐỔI),
+            không đếm thành ghế mới. {from} → {to}, ngày không có email nào bị ẩn.
+            Bấm vào dòng đại lý để xem đúng những email đứng sau con số.
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -245,7 +264,7 @@ function DayTable({ data }: { data: EmailStats }) {
   }
   return (
     <div style={{ overflowX: "auto" }}>
-      <div style={{ minWidth: 620 }}>
+      <div style={{ minWidth: 720 }}>
         <HeadRow cols={["NGÀY", "ADD MỚI ✓", "ADD MỚI ✕", "GIA HẠN ✓", "GIA HẠN ✕", "TỔNG"]} />
         {rows.map((d) => (
           <DayRow key={d.date} day={d} open={open === d.date} onToggle={() => setOpen(open === d.date ? null : d.date)} />
@@ -288,6 +307,8 @@ function HeadRow({ cols }: { cols: string[] }) {
 function DayRow({ day, open, onToggle }: { day: EmailStatsDay; open: boolean; onToggle: () => void }) {
   const { day: dd, wd } = dayLabel(day.date);
   const canOpen = day.by_agent.length > 0;
+  // Mỗi ngày nhớ riêng đại lý đang mở: đóng ngày rồi mở lại thì vẫn ở chỗ cũ.
+  const [openAgent, setOpenAgent] = useState<string | null>(null);
   return (
     <>
       <div
@@ -330,27 +351,14 @@ function DayRow({ day, open, onToggle }: { day: EmailStatsDay; open: boolean; on
       </div>
       {open &&
         day.by_agent.map((a) => (
-          <div
-            key={a.user_id ?? "unknown"}
-            style={{
-              display: "grid",
-              gridTemplateColumns: COLS,
-              gap: 12,
-              alignItems: "center",
-              padding: "9px 24px 9px 46px",
-              borderBottom: "1px solid var(--border)",
-              background: "var(--surface-2)",
-            }}
-          >
-            <div style={{ fontSize: 12.5, color: "var(--ink-2)", overflow: "hidden", textOverflow: "ellipsis" }}>
-              {agentName(a)}
-            </div>
-            <Num v={a.new_ok} small />
-            <Num v={a.new_failed} small color={a.new_failed > 0 ? FAIL : undefined} />
-            <Num v={a.renew_ok} small />
-            <Num v={a.renew_failed} small color={a.renew_failed > 0 ? FAIL : undefined} />
-            <Num v={a.total} small />
-          </div>
+          <AgentRow
+            key={agentKey(a)}
+            agent={a}
+            nested
+            showDate={false}
+            open={openAgent === agentKey(a)}
+            onToggle={() => setOpenAgent(openAgent === agentKey(a) ? null : agentKey(a))}
+          />
         ))}
     </>
   );
@@ -373,61 +381,244 @@ function Num({ v, color, bold, small }: { v: number; color?: string; bold?: bool
   );
 }
 
-// ── Bảng theo đại lý (gộp cả kỳ) ────────────────────────────────────────────
+// ── Dòng đại lý (dùng chung cho cả 2 tab) ───────────────────────────────────
 
-function AgentTable({ rows }: { rows: EmailStatsAgent[] }) {
-  if (rows.length === 0) {
-    return <Empty>Khoảng thời gian này chưa add hay gia hạn email nào.</Empty>;
-  }
+function AgentRow({
+  agent,
+  nested,
+  showDate,
+  open,
+  onToggle,
+}: {
+  agent: EmailStatsAgent;
+  /** Dòng con nằm trong một ngày → thụt vào, chữ nhỏ, nền xám. */
+  nested: boolean;
+  /** Tab "Theo đại lý" gộp cả kỳ nên mỗi email phải kèm ngày. */
+  showDate: boolean;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  const emails = agent.emails ?? [];
+  const canOpen = emails.length > 0;
   return (
-    <div style={{ overflowX: "auto" }}>
-      <div style={{ minWidth: 620 }}>
-        <HeadRow cols={["ĐẠI LÝ", "ADD MỚI ✓", "ADD MỚI ✕", "GIA HẠN ✓", "GIA HẠN ✕", "TỔNG"]} />
-        {rows.map((a) => (
-          <div
-            key={a.user_id ?? "unknown"}
+    <>
+      <div
+        onClick={canOpen ? onToggle : undefined}
+        style={{
+          display: "grid",
+          gridTemplateColumns: COLS,
+          gap: 12,
+          alignItems: "center",
+          padding: nested ? "9px 24px 9px 46px" : "12px 24px",
+          borderBottom: "1px solid var(--border)",
+          cursor: canOpen ? "pointer" : "default",
+          background: nested || open ? "var(--surface-2)" : "transparent",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <span
+            aria-hidden
             style={{
-              display: "grid",
-              gridTemplateColumns: COLS,
-              gap: 12,
-              alignItems: "center",
-              padding: "12px 24px",
-              borderBottom: "1px solid var(--border)",
+              fontSize: 9,
+              color: "var(--ink-3)",
+              width: 10,
+              flexShrink: 0,
+              visibility: canOpen ? "visible" : "hidden",
+              transform: open ? "rotate(90deg)" : "none",
+              transition: "transform 0.12s",
             }}
           >
-            <div style={{ overflow: "hidden" }}>
+            ▶
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <div
+              style={{
+                fontSize: nested ? 12.5 : 13.5,
+                fontWeight: nested ? 500 : 600,
+                color: agent.user_id ? (nested ? "var(--ink-2)" : "var(--ink)") : "var(--ink-3)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {agentName(agent)}
+            </div>
+            {!nested && agent.username && agent.email && (
               <div
                 style={{
-                  fontSize: 13.5,
-                  fontWeight: 600,
-                  color: a.user_id ? "var(--ink)" : "var(--ink-3)",
+                  fontSize: 11.5,
+                  color: "var(--ink-3)",
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
                 }}
               >
-                {agentName(a)}
+                {agent.email}
               </div>
-              {a.username && a.email && (
-                <div
-                  style={{
-                    fontSize: 11.5,
-                    color: "var(--ink-3)",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {a.email}
-                </div>
-              )}
-            </div>
-            <Num v={a.new_ok} color={NEW} />
-            <Num v={a.new_failed} color={FAIL} />
-            <Num v={a.renew_ok} color={RENEW} />
-            <Num v={a.renew_failed} color={FAIL} />
-            <Num v={a.total} bold />
+            )}
           </div>
+        </div>
+        <Num v={agent.new_ok} small={nested} color={nested ? undefined : NEW} />
+        <Num v={agent.new_failed} small={nested} color={agent.new_failed > 0 ? FAIL : undefined} />
+        <Num v={agent.renew_ok} small={nested} color={nested ? undefined : RENEW} />
+        <Num v={agent.renew_failed} small={nested} color={agent.renew_failed > 0 ? FAIL : undefined} />
+        <Num v={agent.total} small={nested} bold={!nested} />
+      </div>
+      {open && <EmailList emails={emails} showDate={showDate} indent={nested ? 68 : 46} />}
+    </>
+  );
+}
+
+// ── Danh sách email đứng sau con số ─────────────────────────────────────────
+
+function EmailList({
+  emails,
+  showDate,
+  indent,
+}: {
+  emails: EmailStatsEmail[];
+  showDate: boolean;
+  indent: number;
+}) {
+  const failed = emails.filter((e) => !e.ok).length;
+  return (
+    <div
+      style={{
+        padding: `12px 24px 14px ${indent}px`,
+        borderBottom: "1px solid var(--border)",
+        background: "var(--bg)",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          color: "var(--ink-3)",
+          marginBottom: 8,
+          letterSpacing: "0.04em",
+          userSelect: "none",
+        }}
+      >
+        {emails.length.toLocaleString("vi-VN")} email
+        {failed > 0 && <span style={{ color: FAIL, fontWeight: 600 }}> · {failed} hỏng</span>}
+      </div>
+      <div
+        style={{
+          display: "grid",
+          // Nhiều cột cho hết bề ngang: 500 email mà xếp 1 cột thì cuộn mỏi tay.
+          gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
+          gap: "5px 18px",
+        }}
+      >
+        {emails.map((e, i) => (
+          <EmailChip key={`${e.date}-${e.kind}-${e.email}-${i}`} entry={e} showDate={showDate} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Nhãn nhỏ cuối mỗi dòng email. */
+function Tag({ text, color }: { text: string; color: string }) {
+  return (
+    <span
+      style={{
+        fontSize: 10,
+        fontWeight: 600,
+        letterSpacing: "0.04em",
+        color,
+        border: `1px solid ${color}`,
+        borderRadius: 5,
+        padding: "0 4px",
+        lineHeight: "15px",
+        flexShrink: 0,
+        opacity: 0.85,
+      }}
+    >
+      {text}
+    </span>
+  );
+}
+
+function EmailChip({ entry, showDate }: { entry: EmailStatsEmail; showDate: boolean }) {
+  const color = !entry.ok ? FAIL : entry.kind === "renew" ? RENEW : NEW;
+  // Ô bị đổi email: email hiện ra là email CUỐI chuỗi, nên nhãn phải nói rõ đây là
+  // chỗ của một email khác — không thì nhìn bảng tưởng ngày đó bán thêm ghế. Ô add
+  // mới thành ĐỔI + MỚI, ô gia hạn thành ĐỔI + CŨ (chốt user 2026-08-30).
+  const kindText = !entry.ok
+    ? "HỎNG"
+    : entry.changed
+      ? entry.kind === "renew"
+        ? "CŨ"
+        : "MỚI"
+      : entry.kind === "renew"
+        ? "GIA HẠN"
+        : "MỚI";
+  // Bôi đen cả danh sách chỉ ra email: ngày và nhãn MỚI/GIA HẠN nằm ngoài vùng
+  // chọn nên dán sang chỗ khác là danh sách email sạch, khỏi xoá tay từng dòng.
+  return (
+    <div
+      title={
+        `${entry.email} — ${entry.kind === "renew" ? "gia hạn" : "add mới"} ` +
+        `${entry.ok ? "thành công" : "thất bại"} ngày ${dayLabel(entry.date).day}` +
+        (entry.changed && entry.old_email ? `\nĐổi từ ${entry.old_email}` : "")
+      }
+      style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, userSelect: "none" }}
+    >
+      <span
+        aria-hidden
+        style={{ width: 6, height: 6, borderRadius: "50%", background: color, flexShrink: 0 }}
+      />
+      {showDate && (
+        <span
+          style={{
+            fontSize: 11,
+            color: "var(--ink-3)",
+            fontFamily: "var(--font-mono)",
+            flexShrink: 0,
+          }}
+        >
+          {dayLabel(entry.date).day}
+        </span>
+      )}
+      <span
+        style={{
+          fontSize: 12.5,
+          fontFamily: "var(--font-mono)",
+          color: entry.ok ? "var(--ink-2)" : FAIL,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+          userSelect: "text",
+        }}
+      >
+        {entry.email}
+      </span>
+      {entry.changed && <Tag text="ĐỔI" color={CHANGED} />}
+      <Tag text={kindText} color={color} />
+    </div>
+  );
+}
+
+// ── Bảng theo đại lý (gộp cả kỳ) ────────────────────────────────────────────
+
+function AgentTable({ rows }: { rows: EmailStatsAgent[] }) {
+  const [open, setOpen] = useState<string | null>(null);
+  if (rows.length === 0) {
+    return <Empty>Khoảng thời gian này chưa add hay gia hạn email nào.</Empty>;
+  }
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <div style={{ minWidth: 720 }}>
+        <HeadRow cols={["ĐẠI LÝ", "ADD MỚI ✓", "ADD MỚI ✕", "GIA HẠN ✓", "GIA HẠN ✕", "TỔNG"]} />
+        {rows.map((a) => (
+          <AgentRow
+            key={agentKey(a)}
+            agent={a}
+            nested={false}
+            showDate
+            open={open === agentKey(a)}
+            onToggle={() => setOpen(open === agentKey(a) ? null : agentKey(a))}
+          />
         ))}
       </div>
     </div>
