@@ -332,7 +332,7 @@ function partOf(
       entries.push({
         date: vnDateKey(p.fee.created_at),
         time: vnTime(p.fee.created_at),
-        label: "Phí mời",
+        label: "Phí mời - Đã hoàn",
         outcome: "Lỗi, đã hoàn phí",
         channel: "Đã hoàn đủ",
         email,
@@ -355,9 +355,26 @@ function partOf(
     return { entries, charged, voided, spend, viaInvoice: false, kind: "Lệnh mời" };
   }
 
+  // Lượt trả THẲNG qua hoá đơn ghi 2 bút toán cùng lúc: `order_topup` (+X vào ví) rồi
+  // `invite_fee` (−X ra ngay). Hiện thành 2 dòng thì một lượt mời đọc mất 2 dòng ngược
+  // dấu mà số dư không nhúc nhích (user 2026-08-30: "thể hiện 1 dòng thôi"). Nay tiền
+  // hoá đơn được gán THẲNG vào dòng phí mà nó trả, nguồn tiền ghi luôn ở cột Nội dung.
+  const orderTotal = row.txns.reduce((n, t) => (t.kind === "order_topup" ? n + t.amount : n), 0);
+  const feeTxns = row.txns.filter((t) => FEE_KINDS.has(t.kind));
+  const merge = orderTotal > 0 && feeTxns.length > 0;
+  let leftover = orderTotal;
+
   for (const t of row.txns) {
+    if (merge && t.kind === "order_topup") continue; // đã gán vào dòng phí bên dưới
     const c = codeAt(t);
     const isFee = FEE_KINDS.has(t.kind);
+    // Hoá đơn trả đúng số phí của các suất trong mẻ, nên gán từng dòng đúng phí của
+    // nó là khớp tuyệt đối, không phải chia ước lượng. Dư ra thì tách dòng riêng.
+    let fromInvoice = 0;
+    if (merge && isFee) {
+      fromInvoice = Math.min(leftover, -t.amount);
+      leftover -= fromInvoice;
+    }
     if (isFee) {
       charged += 1;
       spend += -t.amount;
@@ -365,11 +382,13 @@ function partOf(
     entries.push({
       date: vnDateKey(t.created_at),
       time: vnTime(t.created_at),
-      label: TXN_KIND_LABEL[t.kind] ?? t.kind,
+      label: isFee
+        ? `${TXN_KIND_LABEL[t.kind] ?? t.kind} - ${fromInvoice > 0 ? "Hoá đơn" : "Số dư ví"}`
+        : (TXN_KIND_LABEL[t.kind] ?? t.kind),
       outcome: isFee ? "Thành công" : "",
       channel,
       email: str(t.meta?.email),
-      moneyIn: t.amount > 0 ? t.amount : 0,
+      moneyIn: fromInvoice > 0 ? fromInvoice : t.amount > 0 ? t.amount : 0,
       moneyOut: t.amount < 0 ? -t.amount : 0,
       balanceBefore: t.balance_after - t.amount,
       balanceAfter: t.balance_after,
@@ -378,6 +397,29 @@ function partOf(
       note: isFee
         ? feeNote(t, trace)
         : str(t.meta?.reason) || str(t.meta?.note) || KIND_NOTE[t.kind] || "",
+      voided: false,
+    });
+  }
+
+  // Hoá đơn trả dư so với phí đã trừ (lượt trong mẻ hỏng hết chẳng hạn): khoản đó Ở LẠI
+  // trong ví, phải hiện thành một dòng chứ không được nuốt mất.
+  if (merge && leftover > 0) {
+    const src = row.txns.find((t) => t.kind === "order_topup")!;
+    const c = codeAt(src);
+    entries.push({
+      date: vnDateKey(src.created_at),
+      time: vnTime(src.created_at),
+      label: TXN_KIND_LABEL.order_topup,
+      outcome: "",
+      channel,
+      email: "",
+      moneyIn: leftover,
+      moneyOut: 0,
+      balanceBefore: src.balance_after - src.amount,
+      balanceAfter: src.balance_after,
+      refCode: c.ref,
+      providerTxn: c.provider,
+      note: "Tiền hoá đơn còn lại trong ví",
       voided: false,
     });
   }
@@ -790,7 +832,7 @@ function clusterBand(c: ReportCluster): string {
   return bits.join(" · ");
 }
 
-const DETAIL_COLS = 13;
+const DETAIL_COLS = 12;
 
 function detailSheet(r: WalletReport): XSheet {
   const rows: XCell[][] = [];
@@ -799,7 +841,6 @@ function detailSheet(r: WalletReport): XSheet {
     cell("Giờ", "th"),
     cell("Nội dung", "th"),
     cell("Kết quả", "th"),
-    cell("Kênh", "th"),
     cell("Email", "th"),
     cell("Tiền vào", "thRight"),
     cell("Tiền ra", "thRight"),
@@ -822,7 +863,6 @@ function detailSheet(r: WalletReport): XSheet {
           cell(e.time, "textMuted"),
           cell(e.label, text),
           cell(e.outcome || "—", text),
-          cell(e.channel, "textMuted"),
           cell(e.email || "—", text),
           cell(e.moneyIn || null, e.voided ? "numMuted" : "numIn"),
           cell(e.moneyOut || null, e.voided ? "numMuted" : "numOut"),
@@ -836,9 +876,9 @@ function detailSheet(r: WalletReport): XSheet {
       if (c.label) {
         rows.push([
           cell(
-            `Cộng lệnh #${c.no} — ${c.charged} email tính phí${c.voided ? `, ${c.voided} hỏng` : ""}`,
+            `Cộng lệnh #${c.no} — ${c.charged} email tính phí${c.voided ? `, ${c.voided} lỗi` : ""}`,
             "subText",
-            6,
+            5,
           ),
           cell(null, "subText"),
           cell(c.spend, "subNum"),
@@ -848,7 +888,7 @@ function detailSheet(r: WalletReport): XSheet {
     }
 
     rows.push([
-      cell(`Cộng ngày ${dmy(d.date)}`, "totalText", 6),
+      cell(`Cộng ngày ${dmy(d.date)}`, "totalText", 5),
       cell(d.moneyIn, "totalNumIn"),
       cell(d.moneyOut, "totalNumOut"),
       cell(null, "totalNum"),
@@ -860,7 +900,7 @@ function detailSheet(r: WalletReport): XSheet {
   return {
     name: "Chi tiết lệnh",
     freeze: 1,
-    cols: [8, 10, 16, 30, 20, 30, 14, 14, 15, 15, 20, 16, 34],
+    cols: [8, 10, 24, 30, 32, 14, 14, 15, 15, 22, 16, 34],
     rows,
   };
 }
@@ -981,7 +1021,6 @@ export function reportCsv(r: WalletReport): string {
     "Lệnh",
     "Nội dung",
     "Kết quả",
-    "Kênh",
     "Email",
     "Tiền vào (đ)",
     "Tiền ra (đ)",
@@ -1002,7 +1041,6 @@ export function reportCsv(r: WalletReport): string {
             c.label ? `#${c.no}` : "",
             e.label,
             e.outcome,
-            e.channel,
             e.email,
             e.moneyIn || 0,
             e.moneyOut || 0,

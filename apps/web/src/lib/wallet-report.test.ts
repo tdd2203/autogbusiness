@@ -156,6 +156,7 @@ describe("lượt mời hỏng", () => {
     const e = r.days[0].clusters[0].entries[0];
     expect(e.voided).toBe(true);
     expect(e.outcome).toBe("Lỗi, đã hoàn phí");
+    expect(e.label).toBe("Phí mời - Đã hoàn");
     expect(e.moneyIn).toBe(FEE);
     expect(e.moneyOut).toBe(FEE);
     // Dư trước = dư sau ⇒ nhìn một dòng là biết tiền có đi có về.
@@ -238,10 +239,11 @@ describe("reportCsv", () => {
       ]),
     ).split("\n");
     expect(lines[0]).toBe(
-      "Ngày;Giờ;Lệnh;Nội dung;Kết quả;Kênh;Email;Tiền vào (đ);Tiền ra (đ);Số dư trước (đ);Số dư sau (đ);Mã hoá đơn;Mã GD SePay;Ghi chú",
+      "Ngày;Giờ;Lệnh;Nội dung;Kết quả;Email;Tiền vào (đ);Tiền ra (đ);Số dư trước (đ);Số dư sau (đ);Mã hoá đơn;Mã GD SePay;Ghi chú",
     );
-    expect(lines[1]).toContain("#0;Phí mời;Thành công;Thanh toán trực tiếp;a@x.com;0;330000;330000;0;ORD1");
-    expect(lines).toHaveLength(4);
+    expect(lines[1]).toContain("#0;Phí mời - Hoá đơn;Thành công;a@x.com;330000;330000;330000;0;ORD1");
+    // 2 email = 2 dòng. Dòng `order_topup` đã gộp vào dòng phí nên không còn dòng thứ 3.
+    expect(lines).toHaveLength(3);
   });
 });
 
@@ -345,5 +347,62 @@ describe("tiền vào/ra không được phình vì lượt lỗi", () => {
       .find((t) => t.startsWith("30/08/2026"));
     expect(band).toContain(`tiền vào ${(OK * FEE).toLocaleString("vi-VN")}`);
     expect(band).not.toContain("nạp 0");
+  });
+});
+
+/* Lượt trả THANG qua hoá đơn ghi 2 bút toán cùng lúc (+X vào ví rồi −X ra ngay). Hiện
+   2 dòng thì một lượt mời đọc mất 2 dòng ngược dấu mà số dư không nhúc nhích
+   (user 2026-08-30: "thể hiện 1 dòng thôi: Phí mời - Hoá đơn"). */
+describe("gộp dòng hoá đơn vào dòng phí", () => {
+  const at = "2026-08-30T02:00:00Z";
+
+  it("1 email trả qua hoá đơn ⇒ ĐÚNG 1 dòng, ghi 'Phí mời - Hoá đơn'", () => {
+    const r = report([
+      txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, meta: { email: "a@x.com" }, created_at: at }),
+      txn({ kind: "order_topup", amount: FEE, balance_after: FEE, ref_type: "order", ref_code: "ORD1", created_at: at }),
+    ]);
+    const es = r.days[0].clusters[0].entries;
+    expect(es).toHaveLength(1);
+    expect(es[0].label).toBe("Phí mời - Hoá đơn");
+    expect(es[0].email).toBe("a@x.com");
+    expect(es[0].moneyIn).toBe(FEE);
+    expect(es[0].moneyOut).toBe(FEE);
+    expect(es[0].refCode).toBe("ORD1");
+  });
+
+  it("trừ thẳng số dư ví ⇒ ghi 'Phí mời - Số dư ví', không có dòng hoá đơn", () => {
+    const r = report([
+      txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, meta: { email: "a@x.com" }, created_at: at }),
+    ]);
+    const es = r.days[0].clusters[0].entries;
+    expect(es).toHaveLength(1);
+    expect(es[0].label).toBe("Phí mời - Số dư ví");
+    expect(es[0].moneyIn).toBe(0);
+  });
+
+  it("mẻ nhiều email: mỗi email một dòng, KHÔNG còn dòng hoá đơn riêng", () => {
+    const r = report([
+      txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, meta: { email: "a@x.com" }, created_at: at }),
+      txn({ kind: "invite_fee", amount: -FEE, balance_after: FEE, meta: { email: "b@x.com" }, created_at: at }),
+      txn({ kind: "order_topup", amount: 2 * FEE, balance_after: 2 * FEE, ref_type: "order", ref_code: "ORD1", created_at: at }),
+    ]);
+    const es = r.days[0].clusters[0].entries;
+    expect(es).toHaveLength(2);
+    expect(es.every((e) => e.label === "Phí mời - Hoá đơn")).toBe(true);
+    expect(es.reduce((s, e) => s + e.moneyIn, 0)).toBe(2 * FEE);
+  });
+
+  it("hoá đơn trả DƯ so với phí ⇒ phần dư vẫn có dòng riêng, không bị nuốt", () => {
+    const r = report([
+      txn({ kind: "invite_fee", amount: -FEE, balance_after: FEE, meta: { email: "a@x.com" }, created_at: at }),
+      txn({ kind: "order_topup", amount: 2 * FEE, balance_after: 2 * FEE, ref_type: "order", ref_code: "ORD1", created_at: at }),
+    ]);
+    const es = r.days[0].clusters[0].entries;
+    expect(es).toHaveLength(2);
+    expect(es[1].moneyIn).toBe(FEE);
+    expect(es[1].note).toBe("Tiền hoá đơn còn lại trong ví");
+    // Tổng vào/ra của ngày không đổi so với khi hiện 2 dòng.
+    expect(r.days[0].moneyIn).toBe(2 * FEE);
+    expect(r.days[0].moneyOut).toBe(FEE);
   });
 });
