@@ -35,6 +35,17 @@ type PaymentFilter = "all" | "today" | "unpaid" | "requested";
 // (danh sách đến từ query riêng ?removed=true, không nằm trong `members`).
 type StatusTab = "active" | "pending" | "removed";
 
+// Bảng chỉ vẽ 25 dòng mỗi trang (yêu cầu user 30/8/2026). Danh sách đã hơn 500
+// email: dựng cả nghìn ô + menu ⋯ cho mỗi dòng làm trang giật mỗi lần gõ tìm.
+// Phân trang CHẠY TRÊN CLIENT — dữ liệu vẫn tải MỘT LẦN vào cache (staleTime
+// Infinity) nên lật trang, lọc hay tìm kiếm không gọi thêm API lần nào.
+const PAGE_SIZE = 25;
+
+// Giá trị riêng cho mục "Vô chủ" trong select tài khoản phụ: email CHƯA có chủ
+// (invited_by_user_id NULL) — backend lọc bằng ?unassigned=true. Khác chuỗi rỗng
+// ("Tất cả tài khoản phụ") vốn trả cả email có chủ lẫn vô chủ.
+const UNASSIGNED_OWNER = "__unassigned__";
+
 function isToday(iso: string): boolean {
   const d = new Date(iso);
   const now = new Date();
@@ -103,6 +114,8 @@ export default function AddedEmails() {
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Trang đang xem (1-based) của bảng — xem PAGE_SIZE.
+  const [page, setPage] = useState(1);
   // Click email → mở modal chi tiết + lịch sử hoạt động của email đó.
   const [detailMember, setDetailMember] = useState<AddedMember | null>(null);
   // Email đang mở modal "Đổi email" / "Đổi hạn dùng" từ menu ⋯ theo dòng (null = đóng).
@@ -154,8 +167,13 @@ export default function AddedEmails() {
     select: (rows) => rows.filter((u) => !u.is_super_admin),
   });
 
-  const queryParam =
-    isSuper && selectedUserId ? `?user_id=${selectedUserId}` : "";
+  const queryParam = !isSuper
+    ? ""
+    : selectedUserId === UNASSIGNED_OWNER
+      ? "?unassigned=true"
+      : selectedUserId
+        ? `?user_id=${selectedUserId}`
+        : "";
   const { data: members = [], isLoading } = useQuery({
     queryKey: ["added-members", isSuper ? selectedUserId : "self"],
     queryFn: () => api<AddedMember[]>(`/api/v1/added-members${queryParam}`),
@@ -316,6 +334,31 @@ export default function AddedEmails() {
     statusTab,
   ]);
 
+  // ---- Phân trang phía client (25 dòng/trang) ----
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  // Kẹp NGAY lúc dựng chứ không đợi effect: bộ lọc vừa thu hẹp danh sách mà trang
+  // đang xem vượt số trang mới thì bảng sẽ trống trong đúng một nhịp render.
+  const currentPage = Math.min(page, pageCount);
+  const pageRows = useMemo(
+    () => filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
+    [filtered, currentPage],
+  );
+  // Đổi tab / bộ lọc / từ khoá tìm → xem lại từ trang 1.
+  useEffect(() => {
+    setPage(1);
+  }, [statusTab, filter, search, selectedWorkspace, selectedUserId]);
+  // Danh sách co lại do nền làm mới (task xoá/đồng bộ xong) → kéo state về theo.
+  useEffect(() => {
+    setPage((p) => (p > pageCount ? pageCount : p));
+  }, [pageCount]);
+
+  // Lật trang xong đưa mắt về đầu bảng, khỏi phải tự cuộn ngược lên.
+  const listTopRef = useRef<HTMLDivElement>(null);
+  function goToPage(next: number) {
+    setPage(next);
+    listTopRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+
   const total = members.length;
   const paidCount = members.filter((m) => m.payment_status === "paid").length;
 
@@ -347,8 +390,12 @@ export default function AddedEmails() {
     (m) => m.payment_status === "unpaid",
   ).length;
 
-  const allFilteredSelected =
-    filtered.length > 0 && filtered.every((m) => selected.has(m.id));
+  // Ô tích đầu bảng chọn ĐÚNG các dòng đang thấy (tối đa 25). Muốn ôm cả danh
+  // sách khớp bộ lọc thì bấm link "Chọn tất cả N email" ở thanh thao tác.
+  const allPageSelected =
+    pageRows.length > 0 && pageRows.every((m) => selected.has(m.id));
+  const hasUnselectedOffPage =
+    filtered.length > pageRows.length && filtered.some((m) => !selected.has(m.id));
 
   function toggleOne(id: string) {
     setSelected((prev) => {
@@ -361,11 +408,16 @@ export default function AddedEmails() {
 
   function toggleAll() {
     setSelected((prev) => {
-      if (filtered.every((m) => prev.has(m.id))) {
-        const next = new Set(prev);
-        filtered.forEach((m) => next.delete(m.id));
-        return next;
-      }
+      const next = new Set(prev);
+      if (pageRows.every((m) => next.has(m.id)))
+        pageRows.forEach((m) => next.delete(m.id));
+      else pageRows.forEach((m) => next.add(m.id));
+      return next;
+    });
+  }
+
+  function selectAllFiltered() {
+    setSelected((prev) => {
       const next = new Set(prev);
       filtered.forEach((m) => next.add(m.id));
       return next;
@@ -868,7 +920,7 @@ export default function AddedEmails() {
         <Metric label={t("addedEmails.metricUnpaid")} value={unpaidCount} />
       </div>
 
-      <div className="table-card added-emails-card">
+      <div className="table-card added-emails-card" ref={listTopRef}>
         <div className="table-head">
           <div>
             <div className="table-title">{t("addedEmails.listTitle")}</div>
@@ -898,6 +950,11 @@ export default function AddedEmails() {
                         {u.username}
                       </option>
                     ))}
+                    {/* Email chưa gán cho tài khoản phụ nào (invited_by NULL) —
+                        nằm lẫn trong "Tất cả tài khoản phụ" nên cần lối xem riêng. */}
+                    <option value={UNASSIGNED_OWNER}>
+                      {t("addedEmails.unassignedOwner")}
+                    </option>
                   </select>
                 )}
                 {workspaces.length > 1 && (
@@ -1039,6 +1096,17 @@ export default function AddedEmails() {
             <span style={{ fontSize: 13, color: "var(--ink-2)" }}>
               {t("addedEmails.selectedCount", { n: selectedIds.length })}
             </span>
+            {/* Ô tích đầu bảng chỉ ôm 25 dòng của trang; còn kết quả ở trang khác
+                thì mời chọn hết bằng một nút, khỏi lật từng trang mà tích. */}
+            {hasUnselectedOffPage && (
+              <button
+                type="button"
+                className="btn btn-sm btn-text"
+                onClick={selectAllFiltered}
+              >
+                {t("addedEmails.selectAllFiltered", { n: filtered.length })}
+              </button>
+            )}
             {/* MỘT nút "Thao tác hàng loạt ▾" mở menu đẹp (icon + nhóm), thay cho
                 select thô. Item bám tab: "Chờ tham gia" → Đồng bộ + Thu hồi lời mời;
                 cả 2 tab → thanh toán + Chuyển chủ nhanh (super-admin). */}
@@ -1076,7 +1144,7 @@ export default function AddedEmails() {
         {statusTab === "removed" ? (
           /* ---------- Tab "Đã xoá": bảng CHỈ ĐỌC riêng (mobile + desktop) ------- */
           <RemovedEmailsList
-            rows={filtered}
+            rows={pageRows}
             isLoading={removedLoading}
             isSuper={isSuper}
             onOpenDetail={setDetailMember}
@@ -1100,7 +1168,7 @@ export default function AddedEmails() {
                 {t("addedEmails.empty")}
               </div>
             )}
-            {filtered.map((m) => (
+            {pageRows.map((m) => (
               <div key={m.id} className="email-card">
                 <div className="email-card-top">
                   <input
@@ -1162,7 +1230,7 @@ export default function AddedEmails() {
                   <th style={{ width: 36 }}>
                     <input
                       type="checkbox"
-                      checked={allFilteredSelected}
+                      checked={allPageSelected}
                       onChange={toggleAll}
                       aria-label={t("addedEmails.selectAll")}
                     />
@@ -1201,7 +1269,7 @@ export default function AddedEmails() {
                     </td>
                   </tr>
                 )}
-                {filtered.map((m) => (
+                {pageRows.map((m) => (
                   <tr key={m.id}>
                     <td>
                       <input
@@ -1267,6 +1335,113 @@ export default function AddedEmails() {
             </table>
           </div>
         )}
+
+        {/* Thanh chuyển trang — chỉ hiện khi kết quả lọc dài hơn một trang. */}
+        {filtered.length > PAGE_SIZE && (
+          <Pager
+            page={currentPage}
+            pageCount={pageCount}
+            total={filtered.length}
+            onChange={goToPage}
+            t={t}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Dải số trang quanh trang đang xem: luôn giữ trang đầu/cuối, chèn "…" cho quãng
+ *  bị lược. Danh sách ngắn (≤7 trang) thì bày hết cho khỏi phải đoán. */
+function pageNumbers(page: number, pageCount: number): (number | "gap")[] {
+  if (pageCount <= 7)
+    return Array.from({ length: pageCount }, (_, i) => i + 1);
+  const out: (number | "gap")[] = [1];
+  const start = Math.max(2, page - 1);
+  const end = Math.min(pageCount - 1, page + 1);
+  if (start > 2) out.push("gap");
+  for (let p = start; p <= end; p++) out.push(p);
+  if (end < pageCount - 1) out.push("gap");
+  out.push(pageCount);
+  return out;
+}
+
+const CHEVRON = (dir: "left" | "right") => (
+  <svg
+    viewBox="0 0 24 24"
+    width="14"
+    height="14"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <polyline points={dir === "left" ? "15 18 9 12 15 6" : "9 18 15 12 9 6"} />
+  </svg>
+);
+
+/** Chuyển trang cho bảng email (25 dòng/trang). Thuần client: bấm số trang chỉ
+ *  cắt lại mảng đã có trong cache, KHÔNG gọi API. */
+function Pager({
+  page,
+  pageCount,
+  total,
+  onChange,
+  t,
+}: {
+  page: number;
+  pageCount: number;
+  total: number;
+  onChange: (page: number) => void;
+  t: ReturnType<typeof useT>;
+}) {
+  const from = (page - 1) * PAGE_SIZE + 1;
+  const to = Math.min(page * PAGE_SIZE, total);
+  return (
+    <div className="table-pager">
+      <div className="table-meta">
+        {t("addedEmails.pageRange", { from, to, total })}
+      </div>
+      <div className="pager-nav">
+        <button
+          type="button"
+          className="pager-btn"
+          disabled={page <= 1}
+          onClick={() => onChange(page - 1)}
+          aria-label={t("addedEmails.prevPage")}
+          title={t("addedEmails.prevPage")}
+        >
+          {CHEVRON("left")}
+        </button>
+        {pageNumbers(page, pageCount).map((n, i) =>
+          n === "gap" ? (
+            <span key={`gap-${i}`} className="pager-gap">
+              …
+            </span>
+          ) : (
+            <button
+              key={n}
+              type="button"
+              className={n === page ? "pager-btn active" : "pager-btn"}
+              aria-current={n === page ? "page" : undefined}
+              onClick={() => onChange(n)}
+            >
+              {n}
+            </button>
+          ),
+        )}
+        <button
+          type="button"
+          className="pager-btn"
+          disabled={page >= pageCount}
+          onClick={() => onChange(page + 1)}
+          aria-label={t("addedEmails.nextPage")}
+          title={t("addedEmails.nextPage")}
+        >
+          {CHEVRON("right")}
+        </button>
       </div>
     </div>
   );

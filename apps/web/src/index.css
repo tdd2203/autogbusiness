@@ -516,6 +516,56 @@ body {
     flex-wrap: wrap;
     gap: 8px;
   }
+  /* Thanh chuyển trang dưới bảng (Email đã thêm: 25 dòng/trang). */
+  .table-pager {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border);
+  }
+  .pager-nav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .pager-btn {
+    min-width: 30px;
+    height: 30px;
+    padding: 0 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--ink-2);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .pager-btn:hover:not(:disabled) {
+    background: var(--surface-2);
+    color: var(--ink);
+  }
+  .pager-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .pager-btn.active {
+    background: var(--ink);
+    border-color: var(--ink);
+    color: var(--surface);
+  }
+  .pager-gap {
+    padding: 0 2px;
+    color: var(--ink-3);
+    font-size: 12px;
+  }
   .wallet-admin-row {
     transition: background 0.1s;
   }
