@@ -166,7 +166,7 @@
   "addedEmails.colOwner": "所有者",
   "addedEmails.colRemovedAt": "删除日期",
   "addedEmails.colRemovedReason": "原因",
-  "addedEmails.removedEmpty": "最近 30 天没有被删除的邮箱。",
+  "addedEmails.removedEmpty": "最近 90 天没有被删除的邮箱。",
   "removedReason.expired": "已过期",
   "removedReason.removed_by_admin": "管理员删除",
   "removedReason.invite_revoked": "撤回邀请",

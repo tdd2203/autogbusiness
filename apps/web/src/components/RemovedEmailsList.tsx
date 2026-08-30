@@ -32,7 +32,8 @@ const REASON_BADGE: Record<string, string> = {
  * bảng chính chỉ để tắt hết chúng sẽ rối hơn là một bảng riêng. Ở đây chỉ trả lời
  * "email nào đã mất, mất lúc nào, vì sao" + click email để xem lịch sử đầy đủ.
  *
- * Backend chỉ trả email bị xoá trong 30 ngày gần nhất (REMOVED_TAB_WINDOW).
+ * Backend chỉ trả email bị xoá trong 90 ngày gần nhất (REMOVED_TAB_WINDOW) —
+ * bằng đúng mốc retention nên còn bản ghi là còn thấy ở đây.
  */
 export function RemovedEmailsList({
   rows,

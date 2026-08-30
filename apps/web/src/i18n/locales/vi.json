@@ -166,7 +166,7 @@
   "addedEmails.colOwner": "Người sở hữu",
   "addedEmails.colRemovedAt": "Ngày xoá",
   "addedEmails.colRemovedReason": "Lý do",
-  "addedEmails.removedEmpty": "Chưa có email nào bị xoá trong 30 ngày qua.",
+  "addedEmails.removedEmpty": "Chưa có email nào bị xoá trong 90 ngày qua.",
   "removedReason.expired": "Hết hạn",
   "removedReason.removed_by_admin": "Admin xoá",
   "removedReason.invite_revoked": "Thu hồi lời mời",

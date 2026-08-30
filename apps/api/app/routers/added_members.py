@@ -38,12 +38,12 @@ router = APIRouter(prefix="/api/v1/added-members", tags=["added-members"])
 # hưởng RAM/số truy vấn phụ của selectinload, KHÔNG ảnh hưởng dữ liệu trả về.
 _LIST_CHUNK = 200
 
-# Cửa sổ HIỂN THỊ của tab "Đã xoá" (yêu cầu user 2026-08-24: "lưu trong 30 ngày ở
-# tab này"). Đây là mốc LỌC LÚC ĐỌC, KHÔNG phải retention: bản ghi vẫn nằm trong DB
-# tới khi job nền hard-delete ở mốc riêng, dài hơn (REMOVED_MEMBER_RETENTION = 90
-# ngày, do user chốt 2026-07-19). Email bị xoá quá 30 ngày rơi khỏi tab nhưng lịch
-# sử vẫn còn để tra cứu chỗ khác.
-REMOVED_TAB_WINDOW = timedelta(days=30)
+# Cửa sổ HIỂN THỊ của tab "Đã xoá". Đây là mốc LỌC LÚC ĐỌC, KHÔNG phải retention —
+# việc xoá dữ liệu vẫn do job nền quyết (REMOVED_MEMBER_RETENTION trong main.py).
+# User nâng 30 → 90 ngày (2026-08-30) cho khớp đúng mốc retention: email nào còn
+# bản ghi trong DB thì còn tra được ở tab này, rơi khỏi tab đúng lúc job nền đã
+# đủ điều kiện hard-delete. Sửa mốc kia thì sửa luôn mốc này, kẻo lại lệch.
+REMOVED_TAB_WINDOW = timedelta(days=90)
 
 
 # Số bước tối đa khi lần theo chuỗi đổi email (A → B → C…). Chuỗi thật dài 1–2 bước;
@@ -174,7 +174,7 @@ def list_added_members(
         ?unassigned=true → xem "email còn lại" (CHƯA có chủ) — super-admin quản lý
         bỏ trống         → tất cả email đã có chủ (add qua dashboard)
     - ?removed=true → ĐẢO danh sách sang tab "Đã xoá": chỉ email đã rời team trong
-      `REMOVED_TAB_WINDOW` (30 ngày) gần nhất, mới xoá xếp trước. Quy tắc ai-thấy-gì
+      `REMOVED_TAB_WINDOW` (90 ngày) gần nhất, mới xoá xếp trước. Quy tắc ai-thấy-gì
       giữ NGUYÊN như trên. Email `removed` mà thiếu `removed_at` (dữ liệu cũ trước
       khi có cột) KHÔNG lọt vào — không biết xoá lúc nào thì không xếp được vào cửa sổ.
     """

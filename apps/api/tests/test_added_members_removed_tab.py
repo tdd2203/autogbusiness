@@ -1,12 +1,12 @@
 """Tab "Đã xoá" ở trang Email đã thêm (yêu cầu user 2026-08-24).
 
-`GET /api/v1/added-members?removed=true` trả email ĐÃ RỜI team trong 30 ngày gần
+`GET /api/v1/added-members?removed=true` trả email ĐÃ RỜI team trong 90 ngày gần
 nhất, kèm `removed_at` + `removed_reason` để bảng trả lời được "vì sao mất email
 này". Kiểm 4 điểm dễ hỏng nhất:
 
   1. Email bị xoá KHÔNG lọt vào danh sách thường, và CHỈ lọt vào ?removed=true.
-  2. Cửa sổ 30 ngày là mốc LỌC LÚC ĐỌC: xoá lâu hơn 30 ngày rơi khỏi tab dù record
-     vẫn nằm trong DB (retention hard-delete riêng, 90 ngày — xem test_removed_retention).
+  2. Cửa sổ 90 ngày là mốc LỌC LÚC ĐỌC, tách bạch với việc XOÁ dữ liệu: record quá
+     hạn vẫn nằm trong DB tới khi job nền chạy (xem test_removed_retention).
   3. `removed_reason` phân biệt được HẾT HẠN (job nền, cả đường REMOVE_MEMBER lẫn
      REVOKE_INVITES) với ADMIN XOÁ TAY và THU HỒI LỜI MỜI — đây là lý do cột này tồn
      tại thay vì suy ngược từ audit log.
@@ -162,14 +162,14 @@ def test_removed_reason_invite_revoked_for_pending(
 def test_removed_tab_drops_rows_older_than_window(
     client: TestClient, auth_header: dict
 ) -> None:
-    """Quá 30 ngày → rơi khỏi tab, nhưng record VẪN còn trong DB (retention 90 ngày)."""
+    """Quá 90 ngày → rơi khỏi tab, nhưng record VẪN còn trong DB tới khi job nền dọn."""
     ws = _ws(client, auth_header, "WS removed window")
     old = _invite(client, auth_header, ws["id"], "old@example.com")
     recent = _invite(client, auth_header, ws["id"], "recent@example.com")
     _remove_complete(client, auth_header, ws, old["id"])
     _remove_complete(client, auth_header, ws, recent["id"])
-    _backdate_removed_at(old["id"], days=31)
-    _backdate_removed_at(recent["id"], days=29)
+    _backdate_removed_at(old["id"], days=91)
+    _backdate_removed_at(recent["id"], days=89)
 
     rows = client.get("/api/v1/added-members?removed=true", headers=auth_header).json()
     assert [r["email"] for r in rows] == ["recent@example.com"]
