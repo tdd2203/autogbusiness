@@ -360,3 +360,221 @@ def test_fresh_invite_flow_counts_as_new(client: TestClient, auth_header: dict) 
     s = _summary(client, sub["token"])
     assert s["new_email_count"] == 2
     assert s["renew_email_count"] == 0
+
+
+def _backdate_email(email: str, days: int) -> None:
+    """Đẩy một email về QUÁ KHỨ: cả bản ghi member lẫn bút toán phí của nó.
+
+    Luồng mời thật luôn ghi ở hiện tại nên không dựng được ca "email cũ" — mà đó
+    chính là ranh giới giữa MỚI và GIA HẠN của thẻ "Đã add". `last_invited_at` giữ
+    nguyên hôm nay để bản ghi vẫn nằm trong ngày đang xem.
+    """
+    from app.db import SessionLocal
+    from app.models import Member, WalletTransaction
+
+    past = datetime.now(timezone.utc) - timedelta(days=days)
+    with SessionLocal() as db:
+        member = db.query(Member).filter(Member.email == email).one()
+        member.created_at = past
+        for txn in (
+            db.query(WalletTransaction)
+            .filter(WalletTransaction.meta["email"].astext == email)
+            .all()
+        ):
+            txn.created_at = past
+        db.commit()
+
+
+def _reverse_fee(email: str) -> None:
+    """Đánh dấu phí của email đã HOÀN mà KHÔNG đụng bản ghi member.
+
+    Đúng ca "chốt hỏng oan": lệnh mời mất tiếng nên backend hoàn phí, nhưng ChatGPT
+    đã nhận email và lượt đồng bộ sau giữ nó lại trong workspace.
+    """
+    from app.db import SessionLocal
+    from app.models import WalletTransaction
+
+    with SessionLocal() as db:
+        for txn in (
+            db.query(WalletTransaction)
+            .filter(
+                WalletTransaction.meta["email"].astext == email,
+                WalletTransaction.kind == "invite_fee",
+            )
+            .all()
+        ):
+            txn.reversed = True
+        db.commit()
+
+
+def test_added_card_counts_new_emails(client: TestClient, auth_header: dict) -> None:
+    """Thẻ "Đã add" đếm theo EMAIL: 2 email dán chung một lần = 2 email mới."""
+    ws = create_ws(client, auth_header, "Daily WS 8")
+    sub = make_beta_sub(client, auth_header, username="daily13", balance=300_000)
+    assign(client, auth_header, ws["id"], sub["id"])
+    _bulk_invite(client, sub["token"], ws["id"], ["a1@example.com", "a2@example.com"])
+
+    s = _summary(client, sub["token"])
+    assert s["added_new_count"] == 2
+    assert s["added_renew_count"] == 0
+    assert s["added_free_reinvite_count"] == 0
+
+
+def test_change_email_is_replacement_not_extra_add(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Đổi email = THAY THẾ: 2 email add rồi đổi 1 cái vẫn là 2, không phải 3.
+
+    Bản ghi mới thừa hưởng `last_invited_at` của email cũ, bản ghi cũ thành `removed`
+    ⇒ tổng không đổi (user 2026-08-29).
+    """
+    ws = create_ws(client, auth_header, "Daily WS 9")
+    sub = make_beta_sub(client, auth_header, username="daily14", balance=300_000)
+    assign(client, auth_header, ws["id"], sub["id"])
+    res = _bulk_invite(client, sub["token"], ws["id"], ["c1@example.com", "c2@example.com"])
+    assert res
+
+    r = client.get(f"/api/v1/workspaces/{ws['id']}/members", headers=bearer(sub["token"]))
+    assert r.status_code == 200, r.text
+    old = next(m for m in r.json() if m["email"] == "c1@example.com")
+    # Đại lý beta không có quyền xoá thành viên nên đổi email đi đường admin; member
+    # mới vẫn thừa hưởng chủ sở hữu cũ ⇒ vẫn nằm trong báo cáo của đại lý.
+    chg = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{old['id']}/change-email",
+        json={"new_email": "c1-moi@example.com"},
+        headers=auth_header,
+    )
+    assert chg.status_code == 201, chg.text
+
+    s = _summary(client, sub["token"])
+    assert s["added_new_count"] == 2  # c1-moi@ thay chỗ c1@, không cộng thêm
+    assert s["added_renew_count"] == 0
+
+
+def test_added_card_counts_renew_of_old_email(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Email CŨ trả tiền tiếp là GIA HẠN, kể cả khi gia hạn không đụng bảng member.
+
+    `renew_fee` cho email đang active không đẩy `last_invited_at` nên chỉ có sổ cái
+    biết — đọc mỗi bảng member là mất hẳn cột "Gia hạn".
+    """
+    ws = create_ws(client, auth_header, "Daily WS 10")
+    sub = make_beta_sub(client, auth_header, username="daily15", balance=300_000)
+    assign(client, auth_header, ws["id"], sub["id"])
+    _bulk_invite(client, sub["token"], ws["id"], ["r1@example.com"])
+    _backdate_email("r1@example.com", days=40)
+    _craft_txns(sub, [("renew_fee", "r1@example.com", False, None)])
+
+    s = _summary(client, sub["token"])
+    assert s["added_new_count"] == 0  # bản ghi có từ 40 ngày trước
+    assert s["added_renew_count"] == 1
+    assert s["added_free_reinvite_count"] == 0
+
+
+def test_free_reinvite_stays_out_of_the_total(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Mời lại email CÒN HẠN không thêm email nào ⇒ đứng riêng, không vào tổng.
+
+    Lượt này miễn phí nhưng vẫn đẩy `last_invited_at` sang hôm nay — cộng vào tổng là
+    thổi phồng số email đã add.
+    """
+    ws = create_ws(client, auth_header, "Daily WS 11")
+    sub = make_beta_sub(client, auth_header, username="daily16", balance=300_000)
+    assign(client, auth_header, ws["id"], sub["id"])
+    _bulk_invite(client, sub["token"], ws["id"], ["f1@example.com"])
+    _backdate_email("f1@example.com", days=3)
+    # Gói còn hạn ⇒ mời lại KHÔNG sinh bút toán phí nào.
+    _bulk_invite(client, sub["token"], ws["id"], ["f1@example.com"])
+
+    s = _summary(client, sub["token"])
+    assert s["added_new_count"] == 0
+    assert s["added_renew_count"] == 0
+    assert s["added_free_reinvite_count"] == 1
+    assert s["emails_added"] == 1  # bảng member vẫn thấy nó, thẻ thì không cộng
+
+
+def test_refunded_but_still_in_team_counts_as_added(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Lượt chốt hỏng oan (đã hoàn phí nhưng email vẫn trong workspace) vẫn là đã add.
+
+    Đây là chỗ thẻ "Đã add" tách khỏi số lượt thu tiền: tiền đã trả lại mà dịch vụ thì
+    đã giao.
+    """
+    ws = create_ws(client, auth_header, "Daily WS 12")
+    sub = make_beta_sub(client, auth_header, username="daily17", balance=300_000)
+    assign(client, auth_header, ws["id"], sub["id"])
+    _bulk_invite(client, sub["token"], ws["id"], ["g1@example.com"])
+    _reverse_fee("g1@example.com")
+
+    s = _summary(client, sub["token"])
+    assert s["refunded_invite_count"] == 1  # tiền đã trả lại
+    assert s["added_new_count"] == 1  # nhưng email vẫn nằm trong workspace
+
+
+def test_truly_failed_invite_is_not_an_add(client: TestClient, auth_header: dict) -> None:
+    """Lượt hỏng THẬT thì bản ghi member bị xoá hẳn ⇒ không tính là đã add."""
+    ws = create_ws(client, auth_header, "Daily WS 13")
+    sub = make_beta_sub(client, auth_header, username="daily18", balance=300_000)
+    assign(client, auth_header, ws["id"], sub["id"])
+    bad = _bulk_invite(client, sub["token"], ws["id"], ["h1@example.com"])
+    upd = client.patch(
+        f"/api/v1/queue/{bad['queue_item_id']}",
+        json={"status": "FAILED", "error_code": "FAILED_UI_CHANGED", "error_message": "hỏng"},
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert upd.status_code == 200, upd.text
+
+    s = _summary(client, sub["token"])
+    assert s["refunded_invite_count"] == 1
+    assert s["added_new_count"] == 0
+    assert s["added_renew_count"] == 0
+
+
+def _backdate_fees_only(email: str, days: int) -> None:
+    """Đẩy BÚT TOÁN phí của một email về quá khứ, GIỮ bản ghi member ở hôm nay.
+
+    Dựng lại đúng ca thật: lượt chốt hỏng oan xoá bản ghi member đi, hôm sau lượt
+    đồng bộ thấy email vẫn nằm trong workspace nên tạo bản ghi MỚI mang ngày hôm sau.
+    """
+    from app.db import SessionLocal
+    from app.models import WalletTransaction
+
+    past = datetime.now(timezone.utc) - timedelta(days=days)
+    with SessionLocal() as db:
+        for txn in (
+            db.query(WalletTransaction)
+            .filter(WalletTransaction.meta["email"].astext == email)
+            .all()
+        ):
+            txn.created_at = past
+        db.commit()
+
+
+def test_recreated_member_record_stays_on_its_pay_day(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Bản ghi dựng lại hôm nay KHÔNG kéo email của ngày cũ sang thẻ "Đã add" hôm nay.
+
+    Mốc của thẻ là ngày TRẢ TIỀN. Đếm theo ngày tạo bản ghi thì email đã trả tiền hôm
+    qua lại hiện là "mới" hôm nay — đúng 6 email của một đại lý bị nhảy ngày như vậy
+    (user 2026-08-29).
+    """
+    ws = create_ws(client, auth_header, "Daily WS 14")
+    sub = make_beta_sub(client, auth_header, username="daily19", balance=300_000)
+    assign(client, auth_header, ws["id"], sub["id"])
+    _bulk_invite(client, sub["token"], ws["id"], ["k1@example.com"])
+    _backdate_fees_only("k1@example.com", days=1)
+
+    today = _summary(client, sub["token"])
+    assert today["added_new_count"] == 0
+    assert today["added_renew_count"] == 0
+    # Bảng member vẫn thấy email này hôm nay — hai con số trả lời hai câu hỏi khác nhau.
+    assert today["emails_added"] == 1
+
+    yesterday = (datetime.now(VN_TZ).date() - timedelta(days=1)).isoformat()
+    past = _summary(client, sub["token"], yesterday)
+    assert past["added_new_count"] == 1
+    assert past["added_renew_count"] == 0

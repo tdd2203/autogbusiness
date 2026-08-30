@@ -7,12 +7,26 @@ DST) — mặc định hôm nay:
     mốc "ngày thêm" y như tab *Email đã thêm*: COALESCE(last_invited_at,
     created_at). Email bị gỡ (mời hỏng, thu hồi, admin xoá…) đếm riêng ở
     `emails_removed` để con số chính không bị thổi phồng bởi lượt mời thất bại.
+  • `added_new_count` / `added_renew_count` / `added_free_reinvite_count` = bộ ba của
+    thẻ "Đã add" ở trang Ví, đơn vị EMAIL — đại lý đếm bằng email chứ không bằng bút
+    toán (user 2026-08-29). Mốc là NGÀY TRẢ TIỀN, nguồn là SỔ CÁI:
+      - MỚI = email có phí trong ngày mà chưa từng trả tiền thành công trước đó.
+      - GIA HẠN = email cũ trả tiền tiếp: `renew_fee`, hoặc gói hết hạn rồi add lại
+        (lượt này đi qua `invite_fee` nên phân loại theo `kind` sẽ đếm nhầm).
+      - ĐỔI EMAIL chỉ là THAY THẾ: tiền nằm ở email cũ, email mới không sinh phí nên
+        không cộng thêm; bản ghi cũ `removed` vì `email_changed` vẫn tính là còn ghế.
+      - Mời lại email CÒN HẠN thì miễn phí và KHÔNG thêm email nào, nên đứng riêng và
+        KHÔNG cộng vào tổng của thẻ.
+    KHÔNG lấy mốc "bản ghi member tạo trong ngày": bản ghi bị xoá lúc chốt hỏng oan
+    rồi được lượt đồng bộ hôm sau dựng lại là nhảy nguyên sang ngày mới — 6 email trả
+    tiền 28/8 của một đại lý nhảy hết sang 29/8 kiểu đó (user 2026-08-29). Vì vậy ba
+    số này cũng KHÔNG cộng lại thành `emails_added`: hai bên trả lời hai câu khác nhau.
+    Tổng của thẻ KHÔNG bằng số lượt thu tiền: lượt bị chốt hỏng oan rồi hoàn phí mà
+    email vẫn nằm trong workspace thì vẫn là email đã add.
   • `invite_count` = TỔNG lời mời tính phí trong ngày, đếm theo EMAIL: mỗi email là
     một lời mời và có một bút toán `invite_fee` riêng, dán 5 email trong một lần bấm
-    vẫn là 5 lời mời (user 2026-08-27). Trừ đi `refunded_invite_count` ra số lời mời
-    THÀNH CÔNG — đó là cặp số thẻ "Mời" ở trang Ví hiện. Thẻ KHÔNG đọc `emails_added`:
-    mời lại email CÒN HẠN thì miễn phí nhưng vẫn đẩy `last_invited_at` sang ngày mới
-    nên `emails_added` đếm cả lượt không tốn đồng nào.
+    vẫn là 5 lời mời (user 2026-08-27). Trừ đi `refunded_invite_count` ra số lượt THU
+    ĐƯỢC TIỀN.
   • Phần giao dịch tách theo NGUỒN TIỀN thay vì cộng dồn có dấu: một lượt mời trả
     qua hoá đơn ghi 2 bút toán cùng lúc (order_topup +X, invite_fee −X) nên tổng
     có dấu = 0 dù user vẫn tiêu X. Vì vậy `fee_total` là TOÀN BỘ phí phát sinh,
@@ -71,16 +85,15 @@ def _summary_for(db: Session, user_id: UUID, date: date_type | None) -> WalletDa
     # ── Email đã thêm trong ngày ───────────────────────────────────────────
     added_at = func.coalesce(Member.last_invited_at, Member.created_at)
     member_rows = db.execute(
-        select(Member.status, func.count())
+        select(func.lower(Member.email), Member.status, Member.created_at)
         .where(
             Member.invited_by_user_id == user_id,
             added_at >= start,
             added_at < end,
         )
-        .group_by(Member.status)
     ).all()
-    emails_added = sum(n for status, n in member_rows if status != "removed")
-    emails_removed = sum(n for status, n in member_rows if status == "removed")
+    emails_added = sum(1 for _e, status, _c in member_rows if status != "removed")
+    emails_removed = sum(1 for _e, status, _c in member_rows if status == "removed")
 
     # ── Giao dịch trong ngày ───────────────────────────────────────────────
     # Lấy dòng thô (không GROUP BY) vì cần cờ `reversed` của TỪNG phí và cần gom
@@ -124,6 +137,94 @@ def _summary_for(db: Session, user_id: UUID, date: date_type | None) -> WalletDa
     fee_refunded = -sum(int(r[1]) for r in fee_rows if r[2])
     fee_net = fee_total - fee_refunded
     refunded_invite_count = sum(1 for r in fee_rows if r[0] == "invite_fee" and r[2])
+
+    # ── Add trong ngày tách MỚI / GIA HẠN (đơn vị EMAIL) ──────────────────
+    # Đại lý đếm theo email chứ không theo bút toán: "add hôm nay bao nhiêu email,
+    # trong đó mới bao nhiêu, gia hạn bao nhiêu" (user 2026-08-29). Mốc của thẻ là
+    # NGÀY TRẢ TIỀN: email có bút toán phí trong ngày thì thuộc về ngày đó, chấm hết.
+    #
+    # KHÔNG được lấy mốc "bản ghi member tạo hôm nay". Bản ghi bị dựng lại bất cứ lúc
+    # nào: lượt mời chốt hỏng oan xoá bản ghi đi, hôm sau đồng bộ thấy email vẫn nằm
+    # trong workspace nên tạo lại — 6 email trả tiền ngày 28/8 của một đại lý nhảy hết
+    # sang ngày 29/8 kiểu đó, thổi phồng cột "mới" thêm 6 (user 2026-08-29).
+    #
+    # Lấy CẢ bút toán đã hoàn: lượt bị chốt hỏng oan (`MEMBER_REFUND_WHILE_IN_TEAM`)
+    # vẫn là email đang nằm trong workspace. Lượt hỏng THẬT bị loại ở bước dưới bằng
+    # bản ghi member (xoá hẳn, hoặc `removed` vì mời hỏng/thu hồi/hết hạn).
+    fee_kinds_by_email: dict[str, set[str]] = {}
+    for r in fee_rows:
+        fee_email = _fee_email(r)
+        if fee_email:
+            fee_kinds_by_email.setdefault(fee_email, set()).add(r[0])
+
+    # Email trả tiền hôm nay hiện còn giữ ghế không, và bản ghi CŨ NHẤT của nó có từ
+    # bao giờ. Một email có thể có nhiều bản ghi (nhiều workspace, hoặc bản đã đổi
+    # tên) nên phải gộp: còn ghế = còn bản ghi sống, HOẶC bản ghi đã ĐỔI EMAIL — ca
+    # đó ghế vẫn nằm đó dưới tên mới, và email mới không sinh phí nên vẫn là một.
+    holds_seat: set[str] = set()
+    first_record_at: dict[str, datetime] = {}
+    if fee_kinds_by_email:
+        for email, status, reason, created in db.execute(
+            select(
+                func.lower(Member.email),
+                Member.status,
+                Member.removed_reason,
+                Member.created_at,
+            ).where(
+                Member.invited_by_user_id == user_id,
+                func.lower(Member.email).in_(sorted(fee_kinds_by_email)),
+            )
+        ).all():
+            if status != "removed" or reason == "email_changed":
+                holds_seat.add(email)
+            oldest = first_record_at.get(email)
+            if oldest is None or created < oldest:
+                first_record_at[email] = created
+
+    # Email đã trả tiền THÀNH CÔNG trước ngày này ⇒ lượt hôm nay là trả tiếp, kể cả
+    # khi nó đi qua luồng mời mới (gói cũ hết hạn rồi add lại). Bỏ bút toán đã hoàn:
+    # lượt hỏng được hoàn phí thì email chưa từng trả đồng nào.
+    paid_before: set[str] = set()
+    if fee_kinds_by_email:
+        fee_email_col = func.lower(WalletTransaction.meta["email"].astext)
+        paid_before = {
+            e
+            for (e,) in db.execute(
+                select(fee_email_col)
+                .where(
+                    WalletTransaction.user_id == user_id,
+                    WalletTransaction.kind.in_(_FEE_KINDS),
+                    WalletTransaction.reversed.is_(False),
+                    WalletTransaction.created_at < start,
+                    fee_email_col.in_(sorted(fee_kinds_by_email)),
+                )
+                .group_by(fee_email_col)
+            ).all()
+        }
+
+    added_new_count = 0
+    added_renew_count = 0
+    for email, kinds in fee_kinds_by_email.items():
+        if email not in holds_seat:
+            continue  # lượt hỏng thật: email không vào team, hoặc đã bị gỡ khỏi team
+        oldest = first_record_at.get(email)
+        if (
+            "renew_fee" in kinds
+            or email in paid_before
+            or (oldest is not None and oldest < start)
+        ):
+            added_renew_count += 1
+        else:
+            added_new_count += 1
+
+    # Mời lại email CÒN HẠN không mất tiền: không phải email mới, cũng không phải lượt
+    # trả tiền nào. Đếm riêng để chỗ chênh giữa thẻ và tab *Email đã thêm* có tên gọi,
+    # khỏi ai phải tự đoán.
+    added_free_reinvite_count = sum(
+        1
+        for e, status, c in member_rows
+        if status != "removed" and c < start and e not in fee_kinds_by_email
+    )
 
     # ── New / Renew: email LẦN ĐẦU trả tiền vs email CŨ trả tiếp ──────────
     # New = email chưa từng có lượt thu phí thành công nào trước đó. Renew = email
@@ -194,6 +295,9 @@ def _summary_for(db: Session, user_id: UUID, date: date_type | None) -> WalletDa
         fee_net=fee_net,
         fee_from_invoice=fee_from_invoice,
         fee_from_balance=fee_net - fee_from_invoice,
+        added_new_count=added_new_count,
+        added_renew_count=added_renew_count,
+        added_free_reinvite_count=added_free_reinvite_count,
         invite_count=count_of("invite_fee"),
         refunded_invite_count=refunded_invite_count,
         renew_count=count_of("renew_fee"),

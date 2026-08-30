@@ -1295,6 +1295,13 @@ class WalletDailySummaryOut(BaseModel):
     fee_net: int = 0
     fee_from_invoice: int
     fee_from_balance: int
+    #: Email VÀO đội lần đầu trong ngày (bản ghi member tạo hôm nay). Đổi email chỉ là
+    #: thay thế nên vẫn tính 1, không phải 2.
+    added_new_count: int = 0
+    #: Email CŨ trả tiền tiếp trong ngày: gia hạn thêm tháng, hoặc hết hạn rồi add lại.
+    added_renew_count: int = 0
+    #: Mời lại email CÒN HẠN — không mất tiền, không phải add mới lẫn gia hạn.
+    added_free_reinvite_count: int = 0
     #: TỔNG lời mời tính phí trong ngày, đếm theo EMAIL (dán 5 email = 5 lời mời).
     invite_count: int
     #: Số lượt mời trong ngày đã hỏng và được hoàn phí.
