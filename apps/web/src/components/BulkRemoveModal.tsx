@@ -677,7 +677,11 @@ export function BulkRemoveModal({
         className="bg-white rounded-lg shadow-xl w-full mx-4"
         style={{
           maxWidth: isRenew ? 1040 : 860,
-          maxHeight: "calc(90vh / var(--ui-scale))",
+          // Dự phòng `1` là BẮT BUỘC: `--ui-scale` do lib/ui-scale.ts đặt, chưa
+          // chạy ở mọi bản triển khai. Thiếu dự phòng thì `var()` rỗng làm HỎNG CẢ
+          // khai báo (không phải bỏ qua phần lỗi) → max-height về `none` → modal
+          // mất trần chiều cao, chọn nhiều email là tràn khỏi màn hình.
+          maxHeight: "calc(90vh / var(--ui-scale, 1))",
           display: "flex",
           flexDirection: "column",
         }}
