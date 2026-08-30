@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     # Tái tạo kết nối cũ hơn ngưỡng này (giây) — tránh dùng lại kết nối đã bị
     # Postgres/tunnel đóng phía kia mà pool chưa biết.
     db_pool_recycle_sec: int = Field(1800, alias="DB_POOL_RECYCLE_SEC")
+    # Trần thời gian cho MỘT câu SQL và cho việc CHỜ KHOÁ (mili-giây, 0 = tắt).
+    # Postgres mặc định chờ vô hạn cả hai: một câu chạy loạn hoặc một transaction bị
+    # bỏ quên đang giữ khoá là mọi request sau xếp hàng cho tới khi pool cạn, và
+    # trình duyệt chỉ thấy màn hình quay mãi. Xem db.py.
+    # 60s cho câu SQL vì endpoint nặng nhất đo được vẫn dưới 30s; 10s cho khoá vì
+    # chờ lâu hơn thế là đang dồn hàng chứ không phải đang tới lượt.
+    db_statement_timeout_ms: int = Field(60_000, alias="DB_STATEMENT_TIMEOUT_MS")
+    db_lock_timeout_ms: int = Field(10_000, alias="DB_LOCK_TIMEOUT_MS")
     # Số thread tối đa của threadpool anyio (xem main.py::_apply_thread_limit).
     thread_pool_size: int = Field(16, alias="THREAD_POOL_SIZE")
 
