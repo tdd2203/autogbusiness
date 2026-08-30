@@ -6,11 +6,21 @@
  *   SYNC_BILLING → seat used/total, plan, billing_status
  *   INVITE/REMOVE/CHANGE_ROLE → email + role
  *
+ * RIÊNG INVITE_MEMBER (user 29/8/2026): liệt kê ĐỦ từng email kèm trạng thái của
+ * chính nó, thay vì một dòng "verify 7/8" cắt danh sách còn 3 email. Người dùng hỏi
+ * "email nào đã mời được", con số không trả lời được câu đó. Xem `lib/inviteOutcome`.
+ * Task mời cũ (chưa có `invite_outcome`) vẫn rơi về dòng tóm tắt như trước.
+ *
  * Dismissible. Caller tự manage auto-dismiss qua state (banner KHÔNG tự ẩn).
  */
 
 import type { QueueItem } from "../types";
 import { useT } from "../i18n";
+import {
+  readInviteOutcome,
+  type InviteOutcomeRow,
+  type InviteOutcomeView,
+} from "../lib/inviteOutcome";
 
 type SyncMismatch = {
   expected_total?: number | null;
@@ -179,6 +189,148 @@ function renderDetail(task: QueueItem, t: Translator): string {
   }
 }
 
+/**
+ * Chip trạng thái của một email — lối trình bày của chính ChatGPT admin: nền nhạt,
+ * bo tròn hết cỡ, chữ nhỏ. Trạng thái nằm ở chip, KHÔNG nhuộm màu cả khung.
+ */
+const PILL: Record<
+  InviteOutcomeRow["kind"],
+  { labelKey: string; fg: string; bg: string; border: string }
+> = {
+  invited: {
+    labelKey: "inviteOutcome.pill.invited",
+    fg: "var(--success)",
+    bg: "var(--success-bg)",
+    border: "var(--success-border)",
+  },
+  failed: {
+    labelKey: "inviteOutcome.pill.failed",
+    fg: "var(--danger)",
+    bg: "var(--danger-bg)",
+    border: "var(--danger-border)",
+  },
+};
+
+/** Dòng tóm tắt "5 đã mời · 2 chưa xác minh · 1 lỗi" — bỏ qua nhóm rỗng. */
+export function outcomeSummary(view: InviteOutcomeView, t: Translator): string {
+  const parts: string[] = [];
+  if (view.counts.sent)
+    parts.push(t("inviteOutcome.countInvited", { n: view.counts.sent }));
+  if (view.counts.failed)
+    parts.push(t("inviteOutcome.countFailed", { n: view.counts.failed }));
+  return parts.join(" · ");
+}
+
+/**
+ * Danh sách email của một lệnh mời. KHÔNG cắt bớt, KHÔNG gộp "+5" — cắt đúng chỗ
+ * này là quay lại đúng cái bệnh cũ (không biết email nào đã mời được). Mẻ đông thì
+ * cho khung tự cuộn.
+ *
+ * Mỗi email một hàng có gạch ngăn, email bên trái, chip trạng thái bên phải — đúng
+ * lối bảng thành viên của ChatGPT admin, để đọc lướt theo cột chip là ra ngay email
+ * nào chưa đi được.
+ */
+export function InviteOutcomeList({
+  view,
+  t,
+}: {
+  view: InviteOutcomeView;
+  t: Translator;
+}) {
+  return (
+    <ul
+      style={{
+        listStyle: "none",
+        margin: "10px 0 0",
+        padding: 0,
+        maxHeight: 340,
+        overflowY: "auto",
+      }}
+    >
+      {view.rows.map((row, i) => {
+        const pill = PILL[row.kind];
+        return (
+          <li
+            key={`${row.kind}:${row.email}`}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              padding: "8px 0",
+              borderTop: i === 0 ? "none" : "1px solid var(--border)",
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 13,
+                  color: "var(--ink)",
+                  wordBreak: "break-all",
+                }}
+              >
+                {row.email}
+              </div>
+              {row.noteKey && (
+                <div
+                  style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 1 }}
+                >
+                  {t(row.noteKey)}
+                </div>
+              )}
+            </div>
+            <span
+              style={{
+                flexShrink: 0,
+                fontSize: 12,
+                lineHeight: 1.5,
+                padding: "1px 9px",
+                borderRadius: 999,
+                color: pill.fg,
+                background: pill.bg,
+                border: `1px solid ${pill.border}`,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {t(pill.labelKey)}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Nút đóng — chữ X mờ ở góc, hiện rõ khi rê chuột. */
+function DismissButton({
+  onClick,
+  label,
+}: {
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      style={{
+        background: "transparent",
+        border: "none",
+        cursor: "pointer",
+        color: "inherit",
+        opacity: 0.5,
+        padding: "0 6px",
+        fontSize: 14,
+      }}
+      onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+      onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.5")}
+    >
+      ✕
+    </button>
+  );
+}
+
 export function TaskCompletionBanner({
   task,
   onDismiss,
@@ -191,9 +343,69 @@ export function TaskCompletionBanner({
 }) {
   const t = useT();
   const isError = task.status === "FAILED";
+  const outcome = readInviteOutcome(task);
+  const typeLabel = t(`sync.type.${task.type}`);
+  const time = task.completed_at
+    ? new Date(task.completed_at).toLocaleTimeString()
+    : null;
+
+  // ── LỆNH MỜI: thẻ trắng trung tính, trạng thái nằm ở chip từng dòng ──────────
+  //
+  // Không nhuộm màu cả khung (user 29/8/2026: "làm như cách ChatGPT thông báo").
+  // Mảng xanh/vàng/đỏ nguyên khung đọc như một tiếng chuông báo động cho CẢ MẺ,
+  // trong khi mẻ mời gần như luôn pha trộn — thứ cần phân biệt là từng email, và
+  // đó đúng là việc của chip. Tiêu đề vẫn đi theo kết cục, không theo status task.
+  if (outcome) {
+    return (
+      <div
+        role="status"
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          gap: 12,
+          background: "var(--surface)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--radius-lg)",
+          boxShadow: "var(--shadow-card)",
+          padding: "12px 14px",
+        }}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--ink)" }}>
+            {t(outcome.titleKey)}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>
+            {[outcomeSummary(outcome, t), contextLabel, time]
+              .filter(Boolean)
+              .join(" · ")}
+          </div>
+          {/* Lý do hỏng là của CẢ NHÓM (một mẻ chỉ mang một mã lỗi) — nói một lần
+              ở đây, không lặp xuống từng dòng email. */}
+          {(outcome.failureText || outcome.failureKey) && (
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--danger)",
+                background: "var(--danger-bg)",
+                border: "1px solid var(--danger-border)",
+                borderRadius: "var(--radius)",
+                padding: "6px 9px",
+                marginTop: 8,
+                lineHeight: 1.5,
+              }}
+            >
+              {outcome.failureText ?? t(outcome.failureKey!)}
+            </div>
+          )}
+          <InviteOutcomeList view={outcome} t={t} />
+        </div>
+        <DismissButton onClick={onDismiss} label={t("common.close")} />
+      </div>
+    );
+  }
+
   const detail = renderDetail(task, t);
   const title = isError ? t("sync.failedTitle") : t("sync.completedTitle");
-  const typeLabel = t(`sync.type.${task.type}`);
 
   return (
     <div
@@ -232,7 +444,7 @@ export function TaskCompletionBanner({
         >
           {detail}
         </div>
-        {task.completed_at && (
+        {time && (
           <div
             style={{
               fontSize: 11,
@@ -241,28 +453,11 @@ export function TaskCompletionBanner({
               fontFamily: "var(--font-mono)",
             }}
           >
-            {new Date(task.completed_at).toLocaleTimeString()}
+            {time}
           </div>
         )}
       </div>
-      <button
-        type="button"
-        onClick={onDismiss}
-        aria-label={t("common.close")}
-        style={{
-          background: "transparent",
-          border: "none",
-          cursor: "pointer",
-          color: "inherit",
-          opacity: 0.5,
-          padding: "0 6px",
-          fontSize: 14,
-        }}
-        onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
-        onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.5")}
-      >
-        ✕
-      </button>
+      <DismissButton onClick={onDismiss} label={t("common.close")} />
     </div>
   );
 }

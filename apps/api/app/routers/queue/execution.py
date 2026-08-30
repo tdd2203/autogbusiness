@@ -29,8 +29,13 @@ from app.schemas import QueueOut, QueueProgressUpdate
 from app.services import task_merge
 
 from ._shared import router
+from .completion import (
+    _invite_task_emails,
+    _stamp_invite_outcome,
+    defer_unverified_invite,
+    reconcile_failed_invite,
+)
 from .timing import stamp_task_timing
-from .completion import defer_unverified_invite, reconcile_failed_invite
 
 # Task còn BÁO NHỊP (progress tick) thì chưa phải task chết — nhưng cũng không
 # được sống mãi: trần tuyệt đối = ngưỡng của loại task × hệ số này, tính từ
@@ -281,12 +286,25 @@ def pick_next(
             ):
                 # Không còn member nào sống để theo dõi → hoãn chỉ là giam tiền mà
                 # không ai đối chiếu → chốt hỏng + hoàn phí ngay như cũ.
-                reconcile_failed_invite(
+                failure = reconcile_failed_invite(
                     db,
                     stuck,
                     workspace_id=workspace.id,
                     workspace_name=workspace.name,
                     error_code="TIMEOUT",
+                )
+                _stamp_invite_outcome(
+                    stuck,
+                    failed=failure.failed,
+                    refunded=failure.refunded,
+                    seat_credit=failure.seat_credit,
+                    reason_code="TIMEOUT",
+                )
+            else:
+                _stamp_invite_outcome(
+                    stuck,
+                    pending_verify=sorted(_invite_task_emails(stuck)),
+                    reason_code="TIMEOUT",
                 )
     if stuck_tasks:
         db.commit()

@@ -13,6 +13,7 @@ Endpoints (đăng ký lên router dùng chung từ `_shared`):
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
@@ -39,6 +40,7 @@ from app.models import (
 )
 from app.schemas import QueueOut, QueueUpdate
 from app.services import wallet_service
+from app.services.task_errors import friendly_error_message
 from app.sse import publish_task_event
 
 from ._shared import router
@@ -147,6 +149,19 @@ def _refund_stranded_deferred_fees(
     return wallet_service.InviteRefund(total, sorted(set(refunded_emails)))
 
 
+class InviteFailureSummary(NamedTuple):
+    """Kết cục TIỀN của một lệnh mời hỏng, chia theo từng email — để banner kết quả
+    nói đúng chuyện gì đã xảy ra với khoản đã trừ, thay vì nói chung "đã hoàn phí".
+
+    `refunded` = tiền đã quay về ví. `seat_credit` = KHÔNG hoàn, giữ tiền gắn với
+    email để lần mời lại miễn phí (luật NOT_ENOUGH_SEATS chốt 28/8/2026).
+    """
+
+    failed: list[str]
+    refunded: list[str]
+    seat_credit: list[str]
+
+
 def reconcile_failed_invite(
     db: Session,
     item: QueueItem,
@@ -154,7 +169,7 @@ def reconcile_failed_invite(
     workspace_id: UUID,
     workspace_name: str,
     error_code: str | None = None,
-) -> None:
+) -> InviteFailureSummary:
     """Reconcile 1 task INVITE_MEMBER THẤT BẠI HOÀN TOÀN — dùng chung cho CẢ 2 đường:
       - extension báo FAILED (completion.update_task), VÀ
       - timeout lazy-cleanup (execution.pick_next).
@@ -379,6 +394,69 @@ def reconcile_failed_invite(
             item_id=item.id,
             now=now_terminal,
         )
+
+    return InviteFailureSummary(
+        failed=sorted(task_emails),
+        refunded=sorted({e.lower() for e in refunded.emails}),
+        seat_credit=sorted(seat_credit_emails),
+    )
+
+
+def _invite_task_emails(item: QueueItem) -> set[str]:
+    """Email của một task INVITE_MEMBER (batch `emails` hoặc đơn `email`), lowercase."""
+    payload = item.payload or {}
+    if isinstance(payload.get("emails"), list):
+        return {
+            str(e).lower()
+            for e in payload["emails"]
+            if isinstance(e, str) and "@" in e
+        }
+    if isinstance(payload.get("email"), str):
+        return {payload["email"].lower()}
+    return set()
+
+
+def _stamp_invite_outcome(
+    item: QueueItem,
+    *,
+    invited: list[str] | None = None,
+    failed: list[str] | None = None,
+    pending_verify: list[str] | None = None,
+    refunded: list[str] | None = None,
+    seat_credit: list[str] | None = None,
+    reason_code: str | None = None,
+) -> None:
+    """Ghi kết cục TỪNG EMAIL của lệnh mời vào `item.result["invite_outcome"]`.
+
+    Vì sao (user 29/8/2026): banner kết quả chỉ nói "verify 7/8" rồi cắt còn 3 email
+    → người dùng biết lệnh chạy xong nhưng KHÔNG biết email nào đã mời được. Backend
+    ngay tại đây đã chia đủ ba nhóm (verified / hoãn đối chiếu / hỏng đã hoàn phí),
+    chỉ là chưa ai ghi lại. Ghi ra để dashboard liệt kê thẳng từng email.
+
+    Ba nhóm LOẠI TRỪ nhau: `invited` = có mặt thật trên ChatGPT; `pending_verify` =
+    chưa xác minh được, đang đối chiếu (chưa được coi là hỏng); `failed` = đã chốt
+    hỏng, bản ghi bị xoá. `refunded`/`seat_credit` là tập con của `failed` cho biết
+    tiền đi đâu (xem InviteFailureSummary).
+
+    Gán LẠI cả dict `item.result` — JSONB sửa tại chỗ không được SQLAlchemy theo dõi.
+    """
+    item.result = {
+        **(item.result or {}),
+        "invite_outcome": {
+            "invited": invited or [],
+            "failed": failed or [],
+            "pending_verify": pending_verify or [],
+            "refunded": refunded or [],
+            "seat_credit": seat_credit or [],
+            "reason_code": reason_code,
+            # Câu giải thích lấy THẲNG từ `task_errors` — bảng chữ cho đại lý đã
+            # chốt 28/8/2026. Dashboard tuyệt đối không được dựng bảng dịch mã lỗi
+            # thứ hai: hai bảng thì sớm muộn cũng nói hai chuyện khác nhau, và ca
+            # đắt nhất (`SEAT_PURCHASE_FAILED` — mua suất không thành) là ca dễ bị
+            # bỏ sót nhất ở bảng đi sau.
+            "reason_text": friendly_error_message(reason_code, None),
+        },
+    }
 
 
 def close_invite_defer_with_sync_evidence(
@@ -1876,16 +1954,45 @@ def update_task(
         # vào reconcile_failed_invite() để đường timeout (execution.py) tái dùng
         # y hệt (trước đây timeout bỏ qua → "thất bại nửa vời").
         if not deferred:
-            reconcile_failed_invite(
+            failure = reconcile_failed_invite(
                 db,
                 item,
                 workspace_id=workspace.id,
                 workspace_name=workspace.name,
                 error_code=body.error_code,
             )
+            _stamp_invite_outcome(
+                item,
+                failed=failure.failed,
+                refunded=failure.refunded,
+                seat_credit=failure.seat_credit,
+                reason_code=body.error_code,
+            )
+        else:
+            # Hoãn phán xử = CHƯA hỏng: banner phải nói "chưa xác minh", không được
+            # nhuộm đỏ một lời mời có thể đã tới hộp thư người nhận.
+            _stamp_invite_outcome(
+                item,
+                pending_verify=sorted(_invite_task_emails(item)),
+                reason_code=body.error_code,
+            )
     elif item.type == "INVITE_MEMBER" and effective_status == "COMPLETED":
         result_dict = body.result or {}
         verify_failed = bool(result_dict.get("verify_scrape_failed"))
+        # EMAIL CHƯA HỀ VÀO ĐƯỢC Ô MỜI (extension khai, xem execute-invite-inner):
+        # hộp thoại đóng giữa chừng hoặc không thêm được dòng nhập → những email này
+        # KHÔNG nằm trong cú "Gửi lời mời" nào cả.
+        #
+        # Đây là bằng chứng DƯƠNG rằng lời mời chưa đi — khác hẳn "đã bấm gửi mà
+        # chưa soi lại được". Nên chúng KHÔNG đi đường hoãn-phán-xử: chốt hỏng +
+        # hoàn phí NGAY, kể cả khi verify không scrape được. Hoãn ở đây là giam
+        # tiền 20 phút cho một việc đã biết chắc kết quả (bug user 30/8/2026: màn
+        # hình báo "đã gửi, đang xác nhận" cho email chưa hề được gửi).
+        skipped_set = {
+            str(e).lower()
+            for e in (result_dict.get("skipped_emails") or [])
+            if isinstance(e, str) and "@" in e
+        }
         emails_to_delete: list[str] = []
         # Email defer (mời tươi < 10′ nhưng CHƯA verify): tách khỏi emails_to_delete để
         # KHÔNG xoá, NHƯNG cũng KHÔNG được coi là verified (bug thuylinhtctbg 2026-07-16:
@@ -2052,10 +2159,12 @@ def update_task(
         # HOÀN PHÍ VÍ (feature 003) cho email COMPLETED nhưng KHÔNG verify được
         # (unverified). verify_scrape_failed → không xoá/không hoàn. Idempotent qua
         # cột `reversed`. No-op nếu task không có giao dịch invite_fee (non-beta).
+        refunded_emails: list[str] = []
         if emails_to_delete:
             refunded = wallet_service.refund_invite(
                 db, item.id, emails=emails_to_delete
             )
+            refunded_emails = sorted({e.lower() for e in refunded.emails})
             # Hoàn phí ⇒ void kỳ đã trả (phantom joined_at != NULL sống sót bộ lọc
             # xoá bên dưới vẫn phải mất "hạn ma"). Void theo `refunded.emails` —
             # email KHÔNG được hoàn đồng nào thì kỳ hạn của họ do task khác trả,
@@ -2096,6 +2205,22 @@ def update_task(
                     Invite.email.in_(emails_to_delete),
                 )
             )
+
+        # Kết cục từng email cho banner kết quả. `verify_scrape_failed` = không đọc
+        # được tab Lời mời ⇒ KHÔNG biết gì về email nào cả, cả mẻ vào nhóm "chưa xác
+        # minh" (đúng sự thật) thay vì mặc định xanh.
+        _stamp_invite_outcome(
+            item,
+            invited=sorted(verified_now),
+            failed=sorted(emails_to_delete),
+            pending_verify=sorted(
+                (task_emails - skipped_set) if verify_failed else deferred_set
+            ),
+            refunded=refunded_emails,
+            # Lệnh COMPLETED không mang mã lỗi nào; nhóm hỏng ở đây (nếu có) là các
+            # email chưa nhập được, nên nói đúng nguyên nhân thay vì câu chung.
+            reason_code="INVITE_NOT_TYPED" if skipped_set else None,
+        )
 
     # SYNC_BILLING chỉ chạy khi user chủ động trigger từ dashboard (WorkspaceLayout
     # "Cập nhật giá & ngày renew" / Workspaces list "Sync billing"). Extension
