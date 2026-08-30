@@ -16,7 +16,6 @@ import { ChangeSubscriptionModal } from "../components/ChangeSubscriptionModal";
 import { NotifyLinkModal } from "../components/NotifyLinkModal";
 import { RowActionsMenu, type RowActionItem } from "../components/RowActionsMenu";
 import { RemovedEmailsList } from "../components/RemovedEmailsList";
-import { isRenewalDue } from "../components/RenewalsPanel";
 import { confirm, toast } from "../components/Toast";
 import { useAddedMemberActions } from "../hooks/useAddedMemberActions";
 import OrderQrModal from "../components/OrderQrModal";
@@ -333,15 +332,20 @@ export default function AddedEmails() {
       new Date(m.subscription_end_at).getTime() <= Date.now(),
   );
 
-  // 2 thẻ thống kê giữa (đã đổi nghĩa theo nhãn mới, KHÔNG còn đếm theo thanh toán):
-  //   "Chờ tham gia"    = email đã thêm nhưng chưa vào team (status pending).
-  //   "Đến hạn gia hạn" = email còn active/pending + đã hết hạn HOẶC còn ≤7 ngày —
-  //                       ĐÚNG bằng định nghĩa `isRenewalDue` dùng cho badge sidebar
-  //                       "Gia hạn" và RenewalsPanel. (Trước đây chỉ đếm expiredMembers
-  //                       = đã quá hạn thật → luôn ra 0 khi mọi email còn hạn tương lai,
-  //                       lệch với badge sidebar. User report 2026-07-20.)
+  // 2 thẻ thống kê giữa:
+  //   "Chờ tham gia"     = email đã thêm nhưng chưa vào team (status pending).
+  //   "Chưa thanh toán"  = email còn nợ tiền (payment_status 'unpaid').
+  //
+  // ⚠️ Thẻ này PHẢI đếm ĐÚNG thứ mà chip lọc cùng tên lọc ra (`payment_status ===
+  // "unpaid"`). Trước 30/8/2026 nó đếm `isRenewalDue` (đã hết hạn hoặc còn ≤7 ngày)
+  // trong khi chip lọc theo tiền → bấm vào thẻ ghi 9 lại ra danh sách khác hẳn, và
+  // email nợ tiền nhưng còn hạn dài thì không đếm vào đâu cả. Nhãn cũ "Đến hạn gia
+  // hạn" nay trả về đúng chỗ của nó là Members.tsx (`metrics.duePayment`), nơi con
+  // số ĐÚNG là hạn dùng chứ không phải tiền.
   const pendingCount = members.filter((m) => m.status === "pending").length;
-  const dueForRenewalCount = members.filter(isRenewalDue).length;
+  const unpaidCount = members.filter(
+    (m) => m.payment_status === "unpaid",
+  ).length;
 
   const allFilteredSelected =
     filtered.length > 0 && filtered.every((m) => selected.has(m.id));
@@ -861,10 +865,7 @@ export default function AddedEmails() {
           label={t("addedEmails.metricRequested")}
           value={pendingCount}
         />
-        <Metric
-          label={t("addedEmails.metricUnpaid")}
-          value={dueForRenewalCount}
-        />
+        <Metric label={t("addedEmails.metricUnpaid")} value={unpaidCount} />
       </div>
 
       <div className="table-card added-emails-card">
