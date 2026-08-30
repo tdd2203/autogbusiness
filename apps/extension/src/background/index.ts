@@ -12,6 +12,7 @@ import {
   isIdleCloseAlarm,
   setupIdleCloseAlarm,
 } from "./idle-close";
+import { enforceTabCap, setupOpenedTabsListener } from "./opened-tabs";
 import { updateProgress } from "../shared/api";
 import { getConfig } from "../shared/storage";
 
@@ -106,7 +107,12 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     return;
   }
   if (isIdleCloseAlarm(alarm.name)) {
-    void handleIdleCloseTick();
+    // Cùng một nhịp ~1 phút lo hai việc khác nhau về tab: `handleIdleCloseTick`
+    // đóng tab ĐỂ KHÔNG quá 30 phút, `enforceTabCap` giữ TỔNG SỐ tab extension
+    // mở không quá 3 (user chốt 29/8/2026).
+    void handleIdleCloseTick().finally(() => {
+      void enforceTabCap();
+    });
     return;
   }
   if (alarm.name !== BACKUP_POLL_ALARM) return;
@@ -166,6 +172,10 @@ void connectSSE();
 setupBackupPoll();
 setupLabelsRefreshAlarm();
 setupIdleCloseAlarm();
+// Đăng ký ở top-level (chạy mọi lần SW load, kể cả reload tay từ
+// chrome://extensions/): tab bị đóng thì phải rời sổ tab, kẻo trần 3 tab đếm cả
+// những tab đã chết.
+setupOpenedTabsListener();
 void refreshLabelBundle();
 // Manual reload từ chrome://extensions/ KHÔNG fire onInstalled/onStartup,
 // chỉ SW restart và chạy top-level code. Phải re-inject bridge ở đây nữa để

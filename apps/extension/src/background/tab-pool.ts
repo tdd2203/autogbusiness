@@ -116,6 +116,25 @@ export async function poolTabIds(): Promise<number[]> {
   return ids;
 }
 
+/**
+ * Tab của những ô ĐANG CÓ TASK GIỮ — trần 3 tab (`opened-tabs.ts`) tuyệt đối
+ * không được đóng chúng, đóng là cắt ngang lệnh đang chạy.
+ *
+ * `leased` là biến in-memory nên sau khi service worker bị khai tử, danh sách
+ * này rỗng — đúng, vì lệnh đang chạy cũng đã chết theo SW, không còn gì để giữ.
+ */
+export async function leasedTabIds(): Promise<number[]> {
+  if (leased.size === 0) return [];
+  const pool = await readPool();
+  const ids: number[] = [];
+  for (const slot of TAB_SLOTS) {
+    if (!leased.has(slot)) continue;
+    const id = pool[slot];
+    if (typeof id === "number") ids.push(id);
+  }
+  return ids;
+}
+
 /** Cặp (ô, tab) đang giữ — idle-close cần biết ô nào để xoá đúng ô khi đóng tab. */
 export async function poolEntries(): Promise<Array<{ slot: TabSlot; tabId: number }>> {
   const pool = await readPool();

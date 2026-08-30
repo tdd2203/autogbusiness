@@ -24,6 +24,13 @@ import type {
   ExecuteActionResponse,
   ScrapedInvoiceDetail,
 } from "../shared/messages";
+import {
+  createTrackedTab,
+  enforceTabCap,
+  forgetOpenedTab,
+  releaseOpenedTab,
+  trackOpenedTab,
+} from "./opened-tabs";
 
 const STRIPE_HOST = "invoice.stripe.com";
 const LINK_HOST = "checkout.link.com";
@@ -32,6 +39,8 @@ const STRIPE_TAB_OPEN_TIMEOUT_MS = 15_000;
 const STRIPE_CONTENT_READY_TIMEOUT_MS = 12_000;
 const LINK_TAB_OPEN_TIMEOUT_MS = 12_000;
 const LINK_CONTENT_READY_TIMEOUT_MS = 12_000;
+/** Cờ bận cho tab Link, đủ dài để chuỗi chạy hết rồi lớp bọc trả cờ về. */
+const BUSY_TTL_MS_LINK = 5 * 60 * 1000;
 
 export type PaymentChainOptions = {
   taskId: string;
@@ -198,7 +207,7 @@ export async function scrapeInvoiceDetailInTab(
 ): Promise<ScrapedInvoiceDetail | null> {
   let tab: chrome.tabs.Tab;
   try {
-    tab = await chrome.tabs.create({ url: invoiceUrl, active: true });
+    tab = await createTrackedTab({ url: invoiceUrl, active: true }, "payment");
   } catch (e) {
     console.warn("[autogpt-billing] mở tab hoá đơn fail:", e);
     return null;
@@ -243,11 +252,34 @@ export async function scrapeInvoiceDetailInTab(
     try {
       await chrome.tabs.remove(tabId);
     } catch {}
+    await forgetOpenedTab(tabId);
   }
 }
 
+/**
+ * Chuỗi thanh toán KHÔNG tự đóng tab Stripe/Link khi xong (cố ý: bước cuối có
+ * thể đòi OTP/3DS và `link-checkout.ts` dừng lại cho admin tự xác minh). Nhưng
+ * hai tab đó vẫn là tab do EXTENSION mở, phải nằm trong sổ để trần 3 tab dọn
+ * được sau khi đã nguội — xem `opened-tabs.ts`.
+ *
+ * `opened` gom id của mọi tab chuỗi này mở/kéo theo, để lớp bọc bên ngoài trả
+ * cờ bận về ngay khi chuỗi kết thúc, dù kết thúc bằng đường nào.
+ */
 export async function runPaymentChain(
   opts: PaymentChainOptions,
+): Promise<PaymentChainResult> {
+  const opened: number[] = [];
+  try {
+    return await runPaymentChainInner(opts, opened);
+  } finally {
+    for (const id of opened) await releaseOpenedTab(id);
+    void enforceTabCap();
+  }
+}
+
+async function runPaymentChainInner(
+  opts: PaymentChainOptions,
+  opened: number[],
 ): Promise<PaymentChainResult> {
   console.log(
     `[autogpt-payment] runPaymentChain start: url=${opts.stripeInvoiceUrl}, expected=${opts.expectedAmountText}`,
@@ -256,10 +288,10 @@ export async function runPaymentChain(
   // Stage 1: mở Stripe tab
   let stripeTab: chrome.tabs.Tab;
   try {
-    stripeTab = await chrome.tabs.create({
-      url: opts.stripeInvoiceUrl,
-      active: true,
-    });
+    stripeTab = await createTrackedTab(
+      { url: opts.stripeInvoiceUrl, active: true },
+      "payment",
+    );
   } catch (e) {
     return {
       ok: false,
@@ -277,6 +309,7 @@ export async function runPaymentChain(
     };
   }
   const stripeTabId = stripeTab.id;
+  opened.push(stripeTabId);
 
   // Đợi load
   const loaded = await waitForTabComplete(stripeTabId, STRIPE_TAB_OPEN_TIMEOUT_MS);
@@ -345,6 +378,11 @@ export async function runPaymentChain(
     };
   }
   const linkTabId = linkTab.id;
+  // Tab Link do TRANG Stripe bật lên chứ không phải `tabs.create` của mình,
+  // nhưng nó xuất hiện là do cú bấm của extension và không ai đóng nó — vẫn phải
+  // vào sổ, kẻo mỗi lần mua suất lại bỏ lại một tab ngoài tầm dọn.
+  await trackOpenedTab(linkTabId, "payment", BUSY_TTL_MS_LINK);
+  opened.push(linkTabId);
 
   // Đợi load
   const linkLoaded = await waitForTabComplete(linkTabId, STRIPE_TAB_OPEN_TIMEOUT_MS);
