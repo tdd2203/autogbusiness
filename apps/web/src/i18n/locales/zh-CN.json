@@ -1487,16 +1487,5 @@
   "rateLimit.action.MEMBER_BULK_REMOVE": "批量移除与清理过期邮箱",
   "rateLimit.action.WALLET_TOPUP": "创建充值单",
   "rateLimit.action.WALLET_WITHDRAW": "创建提现单",
-  "rateLimit.action.MEMBER_PAY": "从钱包付款",
-  "rateLimit.hint.WORKSPACE_FULL_SYNC": "扩展会扫描用户和邀请两个标签页，最重的一次，15-150 秒。",
-  "rateLimit.hint.WORKSPACE_SYNC_BATCH": "把多个邮箱合并成一次用户标签页扫描。",
-  "rateLimit.hint.WORKSPACE_SYNC_BILLING": "打开 ChatGPT 账单页读取席位、套餐和账单列表。",
-  "rateLimit.hint.WORKSPACE_PURCHASE_SEAT": "会动到 ChatGPT 上的真实扣款，不宜连点。",
-  "rateLimit.hint.WORKSPACE_REVOKE_INVITES": "每次点击都是一次进入待处理邀请标签页的操作。",
-  "rateLimit.hint.WORKSPACE_HARVEST_LABELS": "扩展会走完 ChatGPT 的 4 个管理页面读取标签。",
-  "rateLimit.hint.MEMBER_BULK_INVITE": "从钱包扣费并把一批邀请交给扩展执行。",
-  "rateLimit.hint.MEMBER_BULK_REMOVE": "每一批都会生成一串移除任务让扩展逐个执行。",
-  "rateLimit.hint.WALLET_TOPUP": "每次点击都会生成一个等待银行对账的充值码。",
-  "rateLimit.hint.WALLET_WITHDRAW": "每张提现单都需要超级管理员手工处理。",
-  "rateLimit.hint.MEMBER_PAY": "扣除钱包里的真实余额或生成转账账单。"
+  "rateLimit.action.MEMBER_PAY": "从钱包付款"
 }

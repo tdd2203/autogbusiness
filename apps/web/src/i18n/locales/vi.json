@@ -1487,16 +1487,5 @@
   "rateLimit.action.MEMBER_BULK_REMOVE": "Gỡ hàng loạt và dọn email hết hạn",
   "rateLimit.action.WALLET_TOPUP": "Tạo lệnh nạp tiền",
   "rateLimit.action.WALLET_WITHDRAW": "Tạo lệnh rút tiền",
-  "rateLimit.action.MEMBER_PAY": "Thanh toán từ ví",
-  "rateLimit.hint.WORKSPACE_FULL_SYNC": "Extension quét cả tab Người dùng lẫn Lời mời, lượt nặng nhất, 15-150 giây.",
-  "rateLimit.hint.WORKSPACE_SYNC_BATCH": "Gom nhiều email vào một lượt quét tab Người dùng.",
-  "rateLimit.hint.WORKSPACE_SYNC_BILLING": "Mở trang thanh toán ChatGPT đọc số suất, gói và danh sách hoá đơn.",
-  "rateLimit.hint.WORKSPACE_PURCHASE_SEAT": "Chạm tới tiền thật trên ChatGPT, không nên bấm dồn.",
-  "rateLimit.hint.WORKSPACE_REVOKE_INVITES": "Mỗi lần bấm là một lượt extension vào tab Lời mời đang chờ.",
-  "rateLimit.hint.WORKSPACE_HARVEST_LABELS": "Extension đi qua 4 trang quản trị của ChatGPT để đọc nhãn.",
-  "rateLimit.hint.MEMBER_BULK_INVITE": "Trừ phí trong ví và đẩy một mẻ lời mời cho extension.",
-  "rateLimit.hint.MEMBER_BULK_REMOVE": "Mỗi mẻ là một loạt task gỡ cho extension chạy lần lượt.",
-  "rateLimit.hint.WALLET_TOPUP": "Mỗi lần bấm sinh một mã nạp mới chờ đối soát với ngân hàng.",
-  "rateLimit.hint.WALLET_WITHDRAW": "Mỗi lệnh rút là một việc chờ super-admin xử lý tay.",
-  "rateLimit.hint.MEMBER_PAY": "Trừ tiền thật trong ví hoặc sinh hoá đơn chuyển khoản."
+  "rateLimit.action.MEMBER_PAY": "Thanh toán từ ví"
 }

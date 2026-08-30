@@ -284,12 +284,6 @@ export function RateLimitSettings() {
                     <div style={{ fontWeight: 500, color: "var(--ink)" }}>
                       {localized("action", action.key, action.label)}
                     </div>
-                    <div
-                      className="cell-muted"
-                      style={{ fontSize: 12, marginTop: 2 }}
-                    >
-                      {localized("hint", action.key, action.hint)}
-                    </div>
                   </td>
                   <td>
                     <span className="role-tag">
