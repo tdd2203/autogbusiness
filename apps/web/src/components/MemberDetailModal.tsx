@@ -469,6 +469,54 @@ type CashRow =
   | { type: "entry"; entry: MemberPaymentEntry }
   | { type: "voided"; fee: MemberPaymentEntry; refund: MemberPaymentEntry };
 
+/** Bút toán mang tiền VỀ cho món nợ "đã hoàn phí mà email vẫn trong team". */
+const RECLAIM_KINDS = new Set(["adjust", "cycle_fee"]);
+
+/** Cửa sổ coi một lượt `invite_fee` mới là THU LẠI chứ không phải bán tháng mới —
+ *  khớp `RECLAIM_REINVITE_WINDOW` bên members/reconcile.py. */
+const RECLAIM_REINVITE_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Món nợ "đã hoàn phí nhưng email vẫn ở trong team" đã được thu lại chưa?
+ *
+ * Luật phải TRÙNG KHÍT với backend (`_flag_refunded_while_in_team` trong
+ * members/reconcile.py), nếu không thì một bên im còn một bên vẫn đỏ: có bút toán
+ * thu về ÍT NHẤT bằng lần hoàn gần nhất, xảy ra SAU lần hoàn đó.
+ *
+ * Ba cách tiền quay lại, đều tính:
+ *   - `adjust`    — admin truy thu tay;
+ *   - `cycle_fee` — đại lý tự bấm "Thanh toán" cho kỳ còn nợ (đường CHÍNH từ
+ *     29/8/2026, cả khi trừ thẳng ví lẫn khi trả qua hoá đơn QR);
+ *   - `invite_fee` chưa bị hoàn, trong `RECLAIM_REINVITE_WINDOW_MS` — lượt mời lại
+ *     TRÓT LỌT của cùng loạt (mời hỏng đi theo chùm: hỏng → hoàn → thử lại ngay).
+ *
+ * ⚠️ `renew_fee` KHÔNG tính dù cũng là số âm, và `invite_fee` NGOÀI cửa sổ cũng
+ * không: đó là mua THÊM một tháng, không phải trả nợ tháng đã dùng. Cũng vì thế mà
+ * KHÔNG được rút gọn thành "thực thu > 0" — một lượt gia hạn tháng sau sẽ đóng dấu
+ * "đã truy thu" cho khoản chưa ai thu đồng nào. Báo đỏ thừa thì khó chịu, báo xanh
+ * oan thì GIẤU MẤT TIỀN — nên chỗ nào lưỡng lự thì nghiêng về đỏ.
+ */
+export function isRefundDebtSettled(entries: MemberPaymentEntry[]): boolean {
+  const refunds = entries.filter(
+    (e) => e.kind.endsWith("_refund") && e.amount > 0,
+  );
+  if (refunds.length === 0) return false;
+  const latest = refunds.reduce((a, b) => (a.created_at >= b.created_at ? a : b));
+  return entries.some((e) => {
+    // Thu về phải ĐỦ (>= số đã hoàn) và phải xảy ra SAU lần hoàn.
+    if (e.amount > -latest.amount || e.created_at <= latest.created_at) {
+      return false;
+    }
+    if (RECLAIM_KINDS.has(e.kind)) return true;
+    return (
+      e.kind === "invite_fee" &&
+      !e.reversed &&
+      Date.parse(e.created_at) - Date.parse(latest.created_at) <=
+        RECLAIM_REINVITE_WINDOW_MS
+    );
+  });
+}
+
 /**
  * Ghép `invite_fee` (đã `reversed`) với `invite_refund` của cùng lượt mời.
  *
@@ -508,6 +556,16 @@ export function pairMemberCashflow(entries: MemberPaymentEntry[]): CashRow[] {
   return rows;
 }
 
+/** Tiền của 1 hoá đơn đã mời cho email nào, kết quả ra sao (API tính, xem
+    payments.md §2.2). `ok` = phí giữ nguyên · `failed` = phí đã hoàn (mời hỏng) ·
+    `pending` = có trong hoá đơn nhưng chưa phát sinh phí. */
+type MemberPaymentAllocation = {
+  email: string;
+  amount: number;
+  status: "ok" | "failed" | "pending" | string;
+  refunded_at: string | null;
+};
+
 type MemberPaymentOrder = {
   id: string;
   ref_code: string;
@@ -518,7 +576,49 @@ type MemberPaymentOrder = {
   created_at: string;
   paid_at: string | null;
   fulfillment_error: string | null;
+  /** true ⇔ toàn bộ phí mời mà hoá đơn này trả cho đã được hoàn (mời hỏng). */
+  fee_refunded?: boolean;
+  /** true ⇔ RIÊNG email đang xem mời hỏng và đã được hoàn phí ("hoá đơn thất bại"). */
+  member_fee_refunded?: boolean;
+  /** Lúc hoàn phí cho email đang xem — mốc đếm thời hạn còn hiện hoá đơn thất bại. */
+  member_refunded_at?: string | null;
+  allocations?: MemberPaymentAllocation[];
 };
+
+/* ── HOÁ ĐƠN THẤT BẠI Ở LẠI BAO LÂU ─────────────────────────────────────────
+   "Thất bại" ở đây KHÔNG phải là chưa nhận được tiền: tiền đã vào ví, nhưng lượt
+   mời email này hỏng nên phí đã hoàn ⇒ hoá đơn không đổi lấy dịch vụ nào. Nó là
+   bằng chứng đối soát nên phải còn thấy được một thời gian, nhưng để mãi thì panel
+   ngập hoá đơn chết (user 2026-08-29):
+     • CHƯA mời lại được email đó  → giữ 30 ngày (việc còn dở, người add còn phải xử lý)
+     • ĐÃ có lượt mời thành công sau đó → giữ 7 ngày (đã xong, chỉ còn để đối chiếu) */
+const FAILED_ORDER_DAYS = 30;
+const FAILED_ORDER_DAYS_AFTER_OK = 7;
+const DAY_MS = 86_400_000;
+
+/** Hoá đơn còn được hiện trên panel của email này (lọc hoá đơn thất bại quá hạn). */
+export function visibleMemberOrders(
+  orders: MemberPaymentOrder[],
+  entries: MemberPaymentEntry[],
+  now: number = Date.now(),
+): MemberPaymentOrder[] {
+  // Mốc các lượt mời THÀNH CÔNG của email (phí đã trừ và không bị hoàn).
+  const okAt = entries
+    .filter((e) => e.kind === "invite_fee" && !e.reversed)
+    .map((e) => Date.parse(e.created_at))
+    .filter((n) => Number.isFinite(n));
+  return orders.filter((o) => {
+    if (!o.member_fee_refunded) return true;
+    const at = Date.parse(
+      o.member_refunded_at ?? o.paid_at ?? o.created_at ?? "",
+    );
+    if (!Number.isFinite(at)) return true; // thiếu mốc → cứ giữ, đừng giấu bằng chứng
+    const days = okAt.some((t) => t > at)
+      ? FAILED_ORDER_DAYS_AFTER_OK
+      : FAILED_ORDER_DAYS;
+    return now - at <= days * DAY_MS;
+  });
+}
 
 type MemberPayments = {
   email: string;
@@ -609,6 +709,8 @@ export function MemberCashflow({
   const allRefunded = data.charged_total > 0 && data.net_total === 0;
   // Cặp phí ↔ hoàn của lượt mời hỏng gộp thành 1 dòng (xem pairMemberCashflow).
   const rows = pairMemberCashflow(data.entries);
+  // Hoá đơn thất bại chỉ ở lại 30/7 ngày (xem visibleMemberOrders).
+  const visibleOrders = visibleMemberOrders(data.orders, data.entries);
   return (
     <div>
       <div
@@ -821,7 +923,7 @@ export function MemberCashflow({
         </div>
       )}
 
-      {data.orders.length > 0 && (
+      {visibleOrders.length > 0 && (
         <div style={{ marginTop: 12 }}>
           <div
             style={{
@@ -849,93 +951,372 @@ export function MemberCashflow({
             {t("memberDetail.cashOrdersHint")}
           </div>
           <div style={{ display: "grid", gap: 6 }}>
-            {data.orders.map((o) => {
-              const paidIn = o.status === "paid";
-              return (
+            {visibleOrders.map((o) => (
+              <OrderCard
+                key={o.id}
+                order={o}
+                email={data.email}
+                t={t}
+                orderStatus={orderStatus}
+                formatDateTime={formatDateTime}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Một hoá đơn QR ở panel thành viên — bấm vào để xem tiền đó đã mời cho những ai.
+
+    Hoá đơn thường trả cho cả LƯỢT mời (có lượt 17 email, 5.610.000₫): nhìn con số
+    tổng không biết phần của email đang xem là bao nhiêu, càng không biết email nào
+    trong lượt mời hỏng đã hoàn tiền (user 2026-08-29). Bung ra là thấy ✓/✕ từng
+    email — API tính sẵn ở `allocations`, xem members/payments.md §2.2.
+
+    "HOÁ ĐƠN THẤT BẠI" = lượt mời của CHÍNH email này hỏng nên phí đã hoàn về ví,
+    KHÔNG phải là chưa nhận được tiền (tiền vẫn nằm ở ví). Vẫn trình bày y như cũ
+    (gạch ngang + viền nét đứt), chỉ mờ đi và đổi nhãn thành "Đã hoàn tiền". */
+function OrderCard({
+  order: o,
+  email,
+  t,
+  orderStatus,
+  formatDateTime,
+}: {
+  order: MemberPaymentOrder;
+  email: string;
+  t: TFn;
+  orderStatus: (value: string) => string;
+  formatDateTime: (d: string) => string;
+}) {
+  const [open, setOpen] = useState(false);
+  const allocations = o.allocations ?? [];
+  /* Nạp qua QR rồi lượt mời HỎNG → phí quay về ví ⇒ mã nạp này rốt cuộc không đổi
+     lấy gì. Để nguyên "Đã thanh toán · +330.000" là nói dối người đối soát (user
+     2026-08-27) → gạch ngang đúng như dòng phí đã hoàn ở sổ cái phía trên. Tiền vẫn
+     nằm ở ví, chỉ là không còn ứng với dịch vụ nào — nói rõ ở tooltip. */
+  const voided = o.member_fee_refunded === true || o.fee_refunded === true;
+  const paidIn = o.status === "paid" && !voided;
+  const canOpen = allocations.length > 0;
+  // Esc đóng pop-up phân bổ TRƯỚC, không để phím đó rơi xuống đóng luôn modal chi
+  // tiết thành viên bên dưới.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [open]);
+  const failedHint = o.member_fee_refunded
+    ? t("memberDetail.cashOrderFailedHint")
+    : t("memberDetail.cashOrderVoidedHint");
+  return (
+    <div
+      style={{
+        padding: "8px 11px",
+        background: "var(--bg)",
+        border: voided ? "1px dashed var(--border)" : "1px solid var(--border)",
+        borderRadius: 10,
+        display: "grid",
+        gap: 4,
+        // Hoá đơn thất bại: hiện y như cũ, chỉ mờ hơn để không tranh chỗ với
+        // hoá đơn còn hiệu lực (user 2026-08-29).
+        opacity: voided ? 0.62 : 1,
+        cursor: canOpen ? "pointer" : undefined,
+      }}
+      role={canOpen ? "button" : undefined}
+      tabIndex={canOpen ? 0 : undefined}
+      aria-expanded={canOpen ? open : undefined}
+      onClick={canOpen ? () => setOpen((v) => !v) : undefined}
+      onKeyDown={
+        canOpen
+          ? (e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setOpen((v) => !v);
+              }
+            }
+          : undefined
+      }
+    >
+      {/* Cột dòng tiền chỉ rộng 320px → xếp 2 dòng thay vì nhồi mã + giờ + số tiền
+          + trạng thái trên một hàng rồi để chữ tự gãy. */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            fontFamily: "var(--font-mono)",
+            fontSize: 11.5,
+            color: voided ? "var(--ink-3)" : "var(--ink)",
+            textDecoration: voided ? "line-through" : undefined,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={o.ref_code}
+        >
+          {o.ref_code}
+        </span>
+        <span
+          className={
+            voided
+              ? "badge badge-neutral badge-plain"
+              : (ORDER_STATUS_BADGE[o.status] ?? "badge badge-neutral badge-plain")
+          }
+          style={{ flexShrink: 0, whiteSpace: "nowrap" }}
+          title={voided ? failedHint : undefined}
+        >
+          {voided ? t("memberDetail.cashOrderRefunded") : orderStatus(o.status)}
+        </span>
+      </div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 10.5,
+            color: "var(--ink-3)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {formatDateTime(o.paid_at ?? o.created_at)}
+        </span>
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: 11.5,
+            fontWeight: paidIn ? 600 : 400,
+            color: paidIn ? "var(--success)" : "var(--ink-3)",
+            textDecoration: voided ? "line-through" : undefined,
+            whiteSpace: "nowrap",
+          }}
+          title={
+            voided
+              ? failedHint
+              : paidIn
+                ? t("memberDetail.cashOrderPaidIn")
+                : t("memberDetail.cashOrderNotIn")
+          }
+        >
+          {paidIn ? "+" : ""}
+          {formatVnd(o.paid_amount_vnd ?? o.amount_vnd)}
+        </span>
+      </div>
+      {canOpen && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            fontSize: 10.5,
+            color: "var(--ink-3)",
+          }}
+        >
+          <span style={{ display: "inline-block" }}>›</span>
+          {t("memberDetail.cashOrderAllocShow", { n: allocations.length })}
+        </div>
+      )}
+      {/* Phân bổ mở thành POP-UP RIÊNG, không bung tại chỗ: cột dòng tiền chỉ rộng
+          320px, nhồi gần 20 dòng "email + số tiền" vào đó thì email bị cắt cụt, số
+          tiền tràn khỏi mép và cả modal sinh thanh cuộn ngang (user 2026-08-29).
+          Pop-up có bề ngang riêng nên đọc trọn email dài lẫn số tiền.
+          Bấm nền / Esc để đóng; click bên trong CHẶN nổi bọt để không đóng lây
+          modal chi tiết thành viên bên dưới. */}
+      {canOpen && open && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 60,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+            background: "rgba(0,0,0,.45)",
+            cursor: "default",
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen(false);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            style={{
+              width: "min(560px, 100%)",
+              maxHeight: "80vh",
+              display: "flex",
+              flexDirection: "column",
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 16,
+              boxShadow:
+                "0 40px 90px -30px rgba(0,0,0,.45), 0 12px 30px -14px rgba(0,0,0,.3)",
+              overflow: "hidden",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                padding: "13px 16px",
+                borderBottom: "1px solid var(--border)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+              }}
+            >
+              <div style={{ display: "grid", gap: 2, minWidth: 0 }}>
                 <div
-                  key={o.id}
                   style={{
-                    padding: "8px 11px",
-                    background: "var(--bg)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 10,
-                    display: "grid",
-                    gap: 4,
+                    fontSize: 10,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.04em",
+                    color: "var(--ink-3)",
                   }}
                 >
-                  {/* Cột dòng tiền chỉ rộng 320px → xếp 2 dòng thay vì nhồi mã +
-                      giờ + số tiền + trạng thái trên một hàng rồi để chữ tự gãy. */}
+                  {t("memberDetail.cashOrderAllocTitle", {
+                    n: allocations.length,
+                  })}
+                </div>
+                <div
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12.5,
+                    color: "var(--ink)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                  title={o.ref_code}
+                >
+                  {o.ref_code}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                aria-label={t("common.close")}
+                style={{
+                  flexShrink: 0,
+                  width: 30,
+                  height: 30,
+                  borderRadius: 9,
+                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  color: "var(--ink-3)",
+                  fontSize: 13,
+                  cursor: "pointer",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <div
+              style={{
+                padding: "9px 11px",
+                overflowY: "auto",
+                display: "grid",
+                gap: 3,
+              }}
+            >
+              {allocations.map((a) => {
+                const failed = a.status === "failed";
+                const pending = a.status === "pending";
+                const mine = a.email.toLowerCase() === email.toLowerCase();
+                return (
                   <div
+                    key={a.email}
+                    title={t(
+                      failed
+                        ? "memberDetail.cashOrderAllocFailed"
+                        : pending
+                          ? "memberDetail.cashOrderAllocPending"
+                          : "memberDetail.cashOrderAllocOk",
+                    )}
                     style={{
                       display: "flex",
                       alignItems: "center",
-                      justifyContent: "space-between",
                       gap: 8,
+                      padding: "5px 8px",
+                      borderRadius: 8,
+                      // Email đang xem nổi lên giữa cả lượt để khỏi phải dò mắt.
+                      background: mine ? "var(--surface-2)" : undefined,
                     }}
                   >
+                    <span
+                      aria-hidden
+                      style={{
+                        flexShrink: 0,
+                        width: 14,
+                        textAlign: "center",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: failed
+                          ? "var(--danger)"
+                          : pending
+                            ? "var(--ink-3)"
+                            : "var(--success)",
+                      }}
+                    >
+                      {failed ? "✕" : pending ? "◦" : "✓"}
+                    </span>
                     <span
                       style={{
                         flex: 1,
                         minWidth: 0,
                         fontFamily: "var(--font-mono)",
-                        fontSize: 11.5,
-                        color: "var(--ink)",
+                        fontSize: 12,
+                        fontWeight: mine ? 700 : 400,
+                        color: failed ? "var(--ink-3)" : "var(--ink-2)",
+                        textDecoration: failed ? "line-through" : undefined,
                         overflow: "hidden",
                         textOverflow: "ellipsis",
                         whiteSpace: "nowrap",
                       }}
-                      title={o.ref_code}
+                      title={a.email}
                     >
-                      {o.ref_code}
+                      {a.email}
                     </span>
-                    <span
-                      className={
-                        ORDER_STATUS_BADGE[o.status] ?? "badge badge-neutral badge-plain"
-                      }
-                      style={{ flexShrink: 0, whiteSpace: "nowrap" }}
-                    >
-                      {orderStatus(o.status)}
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 8,
-                    }}
-                  >
                     <span
                       style={{
+                        flexShrink: 0,
                         fontFamily: "var(--font-mono)",
-                        fontSize: 10.5,
+                        fontSize: 12,
                         color: "var(--ink-3)",
+                        textDecoration: failed ? "line-through" : undefined,
                         whiteSpace: "nowrap",
                       }}
                     >
-                      {formatDateTime(o.paid_at ?? o.created_at)}
-                    </span>
-                    <span
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 11.5,
-                        fontWeight: paidIn ? 600 : 400,
-                        color: paidIn ? "var(--success)" : "var(--ink-3)",
-                        whiteSpace: "nowrap",
-                      }}
-                      title={
-                        paidIn
-                          ? t("memberDetail.cashOrderPaidIn")
-                          : t("memberDetail.cashOrderNotIn")
-                      }
-                    >
-                      {paidIn ? "+" : ""}
-                      {formatVnd(o.paid_amount_vnd ?? o.amount_vnd)}
+                      {a.amount > 0
+                        ? formatVnd(a.amount)
+                        : t("memberDetail.cashOrderAllocFree")}
                     </span>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
@@ -1437,22 +1818,10 @@ function MemberDetailView({
   // thu lên dương, và thế là món nợ của tháng trước bị đóng dấu "đã truy thu" trong
   // khi chưa ai thu đồng nào. Cũng KHÔNG dò khoá `meta` (`recollect_of`,
   // `manual_invite_at`…) vì mỗi lần truy thu tay trên production đánh dấu một kiểu.
-  const refundDebtSettled = useMemo(() => {
-    const entries = payments?.entries ?? [];
-    const refunds = entries.filter(
-      (e) => e.kind.endsWith("_refund") && e.amount > 0,
-    );
-    if (refunds.length === 0) return false;
-    const latest = refunds.reduce((a, b) =>
-      a.created_at >= b.created_at ? a : b,
-    );
-    return entries.some(
-      (e) =>
-        e.kind === "adjust" &&
-        e.amount === -latest.amount &&
-        e.created_at > latest.created_at,
-    );
-  }, [payments]);
+  const refundDebtSettled = useMemo(
+    () => isRefundDebtSettled(payments?.entries ?? []),
+    [payments],
+  );
 
   const actionLabel = (log: MemberLog) => {
     const action = log.action;
