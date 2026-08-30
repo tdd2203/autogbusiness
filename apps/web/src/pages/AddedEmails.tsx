@@ -293,13 +293,25 @@ export default function AddedEmails() {
   );
   const tabActiveCount = wsScoped.filter((m) => m.status === "active").length;
   const tabPendingCount = wsScoped.filter((m) => m.status === "pending").length;
+  // Số hiện ngay trên chip "Chưa thanh toán": cùng phạm vi không gian với 2 tab
+  // trên, và vì chip lọc xuyên tab nên nó gộp cả email đã tham gia lẫn chờ tham gia.
+  const chipUnpaidCount = wsScoped.filter(
+    (m) => m.payment_status === "unpaid",
+  ).length;
+
+  // Chip "Chưa thanh toán" lọc XUYÊN TAB: nợ tiền thì nợ tiền, email nằm ở "Đã
+  // tham gia" hay "Chờ tham gia" không quan trọng — gom hết vào một danh sách để
+  // đại lý đòi một lượt, khỏi bấm qua lại hai tab mới thấy đủ.
+  const crossTab = filter === "unpaid" && statusTab !== "removed";
 
   const filtered = useMemo(() => {
     // Tab "Đã xoá" đọc danh sách riêng; hai tab kia lọc theo status trong `members`.
     let rows =
       statusTab === "removed"
         ? removedMembers
-        : members.filter((m) => m.status === statusTab);
+        : crossTab
+          ? members
+          : members.filter((m) => m.status === statusTab);
     if (selectedWorkspace)
       rows = rows.filter((m) => m.workspace_id === selectedWorkspace);
     // Chip lọc thanh toán nói về email CÒN SỐNG (add hôm nay / chưa trả / chờ duyệt)
@@ -332,6 +344,7 @@ export default function AddedEmails() {
     search,
     selectedWorkspace,
     statusTab,
+    crossTab,
   ]);
 
   // ---- Phân trang phía client (25 dòng/trang) ----
@@ -497,8 +510,10 @@ export default function AddedEmails() {
   // MỘT menu gom mọi thao tác hàng loạt (giống tab Thành viên trong workspace).
   // markPaid/requestPayment/transferOwner tự clear selection qua onCleared.
   const bulkMenuItems: RowActionItem[] = [
-    // Tab "Chờ tham gia" → Đồng bộ + Thu hồi lời mời.
-    ...(statusTab === "pending"
+    // Tab "Chờ tham gia" → Đồng bộ + Thu hồi lời mời. Khi lọc xuyên tab (chip
+    // "Chưa thanh toán") danh sách trộn cả 2 loại → chỉ mở nhóm này nếu đang chọn
+    // ít nhất một lời mời pending, bằng không bấm vào sẽ không có gì xảy ra.
+    ...(statusTab === "pending" || (crossTab && pendingSelectedRows.length > 0)
       ? [
           {
             key: "sync",
@@ -1058,6 +1073,16 @@ export default function AddedEmails() {
                       onClick={() => setFilter("unpaid")}
                     >
                       {t("addedEmails.filterUnpaid")}
+                      <span
+                        style={{
+                          marginLeft: 6,
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 11,
+                          opacity: 0.7,
+                        }}
+                      >
+                        {chipUnpaidCount}
+                      </span>
                     </FilterChip>
                   </>
                 )}
@@ -1124,9 +1149,14 @@ export default function AddedEmails() {
             <button
               key={tab.key}
               type="button"
-              className={statusTab === tab.key ? "tab active" : "tab"}
+              className={
+                !crossTab && statusTab === tab.key ? "tab active" : "tab"
+              }
               onClick={() => {
                 setStatusTab(tab.key);
+                // Đang xem danh sách xuyên tab mà bấm tab thì phải thấy đổi thật:
+                // bỏ chip "Chưa thanh toán" để quay về đúng tab vừa bấm.
+                setFilter((f) => (f === "unpaid" ? "all" : f));
                 setSelected(new Set());
               }}
             >
