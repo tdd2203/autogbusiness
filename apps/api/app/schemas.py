@@ -434,6 +434,24 @@ class MemberPaymentEntryOut(BaseModel):
     created_at: datetime
 
 
+class MemberPaymentAllocationOut(BaseModel):
+    """Tiền của MỘT hoá đơn được phân bổ cho email nào, kết quả ra sao.
+
+    Một hoá đơn QR thường trả cho cả LƯỢT mời (nhiều email) — nhìn con số tổng
+    không biết được email nào ăn phần nào, càng không biết email nào mời hỏng.
+    `status`: ok = đã trừ phí và không hoàn (mời được) · failed = phí đã hoàn
+    (mời hỏng) · pending = email có trong hoá đơn nhưng chưa phát sinh phí
+    (mời lại email còn hạn = miễn phí, hoặc lượt bị dời).
+    """
+
+    email: str
+    #: Phí của riêng email này (số DƯƠNG). 0 khi chưa phát sinh phí.
+    amount: int = 0
+    #: ok | failed | pending
+    status: str
+    refunded_at: datetime | None = None
+
+
 class MemberPaymentOrderOut(BaseModel):
     """1 hoá đơn QR (chỉ tạo khi ví KHÔNG đủ) — để truy vết, KHÔNG cộng vào tổng."""
 
@@ -449,6 +467,18 @@ class MemberPaymentOrderOut(BaseModel):
     created_at: datetime
     paid_at: datetime | None = None
     fulfillment_error: str | None = None
+    # True ⇔ hoá đơn `invite` đã trả tiền NHƯNG TOÀN BỘ phí mời của lượt đó đã hoàn
+    # (mời hỏng) ⇒ mã nạp này rốt cuộc không đổi lấy gì. Không phải cột DB — router
+    # tính từ `queue_item_id` + cờ `reversed` của `invite_fee`, xem payments.md §2.
+    fee_refunded: bool = False
+    # True ⇔ RIÊNG email đang xem có phí trong hoá đơn này và phí đó đã hoàn (mời
+    # hỏng) — hoá đơn gộp nhiều email thì `fee_refunded` vẫn false. Panel thành viên
+    # gọi đây là "hoá đơn thất bại" của email đó. Xem payments.md §2.2.
+    member_fee_refunded: bool = False
+    #: Lúc hoàn phí cho email đang xem (mốc đếm thời hạn còn hiện hoá đơn thất bại).
+    member_refunded_at: datetime | None = None
+    #: Phân bổ tiền của hoá đơn theo từng email (ai được mời, thành hay hỏng).
+    allocations: list[MemberPaymentAllocationOut] = Field(default_factory=list)
 
 
 class MemberPaymentsOut(BaseModel):

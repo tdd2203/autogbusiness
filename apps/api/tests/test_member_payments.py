@@ -135,3 +135,218 @@ def test_payments_hide_other_admins_wallet_from_sub_admin(
         headers=bearer(other["token"]),
     )
     assert r.status_code == 404, r.text
+
+
+# ── Hoá đơn QR của lượt mời HỎNG → phải gạch (user 2026-08-27) ───────────────
+
+def _webhook_body(note: str, amount: int, txn_id: str) -> dict:
+    return {
+        "transferType": "in",
+        "transferAmount": amount,
+        "content": note,
+        "id": txn_id,
+        "referenceCode": txn_id,
+    }
+
+
+def _qr_paid_invite(client: TestClient, sub: dict, ws: dict, email: str, txn_id: str) -> dict:
+    """Ví rỗng → mời → 402 QR → webhook trả đủ tiền → order `paid` + đã thực thi."""
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": email, "role": "member"},
+        headers=bearer(sub["token"]),
+    )
+    assert r.status_code == 402, r.text
+    order = r.json()["detail"]["order"]
+    wh = client.post("/webhook/sepay", json=_webhook_body(order["note"], FEE, txn_id))
+    assert wh.status_code == 200 and wh.json().get("success") is True
+    o = client.get(
+        f"/api/v1/wallet/orders/{order['id']}", headers=bearer(sub["token"])
+    ).json()
+    assert o["status"] == "paid" and o["queue_item_id"], o
+    return o
+
+
+def test_qr_order_marked_refunded_when_its_invite_failed(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Nạp QR để mời → mời HỎNG → hoàn phí ⇒ hoá đơn phải mang `fee_refunded`.
+
+    Ca thật imas_wangying@163.com (26/8/2026): 2 hoá đơn 330k đều khoe "Đã thanh
+    toán" trong khi cả 2 lượt mời đều hỏng và phí đã hoàn sạch. Nhãn đó đánh lừa
+    người đối soát → web gạch ngang hoá đơn theo cờ này.
+
+    ⚠️ Mời hỏng thì member `pending` bị xoá luôn (phantom) → phải MỜI LẠI mới có
+    member để mở panel; đúng hình dạng ca thật (hỏng vài lần rồi mới vào được).
+    """
+    ws = create_ws(client, auth_header, "Cashflow QR WS")
+    sub = make_beta_sub(client, auth_header, username="cashqr", balance=0)
+    assign(client, auth_header, ws["id"], sub["id"])
+
+    order = _qr_paid_invite(client, sub, ws, EMAIL, "ORD-CASH-VOID-1")
+    member = _member(client, ws["id"], EMAIL, auth_header)
+    # Chưa hoàn → hoá đơn vẫn là hoá đơn thật.
+    data = _payments(client, ws["id"], member["id"], auth_header)
+    assert [o["fee_refunded"] for o in data["orders"]] == [False]
+
+    r = client.patch(
+        f"/api/v1/queue/{order['queue_item_id']}",
+        json={"status": "FAILED", "error_code": "CONTENT_TIMEOUT"},
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert r.status_code == 200, r.text
+    # Tiền QR ở LẠI ví (hoàn phí trả về ví, không trả về ngân hàng).
+    assert wallet_of(client, sub["token"])["balance"] == FEE
+
+    # Mời lại — ví đã đủ nên trừ thẳng, KHÔNG sinh hoá đơn QR thứ hai.
+    _bulk_invite(client, sub["token"], ws["id"], [EMAIL])
+    member = _member(client, ws["id"], EMAIL, auth_header)
+
+    data = _payments(client, ws["id"], member["id"], auth_header)
+    assert [o["fee_refunded"] for o in data["orders"]] == [True]
+    assert data["net_total"] == FEE  # lượt mời lại là tiền thật, không bị gạch
+
+
+# ── Hoá đơn mời ai, ai hỏng — `allocations` (user 2026-08-29) ────────────────
+
+EMAIL_B = "cashflow-b@example.com"
+
+
+def _qr_paid_bulk_invite(
+    client: TestClient, sub: dict, ws: dict, emails: list[str], txn_id: str
+) -> dict:
+    """Ví rỗng → mời NHIỀU email → 402 QR gộp → webhook trả đủ → order `paid`."""
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-invite",
+        json={"emails": emails, "role": "member"},
+        headers=bearer(sub["token"]),
+    )
+    assert r.status_code == 402, r.text
+    order = r.json()["detail"]["order"]
+    wh = client.post(
+        "/webhook/sepay", json=_webhook_body(order["note"], FEE * len(emails), txn_id)
+    )
+    assert wh.status_code == 200 and wh.json().get("success") is True
+    o = client.get(
+        f"/api/v1/wallet/orders/{order['id']}", headers=bearer(sub["token"])
+    ).json()
+    assert o["status"] == "paid" and o["queue_item_id"], o
+    return o
+
+
+def _backdate_members(ws_id: str, emails: list[str], minutes: int = 11) -> None:
+    """Lùi mốc mời để vượt GUARD 10 PHÚT của phantom-cleanup: email 'tươi' lọt
+    unverified được GIỮ chờ sync phân xử — không xoá, KHÔNG hoàn phí ngay."""
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import SessionLocal
+    from app.models import Member
+
+    past = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    with SessionLocal() as db:
+        rows = (
+            db.query(Member)
+            .filter(
+                Member.workspace_id == uuid.UUID(ws_id),
+                Member.email.in_([e.lower() for e in emails]),
+            )
+            .all()
+        )
+        for m in rows:
+            m.last_invited_at = past
+            m.created_at = past
+        db.commit()
+
+
+def _alloc(data: dict) -> dict[str, str]:
+    assert len(data["orders"]) == 1, data["orders"]
+    return {a["email"]: a["status"] for a in data["orders"][0]["allocations"]}
+
+
+def test_order_allocations_show_who_the_money_invited(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Một hoá đơn trả cho CẢ LƯỢT mời: phải nói rõ email nào ăn phần nào, ai hỏng.
+
+    Hoá đơn gộp (ca thật 29/8: 17 email, 5.610.000₫) mà panel chỉ hiện con số tổng
+    thì không đối soát được. `allocations` trả ✓ cho email mời được, ✕ cho email đã
+    hoàn phí — và `member_fee_refunded` chỉ bật trên panel CỦA EMAIL HỎNG, không kéo
+    cả hoá đơn thành rỗng (email kia vẫn nhận được dịch vụ).
+    """
+    ws = create_ws(client, auth_header, "Cashflow Alloc WS")
+    sub = make_beta_sub(client, auth_header, username="cashalloc", balance=0)
+    assign(client, auth_header, ws["id"], sub["id"])
+
+    order_paid = _qr_paid_bulk_invite(
+        client, sub, ws, [EMAIL, EMAIL_B], "ORD-CASH-ALLOC-1"
+    )
+    # Task xong nhưng verify không thấy EMAIL_B → chỉ hoàn phí của riêng nó.
+    _backdate_members(ws["id"], [EMAIL, EMAIL_B])
+    r = client.patch(
+        f"/api/v1/queue/{order_paid['queue_item_id']}",
+        json={
+            "status": "COMPLETED",
+            "result": {
+                "verified_emails": [EMAIL],
+                "unverified_emails": [EMAIL_B],
+                "verify_scrape_failed": False,
+            },
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert r.status_code == 200, r.text
+    assert wallet_of(client, sub["token"])["balance"] == FEE  # phí của B quay về ví
+
+    member = _member(client, ws["id"], EMAIL, auth_header)
+    data = _payments(client, ws["id"], member["id"], auth_header)
+    assert _alloc(data) == {EMAIL: "ok", EMAIL_B: "failed"}
+    order = data["orders"][0]
+    # Hoá đơn vẫn đổi được dịch vụ cho EMAIL ⇒ không gạch cả hoá đơn, và panel của
+    # EMAIL không được coi đây là "hoá đơn thất bại".
+    assert order["fee_refunded"] is False
+    assert order["member_fee_refunded"] is False
+    assert order["member_refunded_at"] is None
+
+    # Mời lại B (ví đã có tiền hoàn) để có member mà mở panel — đúng hình dạng ca thật.
+    _bulk_invite(client, sub["token"], ws["id"], [EMAIL_B])
+    member_b = _member(client, ws["id"], EMAIL_B, auth_header)
+    data_b = _payments(client, ws["id"], member_b["id"], auth_header)
+    order_b = [o for o in data_b["orders"] if o["id"] == order["id"]]
+    assert len(order_b) == 1, data_b["orders"]
+    assert order_b[0]["member_fee_refunded"] is True
+    assert order_b[0]["member_refunded_at"] is not None
+    assert {a["email"]: a["status"] for a in order_b[0]["allocations"]} == {
+        EMAIL: "ok",
+        EMAIL_B: "failed",
+    }
+
+
+def test_order_allocations_mark_every_email_failed_when_task_failed(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Task hỏng cả lượt → mọi email `failed`, hoá đơn rỗng thật (`fee_refunded`)."""
+    ws = create_ws(client, auth_header, "Cashflow Alloc Fail WS")
+    sub = make_beta_sub(client, auth_header, username="cashallocfail", balance=0)
+    assign(client, auth_header, ws["id"], sub["id"])
+
+    order = _qr_paid_bulk_invite(
+        client, sub, ws, [EMAIL, EMAIL_B], "ORD-CASH-ALLOC-2"
+    )
+    r = client.patch(
+        f"/api/v1/queue/{order['queue_item_id']}",
+        json={"status": "FAILED", "error_code": "CONTENT_TIMEOUT"},
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert r.status_code == 200, r.text
+
+    _bulk_invite(client, sub["token"], ws["id"], [EMAIL])
+    member = _member(client, ws["id"], EMAIL, auth_header)
+    data = _payments(client, ws["id"], member["id"], auth_header)
+    failed_order = [o for o in data["orders"] if o["id"] == order["id"]][0]
+    assert failed_order["fee_refunded"] is True
+    assert failed_order["member_fee_refunded"] is True
+    assert {a["email"]: a["status"] for a in failed_order["allocations"]} == {
+        EMAIL: "failed",
+        EMAIL_B: "failed",
+    }

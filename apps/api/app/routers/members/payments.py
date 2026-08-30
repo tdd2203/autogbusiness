@@ -28,6 +28,7 @@ Endpoint:
   - GET /{member_id}/payments → list_member_payments
 """
 
+from collections.abc import Sequence
 from uuid import UUID
 
 from fastapi import Depends, Query
@@ -38,6 +39,7 @@ from app.deps import get_session, require_permission
 from app.models import PaymentOrder, User, WalletTransaction
 from app.permissions import Permission
 from app.schemas import (
+    MemberPaymentAllocationOut,
     MemberPaymentEntryOut,
     MemberPaymentOrderOut,
     MemberPaymentsOut,
@@ -92,14 +94,174 @@ def list_member_payments(
         .all()
     )
 
+    voided_orders = _orders_with_all_fees_refunded(db, orders)
+    allocations = _order_allocations(db, orders, user, member.email)
+
     # Tổng chỉ tính SỔ CÁI VÍ (xem docstring đầu file: không cộng hoá đơn QR).
     charged = sum(-t.amount for t in txns if t.amount < 0)
     refunded = sum(t.amount for t in txns if t.amount > 0)
     return MemberPaymentsOut(
         email=member.email,
         entries=[MemberPaymentEntryOut.model_validate(t) for t in txns],
-        orders=[MemberPaymentOrderOut.model_validate(o) for o in orders],
+        orders=[
+            MemberPaymentOrderOut.model_validate(o).model_copy(
+                update={
+                    "fee_refunded": o.id in voided_orders,
+                    **_member_share(allocations.get(o.id, []), email),
+                    "allocations": allocations.get(o.id, []),
+                }
+            )
+            for o in orders
+        ],
         charged_total=int(charged),
         refunded_total=int(refunded),
         net_total=int(charged - refunded),
     )
+
+
+def _member_share(
+    allocs: Sequence[MemberPaymentAllocationOut], email: str
+) -> dict[str, object]:
+    """Phần của RIÊNG email đang xem trong một hoá đơn (đã hoàn phí chưa, lúc nào).
+
+    Hoá đơn gộp nhiều email: 1 email hỏng không làm cả hoá đơn thành rỗng
+    (`fee_refunded` vẫn false), nhưng trên panel CỦA EMAIL ĐÓ nó là "hoá đơn thất
+    bại" — tiền đã hoàn, dịch vụ không giao. Xem payments.md §2.2.
+    """
+    for a in allocs:
+        if a.email.lower() == email and a.status == "failed":
+            return {
+                "member_fee_refunded": True,
+                "member_refunded_at": a.refunded_at,
+            }
+    return {}
+
+
+def _order_allocations(
+    db: Session,
+    orders: Sequence[PaymentOrder],
+    user: User,
+    member_email: str,
+) -> dict[UUID, list[MemberPaymentAllocationOut]]:
+    """Tiền của mỗi hoá đơn đã đi tới email nào, thành hay hỏng.
+
+    Một hoá đơn QR trả cho cả LƯỢT mời (có lượt 17 email, 5.610.000₫): con số tổng
+    không nói được email nào ăn phần nào, càng không nói email nào mời hỏng đã hoàn
+    tiền (user 2026-08-29). Nối `PaymentOrder.queue_item_id` ↔ `invite_fee.ref_id`
+    (MỘT dòng cho MỖI email của lượt) rồi đọc cờ `reversed` để ra ✓/✕ từng email.
+
+    Email có trong `payload.entries` mà KHÔNG có dòng phí ⇒ `pending`: mời lại email
+    còn hạn là miễn phí, và lượt bị dời sang lần đồng bộ sau cũng chưa trừ gì.
+
+    Hoá đơn `renew` chỉ ứng với đúng một member (không có đường hoàn phí) ⇒ một dòng
+    `ok` cho chính email đang xem.
+    """
+    invite_orders = [o for o in orders if o.queue_item_id]
+    queue_ids = {str(o.queue_item_id) for o in invite_orders}
+    fees: dict[str, list[WalletTransaction]] = {}
+    refunds: dict[tuple[str, str], WalletTransaction] = {}
+    if queue_ids:
+        txn_stmt = select(WalletTransaction).where(
+            WalletTransaction.ref_id.in_(queue_ids),
+            WalletTransaction.kind.in_(("invite_fee", "invite_refund")),
+        )
+        if not user.is_super_admin:
+            txn_stmt = txn_stmt.where(WalletTransaction.user_id == user.id)
+        for t in db.execute(txn_stmt.order_by(WalletTransaction.seq)).scalars().all():
+            em = str((t.meta or {}).get("email") or "").lower()
+            if t.kind == "invite_fee":
+                fees.setdefault(str(t.ref_id), []).append(t)
+            elif em:
+                refunds[(str(t.ref_id), em)] = t
+
+    out: dict[UUID, list[MemberPaymentAllocationOut]] = {}
+    for o in orders:
+        rows: list[MemberPaymentAllocationOut] = []
+        seen: set[str] = set()
+        qid = str(o.queue_item_id) if o.queue_item_id else None
+        for t in fees.get(qid, []) if qid else []:
+            em = str((t.meta or {}).get("email") or "").lower()
+            if not em or em in seen:
+                continue
+            seen.add(em)
+            refund = refunds.get((qid, em)) if qid else None
+            rows.append(
+                MemberPaymentAllocationOut(
+                    email=em,
+                    amount=abs(int(t.amount)),
+                    status="failed" if t.reversed else "ok",
+                    refunded_at=refund.created_at if refund else None,
+                )
+            )
+        for em in _payload_emails(o):
+            if em in seen:
+                continue
+            seen.add(em)
+            rows.append(
+                MemberPaymentAllocationOut(email=em, amount=0, status="pending")
+            )
+        if not rows and o.kind == "renew":
+            rows.append(
+                MemberPaymentAllocationOut(
+                    email=member_email.lower(),
+                    amount=int(o.amount_vnd),
+                    status="ok",
+                )
+            )
+        out[o.id] = rows
+    return out
+
+
+def _payload_emails(order: PaymentOrder) -> list[str]:
+    """Email mà hoá đơn `invite` được tạo ra để trả cho (intent lúc tạo lệnh)."""
+    entries = (order.payload or {}).get("entries")
+    if not isinstance(entries, list):
+        return []
+    out: list[str] = []
+    for e in entries:
+        em = e.get("email") if isinstance(e, dict) else None
+        if isinstance(em, str) and "@" in em:
+            low = em.strip().lower()
+            if low and low not in out:
+                out.append(low)
+    return out
+
+
+def _orders_with_all_fees_refunded(
+    db: Session, orders: Sequence[PaymentOrder]
+) -> set[UUID]:
+    """Id các hoá đơn QR mà TOÀN BỘ phí mời nó trả cho đã được hoàn.
+
+    Nạp tiền qua QR rồi lượt mời hỏng → phí quay về ví ⇒ nhãn "đã thanh toán" trên
+    hoá đơn thành ra nói dối: mã nạp đó rốt cuộc không đổi lấy gì (user 2026-08-27,
+    ca imas_wangying@163.com: 2 hoá đơn 330k đều "Đã thanh toán" trong khi 2 lượt
+    mời tương ứng đều hỏng và đã hoàn phí). Web gạch ngang các hoá đơn này.
+
+    Nối qua `PaymentOrder.queue_item_id` (kết quả thực thi của hoá đơn) ↔
+    `invite_fee.ref_id` (= queue_item_id, MỘT dòng cho MỖI email của lượt mời).
+
+    ⚠️ Chỉ đánh dấu khi MỌI `invite_fee` của lượt đó đã `reversed`. Hoá đơn gộp
+    nhiều email mà chỉ 1 email hỏng thì tiền vẫn đổi được thứ gì đó — gạch cả hoá
+    đơn là nói quá. Hoá đơn `renew` không có đường hoàn phí ⇒ không bao giờ dính.
+
+    Tiền nạp KHÔNG biến mất: nó nằm lại ở ví (hoàn phí trả về ví, không trả về ngân
+    hàng). Đây chỉ là chuyện hoá đơn đó không còn tương ứng với dịch vụ nào.
+    """
+    queue_ids = {str(o.queue_item_id) for o in orders if o.queue_item_id}
+    if not queue_ids:
+        return set()
+    rows = db.execute(
+        select(WalletTransaction.ref_id)
+        .where(
+            WalletTransaction.kind == "invite_fee",
+            WalletTransaction.ref_id.in_(queue_ids),
+        )
+        .group_by(WalletTransaction.ref_id)
+        .having(func.bool_and(WalletTransaction.reversed))
+    ).scalars()
+    fully_refunded = set(rows)
+    return {
+        o.id
+        for o in orders
+        if o.queue_item_id and str(o.queue_item_id) in fully_refunded
+    }
