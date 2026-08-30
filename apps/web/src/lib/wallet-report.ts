@@ -204,6 +204,9 @@ export type WalletReport = {
   voidedCount: number;
   /** Có ghép được dữ liệu thành viên hay không — quyết định sheet email in gì. */
   hasMembers: boolean;
+  /** Số chỗ `Dư sau` của dòng trên KHÔNG nối được `Dư trước` của dòng dưới. Khác 0 ⇒
+   *  thiếu bút toán (chưa tải hết trang), sổ không dùng để đối soát được. */
+  chainBreaks: number;
 };
 
 export type ReportInput = {
@@ -390,7 +393,9 @@ function partOf(
       email: str(t.meta?.email),
       moneyIn: fromInvoice > 0 ? fromInvoice : t.amount > 0 ? t.amount : 0,
       moneyOut: t.amount < 0 ? -t.amount : 0,
-      balanceBefore: t.balance_after - t.amount,
+      // Dòng gộp ôm CẢ HAI bút toán (tiền hoá đơn vào rồi phí ra ngay), nên "Dư trước"
+      // phải là số dư TRƯỚC khoản hoá đơn — không thì nó không nối được dòng phía trên.
+      balanceBefore: t.balance_after - t.amount - fromInvoice,
       balanceAfter: t.balance_after,
       refCode: c.ref,
       providerTxn: c.provider,
@@ -668,6 +673,20 @@ export function buildWalletReport(input: ReportInput): WalletReport {
     };
   });
 
+  // Sổ tiền chỉ dùng được khi các dòng NỐI được vào nhau. Đứt mạch ⇒ thiếu bút toán,
+  // và số dư sẽ nhảy vô cớ giữa hai dòng. Đếm ra để nói thẳng trên đầu file thay vì
+  // để người đọc tự phát hiện (như ca ví hdh2102 ngày 30/8).
+  let chainBreaks = 0;
+  let prev: number | null = null;
+  for (const d of days) {
+    for (const c of d.clusters) {
+      for (const e of c.entries) {
+        if (prev !== null && e.balanceBefore !== null && e.balanceBefore !== prev) chainBreaks += 1;
+        if (e.balanceAfter !== null) prev = e.balanceAfter;
+      }
+    }
+  }
+
   const dates = [...byDate.keys()].sort();
   const filterBits = [
     channel ? CHANNEL_FILTER_LABEL[channel] : "tất cả kênh tiền",
@@ -691,6 +710,7 @@ export function buildWalletReport(input: ReportInput): WalletReport {
     kinds: kindTotals(items),
     voidedCount: items.filter((t) => t.kind === "invite_fee" && t.reversed).length,
     hasMembers: memberMap.size > 0,
+    chainBreaks,
   };
 }
 
@@ -724,11 +744,20 @@ function overviewSheet(r: WalletReport): XSheet {
   ]);
   rows.push([
     cell(
-      `Sheet Chi tiết lệnh đang lọc: ${r.filterLabel}. Các sheet còn lại tính trên toàn bộ bút toán của kỳ.`,
+      "Mọi sheet tính trên TOÀN BỘ bút toán của kỳ, không theo bộ lọc đang xem trên trang Ví.",
       "meta",
       6,
     ),
   ]);
+  if (r.chainBreaks > 0) {
+    rows.push([
+      cell(
+        `Cảnh báo: có ${r.chainBreaks} chỗ số dư không nối được giữa hai dòng liền nhau — kỳ này thiếu bút toán, đừng dùng để đối soát.`,
+        "kpiNumOut",
+        6,
+      ),
+    ]);
+  }
   rows.push(blank(6));
 
   rows.push([

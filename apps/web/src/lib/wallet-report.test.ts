@@ -242,8 +242,8 @@ describe("reportCsv", () => {
       "Ngày;Giờ;Lệnh;Nội dung;Kết quả;Email;Tiền vào (đ);Tiền ra (đ);Số dư trước (đ);Số dư sau (đ);Mã hoá đơn;Mã GD SePay;Ghi chú",
     );
     // Xuôi thời gian: b@x.com bị trừ trước (số dư 660.000 → 330.000), rồi tới a@x.com.
-    expect(lines[1]).toContain("#0;Phí mời - Hoá đơn;Thành công;b@x.com;330000;330000;660000;330000;ORD1");
-    expect(lines[2]).toContain("#0;Phí mời - Hoá đơn;Thành công;a@x.com;330000;330000;330000;0;ORD1");
+    expect(lines[1]).toContain("#0;Phí mời - Hoá đơn;Thành công;b@x.com;330000;330000;330000;330000;ORD1");
+    expect(lines[2]).toContain("#0;Phí mời - Hoá đơn;Thành công;a@x.com;330000;330000;0;0;ORD1");
     // 2 email = 2 dòng. Dòng `order_topup` đã gộp vào dòng phí nên không còn dòng thứ 3.
     expect(lines).toHaveLength(3);
   });
@@ -369,6 +369,9 @@ describe("gộp dòng hoá đơn vào dòng phí", () => {
     expect(es[0].email).toBe("a@x.com");
     expect(es[0].moneyIn).toBe(FEE);
     expect(es[0].moneyOut).toBe(FEE);
+    // Dòng gộp ôm cả hai bút toán ⇒ số dư trước = sau, ví không nhúc nhích.
+    expect(es[0].balanceBefore).toBe(0);
+    expect(es[0].balanceAfter).toBe(0);
     expect(es[0].refCode).toBe("ORD1");
   });
 
@@ -440,5 +443,65 @@ describe("thứ tự xuôi thời gian", () => {
     for (let i = 1; i < all.length; i++) {
       expect(all[i].balanceBefore).toBe(all[i - 1].balanceAfter);
     }
+  });
+});
+
+/* Ca ví hdh2102 ngày 30/8 (ảnh user gửi): số dư nhảy từ 0 lên 3.960.000 giữa hai dòng
+   liền nhau, vì trang Ví GIẤU các khoản hoàn đã bị lượt sau tiêu hết còn báo cáo thì
+   dùng lại đúng danh sách đã lọc đó. Sổ tiền thiếu dòng là không đối soát được. */
+describe("sổ phải đủ dòng", () => {
+  /** Hoàn 990.000 rồi lượt sau tiêu hết — trang Ví giấu dòng hoàn này đi. */
+  function scene() {
+    const t = (kind: WalletTxn["kind"], amount: number, bal: number, at: string, email: string, over: Partial<WalletTxn> = {}) =>
+      txn({ kind, amount, balance_after: bal, meta: { email }, created_at: at, ...over });
+    return [
+      t("invite_fee", -FEE, 0, "2026-08-30T04:00:00Z", "moi3@x.com"),
+      t("invite_fee", -FEE, FEE, "2026-08-30T04:00:00Z", "moi2@x.com"),
+      t("invite_fee", -FEE, 2 * FEE, "2026-08-30T04:00:00Z", "moi1@x.com"),
+      t("invite_refund", FEE, 3 * FEE, "2026-08-30T03:00:00Z", "hong3@x.com"),
+      t("invite_refund", FEE, 2 * FEE, "2026-08-30T03:00:00Z", "hong2@x.com"),
+      t("invite_refund", FEE, FEE, "2026-08-30T03:00:00Z", "hong1@x.com"),
+    ];
+  }
+
+  it("khoản hoàn đã bị tiêu hết VẪN phải có dòng, không được giấu", () => {
+    const r = report(scene());
+    const emails = r.days.flatMap((d) => d.clusters.flatMap((c) => c.entries.map((e) => e.email)));
+    expect(emails).toContain("hong1@x.com");
+    expect(emails).toContain("hong2@x.com");
+    expect(emails).toContain("hong3@x.com");
+  });
+
+  it("số dư nối liền mạch, không có chỗ đứt", () => {
+    expect(report(scene()).chainBreaks).toBe(0);
+  });
+
+  it("thiếu bút toán thì ĐẾM ĐƯỢC và nói ra, không im lặng", () => {
+    // Bỏ đúng một khoản hoàn giữa chừng ⇒ số dư nhảy 330.000 không có gì giải thích.
+    const thieu = scene().filter((t) => (t.meta as { email: string }).email !== "hong2@x.com");
+    expect(report(thieu).chainBreaks).toBe(1);
+  });
+});
+
+/* Dòng gộp "Phí mời - Hoá đơn" ôm hai bút toán, nên nếu lấy Dư trước của riêng dòng
+   phí thì nó lệch đúng bằng số tiền hoá đơn và chuỗi số dư đứt ngay tại đó. */
+describe("dòng gộp vẫn nối được mạch số dư", () => {
+  it("xen kẽ hoá đơn và trừ ví, chuỗi số dư không đứt chỗ nào", () => {
+    const at = (h: number) => `2026-08-30T0${h}:00:00Z`;
+    const items = [
+      // mới → cũ
+      txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, meta: { email: "d@x.com" }, created_at: at(6) }),
+      txn({ kind: "order_topup", amount: FEE, balance_after: FEE, ref_type: "order", ref_code: "O2", created_at: at(6) }),
+      txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, meta: { email: "c@x.com" }, created_at: at(5) }),
+      txn({ kind: "topup", amount: FEE, balance_after: FEE, ref_type: "topup", created_at: at(4) }),
+      txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, meta: { email: "a@x.com" }, created_at: at(3) }),
+      txn({ kind: "order_topup", amount: FEE, balance_after: FEE, ref_type: "order", ref_code: "O1", created_at: at(3) }),
+    ];
+    const r = report(items);
+    expect(r.chainBreaks).toBe(0);
+    const all = r.days.flatMap((d) => d.clusters.flatMap((c) => c.entries));
+    expect(all.map((e) => `${e.balanceBefore}>${e.balanceAfter}`)).toEqual([
+      "0>0", `0>${FEE}`, `${FEE}>0`, "0>0",
+    ]);
   });
 });
