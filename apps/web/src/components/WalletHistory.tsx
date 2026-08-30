@@ -13,6 +13,7 @@
 import { createContext, useContext, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useWalletDailySummary, useWalletTransactions } from "../hooks/useWallet";
+import LoadError from "./LoadError";
 import { formatVnd, TXN_KIND_LABEL } from "../lib/wallet";
 import type { WalletDailySummary, WalletTxn, WalletTxnAdmin, WalletTxnKind } from "../lib/wallet";
 import {
@@ -63,6 +64,11 @@ export function useWalletHistoryState(day: string | null, userId?: string | null
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
+    // Lỗi phải đi kèm ra ngoài: không có nó thì danh sách hỏng và danh sách rỗng
+    // vẽ ra giống hệt nhau (user 2026-08-30).
+    error,
+    isFetching,
+    refetch,
   } = useWalletTransactions(day, userId);
   const items = useMemo(() => (txnPages?.pages ?? []).flatMap((p) => p.items), [txnPages]);
   const [channel, setChannel] = useState<TxnChannel | null>(null);
@@ -95,6 +101,7 @@ export function useWalletHistoryState(day: string | null, userId?: string | null
     items, rows, groups, trace, voidedCount, settled, hiddenHere, closing,
     channel, setChannel, showVoided, setShowVoided, limit, setLimit,
     hasNextPage, isFetchingNextPage, fetchNextPage,
+    error, isFetching, refetch,
   };
 }
 
@@ -194,6 +201,9 @@ export function WalletHistoryCard({
         onShowHidden={() => s.setShowVoided(true)}
         serverTotals={s.channel === null}
         closing={s.closing}
+        error={s.error}
+        onRetry={() => void s.refetch()}
+        retrying={s.isFetching}
       />
     </div>
   );
@@ -219,7 +229,7 @@ export function WalletHistoryCard({
  */
 export function WalletDaySummary({ date, isToday }: { date: string; isToday: boolean }) {
   const scope = useContext(WalletScopeCtx);
-  const { data, isLoading } = useWalletDailySummary(date, scope);
+  const { data, isLoading, error, isFetching, refetch } = useWalletDailySummary(date, scope);
   const suffix = isToday ? "HÔM NAY" : `NGÀY ${vnDateLabel(date)}`;
 
   const added = data?.added_new_count ?? 0;
@@ -228,6 +238,24 @@ export function WalletDaySummary({ date, isToday }: { date: string; isToday: boo
   const viaInvoice = data?.fee_from_invoice ?? 0;
   const viaWallet = data?.fee_from_balance ?? 0;
   const second = data ? secondInviteLine(data) : null;
+
+  // Chưa đọc được số nào mà vẫn vẽ "0 email / 0 đ" là bịa: hai thẻ này là chỗ user
+  // liếc để biết hôm nay làm được bao nhiêu (user 2026-08-30). Thay bằng thẻ lỗi.
+  if (error && !data) {
+    return (
+      <section style={{ display: "grid", gap: 14 }}>
+        <div style={card}>
+          <div style={cardKicker}>SỐ CỦA {suffix}</div>
+          <LoadError
+            error={error}
+            onRetry={() => void refetch()}
+            retrying={isFetching}
+            fallback="Không đọc được số tổng kết của ngày."
+          />
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 14, alignItems: "stretch" }}>
@@ -273,6 +301,17 @@ export function WalletDaySummary({ date, isToday }: { date: string; isToday: boo
             <div style={{ fontSize: 12, color: "var(--ink-3)" }}>Chưa tiêu đồng nào trong ngày này.</div>
           )}
         </div>
+        {/* Số cũ vẫn đúng tới lúc nó được đọc, nên giữ lại — chỉ nói thêm là lần làm
+            mới vừa rồi hỏng, kẻo user tưởng đang nhìn số sống. */}
+        {error && (
+          <LoadError
+            error={error}
+            onRetry={() => void refetch()}
+            retrying={isFetching}
+            variant="inline"
+            fallback="Số của ngày chưa được làm mới."
+          />
+        )}
       </div>
     </section>
   );
@@ -328,7 +367,7 @@ function LegendDivider() {
 
 /* ── Lịch sử theo ngày ─────────────────────────────────────────────────────── */
 
-function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace, hidden, onShowHidden, serverTotals, closing }: { groups: DayGroup[]; limit: number; onMore: () => void; canMore: boolean; loadingMore: boolean; day: string | null; trace: RefundTrace; hidden: { voided: number; settled: number }; onShowHidden: () => void; serverTotals: boolean; closing: Map<string, number> }) {
+function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace, hidden, onShowHidden, serverTotals, closing, error, onRetry, retrying }: { groups: DayGroup[]; limit: number; onMore: () => void; canMore: boolean; loadingMore: boolean; day: string | null; trace: RefundTrace; hidden: { voided: number; settled: number }; onShowHidden: () => void; serverTotals: boolean; closing: Map<string, number>; error: unknown; onRetry: () => void; retrying: boolean }) {
   const today = vnToday();
   let budget = limit;
   const visible: DayGroup[] = [];
@@ -338,6 +377,12 @@ function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace, hi
     budget -= g.rows.length;
   }
   const total = groups.reduce((n, g) => n + g.rows.length, 0);
+
+  // Hỏng thì nói là hỏng. Câu "Chưa có giao dịch nào" cho một lượt gọi lỗi là nói
+  // sai sự thật về tiền — user tưởng sổ trống chứ không biết là chưa đọc được.
+  if (error && total === 0) {
+    return <LoadError error={error} onRetry={onRetry} retrying={retrying} fallback="Không đọc được lịch sử giao dịch." />;
+  }
 
   if (groups.length === 0) {
     // Rỗng vì CÔNG TẮC đang giấu hết, không phải vì không có gì: nói thẳng đang ẩn
@@ -385,6 +430,17 @@ function TxnGroups({ groups, limit, onMore, canMore, loadingMore, day, trace, hi
           {g.rows.map((r) => <HistoryRow key={rowKey(r)} row={r} trace={trace} />)}
         </div>
       ))}
+      {error && (
+        <div style={{ padding: "10px 20px", borderTop: "1px solid var(--border)" }}>
+          <LoadError
+            error={error}
+            onRetry={onRetry}
+            retrying={retrying}
+            variant="inline"
+            fallback="Không tải thêm được giao dịch cũ hơn."
+          />
+        </div>
+      )}
       {(total > limit || canMore) && (
         <div style={{ padding: "14px 20px", display: "flex", justifyContent: "center" }}>
           <button onClick={onMore} disabled={loadingMore} style={{ ...secondaryBtn, opacity: loadingMore ? 0.6 : 1 }}>

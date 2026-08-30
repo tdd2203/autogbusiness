@@ -143,6 +143,9 @@ export function useSepaySync() {
       api<SepaySyncResult>("/api/v1/wallet/admin/sepay/sync", {
         method: "POST",
         body: JSON.stringify(body),
+        // Endpoint này gọi ra API SePay (bản thân nó chờ tới 20s — xem
+        // `sepay/userapi.py`) rồi mới ghi sổ, nên trần 20s mặc định là quá chặt.
+        timeoutMs: 60_000,
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["wallet", "sepay-events"] }),
   });

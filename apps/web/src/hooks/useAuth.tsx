@@ -10,6 +10,8 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import {
   api,
+  ApiError,
+  apiErrorText,
   getToken,
   setToken,
   AUTH_UNAUTHORIZED_EVENT,
@@ -32,6 +34,15 @@ export type UserProfile = {
 type AuthContextValue = {
   user: UserProfile | null;
   loading: boolean;
+  /**
+   * Không đọc nổi `/auth/me` vì MẠNG/SERVER, chứ không phải vì hết phiên.
+   *
+   * Hai chuyện đó phải tách: hết phiên thì đá về /login là đúng, còn server không
+   * trả lời mà cũng đá về /login thì user gõ lại mật khẩu vào một cái server vẫn
+   * đang câm — nhìn như bị đăng xuất vô cớ. Có cờ này thì `ProtectedRoute` hiện
+   * lỗi kèm nút thử lại và GIỮ NGUYÊN token.
+   */
+  authError: string | null;
   login: (identifier: string, password: string) => Promise<void>;
   logout: () => void;
   hasPermission: (perm: string) => boolean;
@@ -43,20 +54,34 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState<boolean>(!!getToken());
+  const [authError, setAuthError] = useState<string | null>(null);
   const qc = useQueryClient();
 
   const refresh = useCallback(async () => {
     if (!getToken()) {
       setUser(null);
+      setAuthError(null);
       setLoading(false);
       return;
     }
+    setAuthError(null);
+    setLoading(true);
     try {
       const me = await api<UserProfile>("/api/v1/auth/me");
       setUser(me);
-    } catch {
-      setToken(null);
+    } catch (e) {
       setUser(null);
+      // 401/403 = token hỏng thật ⇒ dọn token, để ProtectedRoute đá về /login.
+      // (401 thì `api()` đã tự dọn token và bắn AUTH_UNAUTHORIZED_EVENT rồi.)
+      const dead = e instanceof ApiError && (e.status === 401 || e.status === 403);
+      if (dead) {
+        setToken(null);
+        setAuthError(null);
+      } else {
+        // Hết giờ chờ, mất mạng, server 5xx: GIỮ token. Bắt đăng nhập lại lúc này
+        // là vô nghĩa — chính cái server đó đang không trả lời.
+        setAuthError(apiErrorText(e, "Không kết nối được máy chủ."));
+      }
     } finally {
       setLoading(false);
     }
@@ -73,6 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     function onUnauthorized() {
       setToken(null);
       setUser(null);
+      setAuthError(null);
       qc.clear();
     }
     window.addEventListener(AUTH_UNAUTHORIZED_EVENT, onUnauthorized);
@@ -103,6 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     setToken(null);
     setUser(null);
+    setAuthError(null);
     // Dọn luôn khi đăng xuất — không để dữ liệu người vừa thoát nằm lại trong bộ
     // nhớ tab chờ người kế tiếp (máy dùng chung).
     qc.clear();
@@ -118,8 +145,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<AuthContextValue>(
-    () => ({ user, loading, login, logout, hasPermission, refresh }),
-    [user, loading, login, logout, hasPermission, refresh],
+    () => ({ user, loading, authError, login, logout, hasPermission, refresh }),
+    [user, loading, authError, login, logout, hasPermission, refresh],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
