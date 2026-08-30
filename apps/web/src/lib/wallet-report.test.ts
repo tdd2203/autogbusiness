@@ -214,7 +214,7 @@ describe("sheet Email trong ngày", () => {
     const r = report([txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, meta: { email: "a@x.com" } })]);
     expect(r.hasMembers).toBe(false);
     const sheet = sheetOf(reportSheets(r), "Email trong ngày");
-    expect(rowText(sheet.rows[0])).toContain("Không tải được danh sách email đã add");
+    expect(rowText(sheet.rows[0])).toContain("Không tải được danh sách email đã thêm");
   });
 });
 
@@ -248,10 +248,10 @@ describe("reportCsv", () => {
       "Ngày;Giờ;Lệnh;Nội dung;Kết quả;Email;Tiền vào (đ);Tiền ra (đ);Số dư trước (đ);Số dư sau (đ);Mã hoá đơn;Mã GD SePay;Ghi chú",
     );
     // Xuôi thời gian: b@x.com bị trừ trước (số dư 660.000 → 330.000), rồi tới a@x.com.
-    expect(lines[1]).toContain("#0;Phí mời - Hoá đơn;Thành công;b@x.com;330000;330000;330000;330000;ORD1");
-    expect(lines[2]).toContain("#0;Phí mời - Hoá đơn;Thành công;a@x.com;330000;330000;0;0;ORD1");
-    // 2 email = 2 dòng. Dòng `order_topup` đã gộp vào dòng phí nên không còn dòng thứ 3.
-    expect(lines).toHaveLength(3);
+    expect(lines[1]).toContain(";Nạp qua hoá đơn;;;660000;0;0;660000;ORD1");
+    expect(lines[2]).toContain("#0;Phí mời - Hoá đơn;Thành công;b@x.com;0;330000;660000;330000;ORD1");
+    expect(lines[3]).toContain("#0;Phí mời - Hoá đơn;Thành công;a@x.com;0;330000;330000;0;ORD1");
+    expect(lines).toHaveLength(4);
   });
 });
 
@@ -270,8 +270,8 @@ describe("lượt hỏng — đối chiếu với danh sách đội", () => {
 
   it("email VẪN trong đội ⇒ đòi truy thu", () => {
     const r = bad([{ email: "a@x.com", status: "active", subscription_end_at: null, payment_status: "unpaid" }]);
-    expect(r.days[0].clusters[0].entries[0].note).toContain("Cần Truy Thu");
-    expect(r.days[0].roster[0].outcome).toContain("Lỗi, đã hoàn phí. Cần Truy Thu");
+    expect(r.days[0].clusters[0].entries[0].note).toContain("Cần truy thu");
+    expect(r.days[0].roster[0].outcome).toContain("Lỗi, đã hoàn phí. Cần truy thu");
   });
 
   it("email rời đội vì mời hỏng ⇒ đúng là chưa vào đội", () => {
@@ -282,7 +282,7 @@ describe("lượt hỏng — đối chiếu với danh sách đội", () => {
 
   it("email rời vì HẾT HẠN ⇒ nó đã từng ở trong đội, phải kiểm", () => {
     const r = bad([{ email: "a@x.com", status: "removed", subscription_end_at: null, payment_status: "unpaid", removed_reason: "expired" }]);
-    expect(r.days[0].roster[0].outcome).toContain("Cần Kiểm");
+    expect(r.days[0].roster[0].outcome).toContain("Cần kiểm");
     expect(r.days[0].roster[0].outcome).toContain("hết hạn");
   });
 
@@ -391,16 +391,19 @@ describe("gộp dòng hoá đơn vào dòng phí", () => {
     expect(es[0].moneyIn).toBe(0);
   });
 
-  it("mẻ nhiều email: mỗi email một dòng, KHÔNG còn dòng hoá đơn riêng", () => {
+  it("hoá đơn cho NHIỀU email: dòng hoá đơn đứng riêng, phí vẫn ghi 'Hoá đơn'", () => {
     const r = report([
       txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, meta: { email: "a@x.com" }, created_at: at }),
       txn({ kind: "invite_fee", amount: -FEE, balance_after: FEE, meta: { email: "b@x.com" }, created_at: at }),
       txn({ kind: "order_topup", amount: 2 * FEE, balance_after: 2 * FEE, ref_type: "order", ref_code: "ORD1", created_at: at }),
     ]);
     const es = r.days[0].clusters[0].entries;
-    expect(es).toHaveLength(2);
-    expect(es.every((e) => e.label === "Phí mời - Hoá đơn")).toBe(true);
+    // Hoá đơn vào ví MỘT LẦN nên nó giữ dòng riêng; gộp vào cả 2 dòng phí là gãy số dư.
+    expect(es).toHaveLength(3);
+    expect(es[0].label).toBe("Nạp qua hoá đơn");
+    expect(es.slice(1).every((e) => e.label === "Phí mời - Hoá đơn")).toBe(true);
     expect(es.reduce((s, e) => s + e.moneyIn, 0)).toBe(2 * FEE);
+    expect(r.chainBreaks).toBe(0);
   });
 
   it("hoá đơn trả DƯ so với phí ⇒ KHÔNG gộp, để nguyên hai dòng", () => {
@@ -412,7 +415,7 @@ describe("gộp dòng hoá đơn vào dòng phí", () => {
     expect(es).toHaveLength(2);
     expect(es[0].label).toBe("Nạp qua hoá đơn");
     expect(es[0].moneyIn).toBe(2 * FEE);
-    expect(es[1].label).toBe("Phí mời - Số dư ví");
+    expect(es[1].label).toBe("Phí mời - Hoá đơn");
     expect(es[1].moneyOut).toBe(FEE);
     // Số dư nối liền: 0 → 2xFEE → FEE. Phần dư nằm lại ví, thấy rõ.
     expect(r.chainBreaks).toBe(0);
@@ -535,8 +538,8 @@ describe("mời lại thành công thì không đòi truy thu", () => {
     const r = report(reInvited(), inTeam);
     const bad = r.days.flatMap((d) => d.clusters.flatMap((c) => c.entries)).find((e) => e.voided);
     expect(bad?.note).toContain("Đã mời lại thành công sau đó.");
-    expect(bad?.note).not.toContain("Truy Thu");
-    expect(r.days[0].roster[0].outcome).not.toContain("Truy Thu");
+    expect(bad?.note).not.toContain("truy thu");
+    expect(r.days[0].roster[0].outcome).not.toContain("truy thu");
   });
 
   it("hỏng mà KHÔNG mời lại, email vẫn trong đội ⇒ vẫn đòi truy thu", () => {
@@ -548,7 +551,7 @@ describe("mời lại thành công thì không đòi truy thu", () => {
       inTeam,
     );
     const bad = r.days.flatMap((d) => d.clusters.flatMap((c) => c.entries)).find((e) => e.voided);
-    expect(bad?.note).toContain("Cần Truy Thu");
+    expect(bad?.note).toContain("Cần truy thu");
   });
 
   it("cả mẻ lỗi hết thì dải cụm không ghi 'trừ số dư ví 0'", () => {
@@ -562,7 +565,7 @@ describe("mời lại thành công thì không đòi truy thu", () => {
     const band = sheetOf(reportSheets(r), "Chi tiết lệnh").rows
       .map((row) => String(val(row[0]) ?? ""))
       .find((t) => t.startsWith("Lệnh mời"));
-    expect(band).toContain("cả mẻ lỗi, đã hoàn đủ phí");
+    expect(band).toContain("cả cụm lỗi, đã hoàn đủ phí");
     expect(band).not.toContain("trừ số dư ví 0");
   });
 });

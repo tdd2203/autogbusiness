@@ -92,7 +92,7 @@ const REMOVED_LABEL: Record<string, string> = {
   expired: "Hết hạn",
   removed_by_admin: "Admin gỡ khỏi đội",
   invite_revoked: "Thu hồi lời mời",
-  invite_failed: "Mời hỏng",
+  invite_failed: "Mời lỗi",
   sync_missing: "Đồng bộ không thấy trong đội",
   email_changed: "Đã đổi sang email khác",
   subscription_transferred: "Đã chuyển hạn sang email khác",
@@ -110,7 +110,7 @@ export type ReportEntry = {
   ord: number;
   /** Nội dung ("Phí mời", "Nạp tiền"…). */
   label: string;
-  /** "Thành công" / "Hỏng, đã hoàn phí" — chỉ dòng phí mới có. */
+  /** "Thành công" / "Lỗi, đã hoàn phí" — chỉ dòng phí mới có. */
   outcome: string;
   channel: string;
   email: string;
@@ -299,17 +299,17 @@ export function voidedVerdict(
       : "Đúng là chưa vào đội, không còn bản ghi thành viên.";
   }
   if (m.status === "active" || m.status === "pending") {
-    return "Cần Truy Thu: đã hoàn phí, email vẫn trong đội mà kỳ này không có lượt nào tính phí.";
+    return "Cần truy thu: đã hoàn phí mà email vẫn trong đội, kỳ này không có lượt nào tính phí.";
   }
   const reason = str(m.removed_reason);
   if (NOT_DELIVERED.has(reason) || !reason) return "Đúng là chưa vào đội.";
-  return `Cần Kiểm: đã hoàn phí nhưng email từng ở trong đội, rời vì ${(REMOVED_LABEL[reason] ?? reason).toLowerCase()}.`;
+  return `Cần kiểm: đã hoàn phí mà email từng ở trong đội, rời vì ${(REMOVED_LABEL[reason] ?? reason).toLowerCase()}.`;
 }
 
 function feeNote(t: WalletTxn, trace: RefundTrace): string {
   const src = trace.perFee.get(t.id);
   if (!src || src.length === 0) return "";
-  return `Tiêu tiền hoàn của ${src.map((s) => s.email).join(", ")}`;
+  return `Sử dụng tiền hoàn của ${src.map((s) => s.email).join(", ")}`;
 }
 
 /** Phần đóng góp của MỘT `TxnRow` vào cụm của nó. */
@@ -406,10 +406,13 @@ function partOf(
   const orderTotal = row.txns.reduce((n, t) => (t.kind === "order_topup" ? n + t.amount : n), 0);
   const feeTxns = row.txns.filter((t) => FEE_KINDS.has(t.kind));
   const feeTotal = feeTxns.reduce((n, t) => n - t.amount, 0);
-  // Chỉ gộp khi hoá đơn trả KHÍT số phí. Trả dư (mẻ hỏng bớt nên tiền đọng lại ví) mà
-  // vẫn gộp thì phần dư không biết nhét vào dòng nào, và số dư đứt mạch ngay chỗ đó —
-  // lúc ấy để nguyên hai dòng là đúng nhất: tiền vào một dòng, phí ra một dòng.
-  const merge = orderTotal > 0 && feeTxns.length > 0 && feeTotal === orderTotal;
+  // Chỉ gộp khi hoá đơn trả cho ĐÚNG MỘT lượt phí và trả khít.
+  //
+  // Hoá đơn vào ví MỘT LẦN. Một hoá đơn 660.000 trả cho 2 email mà gộp vào cả hai dòng
+  // thì mỗi dòng tự trừ phần của mình, cột số dư gãy ngay giữa cụm (ví hdh2102 8/8 và
+  // 19 ngày khác). Nhiều email thì để nguyên dòng hoá đơn đứng riêng — dải cụm phía
+  // trên đã nói rõ cả cụm trả bằng hoá đơn nào rồi.
+  const merge = orderTotal > 0 && feeTxns.length === 1 && feeTotal === orderTotal;
   let leftover = orderTotal;
 
   for (const t of [...row.txns].reverse()) {
@@ -433,7 +436,7 @@ function partOf(
       at: t.created_at,
       ord: ord.get(t.id) ?? 0,
       label: isFee
-        ? `${TXN_KIND_LABEL[t.kind] ?? t.kind} - ${fromInvoice > 0 ? "Hoá đơn" : "Số dư ví"}`
+        ? `${TXN_KIND_LABEL[t.kind] ?? t.kind} - ${orderTotal > 0 ? "Hoá đơn" : "Số dư ví"}`
         : (TXN_KIND_LABEL[t.kind] ?? t.kind),
       outcome: isFee ? "Thành công" : "",
       channel,
@@ -513,12 +516,13 @@ function clustersOf(
     c.refCode = c.refCode || e.refCode;
     if (e.label.startsWith("Phí gia hạn") || e.label.startsWith("Phí kỳ")) c.kind = "Lệnh gia hạn";
     else if (e.label.startsWith("Phí mời") && !c.kind) c.kind = "Lệnh mời";
+    if (e.label === TXN_KIND_LABEL.order_topup) c.viaInvoice = true;
     if (e.voided) {
       if (e.moneyOut > 0) c.voided += 1; // đếm ở dòng PHÍ, không đếm lại ở dòng hoàn
     } else if (e.label.startsWith("Phí ")) {
       c.charged += 1;
       c.spend += e.moneyOut;
-      if (e.moneyIn > 0) c.viaInvoice = true;
+      if (e.label.endsWith("Hoá đơn")) c.viaInvoice = true;
     }
   }
 
@@ -616,7 +620,7 @@ const CHANNEL_FILTER_LABEL: Record<TxnChannel, string> = {
   wallet: "chỉ dòng trừ số dư ví",
   invoice: "chỉ dòng thanh toán trực tiếp",
   in: "chỉ dòng tiền vào",
-  voided: "chỉ lượt mời hỏng",
+  voided: "chỉ lượt mời lỗi",
 };
 
 export function buildWalletReport(input: ReportInput): WalletReport {
@@ -734,7 +738,7 @@ export function buildWalletReport(input: ReportInput): WalletReport {
   const dates = [...byDate.keys()].sort();
   const filterBits = [
     channel ? CHANNEL_FILTER_LABEL[channel] : "tất cả kênh tiền",
-    showVoided ? "gồm cả lượt mời hỏng" : "ẩn lượt mời hỏng đã hoàn",
+    showVoided ? "gồm cả lượt mời lỗi" : "ẩn lượt mời lỗi đã hoàn",
   ];
 
   return {
@@ -796,7 +800,7 @@ function overviewSheet(r: WalletReport): XSheet {
   if (r.chainBreaks > 0) {
     rows.push([
       cell(
-        `Cảnh báo: có ${r.chainBreaks} chỗ số dư không nối được giữa hai dòng liền nhau — kỳ này thiếu bút toán, đừng dùng để đối soát.`,
+        `Cảnh báo: có ${r.chainBreaks} chỗ số dư không nối được giữa hai dòng liền nhau. Kỳ này thiếu giao dịch, đừng dùng để đối soát.`,
         "kpiNumOut",
         6,
       ),
@@ -911,7 +915,7 @@ function clusterBand(c: ReportCluster): string {
   if (c.refCode) bits.push(`hoá đơn ${c.refCode}`);
   bits.push(
     c.charged === 0 && c.voided > 0
-      ? "cả mẻ lỗi, đã hoàn đủ phí"
+      ? "cả cụm lỗi, đã hoàn đủ phí"
       : c.viaInvoice
         ? `trả qua hoá đơn QR ${vnd(c.spend)}`
         : `trừ số dư ví ${vnd(c.spend)}`,
@@ -998,7 +1002,7 @@ function emailSheet(r: WalletReport): XSheet {
     cell("Email", "th"),
     cell("Mời mới", "thRight"),
     cell("Gia hạn", "thRight"),
-    cell("Lượt hỏng", "thRight"),
+    cell("Lượt lỗi", "thRight"),
     cell("Thực chi", "thRight"),
     cell("Lần cuối", "th"),
   ]);
@@ -1035,7 +1039,7 @@ function rosterSheet(r: WalletReport): XSheet {
   if (!r.hasMembers) {
     rows.push([
       cell(
-        "Không tải được danh sách email đã add nên sheet này chỉ có phần của ví: trạng thái, hạn dùng và chuỗi đổi email để trống.",
+        "Không tải được danh sách email đã thêm, nên sheet này chỉ có phần của ví: trạng thái, hạn dùng và chuỗi đổi email để trống.",
         "meta",
         ROSTER_COLS,
       ),
