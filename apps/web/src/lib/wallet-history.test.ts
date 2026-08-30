@@ -346,3 +346,39 @@ describe("traceRefundUsage — lần nguồn gốc tiền hoàn", () => {
     expect(traceRefundUsage(rows).funding.size).toBe(0);
   });
 });
+
+/* Tiền hoàn của email nào thì nuôi lại chính email đó (user 2026-08-30). FIFO thuần
+   khiến mời lại a@ mà ví còn tiền hoàn của a@ vẫn bị ghi "tiêu tiền hoàn của b@",
+   đọc lên như thể tiền chạy lung tung giữa các khách. */
+describe("traceRefundUsage — tiền hoàn của ai nuôi lại người đó", () => {
+  const at = (h: number) => `2026-08-26T0${h}:00:00Z`;
+
+  it("mời lại a@ thì tiêu ĐÚNG tiền hoàn của a@, dù lô của b@ vào trước", () => {
+    const rows = buildTxnRows([
+      // mới → cũ
+      txn({ kind: "invite_fee", amount: -FEE, created_at: at(5), meta: { email: "a@x.com" }, balance_after: FEE }),
+      txn({ kind: "invite_refund", amount: FEE, created_at: at(4), meta: { email: "a@x.com" }, balance_after: 2 * FEE }),
+      txn({ kind: "invite_refund", amount: FEE, created_at: at(3), meta: { email: "b@x.com" }, balance_after: FEE }),
+    ]);
+    const trace = traceRefundUsage(rows);
+    const fee = rows.find((r) => r.type === "group" && r.txns[0].kind === "invite_fee");
+    if (!fee || fee.type !== "group") throw new Error("unreachable");
+    expect(trace.perFee.get(fee.txns[0].id)).toEqual([{ email: "a@x.com", amount: FEE }]);
+  });
+
+  it("lô của chính nó hết thì mới ăn sang lô người khác", () => {
+    const rows = buildTxnRows([
+      txn({ kind: "invite_fee", amount: -2 * FEE, created_at: at(5), meta: { email: "a@x.com" }, balance_after: 0 }),
+      txn({ kind: "invite_refund", amount: FEE, created_at: at(4), meta: { email: "a@x.com" }, balance_after: 2 * FEE }),
+      txn({ kind: "invite_refund", amount: FEE, created_at: at(3), meta: { email: "b@x.com" }, balance_after: FEE }),
+    ]);
+    const trace = traceRefundUsage(rows);
+    const fee = rows.find((r) => r.type === "group" && r.txns[0].kind === "invite_fee");
+    if (!fee || fee.type !== "group") throw new Error("unreachable");
+    // Của mình trước, thiếu bao nhiêu mới lấy của b@.
+    expect(trace.perFee.get(fee.txns[0].id)).toEqual([
+      { email: "a@x.com", amount: FEE },
+      { email: "b@x.com", amount: FEE },
+    ]);
+  });
+});

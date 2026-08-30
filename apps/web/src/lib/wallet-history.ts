@@ -484,16 +484,35 @@ export function traceRefundUsage(rows: TxnRow[]): RefundTrace {
       if (!FEE_KINDS.has(fee.kind)) continue;
       let need = -fee.amount;
       const mine: RefundSource[] = [];
-      while (need > 0 && lots.length > 0) {
-        const lot = lots[0];
+      const self = emailOf(fee);
+
+      const eat = (at: number) => {
+        const lot = lots[at];
         const take = Math.min(need, lot.remaining);
         lot.remaining -= take;
         need -= take;
         const u = usage.get(lot.row);
         if (u) u.used += take;
         mine.push({ email: lot.email, amount: take });
-        if (lot.remaining <= 0) lots.shift();
+      };
+
+      // Tiền hoàn của CHÍNH email này được ưu tiên nuôi lại chính nó. Trước đây ăn
+      // FIFO thuần nên mời lại a@ mà ví còn tiền hoàn của a@ vẫn bị ghi "tiêu tiền
+      // hoàn của b@" chỉ vì lô của b@ vào trước — đọc lên như thể tiền chạy lung tung
+      // giữa các khách (user 2026-08-30). Chỉ khi lô của chính nó đã hết thì mới ăn
+      // sang lô người khác, và lúc đó nhãn "hoàn từ email khác" mới là sự thật.
+      while (need > 0) {
+        const at = lots.findIndex((l) => l.remaining > 0 && l.email.toLowerCase() === self);
+        if (at < 0) break;
+        eat(at);
       }
+      while (need > 0) {
+        const at = lots.findIndex((l) => l.remaining > 0);
+        if (at < 0) break;
+        eat(at);
+      }
+      for (let i = lots.length - 1; i >= 0; i--) if (lots[i].remaining <= 0) lots.splice(i, 1);
+
       if (mine.length === 0) continue;
       perFee.set(fee.id, mergeSources(mine));
       used.push(...mine);
