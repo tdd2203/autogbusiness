@@ -792,6 +792,46 @@ def close_invite_defer_with_missing_evidence(
     return True
 
 
+def enqueue_sync_probe(
+    db: Session, *, workspace_id: UUID, emails: list[str]
+) -> bool:
+    """Xếp một mẻ `SYNC_MEMBERS_BATCH` ĐI XEM TẬN NƠI các email đang treo chờ xác minh.
+
+    "Hoãn phán xử để đối chiếu" chỉ có nghĩa nếu THẬT SỰ có ai đi đối chiếu. Trước
+    đây chỉ nhánh FAILED-defer xếp mẻ này, còn nhánh COMPLETED-defer (guard 10′) thì
+    không — hoãn xong không ai đi xem, 20′ sau resolver chốt hỏng trong mù và hoàn
+    phí (ca thật 28-29/8/2026: 12 email vào team thật vẫn bị hoàn 3.960.000đ, xem
+    [[hoan-phi-mu-khi-mời-khong-kiem-chung]]). Giờ cả hai nhánh dùng chung hàm này.
+
+    Dedup: đã có mẻ đang chờ/đang chạy thì thôi — nó tự gom email pending. Trả True
+    nếu vừa xếp mẻ mới. `created_by_id=None`: task của HỆ THỐNG, không ăn suất
+    cooldown sync của admin phụ (cùng lối `_enqueue_periodic_sync_once`). KHÔNG
+    commit — caller commit."""
+    if not emails:
+        return False
+    existing = db.execute(
+        select(QueueItem.id)
+        .where(
+            QueueItem.workspace_id == workspace_id,
+            QueueItem.type == "SYNC_MEMBERS_BATCH",
+            QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
+        )
+        .limit(1)
+    ).first()
+    if existing is not None:
+        return False
+    db.add(
+        QueueItem(
+            type="SYNC_MEMBERS_BATCH",
+            status="PENDING",
+            workspace_id=workspace_id,
+            payload={"emails": sorted({e.lower() for e in emails})},
+            created_by_id=None,
+        )
+    )
+    return True
+
+
 def defer_unverified_invite(
     db: Session,
     item: QueueItem,
@@ -885,29 +925,9 @@ def defer_unverified_invite(
             commit=False,
         )
 
-    # Dedup: đã có mẻ SYNC_MEMBERS_BATCH đang chờ/đang chạy → nó sẽ tự gom email
-    # pending, không cần chồng thêm task.
-    existing = db.execute(
-        select(QueueItem.id)
-        .where(
-            QueueItem.workspace_id == workspace_id,
-            QueueItem.type == "SYNC_MEMBERS_BATCH",
-            QueueItem.status.in_(("PENDING", "IN_PROGRESS")),
-        )
-        .limit(1)
-    ).first()
-    if existing is None:
-        # created_by_id=None: task của HỆ THỐNG, không ăn suất cooldown sync của
-        # admin phụ (cùng lối `_enqueue_periodic_sync_once`).
-        db.add(
-            QueueItem(
-                type="SYNC_MEMBERS_BATCH",
-                status="PENDING",
-                workspace_id=workspace_id,
-                payload={"emails": sorted(m.email.lower() for m in pending_members)},
-                created_by_id=None,
-            )
-        )
+    enqueue_sync_probe(
+        db, workspace_id=workspace_id, emails=[m.email for m in pending_members]
+    )
     return True
 
 
@@ -1950,6 +1970,15 @@ def update_task(
                         },
                         commit=False,
                     )
+                # …và ĐI XEM THẬT. Hoãn mà không cử ai đi đối chiếu thì 20′ sau
+                # resolver nền chốt hỏng trong mù: nó chỉ tha khi thấy dấu vết một
+                # lượt sync SAU mốc hoãn, mà auto-sync chỉ chạy 1 lần/ngày. Đây là
+                # đúng lỗ hổng đã hoàn oan 3.960.000đ ngày 28-29/8/2026.
+                enqueue_sync_probe(
+                    db,
+                    workspace_id=workspace.id,
+                    emails=[dm.email for dm in deferred_members],
+                )
 
         # ---- TRẠNG THÁI THÀNH CÔNG theo TỪNG member (gắn timeline) ----
         # Ghi MEMBER_INVITE_VERIFIED gắn member.id + set joined_at = LẦN VERIFIED
