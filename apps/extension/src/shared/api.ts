@@ -68,7 +68,11 @@ export async function fetchActiveTask(
 export async function pickNextTask(
   config: ExtensionConfig,
 ): Promise<QueueItem | null> {
-  return request<QueueItem | null>(config, "/api/v1/queue/next");
+  // `merge=1` = "bản này BIẾT chạy mẻ gộp". Backend chỉ gộp lệnh cùng loại đang
+  // chờ cho client nào tự khai như vậy — bản cũ nhận mẻ sẽ chỉ báo kết quả cho
+  // lệnh dẫn đầu, các lệnh còn lại kẹt IN_PROGRESS tới lúc bị dọn vì treo.
+  // Xem `background/merged-report.ts` + `apps/api/app/services/task_merge.py`.
+  return request<QueueItem | null>(config, "/api/v1/queue/next?merge=1");
 }
 
 export async function updateTask(
