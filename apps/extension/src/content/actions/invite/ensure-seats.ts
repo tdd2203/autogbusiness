@@ -121,6 +121,102 @@ function membersListReady(): boolean {
 }
 
 /**
+ * Trần cho TOÀN BỘ phần "đọc số" của bước chốt suất — hai lượt chờ trang in số
+ * cộng với lượt đếm lời mời đang chờ.
+ *
+ * VÌ SAO (ca thật 30/8/2026 — 4 lệnh mời hỏng `CONTENT_TIMEOUT`): từng chặng
+ * đều có trần riêng nhưng KHÔNG ai giữ tổng, nên phần đọc số ngốn tới 259s trong
+ * ngân sách 300s của cả lượt gọi content, không còn chỗ cho bước mua suất (riêng
+ * khâu chờ ChatGPT trừ tiền đã 92-160s). Cả phần này chỉ là LƯỚI ĐỠ: hết trần
+ * thì dùng số dashboard — số đó đếm THỪA nợ suất, tức lệch về phía an toàn.
+ *
+ * 45s chọn theo phần CÒN LẠI phải đủ: `waitForMembersNavReady` 20s + trần này +
+ * `checkSeatAvailability` ~20s ≈ 85s, chừa ~215s cho lượt mua suất (đo thật
+ * 30/8: từ lúc mở hộp tới khi ChatGPT trừ xong tiền là 177s).
+ */
+const SEAT_STEP_BUDGET_MS = 45_000;
+
+/** Nhịp soi tab "Người dùng" chờ trang in xong số thành viên và hàng thẻ suất. */
+const PAGE_NUMBERS_POLL_MS = 400;
+/** Trần chờ, ĐẾM THEO NHỊP (≈15s) chứ không theo đồng hồ — test tiêm `sleep` giả. */
+const PAGE_NUMBERS_MAX_TICKS = 38;
+/**
+ * Workspace CHƯA được ChatGPT bật UI mới thì trang KHÔNG có hàng thẻ suất — chờ
+ * đủ trần là bắt mọi lệnh mời ở đó đứng không 15s hai lần. Quá mốc này (≈8s) mà
+ * vẫn không thấy thẻ nào thì kết luận trang không có thẻ.
+ */
+const NO_SEAT_CARDS_TICKS = 20;
+
+/**
+ * CHỜ tab "Người dùng" in xong hai con số của bước chốt suất, rồi ĐỌC KIỂM một
+ * nhịp nữa.
+ *
+ * `membersListReady` chỉ đòi trang có vài cái nút — SPA vẽ khung trước, số sau,
+ * nên đọc ngay sau nó là đọc vào lúc trang chưa có số (user 29/8/2026: "load
+ * chưa xong đã làm việc khác rồi"). Đọc hụt ở đây không sai số mà mất đường:
+ * `readSeatCardsFromPage` trả null ⇒ bước chốt suất tụt xuống lưới đỡ bằng số
+ * dashboard, hoặc phải mở hộp "Quản lý suất" — chỗ hỏng nhiều nhất của luồng mời.
+ *
+ * ĐỌC KIỂM (hai lượt đọc liên tiếp phải y hệt): hàng thẻ suất có thể đang vẽ dở
+ * một loại suất trong khi loại kia chưa lên, mà tổng của nó đi thẳng vào phép
+ * tính mua. Thà chờ thêm một nhịp còn hơn cộng nhầm một hàng thẻ nửa vời.
+ *
+ * Hết giờ vẫn không có số thì trả về những gì đọc được (có thể null) — y như
+ * hành vi cũ, caller đã có sẵn mọi nhánh lưới đỡ.
+ */
+async function readMembersPageNumbers(
+  deadlineMs?: number,
+): Promise<{
+  members: number | null;
+  cards: SeatCardsReading | null;
+}> {
+  let lastMembers = readMemberCountFromPage();
+  let lastCards = readSeatCardsFromPage();
+  for (let tick = 1; tick <= PAGE_NUMBERS_MAX_TICKS; tick++) {
+    // Trần CHUNG của cả bước chốt suất đã hết: thôi chờ, đi tiếp bằng số đọc
+    // được (caller có sẵn lưới đỡ). Xem `SEAT_STEP_BUDGET_MS`.
+    if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
+      console.log(`${LOG} hết trần bước chốt suất khi đang chờ trang in số — thôi chờ`);
+      break;
+    }
+    await sleep(PAGE_NUMBERS_POLL_MS);
+    const members = readMemberCountFromPage();
+    const cards = readSeatCardsFromPage();
+    const membersOk = members !== null && members === lastMembers;
+    const cardsOk =
+      cards !== null &&
+      lastCards !== null &&
+      cards.total === lastCards.total &&
+      cards.assigned === lastCards.assigned &&
+      cards.cards.length === lastCards.cards.length;
+    lastMembers = members ?? lastMembers;
+    lastCards = cards ?? lastCards;
+    if (membersOk && cardsOk) break;
+    // Quá mốc mà một trong hai số VẪN không đọc được lần nào: trang này không in
+    // nó (workspace UI cũ không có hàng thẻ suất; tiêu đề in "thành viên" ở nhiều
+    // chỗ khác nhau thì `parseMemberCount` cố ý trả null). Chờ tiếp cũng không ra
+    // — miễn là số CÒN LẠI đã đứng yên thì đi tiếp, caller có sẵn lưới đỡ.
+    if (
+      tick >= NO_SEAT_CARDS_TICKS &&
+      (members === null || membersOk) &&
+      (cards === null || cardsOk)
+    ) {
+      console.log(
+        `${LOG} sau ${tick} nhịp trang vẫn không in ` +
+          `${members === null ? "số thành viên" : ""}${members === null && cards === null ? " và " : ""}` +
+          `${cards === null ? "hàng thẻ suất" : ""} — thôi chờ`,
+      );
+      break;
+    }
+  }
+  console.log(
+    `${LOG} số trên tab 'Người dùng': ${lastMembers ?? "?"} thành viên; ` +
+      `${lastCards ? describeSeatCards(lastCards) : "KHÔNG đọc được hàng thẻ suất"}`,
+  );
+  return { members: lastMembers, cards: lastCards };
+}
+
+/**
  * ⚠️ KHÔNG có hàm "tự tải lại trang" ở đây nữa (26/8/2026).
  *
  * CA THẬT 26/8/2026 — ba lệnh mời phải mua suất (fdeeadc5 11:25, cd03d5ff 11:50,
@@ -366,12 +462,22 @@ export async function ensureSeatsForInvite(
     await sleep(1200);
   }
 
+  // Trần CHUNG cho cả phần đọc số phía dưới, và nhịp báo ra dashboard trong lúc
+  // đọc — trước đây cả khúc này im lặng hàng trăm giây, mà im lặng là thứ backend
+  // đọc thành "lệnh treo" (`stuck_verdict` trong queue/execution.py).
+  const seatStepDeadline = Date.now() + SEAT_STEP_BUDGET_MS;
+  const note = async (message: string): Promise<void> => {
+    await reportProgress(taskId, { phase: "seat-check", message }, true);
+  };
+  await note("Đang kiểm tra số suất còn trống của không gian...");
+
   // ── BƯỚC 1: SỐ THÀNH VIÊN + THẺ SUẤT, đọc thẳng trên trang ──────────────
   // Cả hai đều in sẵn trên tab "Người dùng", không tốn cú bấm nào:
   //   "Business · 253 thành viên"  →  `readMemberCountFromPage`
   //   "Suất Tiêu chuẩn 270 · Đã gán 253/270"  →  `readSeatCardsFromPage`
-  const pageMembers = readMemberCountFromPage();
-  const pageCards = readSeatCardsFromPage();
+  const firstRead = await readMembersPageNumbers(seatStepDeadline);
+  const pageMembers = firstRead.members;
+  const pageCards = firstRead.cards;
 
   // ── BƯỚC 2: ĐẾM LỜI MỜI ĐANG CHỜ TẬN NƠI — LUÔN LUÔN (user chốt 28/8/2026) ─
   // Trước đây bước này chỉ chạy khi số của dashboard nói "sắp hết chỗ"; dư nhiều
@@ -383,8 +489,12 @@ export async function ensureSeatsForInvite(
   // Đọc tận nơi cũng là thứ DUY NHẤT làm dashboard tươi lại: số đọc trên trang
   // được backend ghi về `workspace.seat_total` (`_absorb_seat_reading`), còn số
   // tự-xác-nhận-từ-hint thì bị bỏ qua — đúng ra phải thế, kẻo số cũ nuôi số cũ.
-  const scannedPending = await countPendingInvites(inviteEmails);
+  const scannedPending = await countPendingInvites(inviteEmails, {
+    budgetMs: seatStepDeadline - Date.now(),
+    onNote: note,
+  });
   // Quay lại tab "Người dùng": thẻ suất và nút "Quản lý số suất" chỉ có ở đó.
+  await note("Đang quay lại tab Người dùng để đọc lại số suất...");
   await navigateTo(MEMBERS_PATH, membersListReady, 10_000);
   if (/[?&]tab=(invites|requests)/.test(location.search)) {
     history.pushState({}, "", MEMBERS_PATH);
@@ -392,8 +502,15 @@ export async function ensureSeatsForInvite(
     await sleep(1200);
   }
   // Thẻ suất đọc lại sau khi về tab: lần đọc mới nhất mới là số của thời điểm
-  // quyết định. Không đọc được (SPA chưa vẽ xong) thì giữ lần đọc đầu.
-  const cardsNow = readSeatCardsFromPage() ?? pageCards;
+  // quyết định. Vẫn phải CHỜ trang in xong rồi đọc kiểm như lần đầu — quay về
+  // tab là một lượt render mới, đọc ngay là đọc lúc số cũ vừa bị gỡ. Không đọc
+  // được (SPA chưa vẽ xong) thì giữ lần đọc đầu.
+  const secondRead = await readMembersPageNumbers(seatStepDeadline);
+  const cardsNow = secondRead.cards ?? pageCards;
+  await note(
+    `Đã chốt số suất${cardsNow ? ` (${describeSeatCards(cardsNow)})` : ""} — ` +
+      `cần ${need} suất mới. Bắt đầu mời...`,
+  );
 
   // ── BƯỚC 3: ĐỦ CHỖ theo số ĐỌC TẬN NƠI → mời thẳng, KHÔNG mở hộp ────────
   const onPage = headroomFromPage(

@@ -53,6 +53,18 @@ export const CHANGELOG: ChangelogEntry[] = [
     ],
   },
   {
+    version: "0.14.4",
+    date: "2026-08-30",
+    kind: "fix",
+    summary: "Mời: bỏ khúc đọc số chạy lâu vô ích, hết hỏng vì quá giờ.",
+    details: [
+      "Bước đếm lời mời đang chờ đọc nhầm cả bảng 'Người dùng' còn sót lại trong trang nên lần nào cũng chờ hết giờ rồi bỏ cuộc — mỗi lệnh mời đứng im thêm 2-4 phút, tới lượt mua suất thì không còn giờ. Nay chỉ đọc những dòng đang hiện trên màn hình.",
+      "Danh sách lời mời từ 2 trang trở lên thì tra thẳng bằng ô tìm kiếm, không quét trang đang mở nữa — danh sách xếp theo ngày mời nên email vừa mời nằm ở trang cuối.",
+      "Cả bước chốt suất có trần 45 giây và có báo tiến độ đều đặn: quá giờ thì dùng số của bảng điều khiển rồi mời tiếp, không còn im lặng hàng phút khiến lệnh bị coi là treo.",
+      "Tải lại trang xong phải chắc chắn là trang mới đang chạy; vẫn là trang cũ thì mở tab mới rồi mới thực hiện lệnh.",
+    ],
+  },
+  {
     version: "0.14.3",
     date: "2026-08-28",
     kind: "fix",

@@ -7,7 +7,7 @@ import {
   EMAIL_FULL_RE,
   extractSingleEmail,
 } from "../sync/row-extractors/email";
-import { scrapeAllRows } from "../sync/scrape-all-rows";
+import { isRenderedVisible, scrapeAllRows } from "../sync/scrape-all-rows";
 import { searchPendingForEmails } from "./search-pending-by-email";
 
 /**
@@ -52,6 +52,10 @@ export function emailsInListRegion(): Set<string> {
         : extractSingleEmail(text);
     if (!email) continue;
     if (node.parentElement?.closest(EXCLUDE_SELECTOR)) continue;
+    // Dòng ĐANG ẨN không phải danh sách của tab này: sang tab "Lời mời" rồi mà
+    // React chưa gỡ bảng "Người dùng" thì bảng đó vẫn nằm nguyên trong DOM (ca
+    // 30/8/2026 — xem `isRenderedVisible`).
+    if (!isRenderedVisible(node.parentElement)) continue;
     found.add(email);
   }
   return found;
@@ -70,7 +74,7 @@ function collectMatches(
   if (hits.length === 0) {
     return { matched: [], missing: [...wantedLower] };
   }
-  const rows = scrapeAllRows();
+  const rows = scrapeAllRows({ visibleOnly: true });
   const matched = hits.map<ScrapedMember>((email) => {
     const row = rows.find((r) => r.email.toLowerCase() === email);
     return row
@@ -103,9 +107,11 @@ const MIN_WAIT_MS = 3_000;
  * đúng là: gửi lời mời xong → sang tab Lời mời → QUÉT. Thấy đủ thì thôi (khỏi F5,
  * khỏi vòng verify ~10s). Không thấy mới F5 rồi quét lại.
  *
- * Danh sách lời mời trong thực tế KHÔNG BAO GIỜ quá 1 trang → gõ email vào ô tìm
- * kiếm là thừa (thêm ~1s/email + rủi ro ô lọc đổi UI). Chỉ khi thanh phân trang
- * báo ≥ 2 trang mới dùng tìm kiếm cho các email còn thiếu.
+ * MỘT TRANG thì quét DOM là đủ và nhanh nhất (gõ tìm kiếm tốn ~1s/email + thêm
+ * rủi ro ô lọc đổi UI). NHIỀU TRANG thì NGƯỢC LẠI — quét là vô ích: danh sách
+ * xếp theo ngày mời tăng dần nên email vừa mời nằm ở TRANG CUỐI, còn ta đang
+ * đứng ở trang đầu. Thấy thanh phân trang báo ≥ 2 trang là bỏ quét, sang ô tìm
+ * kiếm ngay (user chốt 30/8/2026, workspace CHAT GPT PRO có 2 trang lời mời).
  *
  * Poll tới `timeoutMs`, trả về NGAY khi thấy đủ. Nếu danh sách đã render và đứng
  * yên `SETTLE_TICKS` nhịp (sau tối thiểu `MIN_WAIT_MS`) mà vẫn thiếu → dừng sớm,
@@ -146,10 +152,23 @@ export async function scanPendingForEmails(
   let lastCount = -1;
   let settleTicks = 0;
   let result = collectMatches(wantedLower);
+  let pages = findPaginationState()?.total ?? 1;
 
   while (result.missing.length > 0 && Date.now() - start < timeoutMs) {
+    // ── NHIỀU TRANG THÌ TÌM KIẾM, KHÔNG QUÉT (user chốt 30/8/2026) ──────────
+    // Danh sách lời mời xếp theo NGÀY MỜI tăng dần, nên email vừa mời nằm ở
+    // TRANG CUỐI. Quét DOM trang đang mở là quét vào chỗ chắc chắn không có:
+    // hết sạch ngân sách poll rồi mới sang ô tìm kiếm. Biết có ≥2 trang là dừng
+    // quét ngay, để ô tìm kiếm làm việc của nó.
+    if (pages >= 2) {
+      console.log(
+        `[autogpt-invite-scan] danh sách có ${pages} trang — dừng quét DOM, dùng ô tìm kiếm`,
+      );
+      break;
+    }
     await sleep(POLL_INTERVAL_MS);
     result = collectMatches(wantedLower);
+    pages = findPaginationState()?.total ?? pages;
     if (result.missing.length === 0) break;
 
     const count = emailsInListRegion().size;
@@ -168,8 +187,7 @@ export async function scanPendingForEmails(
     }
   }
 
-  const pageState = findPaginationState();
-  const pages = pageState?.total ?? 1;
+  pages = findPaginationState()?.total ?? pages;
 
   // Chỉ khi danh sách THẬT SỰ nhiều trang (≥2) mới gõ email vào ô tìm kiếm —
   // email còn thiếu có thể đang nằm ở trang sau, quét DOM trang hiện tại không

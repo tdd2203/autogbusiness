@@ -35,14 +35,20 @@ function clearFilter(input: HTMLInputElement): void {
 }
 
 /**
+ * Trần cho CẢ vòng tra, tính theo lượt gọi content 300s của lệnh mời: mỗi email
+ * tốn ~1s (thấy) tới ~3,6s (không thấy), mẻ gộp 13 email là ~50s.
+ */
+const SEARCH_BUDGET_MS = 60_000;
+
+/**
  * Gõ từng email vào ô tìm kiếm của tab "Lời mời đang chờ xử lý" → list rút còn
  * 0-1 row → đọc ngay. Caller PHẢI đã ở tab Lời mời.
  *
- * CHỈ dùng khi danh sách lời mời có ≥ 2 TRANG (user 2026-08-13): email còn thiếu
- * lúc đó có thể nằm ở trang sau nên quét DOM trang hiện tại không thấy được.
- * Danh sách 1 trang — trường hợp gần như luôn xảy ra — thì `scanPendingForEmails`
- * quét thẳng DOM là đủ và nhanh hơn (mỗi email gõ ở đây tốn ~1s + rủi ro ô lọc
- * đổi UI). Xem [`scan-pending-page.ts`](./scan-pending-page.ts).
+ * CHỈ dùng khi danh sách lời mời có ≥ 2 TRANG (user 2026-08-13, nhắc lại
+ * 30/8/2026): email vừa mời nằm ở TRANG CUỐI vì danh sách xếp theo ngày mời tăng
+ * dần, nên quét DOM trang đang mở không bao giờ thấy. Danh sách 1 trang thì
+ * `scanPendingForEmails` quét thẳng DOM là đủ và nhanh hơn (mỗi email gõ ở đây
+ * tốn ~1s + rủi ro ô lọc đổi UI). Xem [`scan-pending-page.ts`](./scan-pending-page.ts).
  *
  * Trả về:
  *   - `ScrapedMember[]` (status="pending") của các email ĐÃ thấy (có thể rỗng).
@@ -65,7 +71,19 @@ export async function searchPendingForEmails(
   );
 
   const matched = new Map<string, ScrapedMember>();
+  const deadline = Date.now() + SEARCH_BUDGET_MS;
   for (const email of emails) {
+    // Mẻ mời gộp có thể mang hơn chục email; tra hết bằng ô tìm kiếm là chuyện
+    // của cả phút, mà lượt gọi content chỉ có 300s và còn phải chừa cho bước
+    // mua suất. Hết trần thì dừng — email chưa tra được vẫn nằm ở diện "chưa
+    // soi lại", tức backend hoãn phán xử chứ không chốt hỏng oan.
+    if (Date.now() >= deadline) {
+      console.warn(
+        `[autogpt-invite-verify] hết trần ${Math.round(SEARCH_BUDGET_MS / 1000)}s ` +
+          `khi mới tra ${matched.size}/${emails.length} email — dừng tìm kiếm`,
+      );
+      break;
+    }
     const lower = email.toLowerCase();
     // Gõ CHÍNH XÁC email đầy đủ 1 LẦN (user 2026-07-13: không gõ nửa rồi full = 2 lần).
     let hit: ScrapedMember | undefined;
@@ -73,7 +91,14 @@ export async function searchPendingForEmails(
     await sleep(600); // chờ React Query / debounce filter
     try {
       hit = await waitFor(
-        () => scrapeAllRows().find((m) => m.email.toLowerCase() === lower) ?? null,
+        () =>
+          // `visibleOnly`: sang tab "Lời mời" rồi mà React chưa gỡ bảng "Người
+          // dùng" thì bảng đó vẫn nằm trong DOM ở dạng ẩn. Đọc trúng nó là báo
+          // "lời mời có trong danh sách" cho một email thật ra chỉ đang là thành
+          // viên — xác minh giả đúng chỗ dính tiền (ca 30/8/2026).
+          scrapeAllRows({ visibleOnly: true }).find(
+            (m) => m.email.toLowerCase() === lower,
+          ) ?? null,
         3000,
         200,
       );

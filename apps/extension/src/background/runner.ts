@@ -38,6 +38,11 @@ import {
   type TabSlot,
 } from "./tab-pool";
 import {
+  createTrackedTab,
+  forgetOpenedTab,
+  trackOpenedTab,
+} from "./opened-tabs";
+import {
   acquireSeatLease,
   seatDemandForTask,
   type SeatLease,
@@ -468,6 +473,9 @@ function waitForTabComplete(
  *        (reload nguyên URL sẽ giữ `?tab=invites` do action trước để lại).
  *      - `preReload=false` → dùng luôn. Dành cho action TỰ điều hướng/F5 ngay
  *        đầu luồng: F5 ở đây chỉ là một lần load thừa.
+ *      - F5 xong PHẢI chốt được là trang MỚI đang trả lời (`loadId` đổi). Còn
+ *        đúng trang cũ trả lời thì BỎ tab đó, mở tab MỚI — chạy lệnh trên trang
+ *        cũ là thao tác trên danh sách cũ (user chốt 30/8/2026).
  *   2. Ô trống → mở tab MỚI. Tab mới nạp thẳng từ server nên đã là dữ liệu mới,
  *      KHÔNG F5 thêm.
  *   3. Tab bị redirect khỏi /admin (chưa đăng nhập ChatGPT) → trả null.
@@ -493,6 +501,10 @@ async function ensureAdminTab(
       // Đồng hồ "để không" của RIÊNG tab này bắt đầu lại từ đây: tab đang được
       // đem ra chạy lệnh. Tab của ô kia không bị ảnh hưởng — xem `idle-close.ts`.
       await markAdminTabActivity(existingId);
+      // Ghi lại vào sổ tab dùng chung: sổ ở session storage có thể đã mất (SW
+      // restart) trong khi tab vẫn sống — không ghi lại thì trần 3 tab đếm hụt
+      // đúng những tab mình đang dùng.
+      await trackOpenedTab(existingId, "admin");
       const url = current.url ?? "";
       // URL "sạch" = đúng /admin/members, không mang ?tab=invites/requests và
       // không phải sub-page. Chỉ khi đó F5 tại chỗ mới ra đúng tab Người dùng.
@@ -512,6 +524,8 @@ async function ensureAdminTab(
           onCleanMembers ? "F5 tại chỗ" : `điều hướng về ${CHATGPT_ADMIN_URL}`
         } để làm mới dữ liệu`,
       );
+      // Mốc so để biết trang MỚI đã tiếp quản chưa (xem `content-ready.ts`).
+      const prevLoadId = await readContentLoadId(existingId);
       if (onCleanMembers) {
         await chrome.tabs.reload(existingId);
       } else {
@@ -531,20 +545,55 @@ async function ensureAdminTab(
         );
         return null;
       }
-      console.log(`[autogpt-runner] ô ${slot}: tab ${existingId} sẵn sàng ${loaded.url}`);
-      return loaded;
+      // ── KIỂM TRA KĨ RỒI MỚI CHO CHẠY LỆNH (user chốt 30/8/2026) ───────────
+      // `status=complete` KHÔNG có nghĩa là trang mới đã tiếp quản: trang cũ vẫn
+      // trả lời PING trong khe trước lúc navigation commit, rồi mới tụt vào
+      // back/forward cache. Chạy lệnh trên nó là thao tác trên DANH SÁCH CŨ —
+      // đúng lớp tai nạn mà `content-ready.ts` sinh ra để chặn.
+      //
+      // Bắt được đích danh trang CŨ (`same_load_id`) thì bỏ hẳn tab đó, mở tab
+      // MỚI: tab mới nạp thẳng từ server, không mang theo DOM cũ. Chỉ "chưa ai
+      // trả lời" thì đi tiếp — content script chưa kịp inject là chuyện thường
+      // ngay sau F5, và `sendToContent` còn một lớp inject nữa.
+      const freshness = await waitForFreshContent(prevLoadId, 8_000, {
+        ping: () => readContentLoadId(existingId),
+        now: () => Date.now(),
+        sleep,
+      });
+      if (freshness.fresh || freshness.reason !== "same_load_id") {
+        if (!freshness.fresh) {
+          console.warn(
+            `[autogpt-runner] ô ${slot}: sau F5 chưa ping được content (${freshness.reason}) — ` +
+              "đi tiếp, sendToContent sẽ inject",
+          );
+        }
+        console.log(`[autogpt-runner] ô ${slot}: tab ${existingId} sẵn sàng ${loaded.url}`);
+        return loaded;
+      }
+      console.warn(
+        `[autogpt-runner] ô ${slot}: F5 xong tab ${existingId} VẪN là trang cũ ` +
+          `(loadId=${freshness.loadId ?? "?"}) → bỏ tab này, mở tab MỚI`,
+      );
+      try {
+        await chrome.tabs.remove(existingId);
+      } catch {
+        // Tab có thể đã đóng — không sao, chỉ cần xoá khỏi sổ.
+      }
+      await forgetOpenedTab(existingId);
+      // Rơi xuống nhánh "mở tab MỚI" phía dưới.
     }
-    // Tab trong sổ đã bị đóng (user đóng / Chrome dọn) → xoá sổ, mở tab mới.
+    // Tab trong sổ đã bị đóng (user đóng / Chrome dọn), hoặc F5 xong vẫn là trang
+    // cũ nên vừa bị bỏ ở trên → xoá sổ, mở tab mới.
     await setSlotTabId(slot, null);
   }
 
   console.log(
     `[autogpt-runner] ô ${slot}: mở tab admin MỚI ${CHATGPT_ADMIN_URL} (nền) — dữ liệu đã mới, không F5`,
   );
-  const created = await chrome.tabs.create({
-    url: CHATGPT_ADMIN_URL,
-    active: false,
-  });
+  const created = await createTrackedTab(
+    { url: CHATGPT_ADMIN_URL, active: false },
+    "admin",
+  );
   if (created.id === undefined) return null;
   await setSlotTabId(slot, created.id);
   await markAdminTabActivity(created.id);
@@ -795,10 +844,11 @@ async function ensureContentInjected(
     } catch (e) {
       log(`Step 3 tabs.remove THREW (tab có thể đã đóng): ${e instanceof Error ? e.message : String(e)}`);
     }
-    const created = await chrome.tabs.create({
-      url: CHATGPT_ADMIN_URL,
-      active: false,
-    });
+    await forgetOpenedTab(tabId);
+    const created = await createTrackedTab(
+      { url: CHATGPT_ADMIN_URL, active: false },
+      "admin",
+    );
     if (created.id === undefined) {
       log("⚠ Step 3 tabs.create KHÔNG trả tabId");
       return { ok: false, tabId, diag };
@@ -1675,6 +1725,7 @@ async function reportToBackend(
             unverified_emails?: string[];
             verify_scrape_failed?: boolean;
             submit_evidence?: SubmitEvidence;
+            skipped_emails?: string[];
           }
         | undefined;
       const pending = (data?.pending_members ?? []) as Array<{
@@ -1685,6 +1736,7 @@ async function reportToBackend(
       }>;
       const verifiedEmails = data?.verified_emails ?? [];
       const unverifiedEmails = data?.unverified_emails ?? [];
+      const skippedEmails = data?.skipped_emails ?? [];
       const verifyScrapeFailed = data?.verify_scrape_failed === true;
       // Tổng email đã mời (từ verify data, fallback ghép verified+unverified).
       const emails =
@@ -1771,6 +1823,9 @@ async function reportToBackend(
         unverified_emails: unverifiedEmails,
         verify_scrape_failed: verifyScrapeFailed,
         reconciled_removed: reconciledRemoved,
+        // Email chưa hề vào được ô mời → backend chốt hỏng + hoàn phí NGAY, không
+        // xếp chung với diện "đã bấm gửi mà chưa soi lại được".
+        skipped_emails: skippedEmails,
       };
       if (totalMissScrapeOk) {
         await updateTask(config, task.id, {
@@ -3316,6 +3371,11 @@ async function runOnceOnSlot(
     // PHẢI mang sang response của Phase 2 (xem chỗ gán `response = verifyResp`), nếu
     // không thì `decideInviteOutcome` luôn nhận "unknown".
     const submitEvidence = submitData.submit_evidence;
+    // Email KHÔNG vào được ô mời ở Phase 1 (xem execute-invite-inner). Cũng chỉ có
+    // ở Phase 1 và cũng bị `response = verifyResp` xoá sạch — chụp lại y như
+    // `submit_evidence`, nếu không backend mất bằng chứng "chưa gửi" và lại đi
+    // đường hoãn-phán-xử 20 phút cho email chưa hề được gửi.
+    const skippedEmails = submitData.skipped_emails;
     // ⚠️ SỐ SUẤT cũng CHỈ có ở Phase 1 — và `response = verifyResp` bên dưới ghi
     // đè sạch `data` của Phase 1. Chụp lại ngay đây rồi gắp sang kết quả cuối.
     //
@@ -3420,6 +3480,10 @@ async function runOnceOnSlot(
           if (vdata.submit_evidence === undefined) {
             vdata.submit_evidence = submitEvidence;
           }
+          verifyResp.data = vdata;
+        }
+        if (verifyResp?.ok && Array.isArray(skippedEmails)) {
+          vdata.skipped_emails = skippedEmails;
           verifyResp.data = vdata;
         }
         // Scrape fail → reload nữa cũng không scrape được, giữ kết quả + thoát.

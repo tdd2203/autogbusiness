@@ -35,7 +35,38 @@ function countEmailsInSubtree(root: Node): number {
   return count;
 }
 
-export function scrapeAllRows(): ScrapedMember[] {
+/**
+ * Phần tử này CÓ ĐANG HIỆN trên trang không (không phải chỉ nằm trong DOM).
+ *
+ * VÌ SAO CẦN (ca thật 30/8/2026): bấm sang tab "Lời mời đang chờ" xong, React
+ * vẫn giữ nguyên bảng của tab "Người dùng" trong DOM ở dạng ẩn. `scrapeAllRows`
+ * quét thẳng `document` nên đọc trúng cả trăm dòng đã ẩn ⇒ bước đếm lời mời chờ
+ * lần nào cũng thấy "vẫn còn 25 email của tab Người dùng" ⇒ chờ hết trần rồi bỏ
+ * cuộc. Mỗi lệnh mời mất 50-250s cho một phép đếm không bao giờ ra.
+ *
+ * Đo bằng hình học chứ không bằng CSS: `display:none` (kể cả qua thuộc tính
+ * `hidden`) thì không có hình chữ nhật nào. Thêm cửa `aria-hidden` cho lớp phủ
+ * vẫn chiếm chỗ. Tab chạy NỀN vẫn tính layout bình thường nên cách đo này không
+ * hắt oan cả trang.
+ */
+export function isRenderedVisible(el: Element | null): boolean {
+  if (!el) return false;
+  if (el.closest('[hidden], [aria-hidden="true"]')) return false;
+  if ((el as HTMLElement).offsetParent !== null) return true;
+  return el.getClientRects().length > 0;
+}
+
+export type ScrapeRowsOptions = {
+  /**
+   * true = BỎ QUA mọi dòng đang ẩn. Dùng cho chỗ phải phân biệt "danh sách của
+   * tab này" với "danh sách tab cũ React chưa gỡ" — xem `isRenderedVisible`.
+   * Mặc định false để giữ nguyên hành vi của mọi caller cũ.
+   */
+  visibleOnly?: boolean;
+};
+
+export function scrapeAllRows(opts: ScrapeRowsOptions = {}): ScrapedMember[] {
+  const visibleOnly = opts.visibleOnly === true;
   const members: ScrapedMember[] = [];
   const seen = new Set<string>();
   let textNodesScanned = 0;
@@ -48,6 +79,7 @@ export function scrapeAllRows(): ScrapedMember[] {
     const rows = document.querySelectorAll<HTMLElement>(sel);
     if (rows.length === 0) continue;
     for (const row of Array.from(rows)) {
+      if (visibleOnly && !isRenderedVisible(row)) continue;
       const found = findEmailTextNode(row);
       if (!found || seen.has(found.email)) continue;
       seen.add(found.email);
@@ -82,6 +114,7 @@ export function scrapeAllRows(): ScrapedMember[] {
     textNodesScanned += 1;
     const text = (node.nodeValue ?? "").trim();
     if (!text) continue;
+    if (visibleOnly && !isRenderedVisible(node.parentElement)) continue;
     if (text.length <= 100 && EMAIL_FULL_RE.test(text)) {
       fullMatchHits += 1;
       allCandidates.push({ email: text.toLowerCase(), node });
