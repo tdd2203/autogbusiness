@@ -3,7 +3,7 @@
  * cấu hình phí/ngân hàng SePay, và duyệt yêu cầu rút.
  *
  * Giao diện: import từ Claude Design "Sửa lại giao diện" — biến thể "Soft &
- * friendly" (nền ấm, bo tròn mềm, accent teal, chữ Nunito Sans). Bảng tài khoản
+ * friendly" (nền ấm, bo tròn mềm, accent teal). Bảng tài khoản
  * gọn theo mockup (Tài khoản · Số dư · Trạng thái · Thao tác). Toggle Ví (beta)
  * và ô sửa nhanh Phí mời được CHUYỂN vào modal chi tiết (không mất chức năng).
  * Bảng màu scope cục bộ qua biến --w-* nên không ảnh hưởng phần còn lại của app.
@@ -55,7 +55,7 @@ const softVars = {
   "--w-neg": "#cf5b4b",
   "--w-neg-soft": "#fbeae6",
   "--w-shadow": "0 2px 6px rgba(90,70,40,.05), 0 14px 34px rgba(90,70,40,.07)",
-  fontFamily: "'Nunito Sans', var(--font-sans)",
+  fontFamily: "var(--font-sans)",
   color: "var(--w-ink)",
 } as React.CSSProperties;
 
