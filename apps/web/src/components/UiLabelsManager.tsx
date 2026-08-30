@@ -175,9 +175,7 @@ export function UiLabelsManager() {
       toast.success(t("uiLabels.harvestQueued", { locale: vars.locale }));
     },
     onError: (e) => {
-      toast.error(
-        e instanceof ApiError ? String(e.detail) : t("uiLabels.harvestError"),
-      );
+      toast.error(e instanceof Error ? e.message : t("uiLabels.harvestError"));
     },
   });
 

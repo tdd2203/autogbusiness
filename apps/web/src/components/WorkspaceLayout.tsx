@@ -149,7 +149,9 @@ export default function WorkspaceLayout() {
     },
     onError: (e) => {
       if (e instanceof Error && e.message === "__user_cancel__") return;
-      const msg = e instanceof ApiError ? String(e.detail) : String(e);
+      // `e.message` chứ không `String(e.detail)`: cooldown đồng bộ toàn bộ trả
+      // detail dạng object, ép chuỗi thẳng ra "[object Object]".
+      const msg = e instanceof Error ? e.message : String(e);
       toast.error(msg);
     },
   });

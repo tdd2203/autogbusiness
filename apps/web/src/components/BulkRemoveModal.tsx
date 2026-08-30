@@ -26,7 +26,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useFormatDate, useT } from "../i18n";
 import { useAuth } from "../hooks/useAuth";
 import { useIsMobile } from "../hooks/useIsMobile";
-import { api, ApiError } from "../lib/api";
+import { api } from "../lib/api";
 import { LICENSE_FEATURE_ENABLED } from "../lib/featureFlags";
 import { toast } from "./Toast";
 
@@ -602,12 +602,7 @@ export function BulkRemoveModal({
       onClose();
     },
     onError: (e) => {
-      const msg =
-        e instanceof ApiError
-          ? String(e.detail)
-          : e instanceof Error
-            ? e.message
-            : String(e);
+      const msg = e instanceof Error ? e.message : String(e);
       toast.error(t("bulkRemove.resultError", { error: msg }));
     },
   });
@@ -633,12 +628,7 @@ export function BulkRemoveModal({
       onClose();
     },
     onError: (e) => {
-      const msg =
-        e instanceof ApiError
-          ? String(e.detail)
-          : e instanceof Error
-            ? e.message
-            : String(e);
+      const msg = e instanceof Error ? e.message : String(e);
       toast.error(t("bulkRemove.resultError", { error: msg }));
     },
   });
@@ -687,7 +677,7 @@ export function BulkRemoveModal({
         className="bg-white rounded-lg shadow-xl w-full mx-4"
         style={{
           maxWidth: isRenew ? 1040 : 860,
-          maxHeight: "90vh",
+          maxHeight: "calc(90vh / var(--ui-scale))",
           display: "flex",
           flexDirection: "column",
         }}

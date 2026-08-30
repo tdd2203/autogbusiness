@@ -24,8 +24,27 @@ export function setToken(token: string | null): void {
 
 export class ApiError extends Error {
   constructor(public status: number, public detail: unknown) {
-    super(typeof detail === "string" ? detail : JSON.stringify(detail));
+    super(readableDetail(detail));
   }
+}
+
+/**
+ * `message` của một `ApiError` phải là câu ĐỌC ĐƯỢC, vì cả chục chỗ trong app
+ * toast thẳng `e.message`.
+ *
+ * Backend trả `detail` khi thì chuỗi, khi thì `{code, message, ...}` (hạn mức
+ * thao tác, ví thiếu tiền, phiên bị khoá). Trước 2026-08-30 nhánh object bị
+ * `JSON.stringify` nên người dùng đọc được nguyên cục JSON trên toast — câu
+ * tiếng Việt viết sẵn ở backend không ai thấy. Bóc `detail.message` ngay tại
+ * đây thì mọi chỗ dùng `e.message` tự đúng, khỏi phải sửa từng hook.
+ */
+function readableDetail(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object") {
+    const msg = (detail as { message?: unknown }).message;
+    if (typeof msg === "string" && msg) return msg;
+  }
+  return JSON.stringify(detail);
 }
 
 export async function api<T = unknown>(

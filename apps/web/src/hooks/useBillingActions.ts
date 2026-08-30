@@ -16,7 +16,7 @@
  */
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError } from "../lib/api";
+import { api } from "../lib/api";
 import { useT } from "../i18n";
 import { confirm, toast } from "../components/Toast";
 import type { QueueItem, Workspace } from "../types";
@@ -112,7 +112,8 @@ export function useBillingActions(
     },
     onError: (e) => {
       if (e instanceof Error && e.message === "__user_cancel__") return;
-      const msg = e instanceof ApiError ? String(e.detail) : String(e);
+      // Xem ghi chú ở WorkspaceLayout: hạn mức thao tác trả detail dạng object.
+      const msg = e instanceof Error ? e.message : String(e);
       toast.error(t("billing.syncErrorToast", { error: msg }));
     },
   });

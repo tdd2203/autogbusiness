@@ -15,6 +15,7 @@ import {
   type WorkspaceWithKey,
 } from "../types";
 import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
+import { toast } from "../components/Toast";
 import { AssignWorkspaceModal } from "../components/AssignWorkspaceModal";
 import { SearchInput } from "./Members";
 
@@ -129,6 +130,15 @@ export default function Workspaces() {
       setLastBillingTaskId(resp.queue_item_id);
       triggerExtensionRun();
       qc.invalidateQueries({ queryKey: ["workspaces"] });
+    },
+    // Trước 2026-08-30 nhánh lỗi bị bỏ trống: bấm vào lúc còn hạn mức thao tác
+    // (hoặc extension chưa nối) thì nút chỉ hết quay rồi im, không một lời nào.
+    onError: (e) => {
+      toast.error(
+        t("billing.syncErrorToast", {
+          error: e instanceof Error ? e.message : String(e),
+        }),
+      );
     },
   });
 
