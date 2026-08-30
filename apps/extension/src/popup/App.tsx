@@ -10,6 +10,12 @@ import type { ConnectionStatus, ExtensionConfig } from "../shared/types";
 import { useI18n, type Lang } from "../i18n";
 import { CHANGELOG, KIND_COLOR, VERSION } from "../version";
 
+/**
+ * Số mục changelog hiện mỗi lượt. Có 150+ bản, đổ hết ra là panel dài vô tận;
+ * user mở bảng này để xem "vừa đổi gì", không phải để đọc lại cả năm.
+ */
+const CHANGELOG_PAGE = 8;
+
 export default function App() {
   const { t, lang, setLang } = useI18n();
   const [apiBaseUrl, setApiBaseUrl] = useState("http://localhost:18000");
@@ -18,6 +24,11 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [activeInfo, setActiveInfo] = useState<ActiveTaskInfo | null>(null);
   const [showChangelog, setShowChangelog] = useState(false);
+  // Mở sẵn bản mới nhất; các bản cũ thu gọn còn 1 dòng cho tới khi user bấm.
+  const [openVersion, setOpenVersion] = useState<string | null>(
+    CHANGELOG[0]?.version ?? null,
+  );
+  const [changelogLimit, setChangelogLimit] = useState(CHANGELOG_PAGE);
 
   const refreshActiveTask = useCallback(async () => {
     const config = await getConfig();
@@ -150,26 +161,52 @@ export default function App() {
 
       {showChangelog && (
         <div className="changelog-panel">
-          {CHANGELOG.map((entry) => (
-            <div key={entry.version} className="changelog-entry">
-              <div className="changelog-header">
-                <span className="changelog-version">v{entry.version}</span>
-                <span
-                  className="changelog-kind"
-                  style={{ background: KIND_COLOR[entry.kind] }}
+          {CHANGELOG.slice(0, changelogLimit).map((entry) => {
+            const open = entry.version === openVersion;
+            return (
+              <div key={entry.version} className="changelog-entry">
+                <button
+                  type="button"
+                  className="changelog-row"
+                  aria-expanded={open}
+                  onClick={() => setOpenVersion(open ? null : entry.version)}
                 >
-                  {t(`popup.changelogKind.${entry.kind}`)}
-                </span>
-                <span className="changelog-date">{entry.date}</span>
+                  <span className="changelog-version">v{entry.version}</span>
+                  <span
+                    className="changelog-kind"
+                    style={{ background: KIND_COLOR[entry.kind] }}
+                  >
+                    {t(`popup.changelogKind.${entry.kind}`)}
+                  </span>
+                  <span
+                    className={open ? "changelog-summary open" : "changelog-summary"}
+                  >
+                    {entry.summary}
+                  </span>
+                  <span className="caret">{open ? "▴" : "▾"}</span>
+                </button>
+                {open && (
+                  <div className="changelog-body">
+                    <div className="changelog-date">{entry.date}</div>
+                    <ul className="changelog-details">
+                      {entry.details.map((d, i) => (
+                        <li key={i}>{d}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
-              <div className="changelog-summary">{entry.summary}</div>
-              <ul className="changelog-details">
-                {entry.details.map((d, i) => (
-                  <li key={i}>{d}</li>
-                ))}
-              </ul>
-            </div>
-          ))}
+            );
+          })}
+          {changelogLimit < CHANGELOG.length && (
+            <button
+              type="button"
+              className="changelog-more"
+              onClick={() => setChangelogLimit((n) => n + CHANGELOG_PAGE)}
+            >
+              {t("popup.changelogMore")} ({CHANGELOG.length - changelogLimit})
+            </button>
+          )}
         </div>
       )}
 

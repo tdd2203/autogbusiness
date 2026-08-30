@@ -32,5 +32,6 @@
   "popup.changelogKind.feature": "新功能",
   "popup.changelogKind.fix": "修复",
   "popup.changelogKind.chore": "维护",
+  "popup.changelogMore": "查看更早版本",
   "popup.langSwitch": "语言"
 }

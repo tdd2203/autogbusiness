@@ -32,5 +32,6 @@
   "popup.changelogKind.feature": "Mới",
   "popup.changelogKind.fix": "Sửa lỗi",
   "popup.changelogKind.chore": "Bảo trì",
+  "popup.changelogMore": "Xem thêm bản cũ",
   "popup.langSwitch": "Ngôn ngữ"
 }
