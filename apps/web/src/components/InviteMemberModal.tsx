@@ -76,11 +76,12 @@ export function InviteMemberModal({
 
   // Ô paste tự nới theo dòng email dài nhất. Font mono nên bề rộng đoán được:
   // dài quá thì hạ cỡ chữ chứ không để email gãy dòng giữa chừng.
+  // Desktop chứa đủ 20 dòng, điện thoại 10 dòng và không quá nửa màn hình.
   const pasteBox = useMemo(() => {
     const MIN_W = 460;
-    const MAX_W = 660;
+    const MAX_W = isMobile ? 340 : 660;
     const CHROME = 74; // padding cột + padding input + viền + chỗ cho thanh cuộn
-    const VISIBLE_ROWS = 20; // paste 20 email vẫn thấy hết, không phải cuộn
+    const VISIBLE_ROWS = isMobile ? 10 : 20;
     const LINE_H = 1.6;
     const source = emailsText.trim()
       ? emailsText
@@ -96,12 +97,14 @@ export function InviteMemberModal({
       fontSize -= 0.5;
       width = widthAt(fontSize);
     }
+    const rowsHeight = Math.round(VISIBLE_ROWS * fontSize * LINE_H + 22);
     return {
       width: Math.min(MAX_W, Math.max(MIN_W, width)),
       fontSize,
-      minHeight: Math.round(VISIBLE_ROWS * fontSize * LINE_H + 22),
+      // Máy nhỏ: 10 dòng nhưng không được ăn quá nửa màn hình.
+      minHeight: isMobile ? `min(${rowsHeight}px, 46vh)` : rowsHeight,
     };
-  }, [emailsText]);
+  }, [emailsText, isMobile]);
 
   // Derive entries: each valid email + months (override or default).
   const entries = useMemo(
