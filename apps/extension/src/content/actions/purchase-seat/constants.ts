@@ -228,3 +228,14 @@ export const SEAT_CARDS_VERIFY_TIMEOUT_MS = 15_000;
 
 /** Nhịp dò lại hàng thẻ trong lúc chờ số suất mới. */
 export const SEAT_CARDS_VERIFY_POLL_MS = 700;
+
+/**
+ * Trần NGẮN cho lượt chờ trên, dùng khi ChatGPT đã in băng-rôn xanh "Gói đăng ký
+ * của bạn đã được cập nhật thành công" mà hộp thanh toán vẫn còn treo.
+ *
+ * Hộp còn che thì `readSeatTotalsFromPage` từ chối đọc (nó in lại chính mấy con
+ * số này), nên chờ trọn 15s cũng chỉ đọc ra null. Mà câu xanh đã trả lời xong
+ * điều lượt chờ này đi tìm — luồng mời suy tổng mới từ bộ đếm rồi mời tiếp (xem
+ * `canDeriveTotalAfterPurchase`). Vẫn ngó vài nhịp phòng khi hộp vừa kịp đóng.
+ */
+export const SEAT_CARDS_VERIFY_SHORT_MS = 3_000;

@@ -258,13 +258,46 @@ export function headroomFromPage(
 }
 
 /**
+ * ChatGPT đã tự nói giao dịch ĐI QUA chưa — băng-rôn XANH "Gói đăng ký của bạn
+ * đã được cập nhật thành công" (user chốt 30/8/2026: thấy câu này, hoặc thấy số
+ * suất nhích lên đúng số vừa mua, là mua xong).
+ *
+ * Dùng làm nguồn xác nhận NGANG HÀNG với "hộp xác nhận đã đóng". Hộp có ca
+ * không chịu đóng dù giao dịch đã đi qua; khi ấy bản cũ phải tải lại trang rồi
+ * ĐỌC KIỂM lại từ đầu — mà đọc kiểm gồm cả lượt đếm từng dòng lời mời đang chờ,
+ * tốn hàng chục giây cho mỗi lệnh mời. Câu xanh nói thẳng điều mà lượt đọc kiểm
+ * kia đi tìm.
+ *
+ * ⚠️ CHẶN ca "có hiệu lực kỳ sau": ChatGPT vẫn in câu xanh khi ghi nhận một
+ * thay đổi chỉ hiệu lực từ kỳ gia hạn tới — tiền đã trừ nhưng suất HÔM NAY
+ * không hề nhích. Suy ra "đã có chỗ" rồi mời vào là đâm thẳng vào hộp
+ * mua-kèm-mời của ChatGPT. Có câu hoãn hiệu lực thì trả false, để caller quay
+ * về đường đọc tận nơi.
+ */
+export function purchaseSettledBySuccessToast(
+  purchaseData: Record<string, unknown>,
+): boolean {
+  const toast = purchaseData.charge_success_toast;
+  if (typeof toast !== "string" || toast.trim() === "") return false;
+  const later = purchaseData.charge_effective_later_text;
+  if (typeof later === "string" && later.trim() !== "") return false;
+  return true;
+}
+
+/**
  * Có được phép SUY RA tổng suất mới từ bộ đếm của hộp mua, thay vì mở lại hộp
  * "Quản lý suất" để đọc kiểm?
  *
- * Chỉ dám tin khi CẢ BA khớp: hộp xác nhận đã đóng (giao dịch đã đi qua), bộ đếm
- * khởi điểm đúng bằng tổng vừa đọc được, và điểm đến đúng bằng tổng + số mua.
- * Lệch bất kỳ chỗ nào = một trong hai bên đọc sai, hoặc admin khác vừa đổi suất
- * giữa chừng → caller quay về đường đọc lại tận nơi.
+ * Chỉ dám tin khi CẢ BA khớp: ChatGPT đã xác nhận giao dịch đi qua, bộ đếm khởi
+ * điểm đúng bằng tổng vừa đọc được, và điểm đến đúng bằng tổng + số mua. Lệch
+ * bất kỳ chỗ nào = một trong hai bên đọc sai, hoặc admin khác vừa đổi suất giữa
+ * chừng → caller quay về đường đọc lại tận nơi.
+ *
+ * "ChatGPT đã xác nhận" nhận HAI dấu hiệu, đủ một là được: hộp xác nhận tự đóng
+ * (đường cũ), hoặc băng-rôn xanh "đã được cập nhật thành công" (xem
+ * `purchaseSettledBySuccessToast`). Số suất trên trang nhích lên là dấu hiệu
+ * thứ ba, mạnh hơn cả hai, và đi bằng đường riêng
+ * (`totalFromPageCardsAfterPurchase`).
  *
  * Cả ba đều so BẰNG NHAU chứ không so "đủ lớn": chỉ cần tổng thật thấp hơn số
  * suy ra là bước mời phía sau đâm vào hộp mua-kèm-mời. Xuất khẩu để test được —
@@ -275,8 +308,11 @@ export function canDeriveTotalAfterPurchase(
   totalBefore: number,
   shortfall: number,
 ): boolean {
+  const settled =
+    purchaseData.charge_modal_dismissed === true ||
+    purchaseSettledBySuccessToast(purchaseData);
   return (
-    purchaseData.charge_modal_dismissed === true &&
+    settled &&
     asInt(purchaseData.initial_seat) === totalBefore &&
     asInt(purchaseData.target_seat) === totalBefore + shortfall
   );
@@ -789,7 +825,11 @@ export async function ensureSeatsForInvite(
       seat_assigned_after: before.assigned,
       seat_free_after: totalAfter - before.assigned,
       seat_after_source:
-        pageTotalAfter !== null ? "page_cards_after_purchase" : "purchase_counter",
+        pageTotalAfter !== null
+          ? "page_cards_after_purchase"
+          : purchaseData.charge_modal_dismissed === true
+            ? "purchase_counter"
+            : "success_toast_counter",
       // Trang sẽ được BACKGROUND tải lại (không phải content tự điều hướng).
       seat_reloaded_once: purchaseData.charge_overlay_cleared === false,
     };
@@ -815,8 +855,14 @@ export async function ensureSeatsForInvite(
       };
     }
 
+    const afterSourceText =
+      pageTotalAfter !== null
+        ? "thẻ trên trang"
+        : purchaseData.charge_modal_dismissed === true
+          ? "bộ đếm"
+          : "băng-rôn xanh + bộ đếm";
     console.log(
-      `${LOG} mua xong ${shortfall} suất (${pageTotalAfter !== null ? "thẻ trên trang" : "bộ đếm"} ` +
+      `${LOG} mua xong ${shortfall} suất (${afterSourceText} ` +
         `${before.total} → ${totalAfter}), đã gán ${before.assigned} → đủ ${need} suất trống. ` +
         "Mời tiếp, KHÔNG mở lại hộp suất.",
     );

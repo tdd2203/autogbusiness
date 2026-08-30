@@ -49,6 +49,7 @@ import {
   REVIEW_MONEY_GRACE_MS,
   REVIEW_READY_TIMEOUT_MS,
   SEAT_CARDS_VERIFY_POLL_MS,
+  SEAT_CARDS_VERIFY_SHORT_MS,
   SEAT_CARDS_VERIFY_TIMEOUT_MS,
   SEAT_MODAL_SETTLE_MS,
   SEAT_PREVIEW_TIMEOUT_MS,
@@ -162,6 +163,7 @@ async function waitForSeatCardsIncrease(
   before: SeatTotals | null,
   qty: number,
   onTick?: (elapsed: number) => Promise<void>,
+  budgetMs: number = SEAT_CARDS_VERIFY_TIMEOUT_MS,
 ): Promise<SeatVerifyOutcome> {
   const started = Date.now();
   if (!before) {
@@ -179,7 +181,7 @@ async function waitForSeatCardsIncrease(
   let after: SeatTotals | null = null;
   let last: { delta: number; basis: "standard" | "total" } | null = null;
   let ticked = 0;
-  while (Date.now() - started < SEAT_CARDS_VERIFY_TIMEOUT_MS) {
+  while (Date.now() - started < budgetMs) {
     // Hộp thanh toán còn mở thì `readSeatTotalsFromPage` trả null (nó từ chối
     // đọc khi có hộp in lại chính mấy con số này) — cứ dò tiếp, hộp đóng xong là
     // đọc được.
@@ -216,8 +218,8 @@ async function waitForSeatCardsIncrease(
     waitedMs: Date.now() - started,
     reason: after
       ? `số suất trên trang mới nhích ${last?.delta ?? 0}/${qty} sau ` +
-        `${Math.round(SEAT_CARDS_VERIFY_TIMEOUT_MS / 1000)}s`
-      : `không đọc được số suất trên trang sau ${Math.round(SEAT_CARDS_VERIFY_TIMEOUT_MS / 1000)}s`,
+        `${Math.round(budgetMs / 1000)}s`
+      : `không đọc được số suất trên trang sau ${Math.round(budgetMs / 1000)}s`,
   };
 }
 
@@ -844,13 +846,27 @@ export async function executePurchaseSeat(
   // con số này trả lời thẳng. Hộp còn treo vẫn là chuyện riêng (lớp phủ chặn
   // bước mời) → caller vẫn tải lại trang theo `charge_overlay_cleared`.
   await progress("verify_seats", "Đọc lại số suất trên trang để xác nhận...", qty + 4);
-  const verify = await waitForSeatCardsIncrease(cardsBefore, qty, async (elapsed) => {
-    await progress(
-      "verify_seats",
-      `Đang chờ trang cập nhật số suất mới (${Math.round(elapsed / 1000)}s)...`,
-      qty + 4,
-    );
-  });
+  // Hộp CÒN TREO mà ChatGPT đã in băng-rôn xanh "đã được cập nhật thành công"
+  // (user 30/8/2026): câu đó đã trả lời xong câu hỏi "mua được chưa", trong khi
+  // hộp còn che trang thì `readSeatTotalsFromPage` từ chối đọc — nằm chờ trọn
+  // 15s chỉ để đọc ra null là đốt thời gian của lệnh mời. Ngó qua vài nhịp
+  // phòng khi hộp vừa kịp đóng, rồi đi tiếp.
+  const verifyBudgetMs =
+    !dismissed && charge.successToast
+      ? SEAT_CARDS_VERIFY_SHORT_MS
+      : SEAT_CARDS_VERIFY_TIMEOUT_MS;
+  const verify = await waitForSeatCardsIncrease(
+    cardsBefore,
+    qty,
+    async (elapsed) => {
+      await progress(
+        "verify_seats",
+        `Đang chờ trang cập nhật số suất mới (${Math.round(elapsed / 1000)}s)...`,
+        qty + 4,
+      );
+    },
+    verifyBudgetMs,
+  );
   if (verify.verified) {
     console.log(
       `${LOG} XÁC NHẬN trên trang: suất ${verify.basis === "standard" ? "Tiêu chuẩn" : "tổng"} ` +

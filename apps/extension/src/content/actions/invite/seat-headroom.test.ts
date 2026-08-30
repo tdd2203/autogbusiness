@@ -236,12 +236,71 @@ describe("canDeriveTotalAfterPurchase — có dám tin bộ đếm hộp mua kh�
     expect(canDeriveTotalAfterPurchase(OK, 150, 1)).toBe(true);
   });
 
-  it("hộp xác nhận CHƯA đóng → chưa chắc giao dịch đã đi qua, đọc lại", () => {
+  it("hộp xác nhận CHƯA đóng, cũng không có băng-rôn xanh → đọc lại", () => {
     expect(
       canDeriveTotalAfterPurchase({ ...OK, charge_modal_dismissed: false }, 150, 1),
     ).toBe(false);
     const { charge_modal_dismissed: _drop, ...missing } = OK;
     expect(canDeriveTotalAfterPurchase(missing, 150, 1)).toBe(false);
+  });
+
+  it("hộp treo nhưng ChatGPT báo 'đã cập nhật thành công' → suy được, mời tiếp", () => {
+    expect(
+      canDeriveTotalAfterPurchase(
+        {
+          ...OK,
+          charge_modal_dismissed: false,
+          charge_success_toast: "Gói đăng ký của bạn đã được cập nhật thành công",
+        },
+        150,
+        1,
+      ),
+    ).toBe(true);
+  });
+
+  it("băng-rôn xanh nhưng hộp nói 'có hiệu lực kỳ sau' → suất hôm nay chưa có", () => {
+    // Tiền đã trừ nhưng suất chỉ lên vào kỳ gia hạn tới ⇒ suy ra "đã có chỗ" rồi
+    // mời vào là đâm thẳng vào hộp mua-kèm-mời của ChatGPT.
+    expect(
+      canDeriveTotalAfterPurchase(
+        {
+          ...OK,
+          charge_modal_dismissed: false,
+          charge_success_toast: "Gói đăng ký của bạn đã được cập nhật thành công",
+          charge_effective_later_text: "Có hiệu lực vào 25 tháng 9, 2026",
+        },
+        150,
+        1,
+      ),
+    ).toBe(false);
+  });
+
+  it("băng-rôn xanh rỗng / không phải chuỗi → không tính là xác nhận", () => {
+    expect(
+      canDeriveTotalAfterPurchase(
+        { ...OK, charge_modal_dismissed: false, charge_success_toast: "  " },
+        150,
+        1,
+      ),
+    ).toBe(false);
+    expect(
+      canDeriveTotalAfterPurchase(
+        { ...OK, charge_modal_dismissed: false, charge_success_toast: true },
+        150,
+        1,
+      ),
+    ).toBe(false);
+  });
+
+  it("có băng-rôn xanh vẫn phải khớp bộ đếm — số suất mua không được đoán", () => {
+    const toastOnly = {
+      ...OK,
+      charge_modal_dismissed: false,
+      charge_success_toast: "Gói đăng ký của bạn đã được cập nhật thành công",
+    };
+    // Cần bù 2 mà bộ đếm chỉ nhích 1 ⇒ mời tiếp là thiếu suất.
+    expect(canDeriveTotalAfterPurchase(toastOnly, 150, 2)).toBe(false);
+    expect(canDeriveTotalAfterPurchase(toastOnly, 151, 1)).toBe(false);
   });
 
   it("cờ đóng hộp là chuỗi 'true' → KHÔNG nhận, phải đúng boolean", () => {
