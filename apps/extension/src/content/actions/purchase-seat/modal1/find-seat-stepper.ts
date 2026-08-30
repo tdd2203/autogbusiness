@@ -277,6 +277,19 @@ function collectTextSteppers(root: HTMLElement): Located[] {
 }
 
 /**
+ * Mọi bộ đếm đọc được trong hộp — thử đường CẶP NÚT trước, rỗng thì mới sang
+ * đường Ô SỐ.
+ *
+ * Thứ tự này giữ nguyên hành vi đã chạy tốt của các hộp cũ, và chỉ mở thêm lối
+ * cho hai hình dạng làm đường cũ trả rỗng: bộ đếm có `<input>`, và khung chung
+ * của 2 nút nằm sâu hơn 5 tầng.
+ */
+function allSteppers(dialog: HTMLElement): Located[] {
+  const byButtons = collectTextSteppers(dialog);
+  return byButtons.length > 0 ? byButtons : collectHolderSteppers(dialog);
+}
+
+/**
  * Nhãn của một hàng loại suất trong hộp "Quản lý suất".
  *
  * Khớp theo ĐẦU CHUỖI chứ không bắt bằng đúng: ChatGPT có thể gộp nhãn với giá
@@ -367,6 +380,122 @@ function pinStandardByRow(
 }
 
 /**
+ * Con số của RIÊNG element này, không tính con số của thẻ con.
+ *
+ * Ba dạng, theo đúng thứ tự đã gặp trên ChatGPT:
+ *   1. `<input value="247">` — bộ đếm có ô nhập (số KHÔNG nằm trong textContent);
+ *   2. leaf `<div>247</div>` — dạng cũ;
+ *   3. thẻ CÓ CON mà chữ trực tiếp là số: `<div>247<span class="sr-only">suất
+ *      Tiêu chuẩn</span></div>` — leaf duy nhất là cái nhãn ẩn, không phải số.
+ *
+ * Ca 28/8/2026 chết ở chỗ chỉ nhận dạng 2: hộp có đủ nhãn, đủ 5 nút bộ đếm mà
+ * "bộ đếm đọc ra [không có]" ⇒ luồng mua dừng trước khi bấm gì.
+ */
+function ownSeatNumber(el: HTMLElement): { value: number; source: "input" | "text" } | null {
+  if (el.tagName === "INPUT") {
+    const v = toSeatNumber((el as HTMLInputElement).value);
+    return v === null ? null : { value: v, source: "input" };
+  }
+  if (el.children.length === 0) {
+    const v = toSeatNumber(el.textContent);
+    return v === null ? null : { value: v, source: "text" };
+  }
+  // Chữ TRỰC TIẾP của thẻ (bỏ qua thẻ con). `childNodes` không có trong DOM giả
+  // của test → coi như không đọc được, hai dạng trên đã phủ các ca test.
+  const kids = (el as unknown as { childNodes?: ArrayLike<{ nodeType: number; textContent: string | null }> })
+    .childNodes;
+  if (!kids || typeof kids.length !== "number") return null;
+  let direct = "";
+  for (let i = 0; i < kids.length; i++) {
+    const n = kids[i];
+    if (n.nodeType === 3) direct += n.textContent ?? "";
+  }
+  const v = toSeatNumber(direct);
+  return v === null ? null : { value: v, source: "text" };
+}
+
+/** Nút bộ đếm gần nhất bên trái / bên phải `el`, CÙNG DÒNG với nó. */
+function flankingButtons(
+  dialog: HTMLElement,
+  el: HTMLElement,
+): { left: HTMLElement; right: HTMLElement } | null {
+  const r = el.getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0) return null;
+  const cx = r.left + r.width / 2;
+  const cy = r.top + r.height / 2;
+
+  let buttons = stepperButtons(dialog);
+  if (buttons.length < 2) buttons = stepperButtons(dialog, true);
+
+  let left: { el: HTMLElement; x: number } | null = null;
+  let right: { el: HTMLElement; x: number } | null = null;
+  for (const b of buttons) {
+    const br = b.getBoundingClientRect();
+    if (br.width <= 0 || br.height <= 0) continue;
+    const by = br.top + br.height / 2;
+    // Khác dòng thì bỏ — nới bằng đúng chiều cao con số cho dịu chênh lệch nhỏ.
+    if (Math.abs(by - cy) > Math.max(r.height, br.height)) continue;
+    const bx = br.left + br.width / 2;
+    if (bx < cx && (!left || bx > left.x)) left = { el: b, x: bx };
+    if (bx > cx && (!right || bx < right.x)) right = { el: b, x: bx };
+  }
+  if (!left || !right) return null;
+  // Hai bên đảo vai (nút trái mang nhãn "tăng") ⇒ không hiểu được hàng này.
+  if (isIncrementLabelled(left.el) || isDecrementLabelled(right.el)) return null;
+  return { left: left.el, right: right.el };
+}
+
+/**
+ * MỌI bộ đếm trong hộp, ghim theo Ô SỐ chứ không theo khung chung của 2 nút.
+ *
+ * Vì sao cần đường này bên cạnh `collectTextSteppers`: đường kia đi từ CẶP NÚT
+ * rồi mới tìm con số ở giữa, nên nó gãy ở hai chỗ mà hộp thật vẫn bình thường —
+ * khung chung của 2 nút nằm xa hơn 5 tầng (hộp dựng kiểu lưới, React bọc nhiều
+ * lớp), và con số không phải leaf text (ô `<input>`, hoặc thẻ có nhãn ẩn kèm).
+ * Đường này đi ngược: tìm ô số trước, rồi đòi nó phải có nút bộ đếm KẸP HAI BÊN
+ * cùng dòng. Yêu cầu "kẹp hai bên" loại sạch các con số khác trong hộp (giá,
+ * dòng "247/250 đã gán") mà không cần biết hộp lồng thẻ ra sao.
+ */
+function collectHolderSteppers(dialog: HTMLElement): Located[] {
+  const found: Located[] = [];
+  for (const el of Array.from(dialog.querySelectorAll<HTMLElement>("*"))) {
+    if (el.closest("button")) continue;
+    if (!isVisible(el)) continue;
+    const num = ownSeatNumber(el);
+    if (!num) continue;
+    const flank = flankingButtons(dialog, el);
+    if (!flank) continue;
+    found.push({
+      readEl: num.source === "input" ? (el as HTMLInputElement) : el,
+      incEl: flank.right,
+      decEl: flank.left,
+      source: num.source,
+      scope: "single",
+    });
+  }
+  // Cùng MỘT bộ đếm có thể lộ ra hai ô số (ô `<input>` + bản text mirror, hoặc
+  // thẻ cha và thẻ con cùng đọc ra số). Gộp theo cặp nút: cùng cặp nút thì cùng
+  // một bộ đếm — giữ bản `<input>` (đọc chắc hơn), và chỉ gộp khi HAI BÊN CÙNG
+  // MỘT SỐ. Lệch số là hai bên nói hai chuyện khác nhau ⇒ giữ cả hai để tầng
+  // trên thấy "nhiều hơn một bộ đếm" rồi dừng, chứ không chọn hộ.
+  const merged: Located[] = [];
+  for (const f of found) {
+    const same = merged.find(
+      (m) =>
+        m.incEl === f.incEl && m.decEl === f.decEl && readLocated(m) === readLocated(f),
+    );
+    if (!same) {
+      merged.push(f);
+      continue;
+    }
+    if (same.source !== "input" && f.source === "input") {
+      merged[merged.indexOf(same)] = f;
+    }
+  }
+  return merged;
+}
+
+/**
  * Chốt lại cặp nút "−"/"+" cho ĐÚNG con số đã ghim: nút gần nhất bên trái và
  * bên phải, cùng dòng với con số.
  *
@@ -376,28 +505,10 @@ function pinStandardByRow(
  * không nhúc nhích → luồng mua tự dừng) nhưng là một lần hỏng vô cớ.
  */
 function alignButtonsToReadout(dialog: HTMLElement, loc: Located): Located {
-  const r = (loc.readEl as HTMLElement).getBoundingClientRect();
-  if (r.width <= 0 || r.height <= 0) return loc;
-  const cx = r.left + r.width / 2;
-  const cy = r.top + r.height / 2;
-
-  let left: { el: HTMLElement; x: number } | null = null;
-  let right: { el: HTMLElement; x: number } | null = null;
-  for (const b of stepperButtons(dialog)) {
-    const br = b.getBoundingClientRect();
-    if (br.width <= 0 || br.height <= 0) continue;
-    const by = br.top + br.height / 2;
-    // Khác dòng thì bỏ — nới bằng đúng chiều cao con số cho dịu chênh lệch nhỏ.
-    if (Math.abs(by - cy) > r.height) continue;
-    const bx = br.left + br.width / 2;
-    if (bx < cx && (!left || bx > left.x)) left = { el: b, x: bx };
-    if (bx > cx && (!right || bx < right.x)) right = { el: b, x: bx };
-  }
-  if (!left || !right) return loc;
-  // Hai bên đảo vai (nút trái mang nhãn "tăng") ⇒ không hiểu được hàng này,
-  // giữ nguyên cặp cũ chứ không đoán.
-  if (isIncrementLabelled(left.el) || isDecrementLabelled(right.el)) return loc;
-  return { ...loc, incEl: right.el, decEl: left.el };
+  const flank = flankingButtons(dialog, loc.readEl as HTMLElement);
+  // Không chốt được thì giữ nguyên cặp cũ chứ không đoán.
+  if (!flank) return loc;
+  return { ...loc, incEl: flank.right, decEl: flank.left };
 }
 
 /**
@@ -441,14 +552,18 @@ function locateInDialog(dialog: HTMLElement): Located | null {
     }
 
     // Đường 2: ghim theo dòng (hộp dựng kiểu lưới — ca thật 28/8/2026).
-    const all = collectTextSteppers(dialog);
+    // Đường 3 (`collectHolderSteppers`) đi từ Ô SỐ nên đọc được cả bộ đếm có
+    // `<input>` lẫn bộ đếm mà khung chung của 2 nút nằm quá sâu — hai hình dạng
+    // làm `collectTextSteppers` trả về RỖNG dù hộp bình thường (ca 28/8/2026:
+    // "5 nút bộ đếm, bộ đếm đọc ra [không có]", 21 lệnh mời chết liên tiếp).
+    const all = allSteppers(dialog);
     if (all.length === 0) return null;
     const pinned = pinStandardByRow(dialog, all, standard.el, others);
     if (!pinned) return null;
     return alignButtonsToReadout(dialog, { ...pinned, scope: "standard_row" });
   }
 
-  const all = collectTextSteppers(dialog);
+  const all = allSteppers(dialog);
   if (all.length === 0) return null;
   // Nhiều con số khác nhau mà không có nhãn nào để ghim (ChatGPT đổi chữ?) →
   // không đoán bừa hàng nào là hàng Tiêu chuẩn.
@@ -557,11 +672,29 @@ export function describeSeatModal(): string {
         (l) =>
           `${l.standard ? "Tiêu chuẩn" : "loại khác"}="${(l.el.textContent ?? "").trim().slice(0, 30)}"`,
       );
-      const counts = collectTextSteppers(d).map((s) => readLocated(s) ?? "?");
+      const byButtons = collectTextSteppers(d).map((s) => readLocated(s) ?? "?");
+      const byHolder = collectHolderSteppers(d).map(
+        (s) => `${readLocated(s) ?? "?"}(${s.source})`,
+      );
+      // Mọi con số 1-3 chữ số trong hộp, KỂ CẢ số không có nút kẹp hai bên: khi
+      // cả hai đường trên đọc ra rỗng thì đây là thứ nói được ChatGPT đang để
+      // con số ở đâu (ô nhập? thẻ có con? hay hộp thật sự không có số nào).
+      const raw: string[] = [];
+      for (const el of Array.from(d.querySelectorAll<HTMLElement>("*"))) {
+        if (el.closest("button")) continue;
+        const n = ownSeatNumber(el);
+        if (n) raw.push(`${el.tagName.toLowerCase()}=${n.value}${n.source === "input" ? "(ô nhập)" : ""}`);
+        if (raw.length >= 8) break;
+      }
+      // Cây DOM của hộp — chỉ vào Console, KHÔNG nhét vào thông báo lỗi (nó đi
+      // thẳng vào DB và hiện trên dashboard).
+      console.warn(`[autogpt-seat] HTML hộp#${i + 1}:`, d.outerHTML.slice(0, 4000));
       return (
         `hộp#${i + 1}: ${stepperButtons(d).length} nút bộ đếm, ` +
         `nhãn [${labels.join(", ") || "không nhận ra nhãn nào"}], ` +
-        `bộ đếm đọc ra [${counts.join(", ") || "không có"}]`
+        `bộ đếm đọc ra [${byButtons.join(", ") || "không có"}], ` +
+        `theo ô số [${byHolder.join(", ") || "không có"}], ` +
+        `số rời trong hộp [${raw.join(", ") || "không có"}]`
       );
     })
     .join(" | ");

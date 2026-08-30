@@ -42,6 +42,12 @@ class E {
     return this;
   }
 
+  /** DOM thật có `tagName` viết hoa — đường đọc `<input>` dựa vào nó. */
+  get tagName(): string {
+    return this.tag.toUpperCase();
+  }
+  /** Giá trị ô `<input>`; các thẻ khác không dùng tới. */
+  value = "";
   get children(): E[] {
     return this.kids;
   }
@@ -279,5 +285,77 @@ describe("findSeatStepper — hộp một loại suất (hành vi cũ, không đ
     expect(stepper.read()).toBe(47);
     expect(stepper.scope).toBe("single");
     expect((stepper.getIncrementButton()! as unknown as E).textContent).toBe("+");
+  });
+});
+
+describe("findSeatStepper — hình dạng làm chết 21 lệnh mời 28/8/2026", () => {
+  it("bộ đếm là ô <input>: vẫn ghim đúng hàng Tiêu chuẩn", () => {
+    // Dấu vết ca thật: hộp có đủ nhãn ("Tiêu chuẩn"/"Cao cấp") và 5 nút bộ đếm,
+    // nhưng "bộ đếm đọc ra [không có]" — đường cũ chỉ tìm con số ở LEAF TEXT nên
+    // ô <input> là điểm mù, và với hộp nhiều loại suất thì đường <input> cũ lại
+    // bị tắt (nó không biết ô thuộc hàng nào).
+    const numberBox = (count: number, top: number) => {
+      const i = el("input").at(340, top);
+      i.value = String(count);
+      return i;
+    };
+    const flat = el("div").add(
+      el("span", "Tiêu chuẩn").at(100, 0),
+      el("button", "−").at(300, 0),
+      numberBox(152, 0),
+      el("button", "+").at(380, 0),
+      el("span", "Cao cấp").at(100, 100),
+      el("button", "−").at(300, 100),
+      numberBox(0, 100),
+      el("button", "+").at(380, 100),
+    );
+    openModal(flat);
+    const stepper = findSeatStepper()!;
+    expect(stepper).not.toBeNull();
+    expect(stepper.read()).toBe(152);
+    expect(stepper.source).toBe("input");
+    expect(stepper.scope).toBe("standard_row");
+    expect((stepper.getIncrementButton()! as unknown as E).getBoundingClientRect().top).toBe(0);
+    expect((stepper.getDecrementButton()! as unknown as E).getBoundingClientRect().top).toBe(0);
+  });
+
+  it("nút bị bọc nhiều lớp (khung chung xa hơn 5 tầng) vẫn ghim được", () => {
+    // React bọc mỗi nút trong vài lớp div ⇒ khung chung của cặp "−"/"+" nằm
+    // ngoài tầm leo 5 tầng của đường cũ, và đường cũ bỏ cuộc dù hộp bình thường.
+    const wrapped = (child: E, depth: number) => {
+      let node = child;
+      for (let i = 0; i < depth; i++) node = el("div").add(node);
+      return node;
+    };
+    const flat = el("div").add(
+      el("span", "Tiêu chuẩn").at(100, 0),
+      wrapped(el("button", "−").at(300, 0), 7),
+      el("div", "152").at(340, 0),
+      wrapped(el("button", "+").at(380, 0), 7),
+      el("span", "Cao cấp").at(100, 100),
+      wrapped(el("button", "−").at(300, 100), 7),
+      el("div", "0").at(340, 100),
+      wrapped(el("button", "+").at(380, 100), 7),
+    );
+    openModal(flat);
+    const stepper = findSeatStepper()!;
+    expect(stepper).not.toBeNull();
+    expect(stepper.read()).toBe(152);
+    expect(stepper.scope).toBe("standard_row");
+    expect((stepper.getIncrementButton()! as unknown as E).textContent).toBe("+");
+    expect((stepper.getIncrementButton()! as unknown as E).getBoundingClientRect().top).toBe(0);
+  });
+
+  it("ô số KHÔNG có nút kẹp hai bên thì không được nhận là bộ đếm", () => {
+    // "247/250 đã gán" và giá tiền cũng là số; nhận nhầm là đọc số suất từ chỗ
+    // không bao giờ nhúc nhích khi bấm "+".
+    const flat = el("div").add(
+      el("span", "Tiêu chuẩn").at(100, 0),
+      el("div", "247").at(340, 0),
+      el("span", "Cao cấp").at(100, 100),
+      el("div", "0").at(340, 100),
+    );
+    openModal(flat);
+    expect(findSeatStepper()).toBeNull();
   });
 });
