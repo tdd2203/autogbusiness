@@ -802,6 +802,62 @@ export default function AddedEmails() {
       ? formatDateTime(m.subscription_end_at, undefined, PRECISE_TIME)
       : t("addedEmails.expiryNone");
 
+  // Bộ điều khiển của lượt CHỌN NHIỀU. Desktop: nhét vào CUỐI hàng tab trạng thái,
+  // đẩy sang phải bằng margin-left auto — thao tác nằm ngay cạnh chỗ vừa tích chọn
+  // thay vì đội thêm một thanh nữa làm bảng tụt xuống (user 2026-08-30). Mobile
+  // KHÔNG làm vậy: `.tabs-bar` ở mobile là dải cuộn ngang (flex-wrap: nowrap +
+  // overflow-x: auto), nút nhét vào đó sẽ trôi khỏi màn hình — giữ nguyên thanh
+  // riêng bên dưới.
+  const selectionControls = (
+    <>
+      <span style={{ fontSize: 13, color: "var(--ink-2)" }}>
+        {t("addedEmails.selectedCount", { n: selectedIds.length })}
+      </span>
+      {/* Ô tích đầu bảng chỉ ôm 25 dòng của trang; còn kết quả ở trang khác
+          thì mời chọn hết bằng một nút, khỏi lật từng trang mà tích. */}
+      {hasUnselectedOffPage && (
+        <button
+          type="button"
+          className="btn btn-sm btn-text"
+          onClick={selectAllFiltered}
+        >
+          {t("addedEmails.selectAllFiltered", { n: filtered.length })}
+        </button>
+      )}
+      {/* MỘT nút "Thao tác hàng loạt ▾" mở menu đẹp (icon + nhóm), thay cho
+          select thô. Item bám tab: "Chờ tham gia" → Đồng bộ + Thu hồi lời mời;
+          cả 2 tab → thanh toán + Chuyển chủ nhanh (super-admin). */}
+      <RowActionsMenu
+        ariaLabel={t("bulkAction.placeholder", { n: selectedIds.length })}
+        triggerClassName="btn btn-sm btn-primary"
+        trigger={
+          <span
+            className="flex items-center"
+            style={{ gap: 7, whiteSpace: "nowrap" }}
+          >
+            {bulkBusy
+              ? t("bulkRemove.submitBusy")
+              : t("bulkAction.placeholder", { n: selectedIds.length })}
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </span>
+        }
+        items={bulkMenuItems}
+      />
+    </>
+  );
+
   return (
     <div className="page-fade">
       <div
@@ -1080,9 +1136,22 @@ export default function AddedEmails() {
               )}
             </button>
           ))}
+          {!isMobile && selectedIds.length > 0 && (
+            <div
+              className="flex items-center"
+              style={{
+                marginLeft: "auto",
+                alignSelf: "center",
+                gap: 12,
+                paddingBottom: 2,
+              }}
+            >
+              {selectionControls}
+            </div>
+          )}
         </div>
 
-        {selectedIds.length > 0 && (
+        {isMobile && selectedIds.length > 0 && (
           <div
             className="flex items-center"
             style={{
@@ -1093,51 +1162,7 @@ export default function AddedEmails() {
               flexWrap: "wrap",
             }}
           >
-            <span style={{ fontSize: 13, color: "var(--ink-2)" }}>
-              {t("addedEmails.selectedCount", { n: selectedIds.length })}
-            </span>
-            {/* Ô tích đầu bảng chỉ ôm 25 dòng của trang; còn kết quả ở trang khác
-                thì mời chọn hết bằng một nút, khỏi lật từng trang mà tích. */}
-            {hasUnselectedOffPage && (
-              <button
-                type="button"
-                className="btn btn-sm btn-text"
-                onClick={selectAllFiltered}
-              >
-                {t("addedEmails.selectAllFiltered", { n: filtered.length })}
-              </button>
-            )}
-            {/* MỘT nút "Thao tác hàng loạt ▾" mở menu đẹp (icon + nhóm), thay cho
-                select thô. Item bám tab: "Chờ tham gia" → Đồng bộ + Thu hồi lời mời;
-                cả 2 tab → thanh toán + Chuyển chủ nhanh (super-admin). */}
-            <RowActionsMenu
-              ariaLabel={t("bulkAction.placeholder", { n: selectedIds.length })}
-              triggerClassName="btn btn-sm btn-primary"
-              trigger={
-                <span
-                  className="flex items-center"
-                  style={{ gap: 7, whiteSpace: "nowrap" }}
-                >
-                  {bulkBusy
-                    ? t("bulkRemove.submitBusy")
-                    : t("bulkAction.placeholder", { n: selectedIds.length })}
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="14"
-                    height="14"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <polyline points="6 9 12 15 18 9" />
-                  </svg>
-                </span>
-              }
-              items={bulkMenuItems}
-            />
+            {selectionControls}
           </div>
         )}
 
