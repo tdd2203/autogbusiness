@@ -1500,7 +1500,6 @@
   "inviteMembers.seatShortN": "缺 {n}",
   "inviteMembers.seatBuyNote": "执行邀请后系统会加购 {n} 个席位 → 过程会比预计多花 1-2 分钟",
   "inviteMembers.seatsUnknownHint": "尚未获知总席位数（该工作区未同步账单）",
-  "inviteMembers.seatShortage": "{name}：需要 {need} 个新席位，但只剩 {left} 个 — 需另购 {buy} 个席位",
   "settings.sectionRateLimit": "操作频率限制",
   "rateLimit.desc": "同一用户点击同一个重负载按钮两次之间的最短间隔。设为 0 表示该按钮不限制。保存后立即生效，无需重启。",
   "rateLimit.enabledLabel": "启用操作频率限制",

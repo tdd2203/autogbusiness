@@ -512,10 +512,6 @@ export default function InviteMembers() {
       after: left === null ? null : Math.max(left - need, 0),
     };
   };
-  /** Các không gian trong danh sách đang dán mà suất trống KHÔNG đủ → footer cảnh báo. */
-  const shortages = [...seatPlan.keys()]
-    .map((wsId) => ({ wsId, name: seatMap.get(wsId)?.name ?? "", ...seatInfo(wsId) }))
-    .filter((x) => x.short > 0);
   /** Nhãn suất cạnh tên không gian: "còn 4" / "hết suất" / "" khi chưa biết tổng. */
   const seatLabel = (wsId: string | undefined) => {
     const { after } = seatInfo(wsId);
@@ -1319,22 +1315,6 @@ export default function InviteMembers() {
                     ? "…"
                     : formatVnd(feePreview.data?.total ?? 0),
                 })}
-                {/* Cảnh báo THIẾU SUẤT: mời tiếp thì extension phải mua thêm suất
-                    trên ChatGPT bằng tiền thật (giá do ChatGPT quyết) — nói trước
-                    để người dùng còn kịp bớt email hoặc đổi không gian. */}
-                {shortages.map((x) => (
-                  <div
-                    key={x.wsId}
-                    style={{ color: "var(--danger)", marginTop: 4, fontWeight: 600 }}
-                  >
-                    {t("inviteMembers.seatShortage", {
-                      name: x.name,
-                      need: x.need,
-                      left: x.left ?? 0,
-                      buy: x.short,
-                    })}
-                  </div>
-                ))}
                 {/* Thiếu suất: extension phải mua thêm trên ChatGPT bằng tiền thật rồi
                     mới mời được, nên lệnh chạy lâu hơn — nói trước để người dùng khỏi
                     tưởng treo mà bấm lại. */}
