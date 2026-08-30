@@ -452,8 +452,17 @@ export function traceRefundUsage(rows: TxnRow[]): RefundTrace {
   const funding = new Map<TxnRow, RefundSource[]>();
   const perFee = new Map<string, RefundSource[]>();
   const usage = new Map<TxnRow, { used: number; total: number; emails: string[] }>();
-  /** Hàng đợi tiền hoàn chưa tiêu, cũ đứng trước. */
-  const lots: { row: TxnRow; email: string; remaining: number }[] = [];
+  /** Hàng đợi tiền hoàn chưa tiêu, cũ đứng trước.
+   *
+   *  `open` = khoản này là TIỀN HOÁ ĐƠN ĐỌNG LẠI ví (cả mẻ trả qua QR rồi hỏng, phí
+   *  hoàn về nên tiền dôi ra). Nó không thuộc riêng email nào, lượt mời sau của BẤT KỲ
+   *  email nào cũng tiêu đúng khoản đó — chính là ca 26/8 (hỏng lúc 12:56 → mời email
+   *  khác lúc 13:05 tiêu đúng tiền ấy).
+   *
+   *  `open = false` = khoản hoàn của một lượt phí ĐÃ TRỪ VÍ. Tiền này gắn với email của
+   *  nó: mời lại chính email đó thì nó nuôi lại chính nó, không chảy sang cụm khác
+   *  (chốt user 2026-08-30). */
+  const lots: { row: TxnRow; email: string; remaining: number; open: boolean }[] = [];
 
   // API trả mới→cũ; dòng tiền phải lần theo chiều CŨ→MỚI mới đúng nhân quả.
   for (const row of [...rows].reverse()) {
@@ -471,7 +480,8 @@ export function traceRefundUsage(rows: TxnRow[]): RefundTrace {
       // Chia đều cho các email hỏng cùng mốc — phí mỗi lượt bằng nhau nên chia đều
       // là đúng, không phải ước lượng.
       const per = total / emails.length;
-      for (const email of emails) lots.push({ row, email, remaining: per });
+      const open = !loneRefund; // tiền hoá đơn đọng lại ví, không thuộc riêng email nào
+      for (const email of emails) lots.push({ row, email, remaining: per, open });
     }
 
     // 2) Lượt mời TRỪ VÍ ăn dần các lô, tính riêng TỪNG lượt phí để biết khoản hoàn
@@ -496,21 +506,31 @@ export function traceRefundUsage(rows: TxnRow[]): RefundTrace {
         mine.push({ email: lot.email, amount: take });
       };
 
-      // Tiền hoàn của CHÍNH email này được ưu tiên nuôi lại chính nó. Trước đây ăn
-      // FIFO thuần nên mời lại a@ mà ví còn tiền hoàn của a@ vẫn bị ghi "tiêu tiền
-      // hoàn của b@" chỉ vì lô của b@ vào trước — đọc lên như thể tiền chạy lung tung
-      // giữa các khách (user 2026-08-30). Chỉ khi lô của chính nó đã hết thì mới ăn
-      // sang lô người khác, và lúc đó nhãn "hoàn từ email khác" mới là sự thật.
+      // Luật quy nguồn tiền (chốt user 2026-08-30):
+      //   1. tiền hoàn của CHÍNH email này, ưu tiên tuyệt đối;
+      //   2. còn thiếu thì lấy tiếp trong ĐÚNG CỤM mà email này đã hỏng — mấy email
+      //      đi cùng mẻ đó, vì cả mẻ dùng chung một khoản tiền;
+      //   3. hết cụm đó thì DỪNG, không đụng tiền hoàn của cụm khác. Phần còn lại là
+      //      tiền ví thường, dòng đó không ghi nguồn hoàn.
+      //
+      // Trước đây ăn FIFO thuần: mời lại a@ mà ví còn nguyên tiền hoàn của a@ vẫn bị
+      // ghi "tiêu tiền hoàn của b@" chỉ vì lô của b@ vào trước, đọc lên như thể tiền
+      // chạy lung tung giữa các khách.
+      // 1. Tiền hoàn của CHÍNH email này.
       while (need > 0) {
         const at = lots.findIndex((l) => l.remaining > 0 && l.email.toLowerCase() === self);
         if (at < 0) break;
         eat(at);
       }
+      // 2. Còn thiếu thì lấy tiền HOÁ ĐƠN ĐỌNG LẠI ví (cũ trước) — khoản này nằm chung
+      //    trong ví, không của riêng ai.
       while (need > 0) {
-        const at = lots.findIndex((l) => l.remaining > 0);
+        const at = lots.findIndex((l) => l.remaining > 0 && l.open);
         if (at < 0) break;
         eat(at);
       }
+      // 3. Hết hai nguồn trên thì DỪNG: phần còn lại là tiền ví thường, không được quy
+      //    sang khoản hoàn của cụm email khác.
       for (let i = lots.length - 1; i >= 0; i--) if (lots[i].remaining <= 0) lots.splice(i, 1);
 
       if (mine.length === 0) continue;

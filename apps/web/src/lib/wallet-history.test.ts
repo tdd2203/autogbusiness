@@ -366,7 +366,8 @@ describe("traceRefundUsage — tiền hoàn của ai nuôi lại người đó",
     expect(trace.perFee.get(fee.txns[0].id)).toEqual([{ email: "a@x.com", amount: FEE }]);
   });
 
-  it("lô của chính nó hết thì mới ăn sang lô người khác", () => {
+  it("KHÔNG lấy tiền hoàn của cụm email khác, dù còn thiếu", () => {
+    // b@ là khoản hoàn của một lượt ĐÃ TRỪ VÍ ⇒ tiền đó gắn với b@, a@ không đụng tới.
     const rows = buildTxnRows([
       txn({ kind: "invite_fee", amount: -2 * FEE, created_at: at(5), meta: { email: "a@x.com" }, balance_after: 0 }),
       txn({ kind: "invite_refund", amount: FEE, created_at: at(4), meta: { email: "a@x.com" }, balance_after: 2 * FEE }),
@@ -375,10 +376,21 @@ describe("traceRefundUsage — tiền hoàn của ai nuôi lại người đó",
     const trace = traceRefundUsage(rows);
     const fee = rows.find((r) => r.type === "group" && r.txns[0].kind === "invite_fee");
     if (!fee || fee.type !== "group") throw new Error("unreachable");
-    // Của mình trước, thiếu bao nhiêu mới lấy của b@.
-    expect(trace.perFee.get(fee.txns[0].id)).toEqual([
-      { email: "a@x.com", amount: FEE },
-      { email: "b@x.com", amount: FEE },
+    expect(trace.perFee.get(fee.txns[0].id)).toEqual([{ email: "a@x.com", amount: FEE }]);
+  });
+
+  it("nhưng tiền HOÁ ĐƠN đọng lại ví thì email nào tiêu cũng được", () => {
+    // Cả mẻ trả qua hoá đơn rồi hỏng ⇒ tiền dôi ra nằm chung trong ví, không của riêng ai.
+    const bad = "2026-08-26T03:00:00Z";
+    const rows = buildTxnRows([
+      txn({ kind: "invite_fee", amount: -FEE, created_at: at(5), meta: { email: "z@x.com" }, balance_after: 0 }),
+      txn({ kind: "invite_refund", amount: FEE, created_at: "2026-08-26T03:01:00Z", meta: { email: "hong@x.com" }, balance_after: FEE }),
+      txn({ kind: "invite_fee", amount: -FEE, created_at: bad, meta: { email: "hong@x.com" }, balance_after: 0, reversed: true }),
+      txn({ kind: "order_topup", amount: FEE, created_at: bad, balance_after: FEE, ref_type: "order" }),
     ]);
+    const trace = traceRefundUsage(rows);
+    const fee = rows.find((r) => r.type === "group" && r.txns[0].kind === "invite_fee" && !r.txns[0].reversed);
+    if (!fee || fee.type !== "group") throw new Error("unreachable");
+    expect(trace.perFee.get(fee.txns[0].id)).toEqual([{ email: "hong@x.com", amount: FEE }]);
   });
 });
