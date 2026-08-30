@@ -145,6 +145,10 @@ def test_resolver_fails_limbo_refunds_then_reinvite_charges_again(
         mm = db.get(Member, UUID(member_id))
         mm.last_invited_at = past
         mm.created_at = past
+        # …và BẰNG CHỨNG ÂM: một mẻ đồng bộ SAU mốc hoãn đã quét mà không thấy email
+        # ở tab nào (`found_in='none'`). Thiếu dấu này thì resolver KHÔNG chốt nữa —
+        # hết 20′ không phải bằng chứng, xem "chặn hoàn phí mù" trong main.py.
+        mm.sync_missing_at = past + timedelta(minutes=1)
         db.commit()
     finally:
         db.close()

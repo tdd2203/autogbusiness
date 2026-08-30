@@ -223,6 +223,9 @@ def test_timeout_defers_then_resolver_refunds(
         mm = db.get(Member, UUID(member_id))
         mm.last_invited_at = past
         mm.created_at = past
+        # Bằng chứng ÂM bắt buộc: đã có mẻ đồng bộ đi quét SAU mốc hoãn và không
+        # thấy email đâu. Chỉ "quá 20′" thôi thì resolver giữ nguyên, không hoàn.
+        mm.sync_missing_at = past + timedelta(minutes=1)
         db.commit()
     finally:
         db.close()
@@ -236,7 +239,7 @@ def test_timeout_defers_then_resolver_refunds(
             .filter(Member.workspace_id == UUID(ws["id"]), Member.email == "t1@example.com")
             .one_or_none()
             is None
-        ), "quá cửa sổ mà không ai thấy email → resolver phải xoá phantom"
+        ), "đồng bộ quét mà không thấy email → resolver phải xoá phantom"
         actions = [
             r.action
             for r in db.query(AuditLog).filter(AuditLog.target_id == member_id).all()
