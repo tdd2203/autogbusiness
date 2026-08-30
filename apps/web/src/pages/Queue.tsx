@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
@@ -35,7 +35,11 @@ export default function Queue() {
   });
 
   const [filter, setFilter] = useState<Filter>("all");
-  const [search, setSearch] = useState("");
+  // `?item=<id>` — trang Quản trị Ví link sang đây để chỉ ra lệnh đã tiêu tiền. Đổ
+  // thẳng vào ô tìm kiếm chứ không làm chế độ lọc riêng: người xem thấy ngay mình
+  // đang bị lọc bởi cái gì và xoá đi được.
+  const [params] = useSearchParams();
+  const [search, setSearch] = useState(params.get("item") ?? "");
 
   const data = items.data ?? [];
   const counts = useMemo(() => {
@@ -62,6 +66,7 @@ export default function Queue() {
       const s = search.trim().toLowerCase();
       list = list.filter(
         (it) =>
+          it.id.toLowerCase().includes(s) ||
           (it.workspace_id ?? "").toLowerCase().includes(s) ||
           it.type.toLowerCase().includes(s) ||
           JSON.stringify(it.payload).toLowerCase().includes(s),

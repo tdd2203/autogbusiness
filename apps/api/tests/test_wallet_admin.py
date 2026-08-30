@@ -92,6 +92,73 @@ def test_admin_adjust_creates_txn_and_audit(client: TestClient, auth_header: dic
     assert any(a["action"] == "WALLET_ADJUSTED" for a in audit_items)
 
 
+def test_admin_transactions_carry_reconcile_fields(client: TestClient, auth_header: dict) -> None:
+    """Modal quản trị phải lần được từ khoản tiền ra tận lệnh đã chạy và người bấm
+    nút. Trang Ví của người dùng cố ý không có mấy trường này — bản admin thì bắt
+    buộc, nếu không thì đối soát phải mò trong DB (user 2026-08-29)."""
+    set_settings(client, auth_header, invite_fee_vnd=120_000)
+    ws = create_ws(client, auth_header, "Trace WS")
+    sub = make_beta_sub(client, auth_header, username="tracefields", balance=120_000)
+    assign(client, auth_header, ws["id"], sub["id"])
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "trace@example.com", "role": "member"},
+        headers=bearer(sub["token"]),
+    )
+    assert r.status_code == 201, r.text
+
+    items = client.get(
+        f"/api/v1/wallet/admin/users/{sub['id']}/transactions", headers=auth_header
+    ).json()["items"]
+
+    fee = next(t for t in items if t["kind"] == "invite_fee")
+    assert fee["seq"] > 0  # khoá sắp xếp thật của sổ cái
+    assert fee["actor_email"]  # chính chủ ví bấm mời
+    assert fee["member_email"] == "trace@example.com"
+    assert fee["queue_item_id"] == fee["ref_id"]
+    assert fee["queue_item_type"] == "INVITE_MEMBER"
+    assert fee["workspace_id"] == ws["id"]
+    assert fee["workspace_name"] == "Trace WS"
+
+    # Nạp demo do super-admin ghi → phải quy được về đúng người bấm.
+    topup = next(t for t in items if t["kind"] == "adjust")
+    assert topup["actor_email"]
+    assert topup["queue_item_id"] is None and topup["ref_code"] is None
+
+
+def test_admin_daily_summary_matches_owner_view(client: TestClient, auth_header: dict) -> None:
+    """Trang Quản trị Ví hiện ĐÚNG giao diện trang Ví cho tài khoản khác, nên hai thẻ
+    tổng kết ngày phải ra cùng con số — nếu lệch thì super-admin và chủ ví đang nhìn
+    hai sự thật khác nhau (user 2026-08-29)."""
+    set_settings(client, auth_header, invite_fee_vnd=100_000)
+    ws = create_ws(client, auth_header, "Daily WS")
+    sub = make_beta_sub(client, auth_header, username="dailysame", balance=100_000)
+    assign(client, auth_header, ws["id"], sub["id"])
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "daily@example.com", "role": "member"},
+        headers=bearer(sub["token"]),
+    )
+    assert r.status_code == 201, r.text
+
+    mine = client.get("/api/v1/wallet/daily-summary", headers=bearer(sub["token"]))
+    assert mine.status_code == 200, mine.text
+    admin_view = client.get(
+        f"/api/v1/wallet/admin/users/{sub['id']}/daily-summary", headers=auth_header
+    )
+    assert admin_view.status_code == 200, admin_view.text
+    assert admin_view.json() == mine.json()
+    assert mine.json()["invite_count"] == 1
+
+
+def test_admin_daily_summary_requires_super_admin(client: TestClient, auth_header: dict) -> None:
+    sub = make_beta_sub(client, auth_header, username="dailyguard")
+    r = client.get(
+        f"/api/v1/wallet/admin/users/{sub['id']}/daily-summary", headers=bearer(sub["token"])
+    )
+    assert r.status_code == 403
+
+
 def test_admin_adjust_requires_reason(client: TestClient, auth_header: dict) -> None:
     """Nạp/điều chỉnh phải kèm lý do — thiếu hoặc để trắng đều 422 (user 2026-08-14)."""
     user = create_user(client, auth_header, "adjustnoreason", ["MEMBER_VIEW"])

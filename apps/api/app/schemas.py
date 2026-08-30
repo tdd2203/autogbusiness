@@ -1295,6 +1295,39 @@ class WalletTxnPage(BaseModel):
     next_cursor: str | None = None
 
 
+class WalletTxnAdminOut(WalletTxnOut):
+    """Bút toán KÈM dữ liệu đối soát, chỉ trả ở endpoint super-admin.
+
+    Trang Ví của người dùng cố ý gom nhóm và giấu bớt cho dễ đọc. Trang quản trị
+    thì ngược lại: phải lần được từ một khoản tiền ra tận lệnh đã chạy, hoá đơn đã
+    trả và người bấm nút, không phải mò audit log. Các trường dưới đây KHÔNG nằm
+    trong bảng `wallet_transactions` — router tra thêm từ topup_orders /
+    payment_orders / queue_items / members / users / workspaces.
+    """
+
+    #: Khoá sắp xếp THẬT của sổ cái — `created_at` trùng nhau trong cùng transaction.
+    seq: int
+    #: Email người bấm nút. None ⇔ hệ thống (webhook ngân hàng, job hoàn phí).
+    actor_email: str | None = None
+    #: Mã in trên nội dung chuyển khoản (mã nạp / mã hoá đơn).
+    ref_code: str | None = None
+    #: Trạng thái của thứ `ref_id` trỏ tới (hoá đơn paid/expired, task COMPLETED…).
+    ref_status: str | None = None
+    #: Lệnh trong Hàng đợi sinh ra khoản này — FE mở thẳng sang trang Hàng đợi.
+    queue_item_id: UUID | None = None
+    #: Loại lệnh trong Hàng đợi (INVITE_MEMBER…), để hiện nhãn mà không phải gọi thêm.
+    queue_item_type: str | None = None
+    workspace_id: UUID | None = None
+    workspace_name: str | None = None
+    #: Email thành viên liên quan — lấy từ meta, thiếu thì tra bảng members.
+    member_email: str | None = None
+
+
+class WalletTxnAdminPage(BaseModel):
+    items: list[WalletTxnAdminOut]
+    next_cursor: str | None = None
+
+
 class WalletDailyKindOut(BaseModel):
     """1 loại bút toán trong ngày: bao nhiêu lượt, tổng tiền (CÓ DẤU, VND)."""
 

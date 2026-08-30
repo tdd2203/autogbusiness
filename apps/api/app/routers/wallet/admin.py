@@ -12,7 +12,17 @@ from sqlalchemy.orm import Session
 from app.audit import log_event
 from app.config import get_settings
 from app.deps import get_session, require_super_admin
-from app.models import Member, User, Wallet, WalletTransaction, WithdrawalRequest
+from app.models import (
+    Member,
+    PaymentOrder,
+    QueueItem,
+    TopupOrder,
+    User,
+    Wallet,
+    WalletTransaction,
+    WithdrawalRequest,
+    Workspace,
+)
 from app.schemas import (
     MemberFeeIn,
     MemberOut,
@@ -22,8 +32,9 @@ from app.schemas import (
     WalletAdjustIn,
     WalletAdminUserOut,
     WalletBetaIn,
+    WalletTxnAdminOut,
+    WalletTxnAdminPage,
     WalletTxnOut,
-    WalletTxnPage,
     WithdrawalAdminOut,
     WithdrawalOut,
     WithdrawalRejectIn,
@@ -215,7 +226,152 @@ def set_member_fee(
     return member
 
 
-@router.get("/admin/users/{user_id}/transactions", response_model=WalletTxnPage)
+def _as_uuid(value: str | None) -> UUID | None:
+    """`ref_id` lưu dạng chuỗi nên có thể không phải UUID (bút toán cũ) — không parse
+    được thì bỏ qua chứ đừng làm hỏng cả trang lịch sử."""
+    if not value:
+        return None
+    try:
+        return UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _fetch_map(db: Session, model, ids: set[UUID]) -> dict[UUID, object]:
+    """Tra hàng loạt theo khoá chính — 1 truy vấn / bảng, tránh N+1 trên 500 dòng."""
+    if not ids:
+        return {}
+    rows = db.execute(select(model).where(model.id.in_(ids))).scalars().all()
+    return {r.id: r for r in rows}
+
+
+def _enrich_txns(db: Session, rows: list[WalletTransaction]) -> list[WalletTxnAdminOut]:
+    """Gắn dữ liệu ĐỐI SOÁT vào từng bút toán cho trang quản trị.
+
+    Sổ cái chỉ lưu `ref_type` + `ref_id` trần, nhìn vào một chuỗi UUID thì không
+    biết tiền đó đổi lấy cái gì. Ở đây dịch ngược ra mã hoá đơn, trạng thái lệnh,
+    workspace và người bấm nút — đủ để đối soát mà không phải mở audit log.
+    """
+    topup_ids: set[UUID] = set()
+    order_ids: set[UUID] = set()
+    queue_ids: set[UUID] = set()
+    member_ids: set[UUID] = set()
+    withdrawal_ids: set[UUID] = set()
+    actor_ids: set[UUID] = set()
+    for r in rows:
+        if r.actor_id:
+            actor_ids.add(r.actor_id)
+        rid = _as_uuid(r.ref_id)
+        if rid is None:
+            continue
+        # `credit_duplicate_invoice` ghi ref_type="topup" nhưng ref_id lại là id hoá
+        # đơn → tra cả hai bảng, bảng nào có thì dùng.
+        if r.ref_type == "topup":
+            topup_ids.add(rid)
+            order_ids.add(rid)
+        elif r.ref_type == "order":
+            order_ids.add(rid)
+        elif r.ref_type == "invite":
+            queue_ids.add(rid)
+        elif r.ref_type == "renew":
+            member_ids.add(rid)
+        elif r.ref_type == "withdrawal":
+            withdrawal_ids.add(rid)
+
+    topups = _fetch_map(db, TopupOrder, topup_ids)
+    orders = _fetch_map(db, PaymentOrder, order_ids)
+    # Hoá đơn còn trỏ tiếp sang lệnh/thành viên nó sinh ra — gộp vào lượt tra sau.
+    for o in orders.values():
+        if o.queue_item_id:
+            queue_ids.add(o.queue_item_id)
+        if o.member_id:
+            member_ids.add(o.member_id)
+    queues = _fetch_map(db, QueueItem, queue_ids)
+    members = _fetch_map(db, Member, member_ids)
+    withdrawals = _fetch_map(db, WithdrawalRequest, withdrawal_ids)
+    actors = _fetch_map(db, User, actor_ids)
+
+    ws_ids = {
+        w
+        for w in (
+            [o.workspace_id for o in orders.values()]
+            + [q.workspace_id for q in queues.values()]
+            + [m.workspace_id for m in members.values()]
+        )
+        if w
+    }
+    workspaces = _fetch_map(db, Workspace, ws_ids)
+
+    out: list[WalletTxnAdminOut] = []
+    for r in rows:
+        item = WalletTxnAdminOut.model_validate(r)
+        meta = r.meta or {}
+        actor = actors.get(r.actor_id) if r.actor_id else None
+        item.actor_email = actor.email if actor else None
+        raw_email = meta.get("email")
+        item.member_email = str(raw_email) if isinstance(raw_email, str) and raw_email else None
+
+        rid = _as_uuid(r.ref_id)
+        order = None
+        if r.ref_type == "topup":
+            topup = topups.get(rid) if rid else None
+            if topup is not None:
+                item.ref_code = topup.ref_code
+                item.ref_status = topup.status
+            else:
+                # Trả trùng hoá đơn: tiền vào ví nhưng ref trỏ về hoá đơn cũ.
+                order = orders.get(rid) if rid else None
+                raw_ref = meta.get("order_ref")
+                if isinstance(raw_ref, str) and raw_ref:
+                    item.ref_code = raw_ref
+        elif r.ref_type == "order":
+            order = orders.get(rid) if rid else None
+        elif r.ref_type == "invite":
+            item.queue_item_id = rid
+        elif r.ref_type == "renew":
+            member = members.get(rid) if rid else None
+            if member is not None:
+                item.member_email = item.member_email or member.email
+                item.workspace_id = member.workspace_id
+        elif r.ref_type == "withdrawal":
+            req = withdrawals.get(rid) if rid else None
+            if req is not None:
+                item.ref_status = req.status
+
+        if order is not None:
+            item.ref_code = item.ref_code or order.ref_code
+            item.ref_status = item.ref_status or order.status
+            item.queue_item_id = order.queue_item_id
+            item.workspace_id = order.workspace_id
+            if order.member_id and not item.member_email:
+                member = members.get(order.member_id)
+                if member is not None:
+                    item.member_email = member.email
+
+        queue = queues.get(item.queue_item_id) if item.queue_item_id else None
+        if queue is not None:
+            item.queue_item_type = queue.type
+            item.ref_status = item.ref_status or queue.status
+            item.workspace_id = item.workspace_id or queue.workspace_id
+
+        ws = workspaces.get(item.workspace_id) if item.workspace_id else None
+        item.workspace_name = ws.name if ws is not None else None
+
+        # Mã giao dịch SePay: `meta` có sẵn ở bút toán do webhook ghi; bút toán cũ
+        # thiếu thì lấy từ chính lệnh nạp/hoá đơn. Cùng mã in trên sao kê ngân hàng.
+        raw_provider = meta.get("provider_txn_id")
+        item.provider_txn_id = (
+            str(raw_provider) if isinstance(raw_provider, str) and raw_provider else None
+        )
+        if item.provider_txn_id is None:
+            src = topups.get(rid) if rid else None
+            item.provider_txn_id = (src or order).provider_txn_id if (src or order) else None
+
+        out.append(item)
+    return out
+
+
+@router.get("/admin/users/{user_id}/transactions", response_model=WalletTxnAdminPage)
 def user_transactions(
     user_id: UUID,
     db: Session = Depends(get_session),
@@ -223,9 +379,12 @@ def user_transactions(
     limit: int = Query(100, ge=1, le=500),
     before_seq: int | None = Query(None, description="Con trỏ: chỉ lấy bút toán cũ hơn seq này."),
     date: date_type | None = Query(None, description="Chỉ lấy bút toán trong NGÀY này (giờ VN)."),
-) -> WalletTxnPage:
+) -> WalletTxnAdminPage:
     """Lịch sử ví của MỘT user (super-admin). Cùng luật phân trang với
-    `GET /wallet/transactions` — xem giải thích ở routers/wallet/balance.py."""
+    `GET /wallet/transactions` — xem giải thích ở routers/wallet/balance.py.
+
+    Khác bản của người dùng ở chỗ mỗi bút toán được gắn thêm dữ liệu đối soát
+    (mã hoá đơn, lệnh, workspace, người thực hiện) — xem `_enrich_txns`."""
     q = select(WalletTransaction).where(WalletTransaction.user_id == user_id)
     if date is not None:
         start, end = sepay_ledger.day_bounds(date)
@@ -237,8 +396,8 @@ def user_transactions(
     )
     has_more = len(rows) > limit
     rows = rows[:limit]
-    return WalletTxnPage(
-        items=[WalletTxnOut.model_validate(r) for r in rows],
+    return WalletTxnAdminPage(
+        items=_enrich_txns(db, list(rows)),
         next_cursor=str(rows[-1].seq) if has_more and rows else None,
     )
 
