@@ -103,6 +103,11 @@ const REMOVED_LABEL: Record<string, string> = {
 export type ReportEntry = {
   date: string;
   time: string;
+  /** Mốc ISO của chính bút toán này — dùng để gom cụm và xếp thứ tự. */
+  at: string;
+  /** Vị trí trong sổ cái theo chiều cũ → mới. Sổ phải in đúng thứ tự này, nếu không
+   *  cột số dư không nối được. */
+  ord: number;
   /** Nội dung ("Phí mời", "Nạp tiền"…). */
   label: string;
   /** "Thành công" / "Hỏng, đã hoàn phí" — chỉ dòng phí mới có. */
@@ -323,6 +328,7 @@ function partOf(
   codes: Map<string, { ref: string; provider: string }>,
   members: Map<string, MemberInfo>,
   chargedEmails: ReadonlySet<string>,
+  ord: Map<string, number>,
 ): RowPart {
   const channel = CHANNEL_LABEL[rowChannel(row)];
   const entries: ReportEntry[] = [];
@@ -338,6 +344,10 @@ function partOf(
   };
 
   if (row.type === "voided") {
+    // KHÔNG gộp phí với khoản hoàn của nó: hai bút toán cách nhau vài phút và ở giữa
+    // thường có bút toán khác, gộp lại thì cột số dư không nối được (dữ liệu thật ví
+    // hdh2102 30/8: 34 chỗ đứt mạch). Gộp chỉ đúng với cặp hoá đơn + phí vì chúng
+    // dùng chung một mốc. Ở đây tách đôi, mỗi bút toán đứng đúng chỗ của nó trong sổ.
     for (const p of [...row.pairs].reverse()) {
       const c = codeAt(p.fee);
       const email = str(p.fee.meta?.email);
@@ -345,14 +355,16 @@ function partOf(
       entries.push({
         date: vnDateKey(p.fee.created_at),
         time: vnTime(p.fee.created_at),
+        at: p.fee.created_at,
+        ord: ord.get(p.fee.id) ?? 0,
         label: "Phí mời - Đã hoàn",
         outcome: "Lỗi, đã hoàn phí",
-        channel: "Đã hoàn đủ",
+        channel,
         email,
-        moneyIn: p.refund.amount,
+        moneyIn: 0,
         moneyOut: -p.fee.amount,
         balanceBefore: p.fee.balance_after - p.fee.amount,
-        balanceAfter: p.refund.balance_after,
+        balanceAfter: p.fee.balance_after,
         refCode: c.ref,
         providerTxn: c.provider,
         note: [
@@ -362,6 +374,25 @@ function partOf(
         ]
           .filter(Boolean)
           .join(" · "),
+        voided: true,
+      });
+      const rc = codeAt(p.refund);
+      entries.push({
+        date: vnDateKey(p.refund.created_at),
+        time: vnTime(p.refund.created_at),
+        at: p.refund.created_at,
+        ord: ord.get(p.refund.id) ?? 0,
+        label: "Hoàn phí mời",
+        outcome: "",
+        channel,
+        email,
+        moneyIn: p.refund.amount,
+        moneyOut: 0,
+        balanceBefore: p.refund.balance_after - p.refund.amount,
+        balanceAfter: p.refund.balance_after,
+        refCode: rc.ref,
+        providerTxn: rc.provider,
+        note: "Trả lại phí của lượt mời lỗi",
         voided: true,
       });
     }
@@ -374,7 +405,11 @@ function partOf(
   // hoá đơn được gán THẲNG vào dòng phí mà nó trả, nguồn tiền ghi luôn ở cột Nội dung.
   const orderTotal = row.txns.reduce((n, t) => (t.kind === "order_topup" ? n + t.amount : n), 0);
   const feeTxns = row.txns.filter((t) => FEE_KINDS.has(t.kind));
-  const merge = orderTotal > 0 && feeTxns.length > 0;
+  const feeTotal = feeTxns.reduce((n, t) => n - t.amount, 0);
+  // Chỉ gộp khi hoá đơn trả KHÍT số phí. Trả dư (mẻ hỏng bớt nên tiền đọng lại ví) mà
+  // vẫn gộp thì phần dư không biết nhét vào dòng nào, và số dư đứt mạch ngay chỗ đó —
+  // lúc ấy để nguyên hai dòng là đúng nhất: tiền vào một dòng, phí ra một dòng.
+  const merge = orderTotal > 0 && feeTxns.length > 0 && feeTotal === orderTotal;
   let leftover = orderTotal;
 
   for (const t of [...row.txns].reverse()) {
@@ -395,6 +430,8 @@ function partOf(
     entries.push({
       date: vnDateKey(t.created_at),
       time: vnTime(t.created_at),
+      at: t.created_at,
+      ord: ord.get(t.id) ?? 0,
       label: isFee
         ? `${TXN_KIND_LABEL[t.kind] ?? t.kind} - ${fromInvoice > 0 ? "Hoá đơn" : "Số dư ví"}`
         : (TXN_KIND_LABEL[t.kind] ?? t.kind),
@@ -416,29 +453,6 @@ function partOf(
     });
   }
 
-  // Hoá đơn trả dư so với phí đã trừ (lượt trong mẻ hỏng hết chẳng hạn): khoản đó Ở LẠI
-  // trong ví, phải hiện thành một dòng chứ không được nuốt mất.
-  if (merge && leftover > 0) {
-    const src = row.txns.find((t) => t.kind === "order_topup")!;
-    const c = codeAt(src);
-    entries.push({
-      date: vnDateKey(src.created_at),
-      time: vnTime(src.created_at),
-      label: TXN_KIND_LABEL.order_topup,
-      outcome: "",
-      channel,
-      email: "",
-      moneyIn: leftover,
-      moneyOut: 0,
-      balanceBefore: src.balance_after - src.amount,
-      balanceAfter: src.balance_after,
-      refCode: c.ref,
-      providerTxn: c.provider,
-      note: "Tiền hoá đơn còn lại trong ví",
-      voided: false,
-    });
-  }
-
   const kind = row.txns.some((t) => t.kind === "renew_fee" || t.kind === "cycle_fee")
     ? "Lệnh gia hạn"
     : row.txns.some((t) => t.kind === "invite_fee")
@@ -455,56 +469,59 @@ function partOf(
 }
 
 /**
- * Khoá CỤM của một dòng. Cùng một lệnh mời/gia hạn ⇒ mọi bút toán dùng chung
- * `created_at` (now() là hằng trong một transaction Postgres), kể cả bút toán hoá
- * đơn và các lượt HỎNG đã hoàn — `buildTxnRows` tách lượt hỏng ra dòng riêng cho
- * giao diện, nhưng trong báo cáo chúng phải nằm cùng cụm với các email mời cùng mẻ
- * (user 2026-08-30: "những email nào mời chung cụm thì thể hiện chung cụm").
+ * Gom các dòng của MỘT ngày thành cụm, XẾP ĐÚNG THỨ TỰ SỔ CÁI.
+ *
+ * Cụm = một lệnh = một mốc `created_at` (mọi bút toán trong cùng transaction Postgres
+ * dùng chung mốc đó). Trước đây gom theo `TxnRow`, nhưng `buildTxnRows` ghép cặp phí ↔
+ * hoàn thành MỘT dòng đặt ở mốc của phí — mà khoản hoàn xảy ra vài phút sau, ở giữa
+ * còn bút toán khác. In theo dòng đã ghép thì sổ nhảy cóc và cột số dư không nối được
+ * (dữ liệu thật ví hdh2102 30/8: 70 chỗ đứt). Nay mỗi bút toán tự mang mốc của nó,
+ * gom theo mốc rồi xếp theo đúng vị trí trong sổ cái.
  */
-function clusterKey(row: TxnRow): string {
-  if (row.type === "withdraw") return `w:${row.id}`;
-  if (row.type === "voided") return row.key;
-  return row.key;
-}
-
-/** Gom các dòng của MỘT ngày thành cụm, giữ nguyên thứ tự xuất hiện. */
 function clustersOf(
   rows: TxnRow[],
   trace: RefundTrace,
   codes: Map<string, { ref: string; provider: string }>,
   members: Map<string, MemberInfo>,
   chargedEmails: ReadonlySet<string>,
+  ord: Map<string, number>,
 ): ReportCluster[] {
+  const parts = rows.map((row) => partOf(row, trace, codes, members, chargedEmails, ord));
+  const all = parts.flatMap((p) => p.entries).sort((a, b) => a.ord - b.ord);
+
   const out: ReportCluster[] = [];
   const index = new Map<string, number>();
-  for (const row of rows) {
-    const part = partOf(row, trace, codes, members, chargedEmails);
-    const key = clusterKey(row);
-    const at = index.get(key);
-    if (at != null) {
-      const c = out[at];
-      c.entries.push(...part.entries);
-      c.charged += part.charged;
-      c.voided += part.voided;
-      c.spend += part.spend;
-      c.viaInvoice = c.viaInvoice || part.viaInvoice;
-      c.kind = c.kind || part.kind;
-      c.refCode = c.refCode || (part.entries.find((e) => e.refCode)?.refCode ?? "");
-      continue;
+  for (const e of all) {
+    let at = index.get(e.at);
+    if (at == null) {
+      at = out.length;
+      index.set(e.at, at);
+      out.push({
+        no: 0, // đánh số ở bước dựng báo cáo, theo đúng thứ tự đọc
+        label: "",
+        kind: "",
+        refCode: "",
+        charged: 0,
+        voided: 0,
+        spend: 0,
+        viaInvoice: false,
+        entries: [],
+      });
     }
-    index.set(key, out.length);
-    out.push({
-      no: 0, // đánh số ở bước dựng báo cáo, theo đúng thứ tự đọc
-      label: "",
-      kind: part.kind,
-      refCode: part.entries.find((e) => e.refCode)?.refCode ?? "",
-      charged: part.charged,
-      voided: part.voided,
-      spend: part.spend,
-      viaInvoice: part.viaInvoice,
-      entries: part.entries,
-    });
+    const c = out[at];
+    c.entries.push(e);
+    c.refCode = c.refCode || e.refCode;
+    if (e.label.startsWith("Phí gia hạn") || e.label.startsWith("Phí kỳ")) c.kind = "Lệnh gia hạn";
+    else if (e.label.startsWith("Phí mời") && !c.kind) c.kind = "Lệnh mời";
+    if (e.voided) {
+      if (e.moneyOut > 0) c.voided += 1; // đếm ở dòng PHÍ, không đếm lại ở dòng hoàn
+    } else if (e.label.startsWith("Phí ")) {
+      c.charged += 1;
+      c.spend += e.moneyOut;
+      if (e.moneyIn > 0) c.viaInvoice = true;
+    }
   }
+
   // Chỉ gọi là CỤM khi có từ 2 email trở lên — một email lẻ mà cũng kẻ dải riêng thì
   // bảng lại rối đúng như cái đang muốn sửa.
   for (const c of out) {
@@ -663,9 +680,13 @@ export function buildWalletReport(input: ReportInput): WalletReport {
     if (e) chargedEmails.add(e);
   }
 
+  // Vị trí THẬT của từng bút toán trong sổ cái (API trả mới→cũ nên đảo lại).
+  const ordOf = new Map<string, number>();
+  for (let i = items.length - 1, k = 0; i >= 0; i--, k++) ordOf.set(items[i].id, k);
+
   let no = 0;
   const days: ReportDay[] = [...groups].reverse().map((g) => {
-    const clusters = clustersOf([...g.rows].reverse(), trace, codes, memberMap, chargedEmails);
+    const clusters = clustersOf([...g.rows].reverse(), trace, codes, memberMap, chargedEmails, ordOf);
     for (const c of clusters) {
       if (!c.label) continue;
       c.no = no;

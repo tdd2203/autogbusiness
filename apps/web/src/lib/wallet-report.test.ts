@@ -129,7 +129,8 @@ describe("cụm lệnh mời", () => {
       txn({ kind: "invite_fee", amount: -FEE, balance_after: 2 * FEE, meta: { email: "c@x.com" }, reversed: true, created_at: at }),
       txn({ kind: "order_topup", amount: 3 * FEE, balance_after: 3 * FEE, ref_type: "order", ref_code: "ORD1", created_at: at }),
     ]);
-    expect(r.days[0].clusters).toHaveLength(1);
+    // Cụm mời (mốc 02:00) + cụm hoàn phí (mốc 02:05) = 2 cụm.
+    expect(r.days[0].clusters).toHaveLength(2);
     const c = r.days[0].clusters[0];
     expect(c.charged).toBe(2);
     expect(c.voided).toBe(1);
@@ -153,14 +154,19 @@ describe("lượt mời hỏng", () => {
       txn({ kind: "invite_refund", amount: FEE, balance_after: FEE, meta: { email: "a@x.com" }, created_at: "2026-08-30T02:30:00Z" }),
       txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, meta: { email: "a@x.com" }, reversed: true, created_at: "2026-08-30T02:00:00Z" }),
     ]);
-    const e = r.days[0].clusters[0].entries[0];
-    expect(e.voided).toBe(true);
-    expect(e.outcome).toBe("Lỗi, đã hoàn phí");
-    expect(e.label).toBe("Phí mời - Đã hoàn");
-    expect(e.moneyIn).toBe(FEE);
-    expect(e.moneyOut).toBe(FEE);
-    // Dư trước = dư sau ⇒ nhìn một dòng là biết tiền có đi có về.
-    expect(e.balanceBefore).toBe(e.balanceAfter);
+    // Phí và khoản hoàn đứng RIÊNG, mỗi cái đúng mốc của nó, để cột số dư nối được.
+    const es = r.days[0].clusters.flatMap((c) => c.entries);
+    expect(es).toHaveLength(2);
+    const [fee, refund] = es;
+    expect(fee.voided).toBe(true);
+    expect(fee.outcome).toBe("Lỗi, đã hoàn phí");
+    expect(fee.label).toBe("Phí mời - Đã hoàn");
+    expect(fee.moneyOut).toBe(FEE);
+    expect(fee.moneyIn).toBe(0);
+    expect(refund.label).toBe("Hoàn phí mời");
+    expect(refund.moneyIn).toBe(FEE);
+    expect(refund.moneyOut).toBe(0);
+    // Hai dòng bù nhau nên ngày không tính là tiền vào cũng không tính là tiền ra.
     // Không tính vào thực chi của ngày, dù hai chiều tiền đều có mặt.
     expect(r.days[0].spend).toBe(0);
     expect(r.days[0].emails[0].spend).toBe(0);
@@ -397,16 +403,19 @@ describe("gộp dòng hoá đơn vào dòng phí", () => {
     expect(es.reduce((s, e) => s + e.moneyIn, 0)).toBe(2 * FEE);
   });
 
-  it("hoá đơn trả DƯ so với phí ⇒ phần dư vẫn có dòng riêng, không bị nuốt", () => {
+  it("hoá đơn trả DƯ so với phí ⇒ KHÔNG gộp, để nguyên hai dòng", () => {
     const r = report([
       txn({ kind: "invite_fee", amount: -FEE, balance_after: FEE, meta: { email: "a@x.com" }, created_at: at }),
       txn({ kind: "order_topup", amount: 2 * FEE, balance_after: 2 * FEE, ref_type: "order", ref_code: "ORD1", created_at: at }),
     ]);
     const es = r.days[0].clusters[0].entries;
     expect(es).toHaveLength(2);
-    expect(es[1].moneyIn).toBe(FEE);
-    expect(es[1].note).toBe("Tiền hoá đơn còn lại trong ví");
-    // Tổng vào/ra của ngày không đổi so với khi hiện 2 dòng.
+    expect(es[0].label).toBe("Nạp qua hoá đơn");
+    expect(es[0].moneyIn).toBe(2 * FEE);
+    expect(es[1].label).toBe("Phí mời - Số dư ví");
+    expect(es[1].moneyOut).toBe(FEE);
+    // Số dư nối liền: 0 → 2xFEE → FEE. Phần dư nằm lại ví, thấy rõ.
+    expect(r.chainBreaks).toBe(0);
     expect(r.days[0].moneyIn).toBe(2 * FEE);
     expect(r.days[0].moneyOut).toBe(FEE);
   });
