@@ -311,6 +311,11 @@ export default function InviteMembers() {
       let renewed = 0;
       const queued: string[] = [];
       let order: OrderQr | null = null;
+      // Nhóm gửi hỏng KHÔNG được làm hỏng cả mẻ: trước 2026-08-30 nhánh này ném
+      // thẳng, nên nhóm 1 đã mời xong và đã trừ tiền mà toast chỉ hiện lỗi của
+      // nhóm 2 — người dùng tưởng cả mẻ trượt rồi dán lại. Hay gặp từ khi có hạn
+      // mức thao tác: nhóm sau dính cooldown là chuyện bình thường.
+      const failures: { ws: string; message: string }[] = [];
       for (const [ws, invites] of groups) {
         try {
           const resp = await api<{
@@ -330,12 +335,15 @@ export default function InviteMembers() {
             order = o;
             break; // dừng ở nhóm cần thanh toán; các nhóm sau để user xử lý lại
           }
-          throw err;
+          failures.push({
+            ws,
+            message: err instanceof Error ? err.message : String(err),
+          });
         }
       }
-      return { invited, renewed, queued, order };
+      return { invited, renewed, queued, order, failures };
     },
-    onSuccess: ({ invited, renewed, queued, order }) => {
+    onSuccess: ({ invited, renewed, queued, order, failures }) => {
       if (queued.length) {
         const set = new Set(queued.map((e) => e.toLowerCase()));
         removeEmailsFromText(set);
@@ -360,6 +368,21 @@ export default function InviteMembers() {
       // con số cũ tới hết nhịp tim 15s.
       invalidateWorkspaceSeats(qc);
       if (order) setQrOrder(order);
+      // Gom theo LÝ DO: nhiều workspace thường trượt vì cùng một lý do, báo từng
+      // dòng một là chôn mất thông báo thành công phía trên.
+      if (failures.length) {
+        const byReason = new Map<string, string[]>();
+        for (const f of failures) {
+          const name =
+            eligibleWs.find((w) => w.workspace_id === f.ws)?.name ?? f.ws;
+          byReason.set(f.message, [...(byReason.get(f.message) ?? []), name]);
+        }
+        for (const [reason, names] of byReason) {
+          toast.error(
+            t("invite.groupsFailed", { names: names.join(", "), reason }),
+          );
+        }
+      }
     },
     onError: (e) => {
       const msg =

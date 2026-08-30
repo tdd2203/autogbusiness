@@ -1492,5 +1492,6 @@
   "rateLimit.action.MEMBER_BULK_REMOVE": "批量移除与清理过期邮箱",
   "rateLimit.action.WALLET_TOPUP": "创建充值单",
   "rateLimit.action.WALLET_WITHDRAW": "创建提现单",
-  "rateLimit.action.MEMBER_PAY": "从钱包付款"
+  "rateLimit.action.MEMBER_PAY": "从钱包付款",
+  "invite.groupsFailed": "{names} 未能发送。{reason}"
 }

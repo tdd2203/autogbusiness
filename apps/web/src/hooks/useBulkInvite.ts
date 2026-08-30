@@ -11,7 +11,7 @@
  * onSuccess gọi callback do component truyền vào (đóng modal / clear state).
  */
 import { useMutation } from "@tanstack/react-query";
-import { api, ApiError } from "../lib/api";
+import { api } from "../lib/api";
 import { getQrOrder, type OrderQr } from "../lib/wallet";
 import { useT } from "../i18n";
 import { toast } from "../components/Toast";
@@ -71,15 +71,15 @@ export function useBulkInvite(
         opts.onPaymentRequired(order);
         return;
       }
-      const msg =
-        e instanceof ApiError
-          ? typeof e.detail === "object" && e.detail
-            ? String((e.detail as { message?: string }).message ?? JSON.stringify(e.detail))
-            : String(e.detail)
-          : e instanceof Error
-            ? e.message
-            : String(e);
-      toast.error(t("invite.resultError", { error: msg }));
+      // `e.message` đã là câu hoàn chỉnh do backend viết (xem `readableDetail` ở
+      // lib/api.ts). Bọc thêm tiền tố "Lỗi:" thành ra hai lần dấu hai chấm:
+      // "Lỗi: Mời thành viên: hai lần phải cách nhau..." — toast.error đã đủ báo
+      // đây là lỗi rồi. Tiền tố chỉ giữ cho thứ không phải Error (hiếm, không rõ nội dung).
+      if (e instanceof Error) {
+        toast.error(e.message);
+        return;
+      }
+      toast.error(t("invite.resultError", { error: String(e) }));
     },
   });
 }

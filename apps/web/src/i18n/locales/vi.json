@@ -1492,5 +1492,6 @@
   "rateLimit.action.MEMBER_BULK_REMOVE": "Gỡ hàng loạt và dọn email hết hạn",
   "rateLimit.action.WALLET_TOPUP": "Tạo lệnh nạp tiền",
   "rateLimit.action.WALLET_WITHDRAW": "Tạo lệnh rút tiền",
-  "rateLimit.action.MEMBER_PAY": "Thanh toán từ ví"
+  "rateLimit.action.MEMBER_PAY": "Thanh toán từ ví",
+  "invite.groupsFailed": "Chưa gửi được cho {names}. {reason}"
 }
