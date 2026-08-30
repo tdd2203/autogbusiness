@@ -48,6 +48,9 @@ _FRIENDLY: dict[str, str] = {
         "ChatGPT chưa cho gửi lời mời ra ngoài tên miền nên lệnh dừng lại. Chưa "
         "gửi lời mời nào. Vui lòng thử lại sau vài phút."
     ),
+    "INVITE_NOT_TYPED": (
+        "Không nhập được email vào ô mời nên chưa gửi. Đã hoàn phí."
+    ),
     "VERIFY_FAILED": (
         "Đã bấm gửi nhưng chưa nhận được xác nhận từ ChatGPT. Hệ thống đang kiểm "
         "tra lại, đừng mời lại email này cho tới khi có kết quả."

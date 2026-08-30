@@ -2007,6 +2007,25 @@ def update_task(
                     for e in unverified
                     if isinstance(e, str) and "@" in e
                 ]
+        # Gộp email chưa nhập được vào diện chốt hỏng — kể cả nhánh
+        # `verify_scrape_failed` (không scrape được KHÔNG xoá được bằng chứng này).
+        if skipped_set:
+            emails_to_delete = sorted(set(emails_to_delete) | skipped_set)
+            log_event(
+                db,
+                actor_type="EXTENSION",
+                actor_label=f"workspace:{workspace.name}",
+                action="MEMBER_INVITE_NOT_TYPED",
+                result="FAILED",
+                target_type="QUEUE_ITEM",
+                target_id=str(item.id),
+                data={
+                    "workspace_id": str(workspace.id),
+                    "skipped_emails": sorted(skipped_set),
+                    "reason": "khong_nhap_duoc_vao_o_moi",
+                },
+                commit=False,
+            )
 
         # GUARD 10 PHÚT (fix 2026-07-13 — xem EXPIRY_RULES.md §9 + sync-reconcile-safety):
         # COMPLETED + email lọt "unverified" CÓ THỂ do ChatGPT CHƯA index xong lời mời
@@ -2028,7 +2047,9 @@ def update_task(
                 .scalars()
                 .all()
             )
-            fresh_set = {e.lower() for e in fresh}
+            # Email chưa nhập được thì "mời tươi < 10 phút" không có nghĩa gì —
+            # không có lời mời nào để ChatGPT index cả. Loại khỏi diện được hoãn.
+            fresh_set = {e.lower() for e in fresh} - skipped_set
             if fresh_set:
                 deferred = [e for e in emails_to_delete if e in fresh_set]
                 deferred_set = fresh_set
