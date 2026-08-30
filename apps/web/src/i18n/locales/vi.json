@@ -1329,7 +1329,7 @@
   "memberLog.action.MEMBER_INVITE_VERIFIED": "Mời thành công",
   "memberLog.action.MEMBER_INVITE_FAILED": "Mời thất bại",
   "memberLog.action.MEMBER_INVITE_PENDING_VERIFY": "Chờ xác minh",
-  "memberLog.inviteVerifiedAt": "Thành công lúc {time}",
+  "memberLog.inviteVerifiedAt": "Đã mời thành công lúc {time}",
   "memberLog.inviteFailedAt": "Thất bại lúc {time}",
   "memberLog.action.MEMBER_REMOVE_QUEUED": "Xoá khỏi workspace",
   "memberLog.action.MEMBER_BULK_REMOVE_QUEUED": "Xoá hàng loạt",

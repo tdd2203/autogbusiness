@@ -1329,7 +1329,7 @@
   "memberLog.action.MEMBER_INVITE_VERIFIED": "邀请成功",
   "memberLog.action.MEMBER_INVITE_FAILED": "邀请失败",
   "memberLog.action.MEMBER_INVITE_PENDING_VERIFY": "等待验证",
-  "memberLog.inviteVerifiedAt": "成功于 {time}",
+  "memberLog.inviteVerifiedAt": "邀请成功于 {time}",
   "memberLog.inviteFailedAt": "失败于 {time}",
   "memberLog.action.MEMBER_REMOVE_QUEUED": "移出工作区",
   "memberLog.action.MEMBER_BULK_REMOVE_QUEUED": "批量移除",
