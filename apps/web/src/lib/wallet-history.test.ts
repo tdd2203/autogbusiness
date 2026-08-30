@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTxnCsv, buildTxnRows, countHiddenRows, countVoidedInvites, groupRowsByDay, rowChannel, traceRefundUsage } from "./wallet-history";
+import { buildTxnRows, closingBalanceByDay, countHiddenRows, countVoidedInvites, groupRowsByDay, rowChannel, traceRefundUsage } from "./wallet-history";
 import type { WalletTxn } from "./wallet";
 
 /* Ca thật: mời hỏng thì phí bị trừ rồi hoàn lại đủ (2 bút toán ngược dấu, 2 thời
@@ -240,31 +240,6 @@ describe("countHiddenRows — danh sách rỗng vì công tắc, không phải v
   });
 });
 
-describe("buildTxnCsv — xuất báo cáo đối soát", () => {
-  it("mỗi bút toán một dòng, kèm kênh tiền + email", () => {
-    const at = "2026-08-26T02:00:00Z"; // 09:00 giờ VN
-    const rows = buildTxnRows([
-      txn({ kind: "order_topup", amount: FEE, created_at: at, ref_type: "order" }),
-      txn({ kind: "invite_fee", amount: -FEE, created_at: at, meta: { email: "a@x.com" }, balance_after: 0 }),
-    ]);
-    const lines = buildTxnCsv(groupRowsByDay(rows)).split("\n");
-    expect(lines[0]).toBe("Ngày;Giờ;Loại;Kênh;Email;Số tiền (đ);Số dư sau (đ)");
-    expect(lines).toHaveLength(3);
-    expect(lines[1]).toContain("2026-08-26;09:00:00;Nạp qua hoá đơn;Thanh toán trực tiếp;;");
-    expect(lines[2]).toContain("Phí mời;Thanh toán trực tiếp;a@x.com;-100000;0");
-  });
-
-  it("lượt mời hỏng ghi THỰC CHI 0, không ghi số phí đã trừ rồi trả lại", () => {
-    const rows = buildTxnRows([
-      refundOf("a@x.com", "2026-08-26T02:30:00Z"),
-      feeOf("a@x.com", "2026-08-26T02:00:00Z", true),
-    ]);
-    const lines = buildTxnCsv(groupRowsByDay(rows, { showVoided: true })).split("\n");
-    expect(lines).toHaveLength(2);
-    expect(lines[1]).toContain("Lỗi mời (đã hoàn phí);a@x.com;0;");
-  });
-});
-
 /* Nguồn gốc tiền (user 2026-08-26): mời hỏng trả qua hoá đơn ⇒ tiền ở lại ví;
    lượt mời SAU tiêu đúng khoản đó thì phải nói rõ "dùng tiền hoàn từ email nào",
    và khoản hoàn bị tiêu hết thì triệt tiêu chứ không nằm lại như tiền mới. */
@@ -333,6 +308,29 @@ describe("traceRefundUsage — lần nguồn gốc tiền hoàn", () => {
     expect(funding.get(feeRow!)).toEqual([{ email: "bad1@x.com", amount: FEE }]);
   });
 
+  /* Chi tiết dòng mời phải nói được TỪNG email lấy tiền của ai (user 2026-08-28:
+     "tiền lấy từ các tài khoản sẽ → tài khoản đích nhận"), nên nguồn gốc phải chia
+     tới từng lượt phí chứ không chỉ tổng cả dòng. */
+  it("chia nguồn gốc tới TỪNG lượt phí, không gộp cả dòng", () => {
+    const mkBad = (at: string, email: string) => [
+      txn({ kind: "order_topup", amount: FEE, created_at: at, balance_after: FEE, ref_type: "order" }),
+      txn({ kind: "invite_fee", amount: -FEE, created_at: at, meta: { email }, balance_after: 0, reversed: true }),
+      refundOf(email, at.replace("00Z", "30Z")),
+    ];
+    const good = "2026-08-26T09:00:00Z";
+    const rows = buildTxnRows([
+      // mới → cũ; hai lượt phí cùng mốc ⇒ một dòng gộp
+      txn({ id: "fee-2", kind: "invite_fee", amount: -FEE, created_at: good, meta: { email: "g2@x.com" }, balance_after: 0 }),
+      txn({ id: "fee-1", kind: "invite_fee", amount: -FEE, created_at: good, meta: { email: "g1@x.com" }, balance_after: FEE }),
+      ...mkBad("2026-08-26T08:00:00Z", "bad2@x.com").reverse(),
+      ...mkBad("2026-08-26T07:00:00Z", "bad1@x.com").reverse(),
+    ]);
+    const { perFee } = traceRefundUsage(rows);
+    // Lượt phí đứng trước trong dòng ăn khoản hoàn CŨ nhất.
+    expect(perFee.get("fee-2")).toEqual([{ email: "bad1@x.com", amount: FEE }]);
+    expect(perFee.get("fee-1")).toEqual([{ email: "bad2@x.com", amount: FEE }]);
+  });
+
   it("lượt mời trả qua hoá đơn KHÔNG tiêu tiền hoàn (không đụng số dư)", () => {
     const bad = "2026-08-26T05:00:00Z";
     const later = "2026-08-26T06:00:00Z";
@@ -344,6 +342,35 @@ describe("traceRefundUsage — lần nguồn gốc tiền hoàn", () => {
       txn({ kind: "order_topup", amount: FEE, created_at: bad, balance_after: FEE, ref_type: "order" }),
     ]);
     expect(traceRefundUsage(rows).funding.size).toBe(0);
+  });
+});
+
+/* Chốt số dư cuối ngày (user 2026-08-29): ngày 28/8 nạp 41.910.000đ mà ô "đã tiêu"
+   ghi 39.930.000đ — phần chênh nằm lại trong ví chứ không hụt đi đâu. */
+describe("closingBalanceByDay", () => {
+  it("lấy balance_after của bút toán MỚI NHẤT trong ngày, theo thứ tự mảng", () => {
+    // API trả seq giảm dần; cả 3 bút toán 23:18 dùng chung một created_at nên chỉ
+    // thứ tự mảng mới phân biệt được cái nào đứng sau.
+    const map = closingBalanceByDay([
+      txn({ kind: "invite_refund", amount: FEE, created_at: "2026-08-28T16:18:56Z", balance_after: 2_310_000 }),
+      txn({ kind: "invite_refund", amount: FEE, created_at: "2026-08-28T16:18:56Z", balance_after: 1_980_000 }),
+      txn({ kind: "invite_refund", amount: FEE, created_at: "2026-08-28T16:18:56Z", balance_after: 1_650_000 }),
+      txn({ kind: "invite_fee", amount: -FEE, created_at: "2026-08-27T03:00:00Z", balance_after: 330_000 }),
+    ]);
+    expect(map.get("2026-08-28")).toBe(2_310_000);
+    expect(map.get("2026-08-27")).toBe(330_000);
+  });
+
+  it("mốc sau 17h UTC vẫn thuộc ngày VN hôm sau", () => {
+    // 2026-08-28T17:30:00Z = 00:30 ngày 29/8 giờ VN.
+    const map = closingBalanceByDay([txn({ kind: "topup", amount: FEE, created_at: "2026-08-28T17:30:00Z", balance_after: 500_000 })]);
+    expect(map.get("2026-08-29")).toBe(500_000);
+    expect(map.has("2026-08-28")).toBe(false);
+  });
+
+  it("ví hết sạch cuối ngày ⇒ 0, chỗ gọi tự bỏ dòng chốt", () => {
+    const map = closingBalanceByDay([txn({ kind: "invite_fee", amount: -FEE, created_at: "2026-08-26T10:00:00Z", balance_after: 0 })]);
+    expect(map.get("2026-08-26")).toBe(0);
   });
 });
 

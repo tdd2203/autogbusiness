@@ -16,7 +16,6 @@
  * Giữ nguyên thứ tự mới→cũ của API.
  */
 
-import { TXN_KIND_LABEL } from "./wallet";
 import type { WalletTxn } from "./wallet";
 
 /** 1 lượt mời hỏng: phí đã trừ và bút toán hoàn lại tương ứng. */
@@ -343,8 +342,6 @@ export function countHiddenRows(
   return { voided, settled };
 }
 
-// ── Xuất báo cáo CSV ────────────────────────────────────────────────────────
-
 /** Nhãn "tiền đi đường nào" — dùng chung cho giao diện và báo cáo xuất ra. */
 export const CHANNEL_LABEL: Record<TxnChannel, string> = {
   wallet: "Trừ số dư ví",
@@ -352,53 +349,6 @@ export const CHANNEL_LABEL: Record<TxnChannel, string> = {
   in: "Tiền vào",
   voided: "Lỗi mời (đã hoàn phí)",
 };
-
-function csvCell(v: string | number): string {
-  const s = String(v);
-  return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
-/**
- * CSV đối soát của ĐÚNG những dòng đang hiện (nút "Xuất báo cáo"): mỗi bút toán một
- * dòng, kèm kênh tiền và email liên quan. Excel bản Việt đọc CSV theo dấu `;` nên
- * dùng `;` làm ngăn cách và số giữ nguyên dấu chấm thập phân của JS (số nguyên VND
- * nên không có phần lẻ).
- */
-export function buildTxnCsv(groups: DayGroup[]): string {
-  const head = ["Ngày", "Giờ", "Loại", "Kênh", "Email", "Số tiền (đ)", "Số dư sau (đ)"];
-  const lines = [head.join(";")];
-  for (const g of groups) {
-    for (const row of g.rows) {
-      const channel = CHANNEL_LABEL[rowChannel(row)];
-      const txns = row.type === "voided" ? row.pairs.map((p) => p.fee) : row.txns;
-      for (const t of txns) {
-        const at = new Date(t.created_at);
-        const time = new Intl.DateTimeFormat("en-GB", {
-          timeZone: "Asia/Ho_Chi_Minh",
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        }).format(at);
-        // Lượt hỏng đã hoàn đủ ⇒ thực chi 0, ghi 0 thay vì số phí đã trừ rồi trả lại.
-        const amount = row.type === "voided" ? 0 : t.amount;
-        lines.push(
-          [
-            vnDateKey(t.created_at),
-            time,
-            TXN_KIND_LABEL[t.kind] ?? t.kind,
-            channel,
-            typeof t.meta?.email === "string" ? t.meta.email : "",
-            amount,
-            row.type === "voided" ? "" : t.balance_after,
-          ]
-            .map(csvCell)
-            .join(";"),
-        );
-      }
-    }
-  }
-  return lines.join("\n");
-}
 
 // ── Nguồn gốc tiền: lượt mời sau tiêu tiền hoàn của lượt mời hỏng trước ─────
 //
