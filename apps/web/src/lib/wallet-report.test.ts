@@ -505,3 +505,55 @@ describe("dòng gộp vẫn nối được mạch số dư", () => {
     ]);
   });
 });
+
+/* Ca thật ví hdh2102 30/8 (ảnh user gửi): 12 email mời hỏng liên tiếp mấy mẻ, hoàn phí
+   đủ, rồi MỜI LẠI ĐƯỢC và bị tính phí đàng hoàng. Bản trước gắn cả 12 dòng nhãn
+   "Cần Truy Thu" chỉ vì email đang ở trong đội — trong khi tiền đã thu ở lượt sau
+   (user: "lỗi đã hoàn phí, và xác nhận chưa mời thành công sao lại truy thu?"). */
+describe("mời lại thành công thì không đòi truy thu", () => {
+  const inTeam: MemberInfo[] = [
+    { email: "a@x.com", status: "active", subscription_end_at: null, payment_status: "unpaid" },
+  ];
+
+  /** Hỏng lúc 02:00 (hoàn 02:05), mời lại tính phí thật lúc 03:00. */
+  const reInvited = () => [
+    txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, meta: { email: "a@x.com" }, created_at: "2026-08-30T03:00:00Z" }),
+    txn({ kind: "invite_refund", amount: FEE, balance_after: FEE, ref_id: "q1", meta: { email: "a@x.com" }, created_at: "2026-08-30T02:05:00Z" }),
+    txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, ref_id: "q1", meta: { email: "a@x.com" }, reversed: true, created_at: "2026-08-30T02:00:00Z" }),
+  ];
+
+  it("dòng lỗi ghi 'đã mời lại thành công', KHÔNG đòi truy thu", () => {
+    const r = report(reInvited(), inTeam);
+    const bad = r.days.flatMap((d) => d.clusters.flatMap((c) => c.entries)).find((e) => e.voided);
+    expect(bad?.note).toContain("Đã mời lại thành công sau đó.");
+    expect(bad?.note).not.toContain("Truy Thu");
+    expect(r.days[0].roster[0].outcome).not.toContain("Truy Thu");
+  });
+
+  it("hỏng mà KHÔNG mời lại, email vẫn trong đội ⇒ vẫn đòi truy thu", () => {
+    const r = report(
+      [
+        txn({ kind: "invite_refund", amount: FEE, balance_after: FEE, ref_id: "q1", meta: { email: "a@x.com" }, created_at: "2026-08-30T02:05:00Z" }),
+        txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, ref_id: "q1", meta: { email: "a@x.com" }, reversed: true, created_at: "2026-08-30T02:00:00Z" }),
+      ],
+      inTeam,
+    );
+    const bad = r.days.flatMap((d) => d.clusters.flatMap((c) => c.entries)).find((e) => e.voided);
+    expect(bad?.note).toContain("Cần Truy Thu");
+  });
+
+  it("cả mẻ lỗi hết thì dải cụm không ghi 'trừ số dư ví 0'", () => {
+    const at = "2026-08-30T02:00:00Z";
+    const r = report([
+      txn({ kind: "invite_refund", amount: FEE, balance_after: 2 * FEE, ref_id: "q2", meta: { email: "b@x.com" }, created_at: "2026-08-30T02:05:00Z" }),
+      txn({ kind: "invite_refund", amount: FEE, balance_after: FEE, ref_id: "q1", meta: { email: "a@x.com" }, created_at: "2026-08-30T02:05:00Z" }),
+      txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, ref_id: "q2", meta: { email: "b@x.com" }, reversed: true, created_at: at }),
+      txn({ kind: "invite_fee", amount: -FEE, balance_after: FEE, ref_id: "q1", meta: { email: "a@x.com" }, reversed: true, created_at: at }),
+    ]);
+    const band = sheetOf(reportSheets(r), "Chi tiết lệnh").rows
+      .map((row) => String(val(row[0]) ?? ""))
+      .find((t) => t.startsWith("Lệnh mời"));
+    expect(band).toContain("cả mẻ lỗi, đã hoàn đủ phí");
+    expect(band).not.toContain("trừ số dư ví 0");
+  });
+});

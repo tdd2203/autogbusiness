@@ -277,7 +277,16 @@ const KIND_NOTE: Record<string, string> = {
  */
 const NOT_DELIVERED = new Set(["invite_failed", "invite_revoked"]);
 
-export function voidedVerdict(email: string, members: Map<string, MemberInfo>): string {
+export function voidedVerdict(
+  email: string,
+  members: Map<string, MemberInfo>,
+  charged: ReadonlySet<string>,
+): string {
+  // Mời lỗi rồi MỜI LẠI ĐƯỢC là chuyện thường: lượt sau tính phí đàng hoàng nên email
+  // nằm trong đội là đúng, chẳng ai nợ ai. Không xét điều này thì mỗi lần mời lại thành
+  // công lại đẻ ra một dòng đòi truy thu oan (user 2026-08-30: "lỗi đã hoàn phí, và xác
+  // nhận chưa mời thành công sao lại truy thu?").
+  if (charged.has(email.toLowerCase())) return "Đã mời lại thành công sau đó.";
   const m = members.get(email.toLowerCase());
   if (!m) {
     return members.size === 0
@@ -285,7 +294,7 @@ export function voidedVerdict(email: string, members: Map<string, MemberInfo>): 
       : "Đúng là chưa vào đội, không còn bản ghi thành viên.";
   }
   if (m.status === "active" || m.status === "pending") {
-    return "Cần Truy Thu: đã hoàn phí nhưng email vẫn trong đội.";
+    return "Cần Truy Thu: đã hoàn phí, email vẫn trong đội mà kỳ này không có lượt nào tính phí.";
   }
   const reason = str(m.removed_reason);
   if (NOT_DELIVERED.has(reason) || !reason) return "Đúng là chưa vào đội.";
@@ -313,6 +322,7 @@ function partOf(
   trace: RefundTrace,
   codes: Map<string, { ref: string; provider: string }>,
   members: Map<string, MemberInfo>,
+  chargedEmails: ReadonlySet<string>,
 ): RowPart {
   const channel = CHANNEL_LABEL[rowChannel(row)];
   const entries: ReportEntry[] = [];
@@ -348,7 +358,7 @@ function partOf(
         note: [
           "Thực chi 0",
           row.invoiceStranded > 0 ? "tiền hoá đơn ở lại ví" : null,
-          voidedVerdict(email, members),
+          voidedVerdict(email, members, chargedEmails),
         ]
           .filter(Boolean)
           .join(" · "),
@@ -463,11 +473,12 @@ function clustersOf(
   trace: RefundTrace,
   codes: Map<string, { ref: string; provider: string }>,
   members: Map<string, MemberInfo>,
+  chargedEmails: ReadonlySet<string>,
 ): ReportCluster[] {
   const out: ReportCluster[] = [];
   const index = new Map<string, number>();
   for (const row of rows) {
-    const part = partOf(row, trace, codes, members);
+    const part = partOf(row, trace, codes, members, chargedEmails);
     const key = clusterKey(row);
     const at = index.get(key);
     if (at != null) {
@@ -544,7 +555,11 @@ function emailStatsOf(dayTxns: WalletTxn[]): EmailStat[] {
 }
 
 /** Ghép thống kê email của ngày với dữ liệu thành viên (trạng thái, hạn, đổi email). */
-function rosterOf(stats: EmailStat[], members: Map<string, MemberInfo>): RosterRow[] {
+function rosterOf(
+  stats: EmailStat[],
+  members: Map<string, MemberInfo>,
+  charged: ReadonlySet<string>,
+): RosterRow[] {
   return stats.map((s) => {
     const m = members.get(s.email.toLowerCase());
     const service = [s.newSeats ? "Mời mới" : "", s.renewSeats ? "Gia hạn" : ""]
@@ -556,7 +571,7 @@ function rosterOf(stats: EmailStat[], members: Map<string, MemberInfo>): RosterR
           ? `Thành công (${s.voided} lượt lỗi đã hoàn)`
           : "Thành công"
         : s.voided
-          ? `Lỗi, đã hoàn phí. ${voidedVerdict(s.email, members)}`
+          ? `Lỗi, đã hoàn phí. ${voidedVerdict(s.email, members, charged)}`
           : "";
     const chain = m?.email_changed_to ?? [];
     return {
@@ -640,9 +655,17 @@ export function buildWalletReport(input: ReportInput): WalletReport {
   // phải số dư chốt (user 2026-08-30: "sắp xếp ngược à, cuối cùng lệnh trừ số dư ví
   // phải bằng 0"). Xuôi thời gian thì Dư trước → Dư sau nối liền mạch xuống tận dòng
   // cuối, và dòng cộng ngày đặt ngay sau đó chốt đúng con số ấy.
+  // Email nào ĐÃ bị tính phí thành công trong kỳ (phí không bị hoàn lại).
+  const chargedEmails = new Set<string>();
+  for (const t of items) {
+    if (!FEE_KINDS.has(t.kind) || t.reversed) continue;
+    const e = str(t.meta?.email).toLowerCase();
+    if (e) chargedEmails.add(e);
+  }
+
   let no = 0;
   const days: ReportDay[] = [...groups].reverse().map((g) => {
-    const clusters = clustersOf([...g.rows].reverse(), trace, codes, memberMap);
+    const clusters = clustersOf([...g.rows].reverse(), trace, codes, memberMap, chargedEmails);
     for (const c of clusters) {
       if (!c.label) continue;
       c.no = no;
@@ -669,7 +692,7 @@ export function buildWalletReport(input: ReportInput): WalletReport {
       moneyOut: dOut,
       closing: closing.get(g.date) ?? null,
       emails: stats,
-      roster: rosterOf(stats, memberMap),
+      roster: rosterOf(stats, memberMap, chargedEmails),
     };
   });
 
@@ -865,7 +888,13 @@ function overviewSheet(r: WalletReport): XSheet {
 function clusterBand(c: ReportCluster): string {
   const bits = [c.label, `lệnh #${c.no}`];
   if (c.refCode) bits.push(`hoá đơn ${c.refCode}`);
-  bits.push(c.viaInvoice ? `trả qua hoá đơn QR ${vnd(c.spend)}` : `trừ số dư ví ${vnd(c.spend)}`);
+  bits.push(
+    c.charged === 0 && c.voided > 0
+      ? "cả mẻ lỗi, đã hoàn đủ phí"
+      : c.viaInvoice
+        ? `trả qua hoá đơn QR ${vnd(c.spend)}`
+        : `trừ số dư ví ${vnd(c.spend)}`,
+  );
   return bits.join(" · ");
 }
 
