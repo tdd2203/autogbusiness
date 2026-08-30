@@ -74,6 +74,32 @@ export function InviteMemberModal({
     [emailsText],
   );
 
+  // Ô paste tự nới theo dòng email dài nhất. Font mono nên bề rộng đoán được:
+  // dài quá thì hạ cỡ chữ chứ không để email gãy dòng giữa chừng.
+  const pasteBox = useMemo(() => {
+    const MIN_W = 400;
+    const MAX_W = 560;
+    const CHROME = 74; // padding cột + padding input + viền + chỗ cho thanh cuộn
+    const source = emailsText.trim()
+      ? emailsText
+      : "user2@domain.com, user3@domain.com";
+    let longest = 0;
+    for (const line of source.split("\n")) {
+      longest = Math.max(longest, line.trim().length);
+    }
+    let fontSize = 13;
+    const widthAt = (fs: number) => Math.ceil(longest * fs * 0.6) + CHROME;
+    let width = widthAt(fontSize);
+    while (width > MAX_W && fontSize > 11) {
+      fontSize -= 0.5;
+      width = widthAt(fontSize);
+    }
+    return {
+      width: Math.min(MAX_W, Math.max(MIN_W, width)),
+      fontSize,
+    };
+  }, [emailsText]);
+
   // Derive entries: each valid email + months (override or default).
   const entries = useMemo(
     () =>
@@ -267,7 +293,7 @@ export function InviteMemberModal({
     >
       <div
         style={{
-          width: "min(1040px, 100%)",
+          width: "min(1200px, 100%)",
           maxHeight: "90vh",
           background: "var(--surface)",
           border: "1px solid var(--border)",
@@ -343,7 +369,8 @@ export function InviteMemberModal({
           {/* LEFT — paste textarea + counters + apply-to-all + invalid */}
           <div
             style={{
-              width: isMobile ? "100%" : 360,
+              width: isMobile ? "100%" : pasteBox.width,
+              transition: "width .18s ease",
               flexShrink: 0,
               minHeight: 0,
               padding: "20px 20px",
@@ -380,8 +407,9 @@ export function InviteMemberModal({
                 minHeight: 220,
                 flex: 1,
                 fontFamily: "var(--font-mono)",
-                fontSize: 13,
+                fontSize: pasteBox.fontSize,
                 lineHeight: 1.6,
+                wordBreak: "break-all",
               }}
             />
             <div
