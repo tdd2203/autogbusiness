@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.action_limit import enforce_action_cooldown
 from app.audit import log_event
 from app.deps import get_current_user, get_session
 from app.models import REMOVED_REASON_EMAIL_CHANGED, AuditLog, Member, MemberSubscriptionCycle, User
@@ -822,6 +823,9 @@ def pay_member_cycles(
         db.commit()
         payment_flow.raise_payment_required(settings_row, order)
 
+    # Cooldown đặt sau nhánh 402 (ví thiếu → hoá đơn QR): nạp xong bấm lại ngay
+    # phải chạy được. Tới đây là sắp TRỪ TIỀN THẬT.
+    enforce_action_cooldown(db, user, "MEMBER_PAY")
     count, charged = settle_cycle_payment(db, user, targets, now)
     log_event(
         db,

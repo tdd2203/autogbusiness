@@ -14,8 +14,12 @@ Endpoints (đăng ký lên router dùng chung từ `_shared`):
   - POST /{workspace_id}/purchase-seat  → trigger_purchase_seat (PURCHASE_SEAT)
 
 Rate-limit (⚠️ xem `triggers.md` mục business rules):
-  - Full-sync (SYNC_DATA): admin phụ (is_super_admin=False) phải cách nhau ≥ 5
-    tiếng giữa 2 lần / workspace (cooldown); admin chính không giới hạn.
+  - Full-sync (SYNC_DATA): admin phụ (is_super_admin=False) phải cách nhau đủ
+    khoảng super-admin đặt ở Cài đặt → Hạn mức thao tác (mặc định 5 tiếng) /
+    workspace; admin chính không giới hạn khi cờ miễn trừ còn bật.
+  - Các nút nặng còn lại (đồng bộ hàng loạt, đồng bộ hoá đơn, mua suất, thu hồi
+    lời mời, quét nhãn) có cooldown ngắn theo (user, workspace) — xem
+    `app/action_limit.py`.
   - Chống spam lệnh per-email (SYNC_MEMBER, REMOVE_MEMBER, CHANGE_ROLE,
     CHANGE_LICENSE_TYPE): lặp CÙNG (loại lệnh, email) liên tiếp >3 lần (task FAILED
     không tính) → cấm tài khoản 10 phút (đá session + chặn login). Dùng chung
@@ -29,6 +33,11 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.action_limit import (
+    describe_seconds,
+    enforce_action_cooldown,
+    load_config,
+)
 from app.audit import log_event
 from app.deps import (
     assert_workspace_access,
@@ -46,11 +55,67 @@ from app.sse import publish_task_event
 from ._shared import router, _get_workspace_or_404
 
 # --- Rate-limit constants (⚠️ xem triggers.md trước khi đổi) ---
-# Full-sync: admin phụ phải cách nhau tối thiểu N tiếng giữa 2 lần (cooldown).
-# Admin chính (is_super_admin) bỏ qua hoàn toàn — thích sync lúc nào cũng được.
-FULL_SYNC_MIN_INTERVAL_HOURS = 5
+# Full-sync: admin phụ phải cách nhau tối thiểu N giây giữa 2 lần (cooldown).
+# Con số KHÔNG còn là hằng số: super-admin chỉnh ở Cài đặt → Hạn mức thao tác
+# (bảng `rate_limit_settings`, catalog ở `app/action_limit.py`). Mặc định vẫn là
+# 5 tiếng như trước. Admin chính bỏ qua nếu cờ `exempt_super_admin` còn bật.
+#
+# Vì sao cooldown NÀY tính theo DB (`QueueItem.created_at`) chứ không dùng bộ đếm
+# trong bộ nhớ của `action_limit`: mốc dài hàng tiếng mà đếm trong RAM thì mỗi lần
+# deploy/khởi động lại container là reset sạch — 5 tiếng thành "tới lần deploy kế".
+FULL_SYNC_ACTION = "WORKSPACE_FULL_SYNC"
 # Chống-spam sync lẻ (và các lệnh per-email khác) dùng chung helper
 # `enforce_command_spam` ở app.deps: cùng (loại lệnh, email) lặp >3 lần → cấm 10 phút.
+
+
+def _full_sync_interval_sec(db: Session, user: User) -> int:
+    """Số giây tối thiểu giữa 2 lần full-sync của `user`. 0 = không giới hạn."""
+    config = load_config(db)
+    if not config.enabled:
+        return 0
+    if user.is_super_admin and config.exempt_super_admin:
+        return 0
+    return config.seconds_for(FULL_SYNC_ACTION)
+
+
+def assert_full_sync_allowed(db: Session, user: User, workspace_id: UUID) -> None:
+    """Raise 429 nếu `user` vừa full-sync workspace này chưa đủ lâu.
+
+    Dùng chung với `POST /queue` (tạo task thô) — nếu chỉ gác ở nút "Đồng bộ từ
+    ChatGPT" thì cooldown đi vòng được bằng một request tạo QueueItem SYNC_DATA.
+    """
+    interval_sec = _full_sync_interval_sec(db, user)
+    if interval_sec <= 0:
+        return
+    now = datetime.now(timezone.utc)
+    # Khoá hàng workspace FOR UPDATE TRƯỚC khi đọc last-sync để serialize
+    # double-click (mẫu purchase-seat) — nếu không, 2 request đồng thời cùng thấy
+    # "đủ điều kiện" rồi cùng tạo task → lọt cooldown.
+    db.execute(
+        select(Workspace.id).where(Workspace.id == workspace_id).with_for_update()
+    )
+    last_at = _last_full_sync_at(db, user.id, workspace_id)
+    if last_at is None:
+        return
+    if last_at.tzinfo is None:
+        last_at = last_at.replace(tzinfo=timezone.utc)
+    next_allowed = last_at + timedelta(seconds=interval_sec)
+    if now >= next_allowed:
+        return
+    retry = max(1, int((next_allowed - now).total_seconds()))
+    raise HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail={
+            "code": "FULL_SYNC_COOLDOWN",
+            "message": (
+                f"Đồng bộ toàn bộ phải cách nhau ít nhất "
+                f"{describe_seconds(interval_sec)}, không được spam."
+            ),
+            "retry_after_sec": retry,
+            "reset_at": next_allowed.isoformat(),
+        },
+        headers={"Retry-After": str(retry)},
+    )
 
 
 def _last_full_sync_at(db: Session, user_id: UUID, workspace_id: UUID) -> datetime | None:
@@ -96,33 +161,9 @@ def trigger_sync(
     _get_workspace_or_404(db, workspace_id)
     assert_workspace_access(db, user, workspace_id)
 
-    # Rate-limit full-sync: admin phụ phải cách nhau ≥ FULL_SYNC_MIN_INTERVAL_HOURS
-    # tiếng giữa 2 lần/workspace. Admin chính (is_super_admin) bỏ qua hoàn toàn.
-    # Khoá hàng workspace FOR UPDATE TRƯỚC khi đọc last-sync để serialize double-click
-    # (mẫu purchase-seat) — nếu không, 2 request đồng thời cùng thấy "đủ điều kiện"
-    # rồi cùng tạo task → lọt cooldown.
-    if not user.is_super_admin:
-        now = datetime.now(timezone.utc)
-        db.execute(
-            select(Workspace.id).where(Workspace.id == workspace_id).with_for_update()
-        )
-        last_at = _last_full_sync_at(db, user.id, workspace_id)
-        if last_at is not None:
-            if last_at.tzinfo is None:
-                last_at = last_at.replace(tzinfo=timezone.utc)
-            next_allowed = last_at + timedelta(hours=FULL_SYNC_MIN_INTERVAL_HOURS)
-            if now < next_allowed:
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail={
-                        "code": "FULL_SYNC_COOLDOWN",
-                        "message": (
-                            f"Đồng bộ toàn bộ phải cách nhau ít nhất "
-                            f"{FULL_SYNC_MIN_INTERVAL_HOURS} tiếng, không được spam."
-                        ),
-                        "reset_at": next_allowed.isoformat(),
-                    },
-                )
+    # Rate-limit full-sync: khoảng cách tối thiểu do super-admin đặt ở Cài đặt →
+    # Hạn mức thao tác (mặc định 5 tiếng), tính theo (user, workspace).
+    assert_full_sync_allowed(db, user, workspace_id)
 
     normalized_locale: str | None = None
     if expected_locale in ("vi", "en", "zh"):
@@ -185,13 +226,14 @@ def get_sync_quota(
     """Web hỏi: user hiện tại có được full-sync ngay bây giờ không (để ẩn/hiện nút).
 
     Admin chính: luôn cho phép (`reset_at=None`). Admin phụ: cho phép nếu lần
-    full-sync gần nhất đã cách ≥ FULL_SYNC_MIN_INTERVAL_HOURS tiếng; nếu chưa,
+    full-sync gần nhất đã cách đủ khoảng super-admin đặt; nếu chưa,
     `reset_at` = mốc được phép lần kế. Logic khớp y hệt `trigger_sync` để UI và
     backend không lệch.
     """
     _get_workspace_or_404(db, workspace_id)
     assert_workspace_access(db, user, workspace_id)
-    if user.is_super_admin:
+    interval_sec = _full_sync_interval_sec(db, user)
+    if interval_sec <= 0:
         return {"full_sync_allowed": True, "reset_at": None}
     now = datetime.now(timezone.utc)
     last_at = _last_full_sync_at(db, user.id, workspace_id)
@@ -199,7 +241,7 @@ def get_sync_quota(
         return {"full_sync_allowed": True, "reset_at": None}
     if last_at.tzinfo is None:
         last_at = last_at.replace(tzinfo=timezone.utc)
-    next_allowed = last_at + timedelta(hours=FULL_SYNC_MIN_INTERVAL_HOURS)
+    next_allowed = last_at + timedelta(seconds=interval_sec)
     return {
         "full_sync_allowed": now >= next_allowed,
         "reset_at": next_allowed.isoformat(),
@@ -383,6 +425,10 @@ def trigger_sync_members_batch(
             "deduplicated": True,
         }
 
+    # Cooldown theo (user, workspace): dedup ở trên chỉ chặn khi mẻ CŨ còn đang
+    # chạy — mẻ vừa xong là bấm lại được ngay, mỗi lần là một lượt quét đầy đủ.
+    enforce_action_cooldown(db, user, "WORKSPACE_SYNC_BATCH", workspace_id)
+
     queue_item = QueueItem(
         type="SYNC_MEMBERS_BATCH",
         status="PENDING",
@@ -450,6 +496,8 @@ def trigger_revoke_invites(
             detail="Danh sách emails rỗng hoặc không hợp lệ",
         )
 
+    enforce_action_cooldown(db, user, "WORKSPACE_REVOKE_INVITES", workspace_id)
+
     queue_item = QueueItem(
         type="REVOKE_INVITES",
         status="PENDING",
@@ -514,6 +562,7 @@ def trigger_harvest_labels(
             detail="locale phải là 'vi', 'en' hoặc 'zh'",
         )
     _get_workspace_or_404(db, workspace_id)
+    enforce_action_cooldown(db, user, "WORKSPACE_HARVEST_LABELS", workspace_id)
     queue_item = QueueItem(
         type="HARVEST_LABELS",
         status="PENDING",
@@ -555,6 +604,7 @@ def trigger_sync_billing(
     """Tạo task SYNC_BILLING để Extension scrape seat_total/seat_used từ trang billing."""
     _get_workspace_or_404(db, workspace_id)
     assert_workspace_access(db, user, workspace_id)
+    enforce_action_cooldown(db, user, "WORKSPACE_SYNC_BILLING", workspace_id)
     queue_item = QueueItem(
         type="SYNC_BILLING",
         status="PENDING",
@@ -632,6 +682,10 @@ def trigger_purchase_seat(
             "status": existing.status,
             "deduplicated": True,
         }
+
+    # Sau dedup: task cũ còn chạy thì trả về task đó (không tốn lượt). Tới đây
+    # nghĩa là sắp tạo lệnh mua MỚI — thứ chạm vào tiền thật trên ChatGPT.
+    enforce_action_cooldown(db, user, "WORKSPACE_PURCHASE_SEAT", workspace_id)
 
     queue_item = QueueItem(
         type="PURCHASE_SEAT",

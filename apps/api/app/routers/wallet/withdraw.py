@@ -4,6 +4,7 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.action_limit import enforce_action_cooldown
 from app.deps import get_session, require_wallet_enabled
 from app.models import User, WithdrawalRequest
 from app.schemas import WithdrawalCreateIn, WithdrawalOut
@@ -19,6 +20,7 @@ def create_withdrawal(
     db: Session = Depends(get_session),
     user: User = Depends(require_wallet_enabled),
 ) -> WithdrawalOut:
+    enforce_action_cooldown(db, user, "WALLET_WITHDRAW")
     request = WithdrawalRequest(
         user_id=user.id,
         amount_vnd=body.amount_vnd,

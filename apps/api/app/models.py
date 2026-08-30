@@ -1379,3 +1379,45 @@ class TelegramNotification(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), index=True
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# =============================================================================
+# Hạn mức thao tác cho người dùng dashboard (xem app/action_limit.py)
+# =============================================================================
+
+
+class RateLimitSettings(Base):
+    """Cấu hình hạn mức thao tác do super-admin chỉnh TỪ GIAO DIỆN (singleton id=1).
+
+    Vì sao là bảng chứ không phải hằng số trong code: mỗi lần muốn nới/siết một nút
+    lại phải sửa code + deploy thì thực tế không ai làm, và lúc cần nới gấp (đại lý
+    kêu bị chặn giữa đợt mời) thì không kịp. Giá trị ở đây là SỐ GIÂY tối thiểu
+    giữa hai lần cùng một người bấm cùng một nút.
+
+    `cooldowns`: {action_key: giây}. Key không nằm trong catalog (`action_limit.
+    ACTIONS`) bị bỏ qua; key thiếu → lấy mặc định của catalog. Nhờ vậy thêm/bớt
+    hành động trong code không cần migrate dữ liệu.
+    """
+
+    __tablename__ = "rate_limit_settings"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_rate_limit_settings_singleton"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    # Tắt toàn bộ hạn mức thao tác (không đụng tới rate-limit hạ tầng ở ratelimit.py).
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    # Admin chính có bị áp hạn mức không. Mặc định KHÔNG — giữ đúng hành vi cũ của
+    # cooldown đồng bộ toàn bộ (super-admin luôn được sync).
+    exempt_super_admin: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    cooldowns: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    updated_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=_utcnow
+    )

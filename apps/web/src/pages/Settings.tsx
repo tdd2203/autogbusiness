@@ -6,8 +6,15 @@ import { useFormatDate, useT } from "../i18n";
 import { UiLabelsManager } from "../components/UiLabelsManager";
 import { SystemLanguageManager } from "../components/SystemLanguageManager";
 import { TelegramSettings } from "../components/TelegramSettings";
+import { RateLimitSettings } from "../components/RateLimitSettings";
 
-type SettingsTab = "account" | "security" | "telegram" | "uiLabels" | "systemLang";
+type SettingsTab =
+  | "account"
+  | "security"
+  | "telegram"
+  | "uiLabels"
+  | "systemLang"
+  | "rateLimit";
 
 export default function Settings() {
   const t = useT();
@@ -101,6 +108,14 @@ export default function Settings() {
               {t("settings.sectionSystemLang")}
             </button>
           )}
+          {user?.is_super_admin && (
+            <button
+              onClick={() => setTab("rateLimit")}
+              className={tab === "rateLimit" ? "settings-link active" : "settings-link"}
+            >
+              {t("settings.sectionRateLimit")}
+            </button>
+          )}
         </nav>
 
         <div>
@@ -145,6 +160,8 @@ export default function Settings() {
           {tab === "systemLang" && user?.is_super_admin && (
             <SystemLanguageManager />
           )}
+
+          {tab === "rateLimit" && user?.is_super_admin && <RateLimitSettings />}
 
           {tab === "security" && (
             <div className="settings-section">

@@ -26,6 +26,7 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
+from app.action_limit import enforce_action_cooldown
 from app.audit import log_event
 from app.deps import (
     assert_workspace_access,
@@ -1076,6 +1077,10 @@ def bulk_invite_members(
     mode = payment_flow.decide_payment(db, user, total)
     if mode == payment_flow.DEFER:
         _create_invite_order_and_raise(db, user, ws, entries, body.role, total, settings_row)
+
+    # Cooldown đặt SAU nhánh 402 (ví thiếu → hoá đơn QR): nạp xong bấm lại ngay
+    # phải chạy được, đừng tính lượt cho lần bị chặn vì thiếu tiền.
+    enforce_action_cooldown(db, user, "MEMBER_BULK_INVITE", workspace_id)
 
     queue_item, members, chargeable, renew_members = perform_invite_core(
         db, user, ws, entries, body.role, single=False

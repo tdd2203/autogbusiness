@@ -16,6 +16,7 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.action_limit import enforce_action_cooldown
 from app.audit import log_event
 from app.deps import (
     enforce_command_spam,
@@ -92,6 +93,7 @@ def cleanup_expired_members(
     # Xoá/dọn thành viên mình ĐÃ add vẫn cho phép kể cả khi sub-admin bị gỡ khỏi
     # workspace — visibility filter dưới đây khoá theo invited_by_user_id nên chỉ
     # dọn được member mình mời, không rò rỉ. Xem đầu file remove.py.
+    enforce_action_cooldown(db, user, "MEMBER_BULK_REMOVE", workspace_id)
     now = datetime.now(timezone.utc)
     cutoff = now - SUBSCRIPTION_GRACE_AFTER_EXPIRY
     expired = (
@@ -182,6 +184,8 @@ def bulk_remove_members(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cần ít nhất 1 member_id hoặc email để xoá",
         )
+
+    enforce_action_cooldown(db, user, "MEMBER_BULK_REMOVE", workspace_id)
 
     conds = []
     if body.member_ids:

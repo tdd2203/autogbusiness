@@ -50,6 +50,21 @@ _TYPE_TO_PERMISSION = {
     "PURCHASE_SEAT": Permission.BILLING_PAY,
 }
 
+# Hạn mức thao tác cho đường tạo task THÔ này (xem `app/action_limit.py`).
+#
+# Vì sao cần: các nút trên dashboard đi qua endpoint riêng và đã bị gác cooldown,
+# nhưng endpoint này tạo được QueueItem BẤT KỲ LOẠI NÀO chỉ với đúng permission
+# tương ứng. Không gác ở đây thì mọi cooldown đi vòng được bằng một request.
+# SYNC_DATA không nằm trong bảng: cooldown của nó tính theo DB, gọi riêng
+# `assert_full_sync_allowed` bên dưới.
+_TYPE_TO_COOLDOWN = {
+    "SYNC_BILLING": "WORKSPACE_SYNC_BILLING",
+    "REVOKE_INVITES": "WORKSPACE_REVOKE_INVITES",
+    "PURCHASE_SEAT": "WORKSPACE_PURCHASE_SEAT",
+    "INVITE_MEMBER": "MEMBER_BULK_INVITE",
+    "REMOVE_MEMBER": "MEMBER_BULK_REMOVE",
+}
+
 
 @router.post("", response_model=QueueOut, status_code=status.HTTP_201_CREATED)
 def create_task(
@@ -68,6 +83,19 @@ def create_task(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Thiếu permission: {required.value}",
         )
+
+    # Import cục bộ: `workspaces.triggers` kéo theo cả cụm members/_shared, để ở
+    # đầu file là vòng import khi router queue được nạp trước.
+    from app.action_limit import enforce_action_cooldown
+    from app.routers.workspaces.triggers import assert_full_sync_allowed
+
+    if body.type == "SYNC_DATA":
+        if body.workspace_id is not None:
+            assert_full_sync_allowed(db, user, body.workspace_id)
+    else:
+        action = _TYPE_TO_COOLDOWN.get(body.type)
+        if action is not None:
+            enforce_action_cooldown(db, user, action, body.workspace_id)
 
     item = QueueItem(
         type=body.type,

@@ -7,6 +7,7 @@ from fastapi import Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.action_limit import enforce_action_cooldown
 from app.deps import get_session, require_wallet_enabled
 from app.models import TopupOrder, User
 from app.schemas import TopupCreatedOut, TopupCreateIn, TopupOut
@@ -38,6 +39,9 @@ def create_topup(
     # Nội dung CK trên QR nạp = MÃ NẠP CỐ ĐỊNH của user (user 2026-07-14): không đổi
     # giữa các lần nạp → cùng 1 mã + 1 số tiền thì QR luôn y hệt, user lưu lại được.
     # Webhook khớp mã user → cộng đúng số tiền nhận (không phụ thuộc lệnh nạp nào).
+    # Cooldown đặt sau các kiểm tra rẻ (số tiền, ngân hàng chưa cấu hình) để lần
+    # bấm bị 400/409 không ăn mất lượt của người dùng.
+    enforce_action_cooldown(db, user, "WALLET_TOPUP")
     topup_code = ensure_topup_code(db, user)
     # ref_code riêng của DÒNG lệnh (id nội bộ để FE poll trạng thái + lưu lịch sử) —
     # KHÔNG dùng để khớp webhook nữa. Lệnh pending quá 10′ chưa trả tiền sẽ bị job nền
