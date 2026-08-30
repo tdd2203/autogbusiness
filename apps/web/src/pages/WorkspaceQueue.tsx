@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
+import { progressLine } from "../lib/taskProgress";
 import { useT, useTranslateEnum } from "../i18n";
 import { useAuth } from "../hooks/useAuth";
 import type { QueueItem } from "../types";
@@ -180,20 +181,9 @@ export default function WorkspaceQueue() {
                         code={task.error_code ?? ""}
                         message={task.error_message ?? ""}
                       />
-                    ) : task.status === "IN_PROGRESS" && task.progress ? (
+                    ) : task.status === "IN_PROGRESS" ? (
                       <span style={{ color: "var(--info)", fontSize: 12.5 }}>
-                        {(task.progress.message as string | undefined) ??
-                          t(`progress.${task.progress.phase ?? "IN_PROGRESS"}`)}
-                        {typeof task.progress.current === "number" && (
-                          <>
-                            {" "}
-                            ({String(task.progress.current)}
-                            {typeof task.progress.total === "number"
-                              ? `/${task.progress.total}`
-                              : ""}
-                            )
-                          </>
-                        )}
+                        {progressLine(t, task)}
                       </span>
                     ) : (
                       <PayloadCell payload={task.result} variant="success" />
