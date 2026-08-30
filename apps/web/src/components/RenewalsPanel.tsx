@@ -20,12 +20,15 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MONTH_DAYS = 30;
 
-/** Hạn tiếp theo (cộng dồn, khớp BE): còn hạn → hạn cũ + tháng×30; hết hạn → bây giờ + tháng×30. */
-function nextEndAfterRenew(member: Member, months: number): Date {
+/** Hạn tiếp theo (cộng dồn, khớp BE): còn hạn → hạn cũ + tháng×30; hết hạn → bây
+ *  giờ + tháng×30. Export vì popup "đến hạn theo tuần" ở trang Tổng quan cũng phải
+ *  hiện đúng con số này — hai chỗ đoán hạn mới theo hai cách là sớm muộn lệch. */
+export function nextEndAfterRenew(
+  endAt: string | null,
+  months: number,
+): Date {
   const now = Date.now();
-  const end = member.subscription_end_at
-    ? new Date(member.subscription_end_at).getTime()
-    : 0;
+  const end = endAt ? new Date(endAt).getTime() : 0;
   const base = end > now ? end : now;
   return new Date(base + months * MONTH_DAYS * DAY_MS);
 }
@@ -355,7 +358,7 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
                         >
                           {fmtRenewExpiry(
                             formatDateTime,
-                            nextEndAfterRenew(m, bulkMonths),
+                            nextEndAfterRenew(m.subscription_end_at, bulkMonths),
                           )}
                         </span>
                       </div>
@@ -402,7 +405,7 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
                         >
                           {fmtRenewExpiry(
                             formatDateTime,
-                            nextEndAfterRenew(m, bulkMonths),
+                            nextEndAfterRenew(m.subscription_end_at, bulkMonths),
                           )}
                         </td>
                       </tr>

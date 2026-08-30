@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import Login from "./pages/Login";
+import Dashboard from "./pages/Dashboard";
 import Queue from "./pages/Queue";
 import AuditLogs from "./pages/AuditLogs";
 import Users from "./pages/Users";
@@ -23,15 +24,13 @@ import WorkspaceLayout from "./components/WorkspaceLayout";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { useAuth } from "./hooks/useAuth";
 
-// Trang chủ tuỳ vai trò: super-admin → "Không gian làm việc" (giờ là mục Tổ chức,
-// chỉ admin thấy); còn lại → "Email đã thêm" (nằm trong menu của mọi sub-admin).
+// Trang chủ tuỳ vai trò: super-admin → "Không gian làm việc" (mục Tổ chức, chỉ
+// admin thấy); còn lại → "Tổng quan". Trước đây đại lý rơi thẳng vào bảng "Email
+// đã thêm" — một bảng dài không trả lời được câu nào họ hỏi mỗi sáng.
 function HomeRedirect() {
   const { user } = useAuth();
   return (
-    <Navigate
-      to={user?.is_super_admin ? "/workspaces" : "/added-emails"}
-      replace
-    />
+    <Navigate to={user?.is_super_admin ? "/workspaces" : "/dashboard"} replace />
   );
 }
 
@@ -47,6 +46,9 @@ export default function App() {
         }
       >
         <Route index element={<HomeRedirect />} />
+        {/* "Tổng quan" — mở cho MỌI người dùng; backend luôn chốt số của chính
+            tài khoản đang đăng nhập nên không cần quyền riêng. */}
+        <Route path="dashboard" element={<Dashboard />} />
         {/* Trang "Mời thành viên" phía người dùng — mở cho user có quyền MEMBER_INVITE
             (super-admin luôn có). Không cần workspace trên URL: hệ thống tự chọn
             workspace đích theo cấu hình (nút ⚙️, super-admin đặt). */}

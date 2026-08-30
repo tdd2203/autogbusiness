@@ -44,10 +44,10 @@ _FRIENDLY: dict[str, str] = {
         "của bạn, không cần thao tác gì."
     ),
     # ── Gửi lời mời ───────────────────────────────────────────────────────────
-    "EXTERNAL_TOGGLE_FAILED": (
-        "ChatGPT chưa cho gửi lời mời ra ngoài tên miền nên lệnh dừng lại. Chưa "
-        "gửi lời mời nào. Vui lòng thử lại sau vài phút."
-    ),
+    # EXTERNAL_TOGGLE_FAILED CỐ Ý KHÔNG khai ở đây (chốt user 2026-08-31): bật cờ
+    # mời ngoài tên miền là việc hệ thống tự làm trong luồng mời, không phải chuyện
+    # người bán hiểu hay xử được. Thiếu khai ⇒ rơi vào `FALLBACK` bên dưới, người
+    # dùng thấy câu chung. Nhật ký kỹ thuật đầy đủ vẫn nguyên cho super-admin.
     "INVITE_NOT_TYPED": (
         "Không nhập được email vào ô mời nên chưa gửi. Đã hoàn phí."
     ),
@@ -130,3 +130,56 @@ def friendly_error_message(error_code: str | None, error_message: str | None) ->
     if error_code and error_code in _FRIENDLY:
         return _FRIENDLY[error_code]
     return FALLBACK
+
+
+# ── Nhãn NGẮN + ai xử lý — phục vụ khối "Chất lượng lượt mời" ở trang Tổng quan ──
+#
+# Câu trong `_FRIENDLY` dài 2 vế (chuyện gì + làm gì) nên hợp với một dòng lỗi đơn
+# lẻ, không hợp bảng xếp hạng lý do. Nhãn ngắn ở đây là tên GỌI của lý do; câu đầy
+# đủ vẫn lấy từ `friendly_error_message` để hai chỗ không bao giờ nói khác nhau.
+#
+# `self_serve=True` = đại lý tự mời lại được. False = mời lại cũng hỏng y hệt, phải
+# báo quản trị viên (hết suất, chưa đăng nhập, giao diện ChatGPT đổi) HOẶC hệ thống
+# đang tự kiểm tra lại và mời lại lúc này là nhân đôi ghế. Sáng 28/8/2026 có 16 lệnh
+# mời lại y hệt nhau vì không ai phân biệt được hai nhóm này.
+_SHORT: dict[str, tuple[str, bool]] = {
+    # ── Suất ──────────────────────────────────────────────────────────────────
+    # Suất được MUA TỰ ĐỘNG trong lúc mời (`ensure-seats.ts`), nên với người bán
+    # thì mọi ca hỏng ở chặng suất đều là một chuyện: mua suất không xong. Bốn mã
+    # dưới đây khác nhau ở chỗ hỏng (vượt hạn mức 20 suất/lần, đọc không ra số
+    # suất, mua rồi đọc lại vẫn thiếu, tải lại trang hỏng) — chi tiết đó nằm ở
+    # `error_message` cho admin, không phải việc của đại lý.
+    "NOT_ENOUGH_SEATS": ("Mua suất thất bại", False),
+    "SEAT_CHECK_FAILED": ("Mua suất thất bại", False),
+    "SEAT_PURCHASE_FAILED": ("Mua suất thất bại", False),
+    "SEAT_RELOAD_FAILED": ("Mua suất thất bại", False),
+    "SEAT_LOCK_REQUIRED": ("Lệnh khác đang mua suất", False),
+    # ── Gửi lời mời ───────────────────────────────────────────────────────────
+    # EXTERNAL_TOGGLE_FAILED: xem chú thích ở `_FRIENDLY` — không đặt nhãn riêng.
+    "INVITE_NOT_TYPED": ("Không nhập được email vào ô mời", True),
+    "VERIFY_FAILED": ("Chưa xác nhận được lời mời", False),
+    "INVITE_UNVERIFIED_TIMEOUT": ("Chưa xác nhận được lời mời", False),
+    "INVITE_NOT_FOUND_BY_SYNC": ("Không thấy lời mời trong danh sách chờ", True),
+    # ── Trình duyệt chạy lệnh ────────────────────────────────────────────────
+    "NOT_LOGGED_IN_CHATGPT": ("Trình duyệt chạy lệnh chưa sẵn sàng", False),
+    "PAGE_NOT_ADMIN": ("Trình duyệt chạy lệnh chưa sẵn sàng", False),
+    "CONTENT_NOT_INJECTED": ("Trình duyệt chạy lệnh chưa sẵn sàng", False),
+    "STALE_BUILD": ("Tiện ích trình duyệt là bản cũ", False),
+    "CONTENT_TIMEOUT": ("Lệnh chạy quá lâu", False),
+    "TIMEOUT": ("Lệnh chạy quá lâu", False),
+    # ── Giao diện ChatGPT ────────────────────────────────────────────────────
+    "FAILED_UI_CHANGED": ("Giao diện ChatGPT thay đổi", False),
+    "UI_ELEMENT_NOT_FOUND": ("Giao diện ChatGPT thay đổi", False),
+    # ── Vận hành ─────────────────────────────────────────────────────────────
+    "USER_CANCELED": ("Lệnh đã bị huỷ", True),
+    "APPROVAL_REJECTED": ("Quản trị viên không duyệt", False),
+}
+
+_SHORT_FALLBACK = ("Chưa rõ nguyên nhân", False)
+
+
+def short_error_label(error_code: str | None) -> tuple[str, bool]:
+    """(nhãn ngắn, đại lý tự mời lại được) cho 1 mã lỗi."""
+    if not error_code:
+        return _SHORT_FALLBACK
+    return _SHORT.get(error_code, _SHORT_FALLBACK)

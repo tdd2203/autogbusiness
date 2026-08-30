@@ -101,6 +101,14 @@ const ICONS = {
       <rect x="17" y="5" width="3" height="12" rx="0.5" />
     </svg>
   ),
+  dashboard: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <rect x="3" y="3" width="8" height="8" rx="1.5" />
+      <rect x="13" y="3" width="8" height="5" rx="1.5" />
+      <rect x="3" y="13" width="8" height="8" rx="1.5" />
+      <rect x="13" y="10" width="8" height="11" rx="1.5" />
+    </svg>
+  ),
   notifications: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
       <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
@@ -110,6 +118,9 @@ const ICONS = {
 };
 
 const NAV: NavEntry[] = [
+  // "Tổng quan" — trang chủ của đại lý, không gắn quyền: nó chỉ hiện số của chính
+  // người đang đăng nhập.
+  { to: "/dashboard", labelKey: "nav.dashboard", icon: ICONS.dashboard, section: "manage" },
   // Trang "Mời thành viên" phía người dùng — hiện cho user có quyền MEMBER_INVITE
   // (super-admin luôn có). Đích workspace do super-admin cấu hình qua nút ⚙️.
   { to: "/invite", labelKey: "nav.inviteMembers", perm: "MEMBER_INVITE", icon: ICONS.invite, section: "manage" },

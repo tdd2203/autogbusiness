@@ -1777,3 +1777,188 @@ class EmailStatsOut(BaseModel):
     unique_emails: int = 0
     days: list[EmailStatsDay] = []
     by_agent: list[EmailStatsAgent] = []
+
+
+# ── Trang "Tổng quan" của đại lý (dashboard/overview) ────────────────────────
+# Mọi số dưới đây bó theo CHÍNH người đang đăng nhập. Định nghĩa từng số bám đúng
+# nguồn đã có: thẻ trong ngày dùng lại `_summary_for` của trang Ví, add mới/gia hạn
+# phân loại theo SỔ CÁI (email đã từng trả tiền thành công chưa), lượt hỏng lấy từ
+# nhật ký `MEMBER_INVITE_FAILED` quy chủ qua sự kiện MỜI của chính user.
+
+
+class DashboardToday(BaseModel):
+    """Thẻ "Hôm nay" — cùng công thức với hai thẻ đầu trang Ví."""
+
+    date: str  # YYYY-MM-DD (giờ VN)
+    new_count: int = 0
+    renew_count: int = 0
+    # Mời lại email CÒN HẠN: miễn phí, không phải ghế mới. Đứng riêng để chênh lệch
+    # giữa thẻ này và tab "Email đã thêm" có tên gọi.
+    free_reinvite_count: int = 0
+    failed_count: int = 0
+    # THỰC CHI = đã trừ phần hoàn phí (khác tổng phí phát sinh).
+    fee_net: int = 0
+    fee_refunded: int = 0
+
+
+class DashboardServing(BaseModel):
+    seats: int = 0
+    active: int = 0
+    pending: int = 0
+
+
+class DashboardWallet(BaseModel):
+    """None khi tài khoản chưa bật Ví — trang ẩn hẳn thẻ này."""
+
+    balance: int = 0
+    held: int = 0
+    fee: int = 0
+    # Số lượt mời còn đủ tiền, tính theo phí MẶC ĐỊNH của user (từng email có thể
+    # có phí riêng `member.fee_vnd` nên đây là ước tính).
+    invites_left: int = 0
+
+
+class DashboardRenewalRate(BaseModel):
+    """Tỉ lệ gia hạn = gia hạn / (mới + gia hạn) trong kỳ — chốt user 2026-08-30.
+
+    Cùng đơn vị EMAIL với bảng thống kê email. KHÔNG phải tỉ lệ giữ khách: nó nói
+    trong kỳ tiền đến từ khách cũ hay khách mới.
+    """
+
+    days: int = 30
+    new_count: int = 0
+    renew_count: int = 0
+    total: int = 0
+    # None khi mẫu số = 0 (chưa lượt nào) → UI hiện "—" chứ không hiện 0%.
+    pct: float | None = None
+
+
+class DashboardSeriesDay(BaseModel):
+    date: str  # YYYY-MM-DD (giờ VN)
+    new_count: int = 0
+    renew_count: int = 0
+    failed_count: int = 0
+    # Số ghế còn phục vụ tính tới CUỐI ngày này. Đếm thẳng từ bản ghi member (đã
+    # add tới ngày đó và chưa bị gỡ), KHÔNG suy ngược từ chênh lệch mới/hỏng.
+    seats_end: int = 0
+
+
+class DashboardCompare(BaseModel):
+    """Ba mốc so sánh dưới biểu đồ. Đơn vị: email (mới + gia hạn), KHÔNG gồm hỏng."""
+
+    today: int = 0
+    avg7: float = 0
+    week: int = 0
+    prev_week: int = 0
+    # Tháng này TÍNH TỚI HÔM NAY và cùng số ngày đầu tháng trước — so cả tháng
+    # trước với vài ngày đầu tháng này thì ngày nào cũng ra "giảm".
+    mtd: int = 0
+    prev_mtd: int = 0
+
+
+class DashboardFailedEmail(BaseModel):
+    """1 email có lời mời LỖI và tới giờ vẫn chưa được mời lại thành công.
+
+    CỐ Ý không mang mã lỗi / nhãn lỗi (chốt user 2026-08-31): dòng này chỉ cần trả
+    lời "email nào, tiền ra sao, lúc nào". Nguyên nhân kỹ thuật là việc của khối
+    thống kê lỗi và của nhật ký, không phải của danh sách việc cần làm.
+    """
+
+    email: str
+    failed_at: str  # ISO date (giờ VN)
+    # Tiền của lượt hỏng đó, đọc từ SỔ CÁI chứ không suy đoán:
+    #   refunded = phí đã hoàn (bút toán `invite_fee` mang cờ reversed)
+    #   held     = phí CHƯA hoàn — ca giữ tiền để mời lại miễn phí (hết suất)
+    #   none     = không có bút toán phí nào cho email này
+    fee_state: str = "none"
+
+
+class DashboardTodos(BaseModel):
+    """Việc còn phải làm. KHÔNG có dòng "đã hết hạn" (hết hạn là hệ thống gỡ luôn)
+    và KHÔNG có dòng "ghế kẹt đổi email" (chốt user 2026-08-31)."""
+
+    # Email lỗi CHƯA được mời lại — bằng len(failed_emails).
+    failed_pending_reinvite: int = 0
+    pending: int = 0
+    unpaid: int = 0
+    # Đến hạn gia hạn trong DƯỚI 3 NGÀY (user 2026-08-31, trước là 7).
+    due3: int = 0
+    awaiting_approval: int = 0
+    unbound_notify: int = 0
+
+
+class DashboardDueDay(BaseModel):
+    date: str  # YYYY-MM-DD
+    seats: int = 0
+    money: int = 0
+
+
+class DashboardDueMember(BaseModel):
+    """1 ghế đến hạn — đủ thứ cần để gia hạn ngay trong popup (endpoint renew nhận
+    workspace_id + member_id)."""
+
+    member_id: str
+    workspace_id: str
+    workspace_name: str | None = None
+    email: str
+    end_at: str  # ISO datetime (UTC)
+    fee: int = 0
+    payment_status: str = "unpaid"
+
+
+class DashboardDueWeek(BaseModel):
+    """Một TUẦN đáo hạn (gom theo tuần — chốt user 2026-08-30).
+
+    Đáo hạn dồn cục: có ngày 127 ghế = 41,9 triệu. Liệt kê 23 mốc ngày thì không
+    ai nhìn ra cụm, nên gom tuần và mở ra từng ngày khi cần.
+    """
+
+    from_date: str
+    to_date: str
+    seats: int = 0
+    money: int = 0
+    days: list[DashboardDueDay] = []
+
+
+class DashboardFailReason(BaseModel):
+    """Một mã lỗi mời hỏng + câu tiếng Việt sẵn có trong `services/task_errors.py`."""
+
+    code: str
+    label: str
+    message: str
+    count: int
+    # True = đại lý mời lại được; False = phải báo quản trị viên (hết suất, chưa
+    # bật mời ngoài miền…). Nhãn "cần mời lại" dán cho cả hai là sai.
+    self_serve: bool = False
+
+
+class DashboardQuality(BaseModel):
+    days: int = 30
+    ok_count: int = 0
+    failed_count: int = 0
+    # Email hỏng ít nhất một lượt nhưng vẫn vào được team trong CÙNG ngày. Không
+    # tính là hỏng (hết việc phải làm) nhưng là công mời lại có thật — không kể ra
+    # thì khối này khoe 0,6% hỏng trong đúng ngày đại lý phải hoàn phí 37 lượt.
+    retried_count: int = 0
+    total: int = 0
+    fail_pct: float | None = None
+    reasons: list[DashboardFailReason] = []
+
+
+class DashboardOverviewOut(BaseModel):
+    username: str
+    # Mốc "bây giờ" theo giờ VN, để đầu trang khỏi phải tự đoán múi giờ.
+    now: str
+    today: DashboardToday
+    serving: DashboardServing
+    wallet: DashboardWallet | None = None
+    renewal_rate: DashboardRenewalRate
+    series: list[DashboardSeriesDay] = []
+    compare: DashboardCompare
+    todos: DashboardTodos
+    # Danh sách đứng sau `todos.failed_pending_reinvite` — bấm vào dòng đó là bung
+    # ra đây. Không có trang nào khác liệt kê được: lời mời hỏng bị xoá phantom
+    # khỏi bảng member nên chỉ nhật ký mới còn dấu vết.
+    failed_emails: list[DashboardFailedEmail] = []
+    due_weeks: list[DashboardDueWeek] = []
+    quality: DashboardQuality

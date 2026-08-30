@@ -36,6 +36,7 @@ from app.routers import (
     audit_logs,
     auth,
     auto_invite,
+    dashboard,
     invite_config,
     members,
     queue,
@@ -1243,6 +1244,7 @@ def create_app() -> FastAPI:
     app.include_router(sepay_webhook.router)
     app.include_router(telegram.router)
     app.include_router(admin_limits.router)
+    app.include_router(dashboard.router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict[str, str]:
