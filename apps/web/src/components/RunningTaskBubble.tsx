@@ -24,6 +24,7 @@ import { useAuth } from "../hooks/useAuth";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { queuePollInterval } from "../lib/queuePolling";
 import { TaskTimingCell } from "./TaskTimingCell";
+import { progressLine } from "../lib/taskProgress";
 import type { QueueItem } from "../types";
 
 const ACTIVE = new Set(["PENDING", "IN_PROGRESS"]);
@@ -46,18 +47,6 @@ function payloadEmail(task: QueueItem): string | null {
     }
   }
   return null;
-}
-
-/** Dòng tiến trình extension báo về (phase + current/total) — nếu có. */
-function progressLine(task: QueueItem): string | null {
-  const pr = task.progress;
-  if (!pr) return null;
-  const msg = typeof pr.message === "string" ? pr.message : null;
-  const cur = typeof pr.current === "number" ? pr.current : null;
-  const total = typeof pr.total === "number" ? pr.total : null;
-  const counter = cur != null && total != null ? `${cur}/${total}` : null;
-  if (msg && counter) return `${counter} · ${msg}`;
-  return msg ?? counter;
 }
 
 export function RunningTaskBubble() {
@@ -173,7 +162,7 @@ export function TaskBubbleView({
 
           {active.map((task) => {
             const email = payloadEmail(task);
-            const line = progressLine(task);
+            const line = progressLine(t, task);
             return (
               <div
                 key={task.id}

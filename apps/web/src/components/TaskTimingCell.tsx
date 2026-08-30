@@ -21,6 +21,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { QueueItem } from "../types";
 import { useI18n, useT, localeTag } from "../i18n";
+import { phaseLabel } from "../lib/taskProgress";
 
 const LIVE_STATUSES = new Set(["PENDING", "IN_PROGRESS"]);
 
@@ -339,7 +340,6 @@ export function PhaseBreakdown({
         >
           <span
             style={{
-              fontFamily: "var(--font-mono)",
               color: r.isCurrent ? "var(--info)" : "var(--ink-2, #374151)",
               overflow: "hidden",
               textOverflow: "ellipsis",
@@ -347,7 +347,7 @@ export function PhaseBreakdown({
             }}
           >
             {r.isCurrent ? "▸ " : ""}
-            {r.phase}
+            {phaseLabel(t, task.type, r.phase)}
           </span>
           <span
             style={{

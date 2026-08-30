@@ -29,6 +29,7 @@ import { useT, useTranslateEnum } from "../i18n";
 import { useAuth } from "../hooks/useAuth";
 import type { QueueItem } from "../types";
 import { TaskTimingCell, PhaseBreakdown } from "./TaskTimingCell";
+import { progressLine } from "../lib/taskProgress";
 
 const STATUS_BADGE: Record<string, string> = {
   PENDING: "badge badge-neutral",
@@ -204,12 +205,7 @@ function TaskRailItem({
   deciding?: boolean;
 }) {
   const t = useT();
-  const progress = task.progress;
-  const progressText =
-    task.status === "IN_PROGRESS" && progress
-      ? (progress.message as string | undefined) ??
-        t(`progress.${progress.phase ?? "IN_PROGRESS"}`)
-      : null;
+  const progressText = progressLine(t, task);
   const isPendingApproval = task.approval_status === "pending";
   const canCancel =
     !!task.can_cancel &&
@@ -256,16 +252,6 @@ function TaskRailItem({
       {progressText && (
         <div style={{ color: "var(--info)", fontSize: 11, minWidth: 0 }}>
           {progressText}
-          {typeof progress?.current === "number" && (
-            <>
-              {" "}
-              ({String(progress.current)}
-              {typeof progress?.total === "number"
-                ? `/${progress.total}`
-                : ""}
-              )
-            </>
-          )}
         </div>
       )}
 
