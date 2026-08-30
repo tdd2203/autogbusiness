@@ -1,4 +1,4 @@
-"""DÒ "ĐÃ HOÀN PHÍ MÀ EMAIL VẪN Ở TRONG TEAM" (ca sonvvng@gmail.com 15/8/2026).
+"""DÒ "ĐÃ HOÀN PHÍ MÀ EMAIL VẪN Ở TRONG TEAM" (ca sonvvng 15/8/2026).
 
 Lời mời đi được THẬT (ChatGPT hiện toast thành công) nhưng vòng F5 không đọc kịp
 danh sách → hệ thống chốt hỏng: hoàn phí về ví đại lý VÀ xoá luôn bản ghi member.
@@ -171,20 +171,33 @@ def test_khong_bao_trung_o_cac_lan_sync_sau(
     assert len(_alerts()) == 1
 
 
-def test_khong_bao_khi_da_truy_thu_bang_but_toan_adjust(
-    client: TestClient, auth_header: dict
+@pytest.mark.parametrize(
+    "kind,reason",
+    [
+        ("adjust", "admin truy thu tay"),
+        ("cycle_fee", "đại lý tự bấm Thanh toán cho kỳ còn nợ"),
+    ],
+)
+def test_khong_bao_khi_da_thu_lai_tien(
+    client: TestClient, auth_header: dict, kind: str, reason: str
 ) -> None:
-    """Đã truy thu rồi thì món nợ đã xong — nhắc lại là báo động giả.
+    """Đã thu lại rồi thì món nợ đã xong — nhắc lại là báo động giả.
 
-    Nhận diện theo HÌNH DẠNG bút toán (`adjust` âm đúng số đã hoàn, cùng email, sau
-    lần hoàn) chứ không theo một khoá `meta` cố định: ba lần truy thu tay trên
-    production mỗi lần đánh dấu một kiểu (`recollect_of`, `member_id` +
-    `manual_invite_at`…) nên bắt theo khoá là bỏ sót."""
+    Nhận diện theo HÌNH DẠNG bút toán (thu về ≥ số đã hoàn, cùng email, sau lần hoàn)
+    chứ không theo một khoá `meta` cố định: mỗi lần truy thu tay trên production đánh
+    dấu một kiểu (`recollect_of`, `member_id`+`manual_invite_at`…) nên bắt theo khoá
+    là bỏ sót.
+
+    Hai loại phải cùng được tính, vì có hai đường tiền quay lại: `adjust` (admin truy
+    thu tay) và `cycle_fee` (đại lý bấm "Thanh toán" — đường CHÍNH từ 29/8/2026). Bỏ
+    sót `cycle_fee` là báo đỏ "cần truy thu" ngay sau khi đại lý vừa trả tiền."""
     from app.db import SessionLocal
     from app.models import Wallet, WalletTransaction
 
-    ws = create_ws(client, auth_header, "WS đã truy thu")
-    sub = make_beta_sub(client, auth_header, username="refunddebt3", balance=FEE)
+    ws = create_ws(client, auth_header, f"WS đã thu lại {kind}")
+    sub = make_beta_sub(
+        client, auth_header, username=f"refunddebt3{kind[:3]}", balance=FEE
+    )
     assign(client, auth_header, ws["id"], sub["id"])
     _refunded_invite(client, auth_header, ws, sub)
     txn = _refund_txn()
@@ -195,14 +208,10 @@ def test_khong_bao_khi_da_truy_thu_bang_but_toan_adjust(
             WalletTransaction(
                 wallet_id=txn.wallet_id,
                 user_id=txn.user_id,
-                kind="adjust",
+                kind=kind,
                 amount=-FEE,
                 balance_after=wallet.balance,
-                meta={
-                    "email": EMAIL,
-                    "reason": "Truy thu phí mời đã hoàn oan",
-                    "recollect_of": "invite_refund",
-                },
+                meta={"email": EMAIL, "reason": reason},
             )
         )
         db.commit()
@@ -291,3 +300,76 @@ def test_me_nhieu_email_thi_ghep_dung_tien_cua_tung_email(
     assert (
         by_email[email_a]["refund_txn_id"] != by_email[email_b]["refund_txn_id"]
     ), "hai email dùng chung một bút toán hoàn ⇒ ghép sai tiền"
+
+
+def _inject_reinvite_fee(txn_wallet_id, txn_user_id, offset) -> None:
+    """Bơm một lượt `invite_fee` TRÓT LỌT (chưa bị hoàn) lệch `offset` so với lần hoàn."""
+    from app.db import SessionLocal
+    from app.models import Wallet, WalletTransaction
+
+    with SessionLocal() as db:
+        refund = (
+            db.query(WalletTransaction)
+            .filter(
+                WalletTransaction.kind == "invite_refund",
+                WalletTransaction.meta["email"].astext == EMAIL,
+            )
+            .one()
+        )
+        wallet = db.get(Wallet, txn_wallet_id)
+        wallet.balance -= FEE
+        db.add(
+            WalletTransaction(
+                wallet_id=txn_wallet_id,
+                user_id=txn_user_id,
+                kind="invite_fee",
+                amount=-FEE,
+                balance_after=wallet.balance,
+                reversed=False,
+                created_at=refund.created_at + offset,
+                meta={"email": EMAIL, "fee": FEE},
+            )
+        )
+        db.commit()
+
+
+def test_khong_bao_khi_moi_lai_trot_lot_ngay_sau_lan_hoan(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Mời hỏng đi theo LOẠT: hỏng → hoàn → thử lại ngay. Lượt trót lọt của cùng loạt
+    CHÍNH LÀ tiền của tháng vừa bị hoàn (ca mahlasaei2 28/8/2026: 3 lượt hoàn rồi
+    lượt thứ 4 ăn sau 2,5 phút) → không còn nợ, không được báo."""
+    from datetime import timedelta
+
+    ws = create_ws(client, auth_header, "WS mời lại trót lọt")
+    sub = make_beta_sub(client, auth_header, username="refunddebt5", balance=FEE)
+    assign(client, auth_header, ws["id"], sub["id"])
+    _refunded_invite(client, auth_header, ws, sub)
+    txn = _refund_txn()
+    _inject_reinvite_fee(txn.wallet_id, txn.user_id, timedelta(minutes=3))
+
+    body = _sync_sees_email(client, ws)
+
+    assert body["refund_debt_emails"] == []
+    assert _alerts() == []
+
+
+def test_van_bao_khi_moi_lai_o_thang_sau(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Cùng một lượt `invite_fee` mà xảy ra THÁNG SAU thì là mua tháng mới, không phải
+    trả nợ tháng đã dùng. Tính nhầm = đóng dấu "đã thu" cho khoản chưa ai thu, tức
+    GIẤU MẤT TIỀN — tệ hơn hẳn báo đỏ thừa, nên chỗ lưỡng lự phải nghiêng về còn nợ."""
+    from datetime import timedelta
+
+    ws = create_ws(client, auth_header, "WS mời lại tháng sau")
+    sub = make_beta_sub(client, auth_header, username="refunddebt6", balance=FEE)
+    assign(client, auth_header, ws["id"], sub["id"])
+    _refunded_invite(client, auth_header, ws, sub)
+    txn = _refund_txn()
+    _inject_reinvite_fee(txn.wallet_id, txn.user_id, timedelta(days=30))
+
+    body = _sync_sees_email(client, ws)
+
+    assert body["refund_debt_emails"] == [EMAIL]
+    assert len(_alerts()) == 1

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -57,6 +57,19 @@ REFUND_WHILE_IN_TEAM_LOOKBACK = timedelta(days=7)
 # transaction (`fail_deferred_invite`) nên thực tế lệch 0; để 5 phút chỉ là biên an
 # toàn cho các đường chốt hỏng cũ có thể hoàn phí ở bước riêng.
 REFUND_MATCH_SLACK = timedelta(minutes=5)
+
+# Cửa sổ coi một lượt `invite_fee` mới là "THU LẠI" chứ không phải bán tháng mới.
+# Mời hỏng thường đi theo LOẠT: hỏng → hoàn → thử lại ngay, có khi 5-6 lượt trong
+# vài phút (ca mahlasaei2 28/8/2026: 3 lượt hoàn rồi lượt thứ 4 trót lọt sau 2,5
+# phút; ca phamminhthang 24/8: 6 lượt trong 20 phút). Lượt cuối trót lọt CHÍNH LÀ
+# tiền của tháng vừa hoàn, nên phải tính là đã thu.
+#
+# ⚠️ Đúng lượt `invite_fee` ấy mà xảy ra THÁNG SAU thì lại là chuyện khác hẳn: mua
+# tháng mới, không phải trả nợ tháng đã dùng. Không có cửa sổ này thì mọi email được
+# mời lại sau đó đều bị đóng dấu "đã thu" oan — giấu mất tiền, tệ hơn nhiều so với
+# báo đỏ thừa. 1 giờ rộng gấp nhiều lần loạt mời dài nhất từng gặp, mà vẫn cách xa
+# mọi lần mời lại thật sự.
+RECLAIM_REINVITE_WINDOW = timedelta(hours=1)
 
 # VÙNG BẢO VỆ LỜI MỜI TƯƠI: ChatGPT index lời mời vừa gửi vào tab "Lời mời đang
 # chờ xử lý" TRỄ 1-30s (mẻ nhiều email còn lâu hơn — server gửi tuần tự). Mọi
@@ -305,7 +318,7 @@ def _flag_refunded_while_in_team(
 ) -> list[str]:
     """Bóc ca ĐÃ HOÀN PHÍ MÀ EMAIL VẪN Ở TRONG TEAM → `MEMBER_REFUND_WHILE_IN_TEAM`.
 
-    Bối cảnh (ca thật `sonvvng@gmail.com` 15/8/2026, mãi 26/8 mới lộ): extension bấm
+    Bối cảnh (ca thật `sonvvng` 15/8/2026, mãi 26/8 mới lộ): extension bấm
     mời xong, ChatGPT hiện toast thành công, nhưng vòng F5 không đọc kịp danh sách →
     lời mời kẹt "chờ xác minh". Quá 20 phút, `stale-invite-resolver` chốt hỏng: hoàn
     330.000đ cho đại lý VÀ xoá luôn bản ghi member. 50 phút sau, đồng bộ thấy email
@@ -328,7 +341,9 @@ def _flag_refunded_while_in_team(
       1. có `MEMBER_INVITE_FAILED` cho đúng (workspace, email) trong cửa sổ dò;
       2. có bút toán `invite_refund` khớp lần chốt hỏng đó ⇒ tiền ĐÃ thật sự trả lại
          (chốt hỏng mà không hoàn phí thì chẳng ai nợ ai);
-      3. chưa có bút toán `adjust` nào thu lại đúng số đã hoàn cho email ấy;
+      3. chưa có bút toán nào thu lại (>=) số đã hoàn cho email ấy — `adjust`
+         (truy thu tay), `cycle_fee` (đại lý bấm "Thanh toán"), hoặc lượt mời lại
+         trót lọt trong `RECLAIM_REINVITE_WINDOW`;
       4. chưa từng ghi cảnh báo cho chính lần hoàn ấy ⇒ idempotent qua mọi lần sync
          sau, kể cả khi member lại bị gỡ rồi lại sống lại.
     """
@@ -378,18 +393,38 @@ def _flag_refunded_while_in_team(
         txn = latest_refund.get(email)
         if txn is None or abs(txn.created_at - fail_ts) > REFUND_MATCH_SLACK:
             continue  # chốt hỏng mà không hoàn phí → không có gì để đòi
-        # ĐÃ TRUY THU CHƯA: tìm bút toán `adjust` ÂM ĐÚNG BẰNG số đã hoàn, cho chính
+        # ĐÃ TRUY THU CHƯA: tìm bút toán thu về ÍT NHẤT bằng số đã hoàn, cho chính
         # email này, xảy ra SAU lần hoàn. Nhận diện bằng hình dạng chứ không bằng một
-        # khoá `meta` cố định, vì ba lần truy thu tay trước đó mỗi lần đánh dấu một
-        # kiểu (`recollect_of`, `member_id`+`manual_invite_at`…) — bắt theo khoá là
-        # bỏ sót và báo động lại món nợ đã trả xong.
+        # khoá `meta` cố định, vì mỗi lần truy thu tay đánh dấu một kiểu
+        # (`recollect_of`, `member_id`+`manual_invite_at`…) — bắt theo khoá là bỏ sót
+        # và báo động lại món nợ đã trả xong.
+        #
+        # Ba cách tiền quay lại, đều tính:
+        #   - `adjust`     : admin truy thu tay (đường duy nhất hồi 8/2026);
+        #   - `cycle_fee`  : đại lý tự bấm "Thanh toán" cho kỳ còn nợ — đường CHÍNH
+        #                    từ 29/8/2026 (`added_members.settle_cycle_payment`), cả
+        #                    khi trừ thẳng ví lẫn khi trả qua hoá đơn QR;
+        #   - `invite_fee` chưa bị hoàn, trong `RECLAIM_REINVITE_WINDOW` : lượt mời
+        #                    lại TRÓT LỌT của cùng loạt — tiền của đúng tháng vừa bị
+        #                    hoàn (ca mahlasaei2 28/8/2026, lượt thứ 4 sau 2,5 phút).
+        # `renew_fee` KHÔNG tính, và `invite_fee` NGOÀI cửa sổ cũng không: đó là mua
+        # THÊM một tháng, không phải trả món nợ của tháng đã dùng — tính nhầm là đóng
+        # dấu "đã thu" cho khoản chưa ai thu, tức giấu mất tiền.
         reclaimed = db.execute(
             select(WalletTransaction.id)
             .where(
-                WalletTransaction.kind == "adjust",
-                WalletTransaction.amount == -txn.amount,
+                WalletTransaction.amount <= -txn.amount,
                 func.lower(WalletTransaction.meta["email"].astext) == email,
                 WalletTransaction.seq > txn.seq,
+                or_(
+                    WalletTransaction.kind.in_(("adjust", "cycle_fee")),
+                    and_(
+                        WalletTransaction.kind == "invite_fee",
+                        WalletTransaction.reversed.is_(False),
+                        WalletTransaction.created_at
+                        <= txn.created_at + RECLAIM_REINVITE_WINDOW,
+                    ),
+                ),
             )
             .limit(1)
         ).first()
@@ -434,9 +469,10 @@ def _flag_refunded_while_in_team(
                     f"({data.get('error_code') or 'không rõ mã'}) và đã hoàn "
                     f"{txn.amount:,}đ về ví, NHƯNG đồng bộ này cho thấy email vẫn "
                     "đang ở trong workspace ⇒ dịch vụ đã giao mà chưa thu được đồng "
-                    f"nào (đã {blind_hours} giờ). Kiểm tra rồi truy thu bằng bút "
-                    "toán 'adjust' âm đúng số này, có meta.email — hệ thống KHÔNG "
-                    "tự trừ vì việc đó đẩy ví đại lý xuống âm."
+                    f"nào (đã {blind_hours} giờ). Thu lại bằng nút \"Thanh toán\" "
+                    "của đại lý (bút toán 'cycle_fee', không bao giờ đẩy ví xuống "
+                    "âm), hoặc truy thu tay bằng 'adjust' có meta.email. Hệ thống "
+                    "KHÔNG tự trừ tiền."
                 ),
             },
             commit=False,
