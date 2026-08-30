@@ -22,7 +22,7 @@
  * chỉ hiện 8 mục đầu, phần còn lại nằm sau nút "Xem thêm".
  */
 
-export const VERSION = "0.14.3";
+export const VERSION = "0.14.5";
 
 export type ChangelogEntry = {
   version: string;
@@ -40,6 +40,18 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.14.5",
+    date: "2026-08-30",
+    kind: "fix",
+    summary: "Mời: ChatGPT im quá 1 phút thì soi 2 tab rồi mời lại, hết đứng hình.",
+    details: [
+      "Bấm Gửi xong mà ChatGPT không báo gì: trước đây lệnh đứng im tới 8 phút rồi bị coi là treo, dù lời mời đã tới nơi. Nay hết thời gian chờ là sang tab 'Lời mời đang chờ xử lý' rồi tab 'Người dùng' soi ngay; thấy email ở đâu cũng tính là đã mời xong tại chỗ.",
+      "Cả hai tab đều chưa có email và đã quá một phút kể từ lúc bấm Gửi thì mở lại hộp Mời, nhập email lần nữa, gửi lại đúng một lần rồi soi lại hai tab.",
+      "Không mẻ nào phải chờ ChatGPT xác nhận quá một phút.",
+      "Chặng sau khi gửi giờ báo tiến độ đều đặn (soi tab Lời mời, tắt lại 'mời ngoài tên miền') nên bảng điều khiển không còn thấy lệnh im lặng hàng phút.",
+    ],
+  },
   {
     version: "0.14.3",
     date: "2026-08-28",

@@ -328,6 +328,8 @@
   "audit.step.done": "完成",
   "audit.step.failed": "失败",
   "audit.step.rescued": "完成（超时后）",
+  "audit.runtime.total": "总运行时间",
+  "audit.runtime.live": "执行中",
   "audit.gstatus.rescued": "成功（延迟）",
   "audit.opCount": "{n} 条事件",
   "audit.showAllEmails": "查看全部 {n} 个邮箱",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  SILENT_RETRY_AFTER_MS,
   VERIFY_WAIT_MAX_MS,
   inviteVerifyTimeoutMs,
 } from "./verify-wait";
@@ -35,5 +36,18 @@ describe("inviteVerifyTimeoutMs", () => {
     expect(inviteVerifyTimeoutMs(0)).toBe(25_000);
     expect(inviteVerifyTimeoutMs(-3)).toBe(25_000);
     expect(inviteVerifyTimeoutMs(Number.NaN)).toBe(25_000);
+  });
+
+  it("KHÔNG mẻ nào phải chờ quá 1 phút (user 30/8/2026)", () => {
+    expect(VERIFY_WAIT_MAX_MS).toBe(60_000);
+    expect(inviteVerifyTimeoutMs(50)).toBeLessThanOrEqual(60_000);
+  });
+
+  it("mốc mời lại đúng 1 phút, và không sớm hơn trần chờ của mẻ lớn nhất", () => {
+    // Soi 2 tab thì làm ngay khi hết trần chờ (chỉ đọc), nhưng cú MỜI LẠI phải
+    // đợi đủ một phút kể từ lúc bấm Gửi — tab "Lời mời" index trễ vài giây là
+    // chuyện thường, mời lại sớm là tự tạo lời mời trùng.
+    expect(SILENT_RETRY_AFTER_MS).toBe(60_000);
+    expect(SILENT_RETRY_AFTER_MS).toBeGreaterThanOrEqual(inviteVerifyTimeoutMs(1));
   });
 });

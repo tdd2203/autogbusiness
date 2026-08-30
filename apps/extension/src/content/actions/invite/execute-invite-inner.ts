@@ -1,6 +1,7 @@
 import type {
   ChatGPTRole,
   ExecuteActionResponse,
+  ScrapedMember,
 } from "../../../shared/messages";
 import { SESSION_RECOVERY_HINT } from "../../../shared/messages";
 import {
@@ -31,8 +32,13 @@ import {
   findInviteSuccessToastText,
   isInviteDialogOpen,
 } from "./invite-success-toast";
+import { checkInviteLanded } from "./landed-check";
 import { setRole } from "./set-role";
-import { VERIFY_TOAST_GRACE_MS, inviteVerifyTimeoutMs } from "./verify-wait";
+import {
+  SILENT_RETRY_AFTER_MS,
+  VERIFY_TOAST_GRACE_MS,
+  inviteVerifyTimeoutMs,
+} from "./verify-wait";
 
 /**
  * Nhãn nút "MUA suất và gửi lời mời" — nút CUỐI của hộp "Xem lại giao dịch mua"
@@ -72,11 +78,30 @@ function isControlDisabled(el: HTMLElement): boolean {
   return false;
 }
 
+/**
+ * Số lượt bấm "Gửi lời mời" TỐI ĐA trong một lệnh: lần đầu + đúng MỘT lần mời lại
+ * (chốt user 30/8/2026). Mời lại nữa là tự rải lời mời trùng cho cùng một email.
+ */
+const MAX_INVITE_ATTEMPTS = 2;
+
+export type InviteInnerOptions = {
+  /** Lượt bấm Gửi thứ mấy trong CÙNG lệnh này (1 = lần đầu). */
+  attempt?: number;
+  /** Toàn bộ email của lệnh — lượt mời lại chỉ mang phần còn thiếu. */
+  allEmails?: string[];
+  /** Email lượt trước đã soi thấy ở tab Lời mời / tab Người dùng. */
+  landed?: ScrapedMember[];
+};
+
 export async function executeInviteInner(
   taskId: string,
   emails: string[],
   role: ChatGPTRole,
+  opts: InviteInnerOptions = {},
 ): Promise<ExecuteActionResponse> {
+  const attempt = opts.attempt ?? 1;
+  const allEmails = opts.allEmails ?? emails;
+  const landedBefore = opts.landed ?? [];
 
   await reportProgress(
     taskId,
@@ -236,8 +261,21 @@ export async function executeInviteInner(
     true,
   );
   await randomDelay();
+  // SỔ THEO DÕI EMAIL ĐÃ THỰC SỰ VÀO Ô MỜI (bug user 30/8/2026).
+  //
+  // Vòng lặp dưới có hai chỗ `break` (hộp thoại đóng giữa chừng / không thêm được
+  // dòng mới) rồi ĐI THẲNG xuống bấm Gửi với số email nhập được. Trước đây phần bị
+  // bỏ chỉ có một dòng `console.warn`: lệnh vẫn báo COMPLETED, backend không biết
+  // gì, verify không thấy email đó nên xếp nó vào diện "chưa xác minh" — tức là
+  // màn hình nói "đã gửi, đang xác nhận" cho một email CHƯA HỀ ĐƯỢC GỬI, tiền treo
+  // 20 phút rồi mới hoàn.
+  //
+  // Email không có tên trong sổ này = bằng chứng DƯƠNG rằng lời mời chưa đi (khác
+  // hẳn "đã bấm gửi mà chưa soi lại được"). Backend chốt hỏng + hoàn phí NGAY.
+  const typedEmails: string[] = [];
   // Email đầu tiên: dùng input mặc định
   await humanType(emailInput, emails[0]);
+  typedEmails.push(emails[0]);
   console.log(`[autogpt-invite] typed email 1/${emails.length}: ${emails[0]}`);
 
   // Email 2..N: click "Add more" → tìm input MỚI (input chưa có giá trị) → type
@@ -269,6 +307,10 @@ export async function executeInviteInner(
       const remaining = emails.slice(i).join("\n");
       const lastInput = findLastEmptyEmailInput(dialog) ?? emailInput;
       await humanType(lastInput, remaining);
+      // Đã gõ vào ô thật ⇒ tính là ĐÃ NHẬP. ChatGPT có chịu chuỗi nhiều dòng hay
+      // không là chuyện của bước verify phân xử — ở đây không có bằng chứng dương
+      // nào rằng chúng chưa đi, nên không được chốt hỏng.
+      typedEmails.push(...emails.slice(i));
       console.log(`[autogpt-invite] fallback typed ${emails.length - i} email vào 1 input`);
       break;
     }
@@ -302,7 +344,28 @@ export async function executeInviteInner(
       true,
     );
     await humanType(newInput, emails[i]);
+    typedEmails.push(emails[i]);
     console.log(`[autogpt-invite] typed email ${i + 1}/${emails.length}: ${emails[i]}`);
+  }
+
+  // Email rơi lại sau các `break` ở trên — kêu to, đừng để lọt im lặng như trước.
+  const typedSet = new Set(typedEmails.map((e) => e.toLowerCase()));
+  const skippedEmails = emails.filter((e) => !typedSet.has(e.toLowerCase()));
+  if (skippedEmails.length > 0) {
+    console.warn(
+      `[autogpt-invite] KHÔNG nhập được ${skippedEmails.length}/${emails.length} email vào ô mời ` +
+        `(chưa gửi, backend sẽ hoàn phí ngay): ${skippedEmails.join(", ")}`,
+    );
+    await reportProgress(
+      taskId,
+      {
+        phase: "typing-email",
+        message: `Không nhập được ${skippedEmails.length} email vào ô mời — vẫn gửi ${typedEmails.length} email còn lại...`,
+        current: typedEmails.length,
+        total: emails.length,
+      },
+      true,
+    );
   }
 
   // 5. Set role
@@ -421,6 +484,7 @@ export async function executeInviteInner(
   }
 
   await humanClick(enabledBtn);
+  const submittedAt = Date.now();
   // Trần chờ CO GIÃN theo số email — 15s cố định là nguyên nhân ca 26/8/2026 báo
   // hỏng oan cả một mẻ 5 email đã gửi được. Xem `verify-wait.ts`.
   const verifyTimeoutMs = inviteVerifyTimeoutMs(emails.length);
@@ -502,13 +566,34 @@ export async function executeInviteInner(
     const dialogText = document.querySelector('[role="dialog"]')?.textContent ?? "";
     const errHints = INVITE_ERROR_HINTS;
     const matchedHint = errHints.find((h) => dialogText.toLowerCase().includes(h.toLowerCase()));
+
+    // ── ChatGPT IM LẶNG (không toast, không đóng hộp, cũng không báo lỗi) ─────
+    // Đây KHÔNG phải bằng chứng lời mời chưa đi — chỉ là ta chưa biết. Chỗ có câu
+    // trả lời thật là tab "Lời mời đang chờ xử lý" rồi tab "Người dùng", cách một
+    // cú bấm. Trước đây bước này trả VERIFY_FAILED rồi trả quyền về background để
+    // F5 + phân xử, và đúng chặng im lặng đó đã giết task `0d191682` ngày
+    // 30/8/2026: extension không nhả một nhịp nào trong 483s, backend chốt treo 8
+    // phút, trong khi lời mời ĐÃ tới nơi (đồng bộ sau đó thấy email trong danh
+    // sách chờ). Giờ soi tại chỗ; cả hai tab đều trắng và đã quá một phút kể từ
+    // cú bấm Gửi thì MỜI LẠI đúng một lần (chốt user 30/8/2026).
+    if (!matchedHint) {
+      return await afterSilentSubmit({
+        taskId,
+        emails,
+        allEmails,
+        role,
+        attempt,
+        submittedAt,
+        waitedMs: Date.now() - submittedAt,
+        typedEmails,
+        skippedEmails,
+        landedBefore,
+      });
+    }
     return {
       ok: false,
       error_code: "VERIFY_FAILED",
-      error_message: matchedHint
-        ? `ChatGPT báo lỗi trong dialog: "${matchedHint}". Có thể email đã được mời/tồn tại.`
-        : `Đã submit nhưng hộp thoại không đóng và không đọc được thông báo mời thành công sau ${Math.round((verifyTimeoutMs + VERIFY_TOAST_GRACE_MS) / 1000)}s (${emails.length} email). ` +
-          `Dialog text: "${dialogText.slice(0, 200)}"`,
+      error_message: `ChatGPT báo lỗi trong dialog: "${matchedHint}". Có thể email đã được mời/tồn tại.`,
       data: {
         // ⚠️ Cú click "Gửi lời mời" ĐÃ XẢY RA (ở trên) trước khi vào vòng chờ xác
         // nhận này → hết trần chờ mà không đọc được toast/dialog-đóng KHÔNG chứng minh lời
@@ -521,6 +606,8 @@ export async function executeInviteInner(
         // hết ghế) — đó là bằng chứng DƯƠNG rằng lời mời không đi → giữ nguyên kết
         // luận hỏng, KHÔNG phân xử lại.
         chatgpt_error_hint: matchedHint ?? null,
+        typed_emails: typedEmails,
+        skipped_emails: skippedEmails,
       },
     };
   }
@@ -548,12 +635,210 @@ export async function executeInviteInner(
   return {
     ok: true,
     data: {
-      emails,
-      count: emails.length,
+      emails: allEmails,
+      count: allEmails.length,
       role,
       awaiting_reload_verify: true,
       // "toast" = ChatGPT xác nhận đã gửi → tab Lời mời chưa hiện KHÔNG có nghĩa là hỏng.
       submit_evidence: submitEvidence,
+      // Email THỰC SỰ vào được ô mời, và email bị bỏ lại. `skipped_emails` là bằng
+      // chứng dương "chưa gửi" → backend chốt hỏng + hoàn phí ngay, không hoãn.
+      typed_emails: typedEmails,
+      skipped_emails: skippedEmails,
+      // Lượt mời lại: email lượt trước đã soi thấy phải đi cùng kết quả, kẻo mẻ
+      // gộp mất phần đã xong.
+      ...(landedBefore.length > 0
+        ? { pending_members: landedBefore, reinvite_attempts: attempt }
+        : {}),
     },
   };
+}
+
+/** Ngủ mà VẪN nhả nhịp — im lặng quá 8 phút là backend chốt lệnh treo. */
+async function sleepWithBeat(
+  taskId: string,
+  totalMs: number,
+  message: (leftSec: number) => string,
+): Promise<void> {
+  const deadline = Date.now() + totalMs;
+  while (Date.now() < deadline) {
+    await sleep(Math.min(5_000, deadline - Date.now()));
+    const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+    await reportProgress(taskId, { phase: "no-reply-check", message: message(left) }, true);
+  }
+}
+
+type SilentSubmitContext = {
+  taskId: string;
+  /** Email của LƯỢT này (lượt mời lại chỉ mang phần còn thiếu). */
+  emails: string[];
+  /** Email của cả lệnh. */
+  allEmails: string[];
+  role: ChatGPTRole;
+  attempt: number;
+  submittedAt: number;
+  waitedMs: number;
+  typedEmails: string[];
+  skippedEmails: string[];
+  landedBefore: ScrapedMember[];
+};
+
+/**
+ * ChatGPT không nói gì sau cú bấm "Gửi lời mời" — ĐI TÌM BẰNG CHỨNG, đừng đoán.
+ *
+ * Trình tự user chốt 30/8/2026:
+ *   1. Soi tab "Lời mời đang chờ xử lý", rồi tab "Người dùng". Thấy ở đâu cũng là
+ *      lời mời ĐÃ đi ⇒ xong tại chỗ, khỏi vòng F5 của background.
+ *   2. Cả hai tab đều trắng mà chưa đủ MỘT PHÚT kể từ cú bấm Gửi ⇒ chờ nốt cho đủ
+ *      (vẫn nhả nhịp) rồi soi lại — tab "Lời mời" của ChatGPT index trễ vài giây
+ *      là chuyện thường, mời lại sớm là tự tạo lời mời trùng.
+ *   3. Vẫn trắng ⇒ MỜI LẠI đúng một lần: hộp "Mời thành viên" → nhập lại email →
+ *      Gửi. Toggle "mời ngoài tên miền" đang bật sẵn trong lượt này nên không cần
+ *      đụng lại /admin/identity.
+ *   4. Mời lại rồi mà hai tab vẫn trắng ⇒ trả `VERIFY_FAILED` kèm `submit_clicked`
+ *      như cũ: backend hoãn phán xử chứ không hoàn phí mù.
+ */
+async function afterSilentSubmit(
+  ctx: SilentSubmitContext,
+): Promise<ExecuteActionResponse> {
+  const { taskId, emails, allEmails, role, attempt, submittedAt } = ctx;
+  console.warn(
+    `[autogpt-invite] ChatGPT KHÔNG xác nhận sau ${Math.round(ctx.waitedMs / 1000)}s ` +
+      `(lượt ${attempt}/${MAX_INVITE_ATTEMPTS}) — soi tab Lời mời rồi tab Người dùng.`,
+  );
+
+  const landed: ScrapedMember[] = [...ctx.landedBefore];
+  let check = await checkInviteLanded(taskId, emails);
+  landed.push(...check.pending, ...check.active);
+
+  // Chưa đủ một phút kể từ cú bấm Gửi thì chờ nốt rồi soi lại — chỉ khi còn được
+  // phép mời lại, vì đó là lý do duy nhất phải chờ cho đủ mốc.
+  if (check.missing.length > 0 && attempt < MAX_INVITE_ATTEMPTS) {
+    const waitLeft = SILENT_RETRY_AFTER_MS - (Date.now() - submittedAt);
+    if (waitLeft > 0) {
+      await sleepWithBeat(
+        taskId,
+        waitLeft,
+        (left) =>
+          `Chưa thấy ${check.missing.length} email ở cả 2 tab — chờ nốt ${left}s cho đủ 1 phút rồi soi lại...`,
+      );
+      const again = await checkInviteLanded(taskId, check.missing);
+      landed.push(...again.pending, ...again.active);
+      check = again;
+    }
+  }
+
+  const foundCount = landed.length;
+  if (check.missing.length === 0) {
+    console.log(
+      `[autogpt-invite] ChatGPT im nhưng ĐÃ THẤY đủ ${foundCount}/${allEmails.length} email ở tab Lời mời/Người dùng — xong tại chỗ.`,
+    );
+    await reportProgress(
+      taskId,
+      {
+        phase: "submit-done",
+        message: `ChatGPT không kịp báo, nhưng đã thấy đủ ${foundCount} email ở tab Lời mời/Người dùng.`,
+        current: foundCount,
+        total: allEmails.length,
+      },
+      true,
+    );
+    return {
+      ok: true,
+      data: {
+        emails: allEmails,
+        count: allEmails.length,
+        role,
+        // KHÔNG đặt `awaiting_reload_verify`: đã xác minh tại chỗ, runner khỏi F5.
+        submit_evidence: "dialog_closed",
+        typed_emails: ctx.typedEmails,
+        skipped_emails: ctx.skippedEmails,
+        verified_emails: landed.map((m) => m.email.toLowerCase()),
+        unverified_emails: [],
+        pending_members: landed,
+        verify_scrape_failed: false,
+        verified_without_reload: true,
+        invite_confirmed_by: "tabs_after_silence",
+        reinvite_attempts: attempt,
+      },
+    };
+  }
+
+  if (attempt >= MAX_INVITE_ATTEMPTS) {
+    console.warn(
+      `[autogpt-invite] đã mời lại ${attempt} lượt mà ${check.missing.length} email vẫn ` +
+        "không có ở cả 2 tab — trả VERIFY_FAILED để backend hoãn phán xử.",
+    );
+    return {
+      ok: false,
+      error_code: "VERIFY_FAILED",
+      error_message:
+        `Đã bấm "Gửi lời mời" ${attempt} lần cho ${check.missing.length} email nhưng ChatGPT ` +
+        "không xác nhận, và soi cả tab \"Lời mời đang chờ xử lý\" lẫn tab \"Người dùng\" đều " +
+        "không thấy: " +
+        check.missing.join(", ") +
+        (check.pendingUsable ? "" : " (KHÔNG vào được tab Lời mời nên chưa đủ căn cứ)") +
+        ".",
+      data: {
+        // Cú bấm Gửi ĐÃ xảy ra → backend phải hoãn phán xử, không hoàn phí mù.
+        submit_clicked: true,
+        chatgpt_error_hint: null,
+        typed_emails: ctx.typedEmails,
+        skipped_emails: ctx.skippedEmails,
+        reinvite_attempts: attempt,
+        tabs_checked: true,
+        pending_tab_usable: check.pendingUsable,
+        inconclusive_emails: check.inconclusive,
+        ...(landed.length > 0 ? { pending_members: landed } : {}),
+      },
+    };
+  }
+
+  console.warn(
+    `[autogpt-invite] quá 1 phút mà ${check.missing.length} email không có ở cả 2 tab — MỜI LẠI lần ${attempt + 1}.`,
+  );
+  await reportProgress(
+    taskId,
+    {
+      phase: "re-invite",
+      message: `ChatGPT im quá 1 phút và cả 2 tab đều chưa có ${check.missing.length} email — mời lại lần nữa...`,
+      current: foundCount,
+      total: allEmails.length,
+    },
+    true,
+  );
+  const retry = await executeInviteInner(taskId, check.missing, role, {
+    attempt: attempt + 1,
+    allEmails,
+    landed,
+  });
+  if (!retry.ok) {
+    const rdata = (retry.data ?? {}) as Record<string, unknown>;
+    if (rdata.submit_clicked !== true) {
+      // Lượt mời lại hỏng TRƯỚC khi kịp bấm Gửi (không mở được hộp, mất nút,
+      // hộp "mua suất kèm gửi lời mời"...). Lỗi đó nói đúng về LƯỢT NÀY, nhưng
+      // cú bấm "Gửi lời mời" của lượt ĐẦU thì đã xảy ra rồi — trả nguyên mã đó
+      // về là để backend đọc thành "chưa hề gửi" ⇒ hoàn phí + xoá bản ghi cho
+      // một lời mời có thể đang bay. Hạ về `VERIFY_FAILED` + `submit_clicked`
+      // để đi đúng đường hoãn phán xử (`invite-salvage.ts`).
+      return {
+        ok: false,
+        error_code: "VERIFY_FAILED",
+        error_message:
+          `Lượt mời lại không bấm được nút Gửi (${retry.error_code}: ${retry.error_message}). ` +
+          "Cú bấm Gửi lần đầu ĐÃ xảy ra và cả hai tab đều chưa thấy email — chưa đủ căn cứ kết luận.",
+        data: {
+          submit_clicked: true,
+          chatgpt_error_hint: null,
+          typed_emails: ctx.typedEmails,
+          skipped_emails: ctx.skippedEmails,
+          reinvite_attempts: attempt + 1,
+          reinvite_blocked_by: retry.error_code,
+          tabs_checked: true,
+          ...(landed.length > 0 ? { pending_members: landed } : {}),
+        },
+      };
+    }
+  }
+  return retry;
 }

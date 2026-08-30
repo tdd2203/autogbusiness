@@ -5,6 +5,7 @@ import type {
 import { SESSION_RECOVERY_HINT } from "../../../shared/messages";
 import { sleep, waitFor } from "../../human";
 import { findControlByKey } from "../../i18n-ui";
+import { reportProgress } from "../../progress";
 import { TEXT_FALLBACKS } from "../../selectors";
 import { navigateTo } from "../external-invites/navigate";
 import { setExternalInvites } from "../external-invites/set-toggle";
@@ -401,11 +402,64 @@ export async function executeInvite(
   // sang tab "Lời mời đang chờ xử lý" là thấy người vừa mời NGAY. Nên xác minh
   // ngay tại đây thay vì mặc định F5 rồi mới quét: thấy đủ ⇒ khỏi F5 (tiết kiệm
   // trọn vòng verify ~10s + 1-3 lần reload tab). Thiếu ⇒ mới nhờ runner F5.
+  /**
+   * Gắn nốt số liệu suất + cờ dọn-dẹp toggle rồi trả kết quả. Có HAI đường ra khỏi
+   * hàm này (bỏ qua bước quét vì đã xác minh tại chỗ, và đường thường), cả hai đều
+   * phải qua đây — thiếu `seatData` là dashboard đứng im số suất dù vừa tiêu tiền
+   * thật (ca GPT1 ngày 28/8/2026).
+   */
+  const finish = (res: ExecuteActionResponse): ExecuteActionResponse => {
+    if (Object.keys(seatData).length > 0) {
+      const withData = res as { data?: Record<string, unknown> };
+      withData.data = { ...(withData.data ?? {}), ...seatData };
+    }
+    if (externalRestorePending) {
+      const withData = res as { data?: Record<string, unknown> };
+      withData.data = { ...(withData.data ?? {}), needs_external_restore: true };
+    }
+    return res;
+  };
+
   if (inviteResult.ok) {
-    await sleep(500); // chờ DOM ổn định sau navigate cuối của wrapper
-    const scan = await scanPendingForEmails(emails, 8_000);
     const data = (inviteResult as { ok: true; data?: Record<string, unknown> })
       .data ?? {};
+    // Lượt mời vừa rồi đã tự soi 2 tab và thấy đủ (đường `afterSilentSubmit`) →
+    // quét lại là quét vào chỗ đã biết câu trả lời, chỉ tốn thêm chục giây.
+    const alreadyVerified = data.verified_without_reload === true;
+    if (alreadyVerified) {
+      console.log(
+        "[autogpt-invite] lượt mời đã xác minh tại chỗ ở tab Lời mời/Người dùng — bỏ qua bước quét lại",
+      );
+      return finish(inviteResult);
+    }
+    // BÁO NHỊP trước khi vào bước quét: từ đây tới lúc background nhận kết quả là
+    // chặng dài nhất mà dashboard không nghe thấy gì (ca `0d191682` ngày
+    // 30/8/2026: im 483s → backend chốt treo 8 phút dù lời mời đã đi).
+    await reportProgress(
+      taskId,
+      {
+        phase: "scan-pending",
+        message: `Đã gửi ${emails.length} lời mời — sang tab "Lời mời đang chờ xử lý" soi lại...`,
+        current: 0,
+        total: emails.length,
+      },
+      true,
+    );
+    await sleep(500); // chờ DOM ổn định sau navigate cuối của wrapper
+    const scan = await scanPendingForEmails(emails, 8_000);
+    await reportProgress(
+      taskId,
+      {
+        phase: "scan-pending",
+        message: scan.usable
+          ? `Tab "Lời mời đang chờ xử lý": thấy ${scan.matched.length}/${emails.length} email` +
+            (scan.missing.length > 0 ? " — phần còn lại chờ vòng F5 soi tiếp..." : ".")
+          : 'Không vào được tab "Lời mời đang chờ xử lý" — để vòng F5 soi lại...',
+        current: scan.matched.length,
+        total: emails.length,
+      },
+      true,
+    );
 
     if (scan.usable && scan.missing.length === 0) {
       console.log(
@@ -440,19 +494,9 @@ export async function executeInvite(
   // `{submit_clicked:true}` trong DB, không một con số suất nào — phải suy ngược
   // từ hành vi mới đoán ra là chốt suất đã bị bỏ qua. (v0.13.1 đã giữ `data` của
   // lỗi vào `result`, nhưng `seatData` vẫn rơi ở đây nên vẫn trắng thông tin.)
-  if (Object.keys(seatData).length > 0) {
-    const withData = inviteResult as { data?: Record<string, unknown> };
-    withData.data = { ...(withData.data ?? {}), ...seatData };
-  }
-
   // Cờ dọn-dẹp: gắn cho CẢ ca hỏng — mời hỏng thì toggle vẫn đang ON, càng phải
   // tắt. Background đọc cờ này ở `runner.ts` (nhánh external) rồi gọi
   // SET_EXTERNAL_INVITES. Background bản mới thực ra luôn tắt sau nhánh external
   // dù có cờ hay không; cờ để log/chẩn đoán và cho bản background cũ hơn.
-  if (externalRestorePending) {
-    const withData = inviteResult as { data?: Record<string, unknown> };
-    withData.data = { ...(withData.data ?? {}), needs_external_restore: true };
-  }
-
-  return inviteResult;
+  return finish(inviteResult);
 }

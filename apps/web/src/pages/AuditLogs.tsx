@@ -711,6 +711,17 @@ type Group = {
   events: Decorated[];
   count: number;
   latestTs: string;
+  /**
+   * TỔNG THỜI GIAN CHẠY của lệnh: từ sự kiện cũ nhất (xếp hàng) tới sự kiện mới
+   * nhất của chính nhóm này. `null` khi nhóm chỉ có một mốc (chưa đo được gì).
+   *
+   * Đọc theo NHẬT KÝ chứ không theo `queue_items`: nhật ký là thứ trang này đang
+   * có sẵn, và nó tính cả quãng lệnh nằm chết trước khi bị dọn — đúng con số cần
+   * nhìn để đi sửa quy trình. Chi tiết từng giai đoạn nằm ở ô "Thời gian" bên
+   * trang Hàng đợi (`TaskTimingCell`), lấy từ `progress.history` mà API chốt sổ
+   * lại thành `progress.timing` lúc lệnh kết thúc.
+   */
+  runMs: number | null;
   cat: Cat;
   impGroup: ImpGroup | null;
   /** Chip của tab "Chính" mà nhóm thuộc về; RỖNG = nhóm nằm ở tab "Khác". */
@@ -988,12 +999,19 @@ function makeGroup(key: string, evs: Decorated[]): Group {
   // đổi chủ). Đồng bộ/đăng nhập/cấu hình… không thuộc nhóm nào → tab "Khác".
   const important = evs.some((e) => e.important);
 
+  const stamps = evs
+    .map((e) => new Date(e.timestamp).getTime())
+    .filter((n) => Number.isFinite(n));
+  const runMs =
+    stamps.length > 1 ? Math.max(...stamps) - Math.min(...stamps) : null;
+
   return {
     key,
     lifecycle,
     events: evs,
     count: evs.length,
     latestTs: evs[0].timestamp,
+    runMs,
     cat: evs[0].cat,
     impGroup,
     buckets,
@@ -1299,8 +1317,33 @@ function MoreBar({
   );
 }
 
-/** Thanh tiến trình 3 bước: Xếp hàng → Đang chạy → Hoàn tất/Thất bại. */
-function Steps({ stages, rescued }: { stages: Stages; rescued: boolean }) {
+/** ms → "1h 2m 3s" (ẩn cấp 0 ở đầu). Cùng cách đọc với ô Thời gian bên Hàng đợi. */
+function fmtRunDur(ms: number): string {
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  const parts: string[] = [];
+  if (h) parts.push(`${h}h`);
+  if (h || m) parts.push(`${m}m`);
+  parts.push(`${s}s`);
+  return parts.join(" ");
+}
+
+/**
+ * Thanh tiến trình 3 bước: Xếp hàng → Đang chạy → Hoàn tất/Thất bại, kèm TỔNG
+ * THỜI GIAN CHẠY ở mép phải (user 30/8/2026 — để nhìn ra lệnh nào chậm mà đi sửa
+ * quy trình, thay vì phải mở từng lệnh ra trừ tay hai cái mốc).
+ */
+function Steps({
+  stages,
+  rescued,
+  runMs,
+}: {
+  stages: Stages;
+  rescued: boolean;
+  runMs: number | null;
+}) {
   const t = useT();
   const steps = [
     { label: t("audit.step.queued"), reached: stages.queued, kind: "n" as const },
@@ -1373,6 +1416,26 @@ function Steps({ stages, rescued }: { stages: Stages; rescued: boolean }) {
           )}
         </div>
       ))}
+      {runMs !== null && (
+        <span
+          title={
+            stages.done || stages.failed
+              ? t("audit.runtime.total")
+              : t("audit.runtime.live")
+          }
+          style={{
+            marginLeft: "auto",
+            paddingLeft: 12,
+            fontSize: 11,
+            fontFamily: "var(--font-mono)",
+            fontWeight: 600,
+            color: "var(--ink-3)",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {fmtRunDur(runMs)}
+        </span>
+      )}
     </div>
   );
 }
@@ -2695,7 +2758,11 @@ function AuditTable({
                           </div>
                         )}
                         {g.lifecycle && (
-                          <Steps stages={g.stages} rescued={g.rescued} />
+                          <Steps
+                            stages={g.stages}
+                            rescued={g.rescued}
+                            runMs={g.runMs}
+                          />
                         )}
                       </div>
                       {/* TRẠNG THÁI */}
@@ -2946,7 +3013,9 @@ function AuditCards({
                   )}
 
                   {/* Thanh tiến trình vòng đời */}
-                  {g.lifecycle && <Steps stages={g.stages} rescued={g.rescued} />}
+                  {g.lifecycle && (
+                    <Steps stages={g.stages} rescued={g.rescued} runMs={g.runMs} />
+                  )}
 
                   {/* Đáy thẻ: email đối tượng (đậm) + câu tóm tắt */}
                   <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(0,0,0,.06)" }}>

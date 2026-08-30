@@ -3251,6 +3251,14 @@ async function runOnceOnSlot(
     // nhánh external (không phụ thuộc cờ `needs_external_restore`): mời hỏng thì
     // toggle vẫn ON, càng phải tắt; content bản cũ tự tắt rồi thì lệnh này thấy
     // OFF sẵn và bỏ qua.
+    // Báo nhịp TRƯỚC khi vào bước tắt toggle: lệnh này điều hướng sang
+    // /admin/identity và có trần 60s mà không nhả một dòng nào — cộng với chặng
+    // quét tab phía trước là đủ để backend đọc thành "lệnh treo" (ca `0d191682`
+    // ngày 30/8/2026).
+    await reportRunnerProgress(config, task.id, {
+      phase: "external-restore",
+      message: "Đang tắt lại 'Cho phép lời mời ngoài tên miền' cho workspace...",
+    });
     await restoreExternalInvites(tab.id, task.id);
   }
 

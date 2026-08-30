@@ -29,16 +29,34 @@ export const VERIFY_WAIT_BASE_MS = 25_000;
 /** Cộng thêm cho MỖI email kể từ email thứ hai trong cùng một mẻ. */
 export const VERIFY_WAIT_PER_EMAIL_MS = 6_000;
 
-/** Trần tuyệt đối — mẻ lớn cũng không được ngốn hết hạn Phase 1 của background. */
-export const VERIFY_WAIT_MAX_MS = 90_000;
+/**
+ * Trần tuyệt đối cho lượt CHỜ XÁC NHẬN.
+ *
+ * 90s → 60s (user 30/8/2026): *"khi ChatGPT không phản hồi trong 1 phút thì mời
+ * lại email đó một lần nữa"*. Hết trần KHÔNG còn nghĩa là báo hỏng — xem
+ * `SILENT_RETRY_AFTER_MS`: extension đi soi tab "Lời mời đang chờ xử lý" rồi tab
+ * "Người dùng", chỉ khi cả hai đều trắng mới mời lại. Nên cắt sớm ở đây không
+ * tạo ra ca "mời trót lọt mà báo hỏng" như hồi trần còn là một cú chờ mù.
+ */
+export const VERIFY_WAIT_MAX_MS = 60_000;
+
+/**
+ * Mốc "ChatGPT im quá lâu" tính từ cú bấm "Gửi lời mời" — trước mốc này KHÔNG
+ * được mời lại (chốt user 30/8/2026: *"khi ChatGPT không phản hồi trong 1 phút"*).
+ *
+ * Trần chờ ở trên co giãn theo số email nên mẻ 1 email hết chờ ở 25s. Lúc đó soi
+ * hai tab là việc chỉ-đọc, làm ngay được. Nhưng cú MỜI LẠI thì đụng vào ChatGPT
+ * thật: tab "Lời mời" index trễ vài giây là chuyện thường, mời lại lúc 25s là tự
+ * tạo lời mời trùng. Nên soi sớm, mời lại thì đợi đủ một phút.
+ */
+export const SILENT_RETRY_AFTER_MS = 60_000;
 
 /**
  * Trần chờ xác nhận cho mẻ `emailCount` email.
  *
  *   1 email  → 25s
  *   5 email  → 49s   (đúng mẻ đã gãy ngày 26/8/2026)
- *   10 email → 79s
- *   ≥12 email→ 90s   (chạm trần)
+ *   ≥7 email → 60s   (chạm trần)
  *
  * `emailCount` không hợp lệ (0, âm, NaN) → coi như 1 email: thà chờ đủ còn hơn cắt
  * sớm rồi báo hỏng oan.

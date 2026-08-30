@@ -42,6 +42,7 @@ from app.services import wallet_service
 from app.sse import publish_task_event
 
 from ._shared import router
+from .timing import stamp_task_timing
 
 
 def _refund_stranded_deferred_fees(
@@ -1292,6 +1293,7 @@ def update_task(
         item.error_code = None
         item.error_message = None
         item.completed_at = datetime.now(timezone.utc)
+        stamp_task_timing(item)
         db.add(item)
         log_event(
             db,
@@ -1480,6 +1482,8 @@ def update_task(
     )
     if effective_status in ("COMPLETED", "FAILED"):
         item.completed_at = datetime.now(timezone.utc)
+        # Chốt sổ thời gian ngay lúc lệnh về đích — xem `timing.py`.
+        stamp_task_timing(item)
     db.add(item)
 
     # CHANGE_ROLE COMPLETED → sync Member.chatgpt_role trong DB.

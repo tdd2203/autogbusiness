@@ -29,6 +29,7 @@ from app.schemas import QueueOut, QueueProgressUpdate
 from app.services import task_merge
 
 from ._shared import router
+from .timing import stamp_task_timing
 from .completion import defer_unverified_invite, reconcile_failed_invite
 
 # Task còn BÁO NHỊP (progress tick) thì chưa phải task chết — nhưng cũng không
@@ -233,6 +234,9 @@ def pick_next(
             + " Auto-cleanup lúc pick task tiếp theo."
         )
         stuck.completed_at = now
+        # Lệnh chết im vẫn phải để lại sổ thời gian: giai đoạn cuối dài bất thường
+        # chính là chỗ cần sửa (ca `0d191682` ngày 30/8/2026, `submit-done` 483s).
+        stamp_task_timing(stuck)
         db.add(stuck)
         log_event(
             db,

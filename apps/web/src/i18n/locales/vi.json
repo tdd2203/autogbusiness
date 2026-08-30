@@ -328,6 +328,8 @@
   "audit.step.done": "Hoàn tất",
   "audit.step.failed": "Thất bại",
   "audit.step.rescued": "Hoàn tất (sau khi hết giờ)",
+  "audit.runtime.total": "Tổng thời gian chạy",
+  "audit.runtime.live": "Đang chạy",
   "audit.gstatus.rescued": "Thành công (chậm)",
   "audit.opCount": "{n} sự kiện",
   "audit.showAllEmails": "Xem tất cả {n} email",
