@@ -1165,7 +1165,7 @@ function OrderCard({
             aria-modal="true"
             style={{
               width: "min(560px, 100%)",
-              maxHeight: "80vh",
+              maxHeight: "calc(80vh / var(--ui-scale))",
               display: "flex",
               flexDirection: "column",
               background: "var(--surface)",
@@ -2190,7 +2190,9 @@ function MemberDetailView({
           // theo cả kỳ thanh toán lẫn lịch sử hoạt động. Dưới 1180px cột đó xếp
           // xuống luồng dọc (xem narrowModal) nên modal vẫn dùng được ở màn hẹp.
           width: "min(1180px, 100%)",
-          maxHeight: isMobile ? "94vh" : "90vh",
+          maxHeight: isMobile
+            ? "calc(94vh / var(--ui-scale))"
+            : "calc(90vh / var(--ui-scale))",
           background: "var(--surface)",
           border: "1px solid var(--border)",
           borderRadius: isMobile ? 16 : 20,

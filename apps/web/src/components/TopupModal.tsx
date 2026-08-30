@@ -218,7 +218,7 @@ function CopyButton({ value, field, danger }: { value: string; field: string; da
 }
 
 const backdrop: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 16 };
-const modal: React.CSSProperties = { background: "var(--bg)", borderRadius: 22, width: 475, maxWidth: "100%", maxHeight: "92vh", overflowY: "auto", boxShadow: "0 24px 70px -18px rgba(28,26,23,0.4), 0 2px 8px rgba(28,26,23,0.08)", overflowX: "hidden" };
+const modal: React.CSSProperties = { background: "var(--bg)", borderRadius: 22, width: 475, maxWidth: "100%", maxHeight: "calc(92vh / var(--ui-scale))", overflowY: "auto", boxShadow: "0 24px 70px -18px rgba(28,26,23,0.4), 0 2px 8px rgba(28,26,23,0.08)", overflowX: "hidden" };
 const header: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "22px 24px 18px", gap: 12 };
 const closeBtn: React.CSSProperties = { width: 32, height: 32, borderRadius: 9, border: "1px solid var(--border)", background: "var(--surface)", color: "var(--ink-3)", fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1, flexShrink: 0 };
 

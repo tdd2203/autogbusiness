@@ -298,7 +298,7 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
         >
           <div
             className="bg-white rounded-lg shadow-xl"
-            style={{ width: "100%", maxWidth: 640, maxHeight: "85vh", display: "flex", flexDirection: "column" }}
+            style={{ width: "100%", maxWidth: 640, maxHeight: "calc(85vh / var(--ui-scale))", display: "flex", flexDirection: "column" }}
           >
             <div style={{ padding: "16px 20px 12px", borderBottom: "1px solid var(--border)" }}>
               <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>

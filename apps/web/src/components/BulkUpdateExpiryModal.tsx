@@ -423,9 +423,9 @@ export function BulkUpdateExpiryModal({
       <div
         className="bg-white rounded-lg shadow-xl mx-4"
         style={{
-          width: "96vw",
+          width: "calc(96vw / var(--ui-scale))",
           maxWidth: 1320,
-          maxHeight: "92vh",
+          maxHeight: "calc(92vh / var(--ui-scale))",
           display: "flex",
           flexDirection: "column",
         }}

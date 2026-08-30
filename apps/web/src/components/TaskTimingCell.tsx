@@ -21,6 +21,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { QueueItem } from "../types";
 import { useI18n, useT, localeTag } from "../i18n";
+import { layoutPx } from "../lib/ui-scale";
 import { phaseLabel } from "../lib/taskProgress";
 
 const LIVE_STATUSES = new Set(["PENDING", "IN_PROGRESS"]);
@@ -66,7 +67,9 @@ export function TaskTimingCell({ task }: { task: QueueItem }) {
     const el = triggerRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    setPos({ top: r.bottom + 6, left: r.left });
+    // rect đo bằng px màn hình, còn tooltip fixed lại nằm trong cây đã zoom
+    // theo cỡ chữ giao diện — không quy đổi thì ở cỡ 125% nó rơi lệch hẳn.
+    setPos({ top: layoutPx(r.bottom) + 6, left: layoutPx(r.left) });
   }
 
   // Mốc tham chiếu cho đồng hồ live ở ô (đang chạy: từ picked; đang chờ: từ tạo).

@@ -319,7 +319,7 @@ export function ChangeSubscriptionModal({
         style={{
           width: "100%",
           maxWidth: 460,
-          maxHeight: "90vh",
+          maxHeight: "calc(90vh / var(--ui-scale))",
           display: "flex",
           flexDirection: "column",
         }}

@@ -24,6 +24,7 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import { layoutPx } from "../lib/ui-scale";
 
 export type RowActionItem = {
   key: string;
@@ -140,15 +141,21 @@ export function RowActionsMenu({
 
   // Tính toạ độ fixed từ rect của nút: neo phải mép phải nút, mở xuống dưới;
   // nếu không đủ chỗ dưới đáy viewport thì lật lên trên.
+  //
+  // rect và innerWidth/innerHeight đo bằng px MÀN HÌNH (đã nhân cỡ chữ giao
+  // diện), còn offsetHeight và toạ độ mình gán xuống lại nằm trong cây đã zoom.
+  // Quy hết về hệ của cây zoom bằng layoutPx, không thì ở cỡ 125% menu rơi lệch
+  // đúng 25% xuống dưới và lật lên/xuống sai chỗ.
   const place = () => {
     const btn = btnRef.current;
     if (!btn) return;
     const r = btn.getBoundingClientRect();
     const menuH = menuRef.current?.offsetHeight ?? 0;
-    const below = window.innerHeight - r.bottom;
-    const top =
-      menuH > 0 && below < menuH + 8 ? r.top - menuH - 4 : r.bottom + 4;
-    setPos({ top, right: window.innerWidth - r.right });
+    const rTop = layoutPx(r.top);
+    const rBottom = layoutPx(r.bottom);
+    const below = layoutPx(window.innerHeight) - rBottom;
+    const top = menuH > 0 && below < menuH + 8 ? rTop - menuH - 4 : rBottom + 4;
+    setPos({ top, right: layoutPx(window.innerWidth - r.right) });
   };
 
   useLayoutEffect(() => {

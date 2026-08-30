@@ -119,7 +119,7 @@ export function AssignWorkspaceModal({
       <div
         onClick={(e) => e.stopPropagation()}
         className="surface-card"
-        style={{ width: 480, maxWidth: "100%", maxHeight: "80vh", display: "flex", flexDirection: "column", padding: 0 }}
+        style={{ width: 480, maxWidth: "100%", maxHeight: "calc(80vh / var(--ui-scale))", display: "flex", flexDirection: "column", padding: 0 }}
       >
         <div className="table-head" style={{ padding: "16px 20px" }}>
           <div>

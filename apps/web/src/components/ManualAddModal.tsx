@@ -137,7 +137,7 @@ export function ManualAddModal({
       <div
         style={{
           width: "min(1040px, 100%)",
-          maxHeight: "90vh",
+          maxHeight: "calc(90vh / var(--ui-scale))",
           background: "var(--surface)",
           border: "1px solid var(--border)",
           borderRadius: 20,

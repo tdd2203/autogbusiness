@@ -6,6 +6,7 @@ import App from "./App";
 import { AuthProvider } from "./hooks/useAuth";
 import { I18nProvider } from "./i18n";
 import { ToastProvider } from "./components/Toast";
+import { initUiScale } from "./lib/ui-scale";
 import "./index.css";
 
 const queryClient = new QueryClient({
@@ -43,6 +44,10 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+// Áp cỡ chữ đã chọn TRƯỚC khi React vẽ, nếu không màn hình nháy một nhịp cỡ
+// 100% rồi mới nhảy sang cỡ của người dùng.
+initUiScale();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

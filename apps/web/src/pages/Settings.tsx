@@ -6,11 +6,13 @@ import { useFormatDate, useT } from "../i18n";
 import { UiLabelsManager } from "../components/UiLabelsManager";
 import { SystemLanguageManager } from "../components/SystemLanguageManager";
 import { TelegramSettings } from "../components/TelegramSettings";
+import { AppearanceSettings } from "../components/AppearanceSettings";
 import { RateLimitSettings } from "../components/RateLimitSettings";
 
 type SettingsTab =
   | "account"
   | "security"
+  | "appearance"
   | "telegram"
   | "uiLabels"
   | "systemLang"
@@ -85,6 +87,15 @@ export default function Settings() {
           >
             {t("settings.sectionSecurity")}
           </button>
+          {/* Giao diện: cỡ chữ lưu tại máy nên tài khoản nào cũng chỉnh được. */}
+          <button
+            onClick={() => setTab("appearance")}
+            className={
+              tab === "appearance" ? "settings-link active" : "settings-link"
+            }
+          >
+            {t("settings.sectionAppearance")}
+          </button>
           {/* Telegram: MỌI tài khoản (đại lý cần tự kết nối để nhận nhắc gia hạn). */}
           <button
             onClick={() => setTab("telegram")}
@@ -152,6 +163,8 @@ export default function Settings() {
               </div>
             </div>
           )}
+
+          {tab === "appearance" && <AppearanceSettings />}
 
           {tab === "telegram" && <TelegramSettings />}
 

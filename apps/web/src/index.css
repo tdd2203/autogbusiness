@@ -45,6 +45,10 @@
   --perm-system: #b5822a;
   --role-super: #6a3fb0;
   --role-super-bg: #efe9fb;
+  /* Hệ số phóng giao diện (xem lib/ui-scale.ts). Mọi mốc tính theo vh/vw phải
+     chia lại cho biến này: `zoom` KHÔNG chia đơn vị viewport, nên ở cỡ 125%
+     thì 100vh cao thành 125% màn hình, sidebar và modal tràn khỏi đáy. */
+  --ui-scale: 1;
   --radius: 9px;
   --radius-lg: 14px;
   --shadow-sm: 0 1px 2px rgba(16, 24, 16, 0.05);
@@ -1941,7 +1945,7 @@ body {
   .tg-modal {
     width: 100%;
     max-width: 520px;
-    max-height: 86vh;
+    max-height: calc(86vh / var(--ui-scale));
     background: var(--surface);
     border-radius: 18px;
     box-shadow: 0 24px 64px rgba(20, 23, 21, 0.22);
@@ -2344,7 +2348,7 @@ body {
   .iwc-modal {
     width: 620px;
     max-width: 100%;
-    max-height: 86vh;
+    max-height: calc(86vh / var(--ui-scale));
     display: flex;
     flex-direction: column;
     padding: 0;
@@ -2610,7 +2614,7 @@ body {
     }
     /* Modal soạn mẫu chiếm gần trọn màn hình: nội dung dài, khung nhỏ thì cuộn mãi. */
     .ntpl-modal {
-      max-height: calc(100vh - 24px);
+      max-height: calc((100vh - 24px) / var(--ui-scale));
     }
     .ntpl-modal .tg-modal-head {
       padding: 16px 16px 12px;
@@ -2659,7 +2663,7 @@ body {
   .app-sidebar {
     position: sticky;
     top: 0;
-    height: 100vh;
+    height: calc(100vh / var(--ui-scale));
   }
   /* Vùng nav cuộn được để footer (đổi ngôn ngữ + đăng xuất) luôn ghim đáy,
      không bị đẩy tràn khỏi màn hình khi viewport thấp (nhất là mobile). */
@@ -2734,9 +2738,9 @@ body {
       position: fixed;
       top: 0;
       left: 0;
-      height: 100vh;
+      height: calc(100vh / var(--ui-scale));
       width: 264px;
-      max-width: 82vw;
+      max-width: calc(82vw / var(--ui-scale));
       z-index: 50;
       transform: translateX(-100%);
       transition: transform 0.22s ease;

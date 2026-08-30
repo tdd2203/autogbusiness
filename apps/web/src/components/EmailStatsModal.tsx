@@ -86,7 +86,7 @@ export function EmailStatsModal({
           // thì mỗi hàng chỉ nhét được 2 email và bảng dài lê thê.
           width: 1320,
           maxWidth: "100%",
-          maxHeight: "92vh",
+          maxHeight: "calc(92vh / var(--ui-scale))",
           overflow: "auto",
           background: "var(--surface)",
           borderRadius: 18,

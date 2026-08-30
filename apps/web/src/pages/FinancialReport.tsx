@@ -1219,7 +1219,7 @@ function AgentModal({
         style={{
           width: 760,
           maxWidth: "100%",
-          maxHeight: "86vh",
+          maxHeight: "calc(86vh / var(--ui-scale))",
           overflow: "auto",
           background: "var(--surface)",
           borderRadius: 18,

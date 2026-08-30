@@ -61,7 +61,7 @@ export function PasteInvoiceModal({
       <div
         style={{
           width: "min(680px, 100%)",
-          maxHeight: "90vh",
+          maxHeight: "calc(90vh / var(--ui-scale))",
           background: "var(--surface)",
           border: "1px solid var(--border)",
           borderRadius: 20,

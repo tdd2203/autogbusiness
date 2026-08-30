@@ -587,7 +587,7 @@ const rejectBtn: React.CSSProperties = { flex: 1, background: "transparent", col
 
 // Modal — panel cuộn, header/footer cố định.
 const backdrop: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(20,22,34,0.34)", backdropFilter: "blur(2px)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 120, padding: 24, ...softVars };
-const modalPanel: React.CSSProperties = { background: "var(--w-card)", borderRadius: "calc(var(--w-radius) + 4px)", width: 640, maxWidth: "100%", maxHeight: "90vh", boxShadow: "0 24px 60px rgba(16,24,40,0.28)", display: "flex", flexDirection: "column", overflow: "hidden" };
+const modalPanel: React.CSSProperties = { background: "var(--w-card)", borderRadius: "calc(var(--w-radius) + 4px)", width: 640, maxWidth: "100%", maxHeight: "calc(90vh / var(--ui-scale))", boxShadow: "0 24px 60px rgba(16,24,40,0.28)", display: "flex", flexDirection: "column", overflow: "hidden" };
 const modalHeader: React.CSSProperties = { display: "flex", alignItems: "center", gap: 14, padding: "20px 24px", borderBottom: "1px solid var(--w-line)", flexShrink: 0 };
 const modalBody: React.CSSProperties = { padding: "4px 24px 20px", overflowY: "auto" };
 const modalFooter: React.CSSProperties = { display: "flex", justifyContent: "flex-end", gap: 8, padding: "14px 24px", borderTop: "1px solid var(--w-line)", flexShrink: 0 };
