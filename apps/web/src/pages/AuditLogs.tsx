@@ -311,6 +311,20 @@ export function shortRef(ref: string): string {
   return ref.replace(/-/g, "").slice(0, 8);
 }
 
+/* MÃ HOÁ ĐƠN THẬT (`payment_orders.ref_code`) — mã nằm trên QR, trên sao kê ngân
+   hàng và trong khối "Hoá đơn QR" ở panel thành viên. Trước đây hàng nhật ký hiện
+   mã hàng đợi (id nội bộ, không tra được ở đâu khác) nên người đối soát không nối
+   được lệnh với khoản tiền vào (user 2026-08-29). API bơm sẵn `order_ref_code` cho
+   mọi sự kiện của lệnh; lệnh trả bằng ví (không sinh hoá đơn) thì không có mã. */
+export function orderRefsOf(evs: EventLike[]): string[] {
+  const out: string[] = [];
+  for (const e of evs) {
+    const v = e.data?.order_ref_code;
+    if (typeof v === "string" && v && !out.includes(v)) out.push(v);
+  }
+  return out;
+}
+
 type GroupColor = {
   accent: string;
   tint: string;
@@ -674,8 +688,10 @@ type Group = {
   buckets: MainBucket[];
   /** Nhóm phụ trong tab "Khác" (null khi nhóm ở tab "Chính"). */
   otherBucket: OtherBucket | null;
-  /** Mã hoá đơn (khoá mà giao dịch ví neo vào) — bấm để xem chi tiết thanh toán. */
+  /** Khoá mà giao dịch ví neo vào — bấm để lọc nhật ký về dòng tiền của lệnh. */
   payRefs: string[];
+  /** Mã hoá đơn QR thật (`ref_code`) của lệnh — thứ hiện cho người đọc. */
+  orderRefs: string[];
   important: boolean;
   routine: boolean;
   title: string;
@@ -932,6 +948,7 @@ function makeGroup(key: string, evs: Decorated[]): Group {
   const buckets = mainBucketsOf(evs);
   const otherBucket = buckets.length ? null : otherBucketOf(initiator.action);
   const payRefs = payRefsOf(evs);
+  const orderRefs = orderRefsOf(evs);
   // Quan trọng (lên tab "Chính") = có nhóm nghiệp vụ thành viên (mời/gỡ/gia hạn/
   // đổi chủ). Đồng bộ/đăng nhập/cấu hình… không thuộc nhóm nào → tab "Khác".
   const important = evs.some((e) => e.important);
@@ -947,6 +964,7 @@ function makeGroup(key: string, evs: Decorated[]): Group {
     buckets,
     otherBucket,
     payRefs,
+    orderRefs,
     important,
     routine: !important,
     title,
@@ -1494,6 +1512,11 @@ const DETAIL_LABEL: Record<string, string> = {
   old_email: "Email cũ",
   new_expiry: "Hạn mới",
   queue_item_id: "Mã hàng đợi",
+  // Mã hoá đơn QR: `ref_code` là trường gốc của dòng tạo lệnh, `order_ref_code` do
+  // API suy cho MỌI dòng của lệnh. Cùng nhãn + cùng giá trị → extractDetails khử
+  // trùng còn một dòng.
+  ref_code: "Mã hoá đơn",
+  order_ref_code: "Mã hoá đơn",
   member_id: "Mã thành viên",
   withdrawal_id: "Mã rút tiền",
   user_id: "Mã người dùng",
@@ -1988,6 +2011,9 @@ function ExpandedPanel({ g }: { g: Group }) {
     "Removed",
     "Verified Count",
     "Unverified Count",
+    // Id nội bộ, không tra được ở đâu ngoài hệ thống — "Mã hoá đơn" ngay bên cạnh
+    // mới là thứ đối soát được (user 2026-08-29). Vẫn còn ở "Chi tiết kỹ thuật".
+    "Mã hàng đợi",
   ]);
   // Loại MỌI dòng tiền (₫) khỏi lưới THÔNG TIN — tiền đã hiển thị ở hộp phí (tổng
   // đúng). Trước đây chỉ loại `moneyRow` (dòng ₫ đầu) nên dòng "Số tiền" thứ hai (cũng
@@ -2329,6 +2355,9 @@ function groupView(g: Group, t: TFn) {
     g.buckets.includes("member") || g.buckets.includes("billing")
       ? (g.payRefs[0] ?? null)
       : null;
+  // Chip hiện MÃ HOÁ ĐƠN (tra được ở sao kê + panel thành viên); lệnh trả bằng ví
+  // không sinh hoá đơn nên rơi về mã lệnh như cũ để còn bấm lọc dòng tiền.
+  const invoiceRef = payRef ? (g.orderRefs[0] ?? null) : null;
   return {
     col,
     chipLabel,
@@ -2338,22 +2367,29 @@ function groupView(g: Group, t: TFn) {
     summary,
     targetEmailTitle,
     payRef,
+    invoiceRef,
   };
 }
 
-/** Mã hoá đơn của lệnh — bấm để xem chi tiết thanh toán của chính lệnh đó. */
+/** Mã hoá đơn của lệnh — bấm để xem chi tiết thanh toán của chính lệnh đó.
+
+    `refId` là khoá LỌC (mã lệnh mà sổ cái ví neo vào), `invoice` là mã hoá đơn QR
+    để NGƯỜI ĐỌC nhìn. Hai thứ khác nhau: mã lọc là id nội bộ, mã hoá đơn mới là thứ
+    tra được ở sao kê ngân hàng và panel thành viên. */
 function PayRefChip({
   refId,
+  invoice,
   onOpen,
 }: {
   refId: string;
+  invoice?: string | null;
   onOpen: (ref: string) => void;
 }) {
   const t = useT();
   return (
     <button
       type="button"
-      title={t("audit.payRefHint")}
+      title={invoice ? t("audit.invoiceRefHint") : t("audit.payRefHint")}
       // Hàng là nút bung chi tiết — chặn nổi bọt để bấm mã không bung/thu hàng.
       onClick={(e) => {
         e.stopPropagation();
@@ -2385,7 +2421,10 @@ function PayRefChip({
         <path d="M6 3v18l2-1.5L10 21l2-1.5L14 21l2-1.5L18 21V3H6z" />
         <path d="M9 8.5h6M9 12.5h6" />
       </svg>
-      #{shortRef(refId)}
+      {/* Mã hoá đơn hiện ĐỦ 20 ký tự: cắt ngắn thì không đối chiếu được với sao kê
+          ngân hàng — đúng việc mà chip này sinh ra để làm (user 2026-08-29). Mã lệnh
+          (không có hoá đơn) vẫn rút gọn như cũ vì chỉ dùng để bấm lọc. */}
+      #{invoice ?? shortRef(refId)}
     </button>
   );
 }
@@ -2472,6 +2511,7 @@ function AuditTable({
                   summary,
                   targetEmailTitle,
                   payRef,
+                  invoiceRef,
                 } = groupView(g, t);
                 const isOpen = expanded === g.key;
                 const toggle = () =>
@@ -2594,7 +2634,11 @@ function AuditTable({
                             </span>
                           )}
                           {payRef && (
-                            <PayRefChip refId={payRef} onOpen={onOpenPayments} />
+                            <PayRefChip
+                              refId={payRef}
+                              invoice={invoiceRef}
+                              onOpen={onOpenPayments}
+                            />
                           )}
                         </div>
                         {g.emails.length > 0 && (
@@ -2738,6 +2782,7 @@ function AuditCards({
               summary,
               targetEmailTitle,
               payRef,
+              invoiceRef,
             } = groupView(g, t);
             const isOpen = expanded === g.key;
             const toggle = () => setExpanded((k) => (k === g.key ? null : g.key));
@@ -2834,7 +2879,13 @@ function AuditCards({
                         {g.workspaceName}
                       </span>
                     )}
-                    {payRef && <PayRefChip refId={payRef} onOpen={onOpenPayments} />}
+                    {payRef && (
+                      <PayRefChip
+                        refId={payRef}
+                        invoice={invoiceRef}
+                        onOpen={onOpenPayments}
+                      />
+                    )}
                     <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>
                       {t("audit.byActor")}{" "}
                       <b style={{ fontWeight: 700, color: "var(--ink-2)" }}>

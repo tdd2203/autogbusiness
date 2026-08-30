@@ -176,3 +176,33 @@ describe("số dư sau hộp phí", () => {
     ).toBe(true);
   });
 });
+
+/* MÃ HOÁ ĐƠN TRÊN HÀNG (user 2026-08-29): chip cạnh tên workspace phải là mã hoá
+   đơn thật (tra được ở sao kê + panel thành viên), không phải mã hàng đợi nội bộ.
+   API bơm `order_ref_code` vào mọi sự kiện của lệnh; lệnh trả bằng ví không sinh
+   hoá đơn nên không có mã và hàng rơi về mã lệnh như cũ. */
+describe("mã hoá đơn của nhóm", () => {
+  const REF = "c6a67ae1172b13987b21";
+
+  it("lấy mã hoá đơn từ sự kiện của lệnh", () => {
+    const rows = INVITE_FLOW.map((r) => ({
+      ...r,
+      data: { ...(r.data ?? {}), order_ref_code: REF },
+    }));
+    const g = buildGroups(decorate(rows))[0];
+    expect(g.orderRefs).toEqual([REF]);
+    // Mã lọc (khoá sổ cái ví neo vào) vẫn là mã hàng đợi — hai thứ khác nhau.
+    expect(g.payRefs[0]).toBe(QID);
+  });
+
+  it("chỉ MỘT sự kiện mang mã cũng đủ cho cả nhóm", () => {
+    const rows = INVITE_FLOW.map((r) =>
+      r.id === "e2" ? { ...r, data: { ...(r.data ?? {}), order_ref_code: REF } } : r,
+    );
+    expect(buildGroups(decorate(rows))[0].orderRefs).toEqual([REF]);
+  });
+
+  it("lệnh trả bằng ví (không có hoá đơn) thì không có mã", () => {
+    expect(buildGroups(decorate(INVITE_FLOW))[0].orderRefs).toEqual([]);
+  });
+});

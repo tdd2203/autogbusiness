@@ -86,3 +86,63 @@ def test_unpaid_order_audit_row_has_no_queue_item(client: TestClient, auth_heade
     created = [x for x in logs if x["action"] == "PAYMENT_ORDER_CREATED"]
     assert created, "phải có dòng tạo lệnh thanh toán"
     assert not (created[0].get("data") or {}).get("queue_item_id")
+
+
+def test_order_ref_code_reaches_every_row_of_the_command(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Mọi sự kiện của lệnh phải mang MÃ HOÁ ĐƠN (user 2026-08-29).
+
+    Hàng nhật ký hiện mã này cạnh tên workspace thay cho mã hàng đợi: mã hoá đơn tra
+    được ở sao kê ngân hàng và ở khối "Hoá đơn QR" của panel thành viên, còn mã hàng
+    đợi chỉ là id nội bộ. Suy lúc ĐỌC qua `payment_orders.queue_item_id` nên cả dòng
+    mời (không hề biết tới hoá đơn) cũng có mã.
+    """
+    ws = create_ws(client, auth_header, "Audit Ref WS")
+    sub = make_beta_sub(client, auth_header, username="audref", balance=0)
+    assign(client, auth_header, ws["id"], sub["id"])
+
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "ord3@example.com", "role": "member"},
+        headers=bearer(sub["token"]),
+    )
+    assert r.status_code == 402, r.text
+    order = r.json()["detail"]["order"]
+    wh = client.post(
+        "/webhook/sepay", json=_webhook_body(order["note"], FEE, "ORD-AUD-REF-1")
+    )
+    assert wh.status_code == 200 and wh.json().get("success") is True
+
+    logs = client.get("/api/v1/audit-logs?limit=200", headers=auth_header).json()
+    by_action = {x["action"]: x for x in logs}
+    for action in (
+        "PAYMENT_ORDER_CREATED",
+        "WALLET_ORDER_CREDITED",
+        "MEMBER_INVITE_QUEUED",
+        "WALLET_INVITE_CHARGED",
+    ):
+        assert action in by_action, sorted(by_action)
+        got = (by_action[action].get("data") or {}).get("order_ref_code")
+        assert got == order["ref_code"], (action, got)
+
+
+def test_wallet_paid_command_has_no_order_ref_code(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Ví đủ tiền → không sinh hoá đơn ⇒ không được bịa mã cho lệnh."""
+    ws = create_ws(client, auth_header, "Audit NoRef WS")
+    sub = make_beta_sub(client, auth_header, username="audnoref", balance=FEE)
+    assign(client, auth_header, ws["id"], sub["id"])
+
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": "ord4@example.com", "role": "member"},
+        headers=bearer(sub["token"]),
+    )
+    assert r.status_code == 201, r.text
+
+    logs = client.get("/api/v1/audit-logs?limit=200", headers=auth_header).json()
+    queued = [x for x in logs if x["action"] == "MEMBER_INVITE_QUEUED"]
+    assert queued, "phải có dòng mời"
+    assert not (queued[0].get("data") or {}).get("order_ref_code")

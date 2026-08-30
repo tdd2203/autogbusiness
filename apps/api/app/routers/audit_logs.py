@@ -407,8 +407,6 @@ def list_audit_logs(
     # phải sửa dòng đã ghi.
     order_ids: set[UUID] = set()
     for r in rows:
-        if _queue_item_id_of(r):
-            continue
         oid = _order_id_of(r)
         if oid:
             try:
@@ -416,14 +414,16 @@ def list_audit_logs(
             except ValueError:
                 pass
     order_queue: dict[str, str] = {}
+    order_ref: dict[str, str] = {}
     if order_ids:
-        for oid, qid in db.execute(
-            select(PaymentOrder.id, PaymentOrder.queue_item_id).where(
-                PaymentOrder.id.in_(order_ids),
-                PaymentOrder.queue_item_id.is_not(None),
-            )
+        for oid, qid, ref_code in db.execute(
+            select(
+                PaymentOrder.id, PaymentOrder.queue_item_id, PaymentOrder.ref_code
+            ).where(PaymentOrder.id.in_(order_ids))
         ).all():
-            order_queue[str(oid)] = str(qid)
+            if qid:
+                order_queue[str(oid)] = str(qid)
+            order_ref[str(oid)] = ref_code
 
     def _resolved_queue_id(log: AuditLog) -> str | None:
         """queue_item_id của dòng log — kể cả khi chỉ suy ra được qua hoá đơn."""
@@ -432,6 +432,33 @@ def list_audit_logs(
             return qid
         oid = _order_id_of(log)
         return order_queue.get(oid) if oid else None
+
+    # MÃ HOÁ ĐƠN cho cả cụm sự kiện của lệnh. Trang nhật ký hiện mã này cạnh tên
+    # workspace thay cho mã hàng đợi — người đối soát tra được thẳng sang khối "Hoá
+    # đơn QR" ở panel thành viên và sao kê ngân hàng, còn mã hàng đợi chỉ là id nội
+    # bộ (user 2026-08-29). Nối ngược `payment_orders.queue_item_id` → `ref_code`.
+    queue_ref: dict[str, str] = {}
+    ref_queue_ids: set[UUID] = set()
+    for r in rows:
+        qid = _resolved_queue_id(r)
+        if qid:
+            try:
+                ref_queue_ids.add(UUID(qid))
+            except ValueError:
+                pass
+    if ref_queue_ids:
+        for qid, ref_code in db.execute(
+            select(PaymentOrder.queue_item_id, PaymentOrder.ref_code)
+            .where(PaymentOrder.queue_item_id.in_(ref_queue_ids))
+            .order_by(PaymentOrder.created_at)
+        ).all():
+            queue_ref[str(qid)] = ref_code  # nhiều hoá đơn/lượt → giữ mã mới nhất
+
+    def _order_ref_code(log: AuditLog, qid: str | None) -> str | None:
+        oid = _order_id_of(log)
+        if oid and oid in order_ref:
+            return order_ref[oid]
+        return queue_ref.get(qid) if qid else None
 
     # Suy email từ payload QueueItem khi audit chỉ có queue_item_id / QUEUE_ITEM
     # (REVOKE_INVITES_QUEUED cũ chỉ lưu count; QUEUE_PICKED không mang email).
@@ -468,6 +495,10 @@ def list_audit_logs(
         row_qid = _resolved_queue_id(r)
         if row_qid and not _queue_item_id_of(r):
             d["queue_item_id"] = row_qid
+            mutated = True
+        row_ref = _order_ref_code(r, row_qid)
+        if row_ref and not d.get("order_ref_code"):
+            d["order_ref_code"] = row_ref
             mutated = True
         if d.get("member_ids") and not d.get("emails"):
             resolved = [
