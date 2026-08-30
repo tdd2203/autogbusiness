@@ -295,8 +295,8 @@ def _retry_stuck_email_change_removals(
                 "queue_item_id": str(item.id),
                 "task_type": task_type,
                 "note": (
-                    "Email này đã ĐỔI sang email khác nhưng lệnh gỡ trước đó không "
-                    "chốt được — ChatGPT vẫn trả nó về. Xếp lại lệnh gỡ để trả ghế."
+                    "Email này đã ĐỔI sang email khác nhưng lệnh xoá trước đó "
+                    "chưa thành công — Đã thực hiện xoá lại hoàn tất."
                 ),
             },
             commit=False,
