@@ -342,7 +342,8 @@ export async function executeInvite(
       };
     }
     console.log(
-      `[autogpt-invite] PHASE A: toggle external invites đã ON (prev=${ensured.prev ? "ON" : "OFF"}) → yêu cầu background HARD-RELOAD /admin/members rồi gọi lại để mời.`,
+      `[autogpt-invite] PHASE A: toggle external invites đã ON (prev=${ensured.prev ? "ON" : "OFF"}) → yêu cầu background HARD-RELOAD /admin/members rồi gọi lại để mời.` +
+        (ensured.toast ? ` ChatGPT báo: "${ensured.toast}"` : ""),
     );
     return {
       ok: true,
@@ -351,6 +352,9 @@ export async function executeInvite(
         emails,
         count: emails.length,
         role,
+        // Câu ChatGPT in ra khi lưu xong công tắc. Chỉ để soi lại — cờ cho phép
+        // mời vẫn là `ensured.confirmed` đọc từ chính công tắc.
+        external_toggle_toast: ensured.toast ?? null,
         // Lần gọi 2 (externalReady) BỎ QUA bước suất → số liệu chỉ có ở đây,
         // đính kèm để dashboard vẫn ghi nhận được.
         ...seatData,

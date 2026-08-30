@@ -43,7 +43,8 @@ export async function executeSetExternalInvites(
   const r = await setExternalInvites(enabled);
   console.log(
     `[autogpt-external-invites] lệnh riêng: đặt toggle = ${enabled} → ` +
-      `prev=${r.prev} changed=${r.changed} confirmed=${r.confirmed}`,
+      `prev=${r.prev} changed=${r.changed} confirmed=${r.confirmed}` +
+      (r.toast ? ` — ChatGPT báo: "${r.toast}"` : ""),
   );
   // Về /admin/members để task kế tiếp không phải tự điều hướng từ
   // /admin/identity. Không xong cũng không sao — `ensureAdminTab` của background
@@ -64,6 +65,11 @@ export async function executeSetExternalInvites(
       confirmed: r.confirmed,
       prev: r.prev,
       changed: r.changed,
+      // Câu ChatGPT tự in ra sau khi lưu ("Lời mời từ miền bên ngoài bị vô hiệu
+      // hóa với không gian làm việc này") — bằng chứng do CHÍNH ChatGPT khai,
+      // khác với `confirmed` vốn là kết luận của ta từ `aria-checked`.
+      toast: r.toast,
+      confirmed_by: r.confirmedBy,
     },
   };
 }

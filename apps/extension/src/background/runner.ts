@@ -911,10 +911,23 @@ async function restoreExternalInvites(
       60_000,
       "content-SET_EXTERNAL_INVITES",
     );
-    const confirmed =
-      resp.ok && (resp.data as { confirmed?: boolean } | undefined)?.confirmed;
+    const data = resp.ok
+      ? (resp.data as
+          | { confirmed?: boolean; toast?: string | null; confirmed_by?: string }
+          | undefined)
+      : undefined;
+    const confirmed = resp.ok && data?.confirmed;
     if (confirmed) {
-      console.log("[autogpt-runner] đã tắt lại toggle 'mời ngoài tên miền'");
+      // Câu ChatGPT tự in ra ("Lời mời từ miền bên ngoài bị vô hiệu hóa với
+      // không gian làm việc này") là bằng chứng do chính nó khai — ghi vào log
+      // để đối chiếu khi soi lại một lệnh mời cũ.
+      console.log(
+        "[autogpt-runner] đã tắt lại toggle 'mời ngoài tên miền'" +
+          (data?.toast ? ` — ChatGPT báo: "${data.toast}"` : "") +
+          (data?.confirmed_by === "toast"
+            ? " (công tắc đọc không ra, nhận theo câu ChatGPT báo)"
+            : ""),
+      );
     } else {
       console.warn(
         "[autogpt-runner] KHÔNG xác nhận được toggle 'mời ngoài tên miền' đã tắt — " +
