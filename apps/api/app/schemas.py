@@ -1636,3 +1636,51 @@ class FinancialReportCycle(BaseModel):
 
 class FinancialReportCyclesOut(BaseModel):
     cycles: list[FinancialReportCycle]
+
+
+# ── Thống kê email add mới / gia hạn (super-admin) ──────────────────────────
+# ĐƠN VỊ ĐẾM = 1 EMAIL TRONG 1 NGÀY (giờ VN), KHÔNG phải 1 lượt thao tác. Cùng
+# một email mời đi mời lại 5 lượt trong ngày vẫn chỉ là 1; có lượt nào thành công
+# thì cả ngày đó tính THÀNH CÔNG (chốt user 2026-08-29). Nhờ vậy cộng cột theo
+# ngày ra đúng tổng kỳ, và số ở đây so được với số email thật đã phục vụ.
+
+class EmailStatsAgent(BaseModel):
+    """Một đại lý trong 1 ngày (hoặc gộp cả kỳ). user_id=None → 'Chưa rõ chủ'."""
+
+    user_id: UUID | None = None
+    username: str | None = None
+    email: str | None = None
+    new_ok: int = 0
+    new_failed: int = 0
+    renew_ok: int = 0
+    # Gia hạn chỉ sửa hạn trong DB nên chưa có đường hỏng — cột luôn 0, giữ để bảng
+    # đồng dạng với add mới và khỏi phải đổi hợp đồng khi có luồng hỏng thật.
+    renew_failed: int = 0
+    total: int = 0
+
+
+class EmailStatsDay(BaseModel):
+    """Một NGÀY theo giờ VN (UTC+7)."""
+
+    date: str  # YYYY-MM-DD
+    new_ok: int = 0
+    new_failed: int = 0
+    renew_ok: int = 0
+    renew_failed: int = 0
+    total: int = 0
+    by_agent: list[EmailStatsAgent] = []
+
+
+class EmailStatsOut(BaseModel):
+    from_date: str  # ISO date (bao gồm)
+    to_date: str    # ISO date (bao gồm)
+    new_ok: int = 0
+    new_failed: int = 0
+    renew_ok: int = 0
+    renew_failed: int = 0
+    total: int = 0
+    # Số email DUY NHẤT chạm tới trong kỳ (khác `total` khi 1 email xuất hiện nhiều
+    # ngày — vd add mới đầu tháng rồi gia hạn cuối tháng).
+    unique_emails: int = 0
+    days: list[EmailStatsDay] = []
+    by_agent: list[EmailStatsAgent] = []

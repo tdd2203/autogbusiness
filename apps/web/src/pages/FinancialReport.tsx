@@ -17,6 +17,7 @@
  */
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useFinancialCycles, useFinancialReport } from "../hooks/useWallet";
+import { EmailStatsModal } from "../components/EmailStatsModal";
 import { type FinancialReport } from "../lib/wallet";
 
 // ── Bảng màu biểu đồ (dữ liệu, không phải chrome) — khớp mockup ──────────────
@@ -131,6 +132,7 @@ export default function FinancialReport() {
   // tại → hôm nay bằng new Date() lúc mở trang.
   const [presetKey, setPresetKey] = useState("month");
   const [showAgents, setShowAgents] = useState(false);
+  const [showEmails, setShowEmails] = useState(false);
   const range = useMemo(
     () => (PRESETS.find((p) => p.key === presetKey) ?? PRESETS[0]).range(),
     [presetKey],
@@ -209,6 +211,7 @@ export default function FinancialReport() {
               );
             })}
           </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
           <button
             type="button"
             onClick={() => setShowAgents(true)}
@@ -242,7 +245,31 @@ export default function FinancialReport() {
             >
               {agentCount}
             </span>
-          </button>
+            </button>
+            {/* Đếm ĐẦU EMAIL (add mới / gia hạn / hỏng) — mở riêng chứ không xếp
+                nối đuôi dưới sổ tiền: bảng theo ngày dài, để dưới trang thì mỗi
+                lần xem phải cuộn qua toàn bộ báo cáo. */}
+            <button
+              type="button"
+              onClick={() => setShowEmails(true)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                background: "var(--surface)",
+                color: "var(--ink)",
+                border: "1px solid var(--border)",
+                borderRadius: 10,
+                padding: "10px 16px",
+                fontSize: 13.5,
+                fontWeight: 600,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              Thống kê email add mới &amp; gia hạn
+            </button>
+          </div>
         </div>
       </div>
 
@@ -253,6 +280,11 @@ export default function FinancialReport() {
           <ReportBody data={data} range={range} />
           {showAgents && <AgentModal data={data} range={range} onClose={() => setShowAgents(false)} />}
         </>
+      )}
+      {/* NGOÀI khối `data &&`: bảng email đọc endpoint riêng, sổ tiền hỏng thì nút
+          này vẫn phải mở được. */}
+      {showEmails && (
+        <EmailStatsModal from={range.from} to={range.to} onClose={() => setShowEmails(false)} />
       )}
     </div>
   );
