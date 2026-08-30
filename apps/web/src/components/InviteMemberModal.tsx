@@ -77,9 +77,11 @@ export function InviteMemberModal({
   // Ô paste tự nới theo dòng email dài nhất. Font mono nên bề rộng đoán được:
   // dài quá thì hạ cỡ chữ chứ không để email gãy dòng giữa chừng.
   const pasteBox = useMemo(() => {
-    const MIN_W = 400;
-    const MAX_W = 560;
+    const MIN_W = 460;
+    const MAX_W = 660;
     const CHROME = 74; // padding cột + padding input + viền + chỗ cho thanh cuộn
+    const VISIBLE_ROWS = 20; // paste 20 email vẫn thấy hết, không phải cuộn
+    const LINE_H = 1.6;
     const source = emailsText.trim()
       ? emailsText
       : "user2@domain.com, user3@domain.com";
@@ -97,6 +99,7 @@ export function InviteMemberModal({
     return {
       width: Math.min(MAX_W, Math.max(MIN_W, width)),
       fontSize,
+      minHeight: Math.round(VISIBLE_ROWS * fontSize * LINE_H + 22),
     };
   }, [emailsText]);
 
@@ -293,7 +296,7 @@ export function InviteMemberModal({
     >
       <div
         style={{
-          width: "min(1200px, 100%)",
+          width: "min(1320px, 100%)",
           maxHeight: "90vh",
           background: "var(--surface)",
           border: "1px solid var(--border)",
@@ -404,7 +407,7 @@ export function InviteMemberModal({
               className="form-input"
               style={{
                 resize: "vertical",
-                minHeight: 220,
+                minHeight: pasteBox.minHeight,
                 flex: 1,
                 fontFamily: "var(--font-mono)",
                 fontSize: pasteBox.fontSize,
