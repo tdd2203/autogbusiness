@@ -1251,6 +1251,12 @@ class WalletTxnOut(BaseModel):
     # theo (ref_id, meta.email) rồi giấu cả cặp đi: lượt mời hỏng không làm mất đồng
     # nào nên hiện 2 dòng ngược dấu ở 2 chỗ khác nhau chỉ tổ rối (user 2026-08-26).
     reversed: bool = False
+    #: Mã in trên nội dung chuyển khoản — mã nạp (topup_orders) hoặc mã hoá đơn
+    #: (payment_orders), đúng mã người dùng nhìn thấy trên web lúc quét QR. Router
+    #: tra thêm; bảng `wallet_transactions` không lưu.
+    ref_code: str | None = None
+    #: Mã giao dịch bên SePay — khớp với sao kê ngân hàng lúc đối soát.
+    provider_txn_id: str | None = None
     created_at: datetime
 
 

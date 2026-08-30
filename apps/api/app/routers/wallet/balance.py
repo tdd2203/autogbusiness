@@ -11,7 +11,7 @@ from app.models import User, WalletTransaction
 from app.schemas import WalletOut, WalletTxnOut, WalletTxnPage
 from app.services import payment_flow, sepay_ledger, wallet_service
 
-from ._shared import get_payment_settings, router
+from ._shared import get_payment_settings, resolve_txn_codes, router
 
 
 @router.get("", response_model=WalletOut)
@@ -77,7 +77,16 @@ def list_transactions(
     )
     has_more = len(rows) > limit
     rows = rows[:limit]
+    # Mã hoá đơn + mã giao dịch SePay: không nằm trong sổ cái, phải tra thêm. Báo cáo
+    # xuất ra từ trang Ví cần đúng hai mã này mới đối chiếu được với sao kê ngân hàng
+    # và với hoá đơn user nhìn thấy trên web (user 2026-08-30).
+    codes = resolve_txn_codes(db, rows)
+    items: list[WalletTxnOut] = []
+    for r in rows:
+        item = WalletTxnOut.model_validate(r)
+        item.ref_code, item.provider_txn_id = codes.get(r.id, (None, None))
+        items.append(item)
     return WalletTxnPage(
-        items=[WalletTxnOut.model_validate(r) for r in rows],
+        items=items,
         next_cursor=str(rows[-1].seq) if has_more and rows else None,
     )

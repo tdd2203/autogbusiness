@@ -35,6 +35,11 @@ export type WalletTxn = {
   meta: Record<string, unknown> | null;
   /** Chỉ có ở `invite_fee`: true ⇔ phí đã được hoàn (lượt mời hỏng). */
   reversed?: boolean;
+  /** Mã nạp / mã hoá đơn in trên QR — đúng mã hiện trên web. Chỉ bút toán trỏ về
+   *  topup_orders / payment_orders mới có; phí mời lấy theo cụm (xem wallet-report). */
+  ref_code?: string | null;
+  /** Mã giao dịch bên SePay, khớp sao kê ngân hàng. */
+  provider_txn_id?: string | null;
   created_at: string;
 };
 

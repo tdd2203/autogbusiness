@@ -20,10 +20,10 @@ import {
   useWalletAdminUsers,
 } from "../hooks/useWallet";
 import { formatVnd, type WalletAdminUser } from "../lib/wallet";
-import { buildTxnCsv } from "../lib/wallet-history";
 import { toast } from "../components/Toast";
 import InputModal from "../components/InputModal";
 import SepayReconcileModal from "../components/SepayReconcileModal";
+import WalletExportButton from "../components/WalletExportButton";
 import {
   useWalletHistoryState,
   WalletDaySummary,
@@ -55,16 +55,6 @@ export default function WalletAdminUser() {
   const [reconcileOpen, setReconcileOpen] = useState(false);
   const hist = useWalletHistoryState(day, userId);
 
-  function exportCsv() {
-    const csv = buildTxnCsv(hist.groups);
-    const stamp = day ?? `den-${today}`;
-    const url = URL.createObjectURL(new Blob([`﻿${csv}`], { type: "text/csv;charset=utf-8" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `vi-${user?.username ?? "tai-khoan"}-${stamp}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
 
   return (
     <WalletScopeCtx.Provider value={userId}>
@@ -90,13 +80,12 @@ export default function WalletAdminUser() {
             <button onClick={() => setReconcileOpen(true)} style={secondaryBtn}>
               Đối soát ngân hàng
             </button>
-            <button
-              onClick={exportCsv}
-              disabled={hist.groups.length === 0}
-              style={{ ...secondaryBtn, opacity: hist.groups.length === 0 ? 0.5 : 1 }}
-            >
-              Xuất báo cáo
-            </button>
+            <WalletExportButton
+              s={hist}
+              day={day}
+              owner={user?.username ?? user?.email ?? "tài khoản"}
+              userId={userId}
+            />
           </div>
         </header>
 

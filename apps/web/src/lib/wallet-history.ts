@@ -345,7 +345,8 @@ export function countHiddenRows(
 
 // ── Xuất báo cáo CSV ────────────────────────────────────────────────────────
 
-const CHANNEL_LABEL: Record<TxnChannel, string> = {
+/** Nhãn "tiền đi đường nào" — dùng chung cho giao diện và báo cáo xuất ra. */
+export const CHANNEL_LABEL: Record<TxnChannel, string> = {
   wallet: "Trừ số dư ví",
   invoice: "Thanh toán trực tiếp",
   in: "Tiền vào",
