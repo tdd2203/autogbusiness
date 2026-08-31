@@ -52,8 +52,10 @@ function absUrl(url: string, base?: string): string {
 
 function stepHtml(step: GuideStep, index: number, base?: string): string {
   const num = String(index).padStart(2, "0");
+  // Có ảnh thì xếp hai cột (chữ trái, ảnh phải) — xếp dọc thì bài 9 bước ra 6
+  // trang giấy, mà ảnh cũng chẳng to hơn vì đã bị chặn chiều cao.
   const parts = [
-    `<div class="step">`,
+    `<div class="step${step.image ? " step-cols" : ""}">`,
     `<div class="step-row"><span class="step-num">${esc(num)}</span>`,
     `<div class="step-text"><div class="step-title">${markup(step.title)}</div>`,
     `<p class="step-body">${markup(step.body)}</p></div></div>`,
@@ -103,35 +105,38 @@ const PRINT_SCRIPT = `
 `;
 
 const STYLE = `
-@page { size: A4; margin: 14mm 12mm 16mm; }
+@page { size: A4; margin: 12mm 12mm 14mm; }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: #fff; }
 body {
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  color: #1c1a17; font-size: 11pt; line-height: 1.6;
+  color: #1c1a17; font-size: 10.5pt; line-height: 1.5;
   -webkit-print-color-adjust: exact; print-color-adjust: exact;
 }
-.wrap { max-width: 186mm; margin: 0 auto; padding: 6mm 4mm 10mm; }
+.wrap { max-width: 186mm; margin: 0 auto; padding: 2mm 4mm 6mm; }
 .eyebrow { font-size: 8pt; letter-spacing: .12em; text-transform: uppercase; color: #0f7b57; font-weight: 600; }
-h1 { font-size: 20pt; line-height: 1.25; letter-spacing: -.02em; margin: 4pt 0 8pt; }
+h1 { font-size: 18pt; line-height: 1.25; letter-spacing: -.02em; margin: 3pt 0 6pt; }
 .intro { margin: 0; color: #3f3b36; }
-.section { margin-top: 9mm; }
-.section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 2mm; }
+.section { margin-top: 6mm; }
+.section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 1mm; }
 .section-head span { font-size: 8pt; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; }
 .section-head i { display: block; flex: 1; height: 1px; background: #e2ddd5; }
-.step { margin-top: 6mm; break-inside: avoid; page-break-inside: avoid; }
-.step-row { display: flex; gap: 10px; align-items: baseline; }
-.step-num { font-size: 9.5pt; font-weight: 700; color: #0f7b57; width: 16pt; flex: none; }
+.step { margin-top: 4mm; break-inside: avoid; page-break-inside: avoid; }
+.step-cols { display: grid; grid-template-columns: 1fr 100mm; gap: 5mm; align-items: start; }
+.step-row { display: flex; gap: 8px; align-items: baseline; }
+.step-num { font-size: 9pt; font-weight: 700; color: #0f7b57; width: 15pt; flex: none; }
 .step-text { min-width: 0; }
-.step-title { font-size: 12pt; font-weight: 700; letter-spacing: -.01em; }
-.step-body { margin: 2pt 0 0; color: #3f3b36; }
-figure { margin: 3mm 0 0 26pt; break-inside: avoid; page-break-inside: avoid; }
-figure img { display: block; width: 100%; border: 1px solid #e2ddd5; border-radius: 6px; }
-figcaption { margin-top: 2mm; font-size: 8.5pt; color: #6c655c; }
-.notes { margin-top: 9mm; padding: 4mm 5mm; border: 1px solid #e2ddd5; border-radius: 8px; background: #faf8f5; break-inside: avoid; page-break-inside: avoid; }
-.notes-head { font-size: 8pt; letter-spacing: .12em; text-transform: uppercase; font-weight: 600; color: #a06a12; margin-bottom: 2mm; }
-.notes ul { margin: 0; padding-left: 16pt; }
-.notes li + li { margin-top: 2mm; }
+.step-title { font-size: 11.5pt; font-weight: 700; letter-spacing: -.01em; }
+.step-body { margin: 1pt 0 0; color: #3f3b36; }
+figure { margin: 0; break-inside: avoid; page-break-inside: avoid; }
+/* Chặn CHIỀU CAO ảnh (vẫn giữ tỉ lệ) — ảnh chụp cao cả trăm mm là thứ làm bản
+   in phình ra. Ai cần đọc chữ trong ảnh thì bấm ảnh trong popup xem cỡ đầy đủ. */
+figure img { display: block; width: auto; height: auto; max-width: 100%; max-height: 66mm; border: 1px solid #e2ddd5; border-radius: 6px; }
+figcaption { margin-top: 1.5mm; font-size: 8pt; color: #6c655c; }
+.notes { margin-top: 6mm; padding: 3mm 4mm; border: 1px solid #e2ddd5; border-radius: 8px; background: #faf8f5; break-inside: avoid; page-break-inside: avoid; }
+.notes-head { font-size: 8pt; letter-spacing: .12em; text-transform: uppercase; font-weight: 600; color: #a06a12; margin-bottom: 1.5mm; }
+.notes ul { margin: 0; padding-left: 15pt; }
+.notes li + li { margin-top: 1.5mm; }
 strong { font-weight: 600; }
 `;
 
