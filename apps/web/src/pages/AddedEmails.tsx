@@ -105,21 +105,33 @@ export default function AddedEmails() {
   // quan mở thẳng "Chưa thanh toán") và tab từ ?tab= (dòng "Lời mời đang chờ xử
   // lý" mở thẳng "Chờ tham gia"). Bấm một con số ở Tổng quan là ra đúng danh
   // sách của con số đó, khỏi bấm thêm nhát nữa vào tab hay chip.
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const filterParam = searchParams.get("filter");
   const initialFilter: PaymentFilter =
     filterParam === "requested" || filterParam === "unpaid" || filterParam === "today"
       ? filterParam
       : "all";
+
+  // TAB LÀ ĐƯỜNG DẪN, không phải state (user 2026-08-31): đọc thẳng từ `?tab=` và
+  // bấm tab thì ghi lại vào URL. Nhờ vậy F5 giữ nguyên tab đang xem, gửi link cho
+  // người khác ra đúng danh sách đó, và nút back của trình duyệt quay về tab
+  // trước chứ không văng khỏi trang. Tab mặc định "Đã tham gia" KHÔNG mang tham
+  // số cho đường dẫn sạch.
   const tabParam = searchParams.get("tab");
-  const initialTab: StatusTab =
+  const statusTab: StatusTab =
     tabParam === "pending" || tabParam === "removed" ? tabParam : "active";
+  const setStatusTab = (next: StatusTab) => {
+    const params = new URLSearchParams(searchParams);
+    if (next === "active") params.delete("tab");
+    else params.set("tab", next);
+    // Chip "Chưa thanh toán" lọc XUYÊN tab và bị bỏ khi bấm tab, nên URL cũng
+    // phải bỏ theo — không thì đường dẫn quảng cáo một bộ lọc không còn áp dụng.
+    if (params.get("filter") === "unpaid") params.delete("filter");
+    setSearchParams(params);
+  };
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<PaymentFilter>(initialFilter);
-  // Tab trạng thái: mặc định "Đã tham gia" (khớp Members.tsx). Chuyển sang "Chờ
-  // tham gia" để xem + đồng bộ/thu hồi hàng loạt các lời mời pending mọi không gian.
-  const [statusTab, setStatusTab] = useState<StatusTab>(initialTab);
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
