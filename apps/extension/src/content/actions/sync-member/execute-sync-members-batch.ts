@@ -4,6 +4,7 @@ import { TEXT_FALLBACKS } from "../../selectors";
 import { clearMemberFilter, filterLookupOnce } from "../remove/member-filter";
 import { locateMemberRow } from "../remove/locate-member";
 import { clickTabAndWait, DEFAULT_TAB_VERIFY } from "../sync";
+import { readSeatFields } from "./read-seat-fields";
 
 const LOG = "[autogpt-sync-batch]";
 
@@ -100,6 +101,11 @@ export async function executeSyncMembersBatch(
     };
   }
 
+  // Đang đứng sẵn ở tab "Người dùng" — đọc luôn hàng thẻ suất TRƯỚC khi lọc
+  // (lọc chỉ đổi danh sách bên dưới, nhưng đọc lúc trang còn nguyên là chắc
+  // nhất). Xem `read-seat-fields.ts`: không mở hộp nào, hỏng cũng không sao.
+  const seatFields = readSeatFields(LOG);
+
   // ----- Tìm từng email bằng ô search của tab "Người dùng" -----
   // Ô lọc đã PHẢN HỒI query ít nhất một lần trong mẻ này ⇒ nó còn sống ⇒ từ đây
   // "gõ xong list vẫn trống" là kết quả thật, không phải query bị nuốt.
@@ -185,6 +191,9 @@ export async function executeSyncMembersBatch(
       error_message:
         `Ô "Lọc theo tên" của tab Người dùng không phản hồi — không kiểm được email nào ` +
         `trong ${targets.length} email. Mở chatgpt.com/admin/members và thử lại.`,
+      // Ô lọc chết KHÔNG làm hàng thẻ suất sai — số đã đọc vẫn đáng ghi (backend
+      // đọc cả result của task FAILED, xem `_absorb_seat_reading`).
+      data: seatFields,
     };
   }
 
@@ -201,5 +210,5 @@ export async function executeSyncMembersBatch(
     true,
   );
 
-  return { ok: true, data: { results: resultsArr } };
+  return { ok: true, data: { results: resultsArr, ...seatFields } };
 }

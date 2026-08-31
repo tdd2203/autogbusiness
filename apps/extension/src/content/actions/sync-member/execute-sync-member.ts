@@ -3,6 +3,7 @@ import { reportProgress } from "../../progress";
 import { TEXT_FALLBACKS } from "../../selectors";
 import { clickTabAndWait, DEFAULT_TAB_VERIFY } from "../sync";
 import { locateMemberRow } from "../remove/locate-member";
+import { readSeatFields } from "./read-seat-fields";
 
 const LOG = "[autogpt-sync-member]";
 
@@ -60,6 +61,10 @@ export async function executeSyncMember(
     };
   }
 
+  // Đứng sẵn ở tab "Người dùng" thì đọc luôn hàng thẻ suất — không tốn cú bấm
+  // nào, backend ghi vào workspace (xem `read-seat-fields.ts`).
+  const seatFields = readSeatFields(LOG);
+
   const row = await locateMemberRow(target, {
     pageThrough: false,
     preferFilter: true,
@@ -71,7 +76,7 @@ export async function executeSyncMember(
       { phase: "verifying", message: `${target} đã tham gia workspace.` },
       true,
     );
-    return { ok: true, data: { email: target, found_in: "active" } };
+    return { ok: true, data: { email: target, found_in: "active", ...seatFields } };
   }
 
   console.log(`${LOG} ${target} KHÔNG có ở tab Người dùng → chưa tham gia (pending)`);
@@ -80,5 +85,5 @@ export async function executeSyncMember(
     { phase: "verifying", message: `${target} chưa tham gia (vẫn đang chờ).` },
     true,
   );
-  return { ok: true, data: { email: target, found_in: "pending" } };
+  return { ok: true, data: { email: target, found_in: "pending", ...seatFields } };
 }
