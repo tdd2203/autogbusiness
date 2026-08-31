@@ -930,6 +930,17 @@ function TodoPanel({ data }: { data: DashboardOverview }) {
       // đúng con số đang hiện ở đây.
       to: "/added-emails?filter=unpaid",
     },
+    {
+      // Email chưa chỉ định người nhận tin nhắc gia hạn: tin sắp-hết-hạn về chính
+      // đại lý chứ không tới khách. Đứng CUỐI vì không gấp — và số này thường bằng
+      // gần hết danh sách nên để trên sẽ át mấy dòng thật sự phải làm hôm nay.
+      key: "notify",
+      n: t.unbound_notify,
+      label: "Chưa gắn người nhận nhắc gia hạn",
+      note: "",
+      tone: PLAIN,
+      to: "/notifications",
+    },
   ];
   const nothing = rows.every((r) => r.n === 0);
 
