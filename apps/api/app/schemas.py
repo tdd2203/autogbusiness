@@ -1881,8 +1881,12 @@ class DashboardTodos(BaseModel):
     failed_pending_reinvite: int = 0
     pending: int = 0
     unpaid: int = 0
-    # Đến hạn gia hạn trong DƯỚI 3 NGÀY (user 2026-08-31, trước là 7).
-    due3: int = 0
+    # Ghế đến hạn gia hạn trong cửa sổ `_DUE_SOON_DAYS` (7 ngày) và SỐ TIỀN cần cho
+    # đúng những ghế đó. Thẻ Ví và dòng "Đến hạn" ở Việc cần làm đọc CHUNG hai số
+    # này — trước đây thẻ Ví tự cộng lại ở phía trang theo mốc ngày, lệch với backend
+    # đúng những ghế hết hạn trong ngày cuối cửa sổ.
+    due_soon: int = 0
+    due_soon_money: int = 0
     # KHÔNG có "chờ admin duyệt" (gỡ 2026-08-31): duyệt thanh toán/đổi hạn hai bước
     # đã bị SePay thay — tiền vào là đối chiếu tự động, kỳ sinh ra 'paid' luôn. Số
     # liệu xác nhận: toàn hệ thống 0 yêu cầu treo, lần gửi cuối 13/07/2026.

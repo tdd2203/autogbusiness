@@ -228,25 +228,11 @@ function StatCards({ data, isMobile }: { data: DashboardOverview; isMobile: bool
   const w = data.wallet;
   const r = data.renewal_rate;
 
-  // Thẻ Ví trả lời: sắp tới phải gia hạn bao nhiêu email và cần bao nhiêu tiền.
-  // Cửa sổ 7 NGÀY (chốt user 2026-08-31) — CỐ Ý khác dòng "Đến hạn - dưới 3 ngày"
-  // ở Việc cần làm: dòng kia là việc phải làm ngay, còn ô này là tiền phải lo
-  // trước. Mốc ngày lấy từ `data.now` của backend, không lấy đồng hồ máy người
-  // dùng (máy đặt múi giờ khác là lệch một ngày).
-  const dueSoon = useMemo(() => {
-    const today = data.now.slice(0, 10);
-    const cut = new Date(`${today}T00:00:00Z`);
-    cut.setUTCDate(cut.getUTCDate() + 7);
-    const limit = cut.toISOString().slice(0, 10);
-    const days = data.due_weeks
-      .flatMap((wk) => wk.days)
-      .filter((d) => d.date <= limit);
-    return {
-      seats: days.reduce((a, d) => a + d.seats, 0),
-      money: days.reduce((a, d) => a + d.money, 0),
-    };
-  }, [data.due_weeks, data.now]);
-
+  // Thẻ Ví trả lời "sắp tới phải gia hạn bao nhiêu email, cần bao nhiêu tiền" —
+  // ĐỌC THẲNG số của backend, không tự cộng lại từ danh sách theo tuần. Tự cộng ở
+  // trang thì mốc cắt là NGÀY còn backend cắt theo GIỜ, nên ghế hết hạn trong ngày
+  // cuối cửa sổ làm hai chỗ lệch nhau một hai ghế mà không ai hiểu vì sao.
+  const dueSoon = { seats: data.todos.due_soon, money: data.todos.due_soon_money };
 
   return (
     <section
@@ -905,8 +891,8 @@ function TodoPanel({ data }: { data: DashboardOverview }) {
     },
     {
       key: "due",
-      n: t.due3,
-      label: "Đến hạn - dưới 3 ngày",
+      n: t.due_soon,
+      label: "Đến hạn - dưới 7 ngày",
       note: "",
       tone: WARN,
       to: "/renewals",

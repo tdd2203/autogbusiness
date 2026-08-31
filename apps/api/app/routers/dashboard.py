@@ -98,9 +98,9 @@ _DUE_DAYS = 30
 # sách "lời mời lỗi, chưa được mời lại" — ghế đó khách đã trả tiền mà chưa có.
 _REASON_HIDDEN = {"EXTERNAL_TOGGLE_FAILED"}
 
-# Ngưỡng dòng "Đến hạn - dưới 3 ngày" (chốt user 2026-08-31, trước là 7 ngày).
-# Thẻ Ví cũng dùng đúng ngưỡng này để hai chỗ không nói hai con số.
-_DUE_SOON_DAYS = 3
+# Ngưỡng "đến hạn tới nơi": 7 ngày (chốt user 2026-08-31 — thử 3 ngày rồi bỏ, để
+# khớp với cửa sổ tiền của thẻ Ví). Dùng chung cho cả hai chỗ, không ai tự tính lại.
+_DUE_SOON_DAYS = 7
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -663,7 +663,7 @@ def overview(
     settings = get_payment_settings(db)
     default_fee = int(settings.invite_fee_vnd or 0)
 
-    active = pending = unpaid = due_soon = unbound = 0
+    active = pending = unpaid = due_soon = due_soon_money = unbound = 0
     due_by_day: dict[date_type, list[int]] = {}
     in_team: set[str] = set()
     member_rows = db.execute(
@@ -694,12 +694,12 @@ def overview(
         if end_at is None or end_at <= now_utc:
             # Hết hạn là hệ thống gỡ luôn, không có trạng thái "chờ gỡ" để hiện.
             continue
+        fee = _member_fee(fee_vnd, user.invite_fee_vnd, default_fee)
         if end_at < soon_limit:
             due_soon += 1
+            due_soon_money += fee
         if end_at < due_limit:
-            due_by_day.setdefault(_vn_day(end_at), []).append(
-                _member_fee(fee_vnd, user.invite_fee_vnd, default_fee)
-            )
+            due_by_day.setdefault(_vn_day(end_at), []).append(fee)
 
     serving = DashboardServing(seats=active + pending, active=active, pending=pending)
 
@@ -735,7 +735,8 @@ def overview(
         failed_pending_reinvite=len(failed_emails),
         pending=pending,
         unpaid=unpaid,
-        due3=due_soon,
+        due_soon=due_soon,
+        due_soon_money=due_soon_money,
         unbound_notify=unbound,
     )
 

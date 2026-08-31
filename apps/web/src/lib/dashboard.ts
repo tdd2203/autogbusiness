@@ -61,8 +61,9 @@ export type DashboardTodos = {
   failed_pending_reinvite: number;
   pending: number;
   unpaid: number;
-  /** Đến hạn gia hạn trong dưới 3 ngày. */
-  due3: number;
+  /** Ghế đến hạn trong 7 ngày, và tiền cần cho đúng những ghế đó. */
+  due_soon: number;
+  due_soon_money: number;
   /** Có sẵn từ API, chưa lên màn hình. */
   unbound_notify: number;
 };
