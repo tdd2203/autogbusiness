@@ -1713,6 +1713,21 @@ class CanvaAgentPriceIn(CanvaPriceTiersIn):
     user_ids: list[UUID] = Field(..., min_length=1, max_length=500)
 
 
+class CanvaAgentPriceRow(BaseModel):
+    """Một đại lý ĐANG có bảng giá riêng (khác mặc định hệ thống).
+
+    Trang quản trị phải nhìn được ai đang lệch giá: đặt xong mà không kiểm chứng lại
+    được thì sớm muộn cũng có người bán sai giá cả tháng mới lộ.
+    """
+
+    user_id: UUID
+    tiers: list[CanvaPriceTier]
+
+
+class CanvaAgentPriceListOut(BaseModel):
+    overrides: list[CanvaAgentPriceRow]
+
+
 class CanvaPriceTiersOut(BaseModel):
     tiers: list[CanvaPriceTier]
     #: Các mốc tháng được phép chào bán = đúng các bậc trong bảng.

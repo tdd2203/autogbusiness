@@ -8,6 +8,7 @@ Endpoints (đăng ký lên router dùng chung từ `_shared`, prefix `/api/v1/ca
   - GET /price-tiers          → bảng ĐANG ÁP cho người gọi (đại lý → hệ thống → gốc)
   - GET /price-tiers/default  → bảng mặc định hệ thống (super-admin)
   - PUT /price-tiers/default  → đặt bảng mặc định hệ thống (super-admin)
+  - GET /price-tiers/agents   → danh sách đại lý ĐANG có bảng riêng (super-admin)
   - PUT /price-tiers/agents   → đặt/xoá bảng riêng cho NHIỀU đại lý một lần (super-admin)
 """
 
@@ -23,6 +24,8 @@ from app.models import User
 from app.routers.wallet._shared import get_payment_settings
 from app.schemas import (
     CanvaAgentPriceIn,
+    CanvaAgentPriceListOut,
+    CanvaAgentPriceRow,
     CanvaPriceTier,
     CanvaPriceTiersIn,
     CanvaPriceTiersOut,
@@ -111,6 +114,34 @@ def set_default_price_tiers(
     db.commit()
     return _out(tiers or [dict(t) for t in canva_price.DEFAULT_TIERS],
                 "system" if tiers else "builtin")
+
+
+@router.get("/price-tiers/agents", response_model=CanvaAgentPriceListOut)
+def list_agent_price_tiers(
+    db: Session = Depends(get_session),
+    _: User = Depends(require_super_admin),
+) -> CanvaAgentPriceListOut:
+    """Ai đang được đặt giá riêng, và bảng riêng đó là gì.
+
+    Trang quản trị cần cái này để hiện rõ đại lý nào lệch khỏi bảng mặc định — trước
+    đây đặt giá riêng là thao tác ghi một chiều, nhìn màn hình không kiểm chứng được.
+    """
+    rows = (
+        db.execute(select(User).where(User.canva_price_tiers.isnot(None)))
+        .scalars()
+        .all()
+    )
+    out: list[CanvaAgentPriceRow] = []
+    for u in rows:
+        tiers = canva_price.normalize_tiers(u.canva_price_tiers)
+        if tiers:
+            out.append(
+                CanvaAgentPriceRow(
+                    user_id=u.id,
+                    tiers=[CanvaPriceTier(**t) for t in tiers],
+                )
+            )
+    return CanvaAgentPriceListOut(overrides=out)
 
 
 @router.put("/price-tiers/agents", response_model=dict)

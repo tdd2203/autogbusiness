@@ -139,6 +139,45 @@ def test_dat_hang_loat_va_xoa_bang_rieng(client: TestClient, auth_header: dict) 
     assert got["source"] == "builtin"
 
 
+def test_liet_ke_dai_ly_dang_co_gia_rieng(client: TestClient, auth_header: dict) -> None:
+    """Trang quản trị phải nhìn được ai đang lệch khỏi bảng mặc định.
+
+    Đặt giá riêng mà không đọc lại được thì đó là thao tác ghi một chiều: admin nhìn
+    màn hình không biết mình đã đặt cho ai, đặt bao nhiêu.
+    """
+    a = make_beta_sub(client, auth_header, username="agentX")
+    make_beta_sub(client, auth_header, username="agentY")
+    tiers = [{"months": 1, "price_vnd": 11_000}]
+
+    r = client.get("/api/v1/canva/price-tiers/agents", headers=auth_header)
+    assert r.status_code == 200 and r.json()["overrides"] == []
+
+    client.put(
+        "/api/v1/canva/price-tiers/agents",
+        json={"user_ids": [a["id"]], "tiers": tiers},
+        headers=auth_header,
+    )
+    rows = client.get("/api/v1/canva/price-tiers/agents", headers=auth_header).json()
+    assert rows["overrides"] == [{"user_id": a["id"], "tiers": tiers}]
+
+    # Xoá giá riêng thì biến khỏi danh sách, không còn hiện "đang lệch".
+    client.put(
+        "/api/v1/canva/price-tiers/agents",
+        json={"user_ids": [a["id"]], "tiers": []},
+        headers=auth_header,
+    )
+    rows = client.get("/api/v1/canva/price-tiers/agents", headers=auth_header).json()
+    assert rows["overrides"] == []
+
+
+def test_dai_ly_khong_xem_duoc_danh_sach_gia_rieng(
+    client: TestClient, auth_header: dict
+) -> None:
+    sub = make_beta_sub(client, auth_header, username="tomo")
+    r = client.get("/api/v1/canva/price-tiers/agents", headers=bearer(sub["token"]))
+    assert r.status_code == 403, r.text
+
+
 def test_chi_super_admin_duoc_dat_gia(client: TestClient, auth_header: dict) -> None:
     sub = make_beta_sub(client, auth_header, username="notadmin")
     r = client.put(
