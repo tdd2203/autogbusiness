@@ -18,16 +18,28 @@ import type { CanvaActionResponse, CanvaScrapedMember } from "../../shared/messa
 import { waitForCountStable } from "../human";
 import { emailIn, norm, numberIn, onPeoplePage, visible } from "./dom";
 
-/** Dấu hiệu một dòng là LỜI MỜI ĐANG CHỜ chứ không phải thành viên đã tham gia. */
-const PENDING_MARKS = ["da moi", "loi moi cua", "gui lai loi moi", "invited", "pending"];
+// Dấu hiệu một dòng là LỜI MỜI ĐANG CHỜ chứ không phải thành viên đã tham gia.
+// Bản tiếng Anh (ảnh user 2026-09-01): cột trạng thái ghi "Invited", dòng mô tả là
+// "<email>'s invite is valid for 29 more days.", nút "Resend invite".
+// Bản tiếng Việt: "Đã mời", "Lời mời của <email> còn hiệu lực…", "Gửi lại lời mời".
+const PENDING_MARKS = [
+  "da moi",
+  "loi moi cua",
+  "gui lai loi moi",
+  "invited",
+  "invite is valid",
+  "resend invite",
+];
 
-/** Chữ trong cột vai trò → vai trò chuẩn hoá. */
+/** Chữ trong cột vai trò → vai trò chuẩn hoá (Việt + Anh). */
 function roleOf(rowText: string): CanvaScrapedMember["role"] {
   const t = norm(rowText);
-  if (t.includes("chu so huu")) return "owner";
-  if (t.includes("quan tri vien")) return "admin";
-  if (t.includes("thiet ke thuong hieu")) return "brand_designer";
-  if (t.includes("thanh vien doi")) return "member";
+  if (t.includes("chu so huu") || t.includes("team owner")) return "owner";
+  if (t.includes("quan tri vien") || t.includes("team admin")) return "admin";
+  if (t.includes("thiet ke thuong hieu") || t.includes("brand designer")) {
+    return "brand_designer";
+  }
+  if (t.includes("thanh vien doi") || t.includes("team member")) return "member";
   return null;
 }
 
@@ -35,8 +47,12 @@ function roleOf(rowText: string): CanvaScrapedMember["role"] {
 function nameOf(rowText: string, email: string): string | null {
   const cleaned = rowText
     .replace(email, " ")
+    // Nhãn trạng thái / nút thao tác — tiếng Việt rồi tiếng Anh.
     .replace(/Lời mời của|còn hiệu lực trong.*|Đã mời|Gửi lại lời mời|Sao chép liên kết.*/gi, " ")
+    .replace(/'s invite is valid.*|Invited|Resend invite|Copy unique link|Copy link/gi, " ")
+    // Nhãn vai trò.
     .replace(/Chủ sở hữu đội|Quản trị viên đội|Thành viên đội|Nhà thiết kế thương hiệu của đội/gi, " ")
+    .replace(/Team owner|Team admin|Team member|Team brand designer|Brand designer/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
   return cleaned || null;
@@ -90,11 +106,20 @@ export function scrapePeopleTable(): CanvaScrapedMember[] {
   return [...byEmail.values()];
 }
 
-/** Số trong tiêu đề "Thành viên (N)" — chỉ đếm người ĐÃ tham gia. */
+/** Số trong tiêu đề trang — "Thành viên (N)" / "People (N)". Chỉ đếm người ĐÃ tham
+ *  gia, KHÔNG kể lời mời đang chờ: ảnh user 2026-09-01 hiện "People (2)" trong khi
+ *  bảng có 3 lời mời treo. Đòi có dấu ngoặc chứa số để không vớ nhầm tiêu đề khác. */
+const HEADING_MARKS = ["thanh vien", "people", "members"];
+
 export function headerMemberCount(): number | null {
   const heading = [...document.querySelectorAll<HTMLElement>("h1, h2, [role='heading']")]
     .filter(visible)
-    .find((el) => norm(el.textContent).startsWith("thanh vien"));
+    .find((el) => {
+      const t = norm(el.textContent);
+      return (
+        HEADING_MARKS.some((m) => t.startsWith(m)) && /\(\s*\d/.test(el.textContent ?? "")
+      );
+    });
   return heading ? numberIn(heading.textContent) : null;
 }
 

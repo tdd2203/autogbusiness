@@ -54,18 +54,44 @@ function rowOf(email: string): HTMLElement | null {
   return rows.sort((a, b) => (a.textContent?.length ?? 0) - (b.textContent?.length ?? 0))[0];
 }
 
+/** Chữ trên nút vai trò của dòng (nơi có dấu "⌄" mở menu) — Việt + Anh. */
+const ROLE_BUTTON_MARKS = [
+  "thanh vien doi",
+  "quan tri vien",
+  "thiet ke",
+  "team member",
+  "team admin",
+  "team owner",
+  "brand designer",
+];
+
+/** Nút KHÔNG được bấm nhầm khi tìm menu: chúng làm việc khác hẳn. */
+const NOT_MENU_MARKS = [
+  "gui lai loi moi",
+  "sao chep lien ket",
+  "resend invite",
+  "copy unique link",
+  "copy link",
+];
+
 /** Nút mở menu hành động của dòng (dấu "⌄" cạnh vai trò, hoặc nút "…"). */
 function rowMenuButton(row: HTMLElement): HTMLElement | null {
   const buttons = [...row.querySelectorAll<HTMLElement>("button, [role='button']")].filter(visible);
   if (buttons.length === 0) return null;
-  // Nút menu thường không có chữ (chỉ icon) hoặc mang chữ vai trò + mũi tên.
+  // Ưu tiên nút VAI TRÒ: đó là chỗ Canva gắn menu gỡ/thu hồi.
+  const roleBtn = buttons.find((b) =>
+    ROLE_BUTTON_MARKS.some((m) => norm(b.textContent).includes(m)),
+  );
+  if (roleBtn) return roleBtn;
+  // Không có thì tới nút chỉ có icon (nút "…").
   const iconOnly = buttons.find((b) => norm(b.textContent).length === 0);
   if (iconOnly) return iconOnly;
-  const roleBtn = buttons.find((b) => {
-    const t = norm(b.textContent);
-    return t.includes("thanh vien doi") || t.includes("quan tri vien") || t.includes("thiet ke");
-  });
-  return roleBtn ?? buttons[buttons.length - 1];
+  // Cuối cùng mới đoán, nhưng TUYỆT ĐỐI không đụng "Gửi lại lời mời" / "Sao chép liên
+  // kết": bấm nhầm là gửi thư cho khách hoặc ghi đè clipboard của người dùng.
+  const safe = buttons.filter(
+    (b) => !NOT_MENU_MARKS.some((m) => norm(b.textContent).includes(m)),
+  );
+  return safe.length ? safe[safe.length - 1] : null;
 }
 
 async function removeOne(email: string): Promise<{ ok: boolean; reason?: string }> {

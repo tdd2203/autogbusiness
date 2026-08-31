@@ -42,17 +42,38 @@ import {
 } from "./clipboard-capture";
 import { scrapePeopleTable } from "./sync";
 
-/** Chữ trên nút mở hộp mời — Canva có hai chỗ bấm, chữ đôi khi đổi. */
-const OPEN_INVITE_TEXTS = ["Mời thành viên", "Mời mọi người", "Invite members", "Invite people"];
+// Chữ trên trang, CẢ HAI ngôn ngữ. Team của user đang để tiếng Anh (ảnh 2026-09-01)
+// nhưng tài khoản khác có thể đang tiếng Việt, nên mọi chỗ đều nhận cả hai. So sánh
+// đã bỏ dấu + bỏ hoa thường (xem `dom.norm`), và là so CHỨA chứ không so bằng.
+const OPEN_INVITE_TEXTS = [
+  "Mời thành viên",
+  "Mời mọi người",
+  "Invite people",
+  "Invite members",
+];
 const SUBMIT_TEXTS = ["Xác nhận và mời", "Confirm and invite", "Gửi lời mời", "Send invites"];
 const DONE_TEXTS = ["Xong", "Done"];
-const COPY_LINK_TEXTS = ["Sao chép liên kết", "Copy link"];
+// "Copy unique link" KHÔNG chứa chuỗi "copy link" — phải liệt kê riêng, thiếu là mất
+// sạch liên kết mời ở bản tiếng Anh.
+const COPY_LINK_TEXTS = [
+  "Sao chép liên kết duy nhất",
+  "Sao chép liên kết",
+  "Copy unique link",
+  "Copy link",
+];
 
 /** Chữ trong menu vai trò ứng với từng vai trò dashboard cho chọn. */
 const ROLE_TEXTS: Record<CanvaRole, string[]> = {
   member: ["Thành viên đội", "Team member"],
   brand_designer: ["Nhà thiết kế thương hiệu của đội", "Brand designer"],
 };
+
+/** Hộp mời đang mở? Nhận bằng CẤU TRÚC (có ô email trống) chứ không bằng tiêu đề —
+ *  tiêu đề đổi theo ngôn ngữ, ô nhập thì không. */
+function inviteDialogOpen(): HTMLElement | null {
+  const dlg = openDialog();
+  return dlg && emptyEmailInputs(dlg).length > 0 ? dlg : null;
+}
 
 function fail(
   code: Extract<CanvaActionResponse, { ok: false }>["error_code"],
@@ -64,28 +85,22 @@ function fail(
 
 /** Mở hộp "Mời mọi người vào đội". Trả hộp đang mở, null nếu không mở được. */
 async function openInviteDialog(): Promise<HTMLElement | null> {
-  const existing = openDialog();
-  if (existing && norm(existing.textContent).includes("moi moi nguoi vao doi")) {
-    return existing;
-  }
+  const existing = inviteDialogOpen();
+  if (existing) return existing;
   const opener = clickableByAnyText(OPEN_INVITE_TEXTS);
   if (!opener) return null;
   await humanClick(opener);
-  return waitUntil(() => {
-    const dlg = openDialog();
-    if (!dlg) return null;
-    // Hộp mời nhận diện bằng chính ô nhập email của nó, không bám tiêu đề (Canva
-    // đổi chữ tiêu đề nhiều hơn đổi cấu trúc ô nhập).
-    return emptyEmailInputs(dlg).length > 0 ? dlg : null;
-  }, 15000);
+  return waitUntil(inviteDialogOpen, 15000);
 }
 
-/** "Đội của bạn có N người." → N. */
+/** "Đội của bạn có N người." / "Your team has N people." → N. */
+const TEAM_SIZE_MARKS = ["doi cua ban co", "your team has"];
+
 function teamSizeIn(dialog: HTMLElement): number | null {
   const line = [...dialog.querySelectorAll<HTMLElement>("*")]
     .filter(visible)
     .map((el) => el.textContent ?? "")
-    .find((t) => norm(t).includes("doi cua ban co"));
+    .find((t) => TEAM_SIZE_MARKS.some((m) => norm(t).includes(m)));
   return line ? numberIn(line) : null;
 }
 
@@ -183,11 +198,20 @@ export async function executeCanvaInvite(
   await humanClick(submit);
 
   // Hộp kết quả: "Lời mời đã được gửi!…" — cũng là chỗ lấy liên kết duy nhất.
+  // "Lời mời đã được gửi! …liên kết duy nhất" / "Invite sent! Follow up with a unique
+  // link?" — nhận theo chữ đặc trưng của CẢ HAI bản, hoặc theo chính nút sao chép.
+  const SENT_MARKS = [
+    "loi moi da duoc gui",
+    "lien ket moi",
+    "invite sent",
+    "unique link",
+  ];
   const sentDialog = await waitUntil(() => {
     const dlg = openDialog();
     if (!dlg) return null;
     const t = norm(dlg.textContent);
-    return t.includes("loi moi da duoc gui") || t.includes("lien ket moi") ? dlg : null;
+    if (SENT_MARKS.some((m) => t.includes(m))) return dlg;
+    return COPY_LINK_TEXTS.some((c) => t.includes(norm(c))) ? dlg : null;
   }, 20000);
 
   let inviteLinks: Record<string, string> = {};
