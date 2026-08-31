@@ -25,10 +25,17 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.models import PaymentOrder, PaymentSettings, User
-from app.routers.wallet._shared import order_prefix
+from app.models import (
+    PLATFORM_CANVA,
+    PLATFORM_GPT,
+    Member,
+    PaymentOrder,
+    PaymentSettings,
+    User,
+)
+from app.routers.wallet._shared import get_payment_settings, order_prefix
 from app.sepay import build_transfer_note, qr_image_url
-from app.services import wallet_service
+from app.services import canva_price, wallet_service
 
 # Kết quả decide_payment.
 FREE = "free"      # miễn phí (super-admin / non-beta / phí ≤ 0) → thực thi ngay
@@ -97,6 +104,56 @@ def decide_payment(db: Session, user: User, amount: int) -> str:
     return WALLET if available >= amount else DEFER
 
 
+def member_platform(member: Member) -> str:
+    """Nhánh sản phẩm của một member — suy từ workspace, nguồn thật duy nhất.
+
+    Member không mang cột nhánh riêng (xem models.PLATFORM_*): hai nguồn cho cùng
+    một sự thật là mở đường cho lệch dữ liệu. `member.workspace` được nạp lười, và
+    một lần mời chỉ đụng vài workspace nên identity map của session gánh hết.
+    """
+    ws = getattr(member, "workspace", None)
+    return ws.platform if ws is not None else PLATFORM_GPT
+
+
+def fee_for_months(
+    db: Session,
+    user: User,
+    *,
+    months: int | None,
+    platform: str = PLATFORM_GPT,
+    member_fee: int | None = None,
+    default_fee: int = 0,
+    settings_row: PaymentSettings | None = None,
+) -> int:
+    """Phí MỘT LẦN mời/gia hạn, định tuyến theo nhánh. Điểm vào DUY NHẤT của mọi
+    chỗ tính tiền — thêm nhánh mới thì sửa ở đây, không rải `if` khắp router.
+
+    - `gpt`   : đơn giá/tháng (2 tầng: member → đại lý → hệ thống) × số tháng.
+    - `canva` : tra BẢNG BẬC (đại lý → hệ thống → bảng gốc). Mua càng dài càng rẻ
+      nên KHÔNG nhân đơn giá, và KHÔNG dùng `member_fee` — xem services/canva_price.
+    """
+    if platform == PLATFORM_CANVA:
+        row = settings_row if settings_row is not None else get_payment_settings(db)
+        return canva_price.fee_for_months(canva_price.resolve_tiers(row, user), months)
+    return effective_fee_for_months(member_fee, user, default_fee, months)
+
+
+def order_ref_code(platform: str) -> str:
+    """Sinh mã hoá đơn ngẫu nhiên; nhánh Canva mang hai ký tự cuối 'cv'.
+
+    Tiền tố (AN/AO…) vẫn do cấu hình thanh toán quyết định và GIỮ NGUYÊN cho cả hai
+    nhánh (user 2026-09-01) — chỉ hai ký tự CUỐI cho biết tiền của Canva, để nhìn
+    sao kê ngân hàng là phân biệt được ngay mà không phải tra hệ thống.
+
+    Độ dài giữ đúng 20 ký tự ở cả hai nhánh (Canva: 18 hex + 'cv'), nằm trong dải
+    suffix 6..30 của luồng `order` và khớp lớp ký tự alphanumeric mà webhook dùng để
+    tách mã → không phải đổi cấu hình thanh toán.
+    """
+    if platform == PLATFORM_CANVA:
+        return f"{secrets.token_hex(9)}cv"
+    return secrets.token_hex(10)
+
+
 def create_order(
     db: Session,
     user: User,
@@ -105,14 +162,15 @@ def create_order(
     amount: int,
     payload: dict,
     workspace_id: UUID | None = None,
+    platform: str = PLATFORM_GPT,
 ) -> PaymentOrder:
     """Tạo hoá đơn `pending` mang intent (mời/gia hạn) khi ví không đủ. ref_code
     ngẫu nhiên (khớp id_pattern luồng order). KHÔNG commit — caller lo."""
-    ref_code = secrets.token_hex(10)  # 20 hex → nằm trong [suffix_min, suffix_max]
     order = PaymentOrder(
         user_id=user.id,
         workspace_id=workspace_id,
-        ref_code=ref_code,
+        ref_code=order_ref_code(platform),
+        platform=platform,
         kind=kind,
         amount_vnd=int(amount),
         status="pending",

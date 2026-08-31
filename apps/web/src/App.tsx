@@ -19,6 +19,9 @@ import WorkspaceQueue from "./pages/WorkspaceQueue";
 import WorkspaceBilling from "./pages/WorkspaceBilling";
 import WorkspaceExtension from "./pages/WorkspaceExtension";
 import WorkspaceSettings from "./pages/WorkspaceSettings";
+import CanvaTeams from "./pages/canva/CanvaTeams";
+import CanvaMembers from "./pages/canva/CanvaMembers";
+import CanvaPricing from "./pages/canva/CanvaPricing";
 import Layout from "./components/Layout";
 import WorkspaceLayout from "./components/WorkspaceLayout";
 import ProtectedRoute from "./components/ProtectedRoute";
@@ -179,6 +182,32 @@ export default function App() {
           }
         />
         <Route path="settings" element={<Settings />} />
+        {/* ── Nhánh CANVA: đường dẫn riêng, không lồng vào /workspaces của ChatGPT
+            (user 2026-09-01). Trang mời vẫn dùng chung /invite, có công tắc nhánh. */}
+        <Route
+          path="canva/teams"
+          element={
+            <ProtectedRoute requireSuperAdmin>
+              <CanvaTeams />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="canva/teams/:teamId/members"
+          element={
+            <ProtectedRoute requirePermission="MEMBER_VIEW">
+              <CanvaMembers />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="canva/pricing"
+          element={
+            <ProtectedRoute requireSuperAdmin>
+              <CanvaPricing />
+            </ProtectedRoute>
+          }
+        />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

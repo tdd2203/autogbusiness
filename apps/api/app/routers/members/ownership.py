@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.audit import log_event
 from app.deps import get_session, require_super_admin
-from app.models import Member, User
+from app.models import PLATFORM_CANVA, Member, User
 from app.routers.wallet._shared import get_payment_settings
 from app.schemas import (
     MemberBulkAssignOwnerIn,
@@ -42,6 +42,11 @@ def _freeze_default_fee_on_transfer(db: Session, member: Member) -> None:
     )
     if old_owner is not None and not old_owner.is_super_admin:
         return  # chủ cũ là đại lý → để phí đi theo chủ mới
+    # Nhánh Canva bán theo BẢNG BẬC của đại lý, KHÔNG có tầng "giá riêng theo email"
+    # (chốt user 2026-09-01). Chốt `fee_vnd` ở đây sẽ ghi một con số chẳng ai đọc,
+    # nhưng lại trông như giá riêng khi nhìn dữ liệu — để nguyên NULL.
+    if payment_flow.member_platform(member) == PLATFORM_CANVA:
+        return
     default_fee = int(get_payment_settings(db).invite_fee_vnd or 0)
     member.fee_vnd = payment_flow.effective_fee(None, old_owner, default_fee) if old_owner else default_fee
 

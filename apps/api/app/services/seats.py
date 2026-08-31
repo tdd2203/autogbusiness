@@ -116,6 +116,7 @@ def seat_snapshot(db: Session, workspaces: list[Workspace]) -> list[dict]:
             {
                 "workspace_id": str(ws.id),
                 "name": ws.name,
+                "platform": ws.platform,
                 "seat_total": ws.seat_total,
                 "seat_used": u,
                 "seat_left": seat_left(ws.seat_total, u),

@@ -342,3 +342,63 @@ export const SESSION_RECOVERY_HINT =
   "Nếu lặp lại nhiều lần: phiên đăng nhập ChatGPT có thể đã hỏng/hết hạn khiến " +
   "trang admin không tải được. Hãy XOÁ cookie/đăng xuất chatgpt.com → ĐĂNG NHẬP " +
   "LẠI (mở chatgpt.com/admin/members kiểm tra vào được bình thường) rồi thử lệnh lại.";
+
+// ── NHÁNH CANVA ──────────────────────────────────────────────────────────────
+// Kịch bản thao tác trên canva.com/settings/people. Để RIÊNG một union, không
+// nhồi vào `ExecuteActionRequest`: content script của hai nhánh chạy trên hai
+// trang khác nhau, trộn kiểu vào nhau chỉ khiến mỗi bên phải xử lý những `kind`
+// nó không bao giờ nhận.
+
+/** Vai trò Canva mà dashboard cho phép chọn (user 2026-09-01). */
+export type CanvaRole = "member" | "brand_designer";
+
+/** 1 thành viên/lời mời quét được từ trang "Thành viên" của Canva. */
+export type CanvaScrapedMember = {
+  email: string;
+  name?: string | null;
+  /** "active" = đã tham gia; "pending" = dòng "Lời mời của … còn hiệu lực". */
+  status: "active" | "pending";
+  role?: CanvaRole | "owner" | "admin" | null;
+};
+
+export type CanvaActionRequest =
+  | { kind: "CANVA_PING" }
+  | {
+      kind: "CANVA_INVITE";
+      taskId: string;
+      /** Danh sách email + vai trò. Canva cho nhập nhiều email trong CÙNG một hộp. */
+      entries: { email: string; role: CanvaRole }[];
+    }
+  | { kind: "CANVA_SYNC"; taskId: string }
+  | { kind: "CANVA_REMOVE"; taskId: string; emails: string[] };
+
+export type CanvaActionResponse =
+  | {
+      ok: true;
+      data?: {
+        /** CANVA_INVITE: email đã gửi được lời mời (đọc từ danh sách sau khi mời). */
+        invited_emails?: string[];
+        /** CANVA_INVITE: email KHÔNG xác minh được là đã mời → backend hoàn phí. */
+        unverified_emails?: string[];
+        /** CANVA_INVITE: liên kết mời duy nhất bắt được, theo từng email. */
+        invite_links?: Record<string, string>;
+        /** CANVA_SYNC: toàn bộ thành viên + lời mời chờ. */
+        members?: CanvaScrapedMember[];
+        /** Số người trong đội đọc từ hộp mời ("Đội của bạn có N người"). */
+        team_size?: number | null;
+        [key: string]: unknown;
+      };
+    }
+  | {
+      ok: false;
+      error_code:
+        | "UI_ELEMENT_NOT_FOUND"
+        | "NOT_LOGGED_IN_CANVA"
+        | "PAGE_NOT_PEOPLE"
+        | "SEAT_FULL"
+        | "TIMEOUT"
+        | "VERIFY_FAILED"
+        | "UNKNOWN";
+      error_message: string;
+      data?: Record<string, unknown>;
+    };

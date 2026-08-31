@@ -27,6 +27,24 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# ── Nhánh sản phẩm ───────────────────────────────────────────────────────────
+# Hệ thống phục vụ HAI nhánh dùng chung ví/kỳ hạn/nhật ký nhưng người dùng nhìn
+# thấy tách bạch: ChatGPT Business (nhánh gốc) và Canva (team 50 suất có sẵn).
+# Mọi dữ liệu cũ mang 'gpt' — cột luôn NOT NULL nên không có nhánh nào "không rõ".
+#
+# NGUỒN THẬT DUY NHẤT là `workspaces.platform`. Task trong hàng đợi KHÔNG mang
+# nhãn nhánh riêng: task nào cũng có `workspace_id` nên suy ra được, còn sao chép
+# thêm một bản vào 27 chỗ tạo task thì sót một chỗ là task Canva đội lốt 'gpt'.
+PLATFORM_GPT = "gpt"
+PLATFORM_CANVA = "canva"
+PLATFORMS = (PLATFORM_GPT, PLATFORM_CANVA)
+
+# Team Canva trả phí có sẵn 50 suất và KHÔNG mua thêm được (user 2026-09-01). Dùng
+# làm seat_total mặc định khi tạo team, và làm TRẦN CỨNG khi mời — nhánh GPT cho
+# vượt +50% vì còn mua suất được, Canva vượt là mời hỏng.
+CANVA_SEAT_TOTAL = 50
+
+
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
@@ -68,6 +86,11 @@ class User(Base):
     # 1 lời mời/gia hạn = COALESCE(member.fee_vnd, user.invite_fee_vnd, global).
     # Super-admin đặt qua PUT /wallet/admin/users/{id}/fee.
     invite_fee_vnd: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # BẢNG GIÁ CANVA RIÊNG của đại lý này (user 2026-09-01). NULL = dùng bảng mặc
+    # định toàn hệ thống. Canva bán theo BẬC (mua dài rẻ hơn) nên không dùng chung
+    # `invite_fee_vnd` — cột đó là đơn giá MỘT THÁNG của nhánh ChatGPT.
+    # Dạng: [{"months": 1, "price_vnd": 15000}, ...] — xem services/canva_price.py.
+    canva_price_tiers: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
     # Mã NẠP TIỀN CỐ ĐỊNH theo user (user 2026-07-14): nội dung CK trên QR nạp =
     # `{NAP}{topup_code}`, KHÔNG đổi giữa các lần nạp. Webhook SePay khớp mã này →
     # cộng ĐÚNG số tiền nhận được cho user (không phụ thuộc "lệnh nạp" nào). Nhờ vậy
@@ -214,7 +237,12 @@ class AuditLog(Base):
 
 
 class Workspace(Base):
-    """Workspace ChatGPT Business mà admin quản lý qua Extension."""
+    """Không gian làm việc mà admin quản lý qua Extension.
+
+    Hai nhánh dùng chung bảng này (xem `PLATFORM_*`): workspace ChatGPT Business, và
+    team Canva. Khác nhau ở kịch bản thao tác của extension, trần suất và bảng giá —
+    còn member/kỳ hạn/ví/nhật ký thì chung một bộ máy.
+    """
 
     __tablename__ = "workspaces"
     __table_args__ = (
@@ -223,6 +251,14 @@ class Workspace(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    # Nhánh sản phẩm: 'gpt' (workspace ChatGPT Business) | 'canva' (team Canva).
+    # Quyết định extension mở tab nào, dashboard xếp vào mục nào, tính giá theo bảng
+    # nào, hoá đơn mang mã đuôi gì. Xem hằng PLATFORM_* ở đầu file.
+    platform: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=PLATFORM_GPT, server_default=PLATFORM_GPT, index=True
+    )
+    # ID bên nhà cung cấp: workspace id của ChatGPT, hoặc team id của Canva (đọc từ
+    # URL trang quản trị). Giữ tên cũ vì cột được dùng rộng, ý nghĩa nay rộng hơn.
     chatgpt_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     plan: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -459,6 +495,11 @@ class Member(Base):
     # subscription_end_at: derived = created_at + subscription_months × 30 days; store
     # explicit để query/index nhanh + cho phép extend riêng end_at mà không đổi months.
     subscription_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # LIÊN KẾT MỜI DUY NHẤT của nhánh Canva (user 2026-09-01). Canva sinh cho mỗi
+    # email một link riêng, chỉ email đó dùng được — extension bắt lại chuỗi lúc bấm
+    # "Sao chép liên kết" rồi lưu vào đây, dashboard hiện nút sao chép cho đại lý gửi
+    # khách. NULL với member nhánh ChatGPT (không có khái niệm này).
+    invite_link: Mapped[str | None] = mapped_column(Text, nullable=True)
     subscription_end_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
@@ -883,6 +924,15 @@ class PaymentOrder(Base):
         PG_UUID(as_uuid=True), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True
     )
     ref_code: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # Nhánh sản phẩm của hoá đơn. Hoá đơn Canva có `ref_code` kết thúc bằng 'cv'
+    # (user 2026-09-01) để nhìn nội dung CK trên sao kê là biết ngay tiền của nhánh
+    # nào; cột này mới là nguồn thật khi lọc/đối soát, đuôi mã chỉ để người đọc.
+    #
+    # Không suy từ `workspace_id` như hàng đợi được: hoá đơn kỳ/đổi hạn không gắn
+    # workspace nào (cột nullable) nhưng vẫn phải biết mình thuộc nhánh nào.
+    platform: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=PLATFORM_GPT, server_default=PLATFORM_GPT, index=True
+    )
     # invite | renew | subscription | cycle
     kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     amount_vnd: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -1059,6 +1109,10 @@ class PaymentSettings(Base):
     # Luồng key="topup" (NAP) cộng ví; luồng khác nhận diện được nhưng cần consumer
     # riêng. Webhook match content theo prefix của TỪNG luồng đang bật.
     payment_codes: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+    # BẢNG GIÁ CANVA mặc định toàn hệ thống. NULL = dùng bảng gốc trong code
+    # (services/canva_price.DEFAULT_TIERS). Đại lý nào có bảng riêng thì bảng riêng
+    # thắng — xem `canva_price.resolve_tiers`.
+    canva_price_tiers: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
     # Phương thức xác thực webhook SePay: 'none' | 'apikey' | 'hmac'. Secret ở env
     # (SEPAY_APIKEY cho apikey; SEPAY_WEBHOOK_SECRET cho hmac). Bỏ OAuth 2.0.
     sepay_auth_method: Mapped[str] = mapped_column(

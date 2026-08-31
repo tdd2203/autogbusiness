@@ -114,14 +114,26 @@ def _billable_extension_months(member: Member, body: MemberUpdateSubscriptionIn)
 
 
 def subscription_fee(
-    member: Member, user: User, default_fee: int, body: MemberUpdateSubscriptionIn
+    db: Session,
+    member: Member,
+    user: User,
+    default_fee: int,
+    body: MemberUpdateSubscriptionIn,
 ) -> int:
-    """Phí đổi hạn = đơn giá/tháng (2 tầng) × số tháng KÉO DÀI; 0 nếu không kéo dài
-    (rút ngắn / vô thời hạn / giữ nguyên). Dùng chung endpoint + webhook replay."""
+    """Phí đổi hạn theo số tháng KÉO DÀI; 0 nếu không kéo dài (rút ngắn / vô thời hạn
+    / giữ nguyên). Nhánh GPT nhân đơn giá/tháng, nhánh Canva tra bảng bậc. Dùng chung
+    endpoint + webhook replay."""
     if not subscription_would_extend(member, body):
         return 0
     months = _billable_extension_months(member, body)
-    return payment_flow.effective_fee_for_months(member.fee_vnd, user, default_fee, months)
+    return payment_flow.fee_for_months(
+        db,
+        user,
+        months=months,
+        platform=payment_flow.member_platform(member),
+        member_fee=member.fee_vnd,
+        default_fee=default_fee,
+    )
 
 
 def perform_subscription_core(
@@ -240,6 +252,7 @@ def _create_subscription_order_and_raise(
         user,
         kind="subscription",
         amount=amount,
+        platform=payment_flow.member_platform(member),
         payload={
             "member_id": str(member.id),
             "subscription_months": body.subscription_months,
@@ -298,7 +311,7 @@ def update_member_subscription(
     default_fee = int(settings_row.invite_fee_vnd or 0)
     # Phí = đơn giá/tháng (2 tầng) × số tháng kéo dài, CHỈ khi kéo dài hạn; ngược
     # lại 0. Dùng chung subscription_fee với webhook replay (khớp amount hoá đơn QR).
-    fee = subscription_fee(member, user, default_fee, body)
+    fee = subscription_fee(db, member, user, default_fee, body)
     mode = payment_flow.decide_payment(db, user, fee)
     if mode == payment_flow.DEFER:
         _create_subscription_order_and_raise(db, user, workspace_id, member, body, fee, settings_row)

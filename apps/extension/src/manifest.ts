@@ -21,6 +21,16 @@ export const manifest: ManifestV3Export = {
       run_at: "document_idle",
     },
     {
+      // NHÁNH CANVA: trang quản lý thành viên của team Canva. Kịch bản để riêng ở
+      // `content/canva/` — không dùng chung với content script ChatGPT ở trên.
+      matches: [
+        "https://www.canva.com/settings/*",
+        "https://canva.com/settings/*",
+      ],
+      js: ["src/content/canva/index.ts"],
+      run_at: "document_idle",
+    },
+    {
       // Bridge cho dashboard: nhận postMessage "auto-trigger" sau khi user tạo task.
       // Dashboard chạy port riêng 17173 (xem apps/web/vite.config.ts).
       matches: ["http://localhost:17173/*", "http://127.0.0.1:17173/*"],
@@ -67,6 +77,9 @@ export const manifest: ManifestV3Export = {
     "http://127.0.0.1:17174/*",
     "https://chatgpt.com/*",
     "https://chat.openai.com/*",
+    // Nhánh Canva — cần để mở/điều hướng tab và inject lại content script khi cần.
+    "https://www.canva.com/*",
+    "https://canva.com/*",
     // PURCHASE_SEAT payment chain — cần permission để inject content script
     // qua chrome.scripting.executeScript khi auto-injection chậm (fallback).
     // GIỮ LẠI dù luồng mua suất mới không dùng: chế độ `skip_to_payment` vẫn

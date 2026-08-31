@@ -19,14 +19,15 @@ super-admin only.
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.deps import get_session, require_permission
-from app.models import Member, User, Workspace, WorkspaceAssignment
+from app.models import PLATFORM_GPT, Member, User, Workspace, WorkspaceAssignment
 from app.permissions import Permission
+from app.schemas import Platform
 from app.services import seats
 
 router = APIRouter(prefix="/api/v1/auto-invite", tags=["auto-invite"])
@@ -36,7 +37,9 @@ router = APIRouter(prefix="/api/v1/auto-invite", tags=["auto-invite"])
 MIN_USAGE_DAYS_FOR_HISTORY = 30
 
 
-def _resolve_eligible_workspaces(db: Session, user: User) -> list[Workspace]:
+def _resolve_eligible_workspaces(
+    db: Session, user: User, platform: str = PLATFORM_GPT
+) -> list[Workspace]:
     """Danh sách workspace ĐÍCH được phép add email MỚI (theo cấu hình nút ⚙️):
 
     - super-admin: 1 workspace cũ nhất (giữ nguyên hành vi — mời riêng thì vào thẳng
@@ -44,10 +47,16 @@ def _resolve_eligible_workspaces(db: Session, user: User) -> list[Workspace]:
     - `invite_all_workspaces`: MỌI workspace (kể cả tạo mới sau này);
     - còn lại ("chỉ định"): các workspace được gán qua workspace_assignments.
 
-    Trang Mời thành viên chọn NGẪU NHIÊN 1 phần tử trong danh sách này cho mỗi email
-    mới (email cũ/gia hạn dùng workspace lịch sử — không qua đây).
+    LUÔN lọc theo MỘT nhánh, mặc định 'gpt'. Trang Mời chọn NGẪU NHIÊN một đích cho
+    mỗi email mới — trộn hai nhánh vào cùng danh sách thì một email ChatGPT có thể
+    rơi vào team Canva, mất tiền và mất chỗ ở cả hai bên. Client cũ không gửi tham số
+    nên vẫn chỉ thấy nhánh ChatGPT y như trước.
     """
-    stmt = select(Workspace).order_by(Workspace.created_at.asc())
+    stmt = (
+        select(Workspace)
+        .where(Workspace.platform == platform)
+        .order_by(Workspace.created_at.asc())
+    )
     if user.is_super_admin:
         return list(db.execute(stmt.limit(1)).scalars().all())
     if user.invite_all_workspaces:
@@ -58,9 +67,11 @@ def _resolve_eligible_workspaces(db: Session, user: User) -> list[Workspace]:
     return list(db.execute(stmt).scalars().all())
 
 
-def _resolve_workspace(db: Session, user: User) -> Workspace | None:
+def _resolve_workspace(
+    db: Session, user: User, platform: str = PLATFORM_GPT
+) -> Workspace | None:
     """Workspace ĐÍCH đầu tiên của người dùng (tương thích endpoint `/target` cũ)."""
-    ws = _resolve_eligible_workspaces(db, user)
+    ws = _resolve_eligible_workspaces(db, user, platform)
     return ws[0] if ws else None
 
 
@@ -68,12 +79,13 @@ def _resolve_workspace(db: Session, user: User) -> Workspace | None:
 
 @router.get("/target", response_model=dict)
 def get_target_workspace(
+    platform: Platform = Query(default="gpt", description="Nhánh: 'gpt' | 'canva'"),
     db: Session = Depends(get_session),
     user: User = Depends(require_permission(Permission.MEMBER_INVITE)),
 ) -> dict:
     """Trả workspace cố định của người dùng (id + tên + ghế đã dùng/tổng) để trang Mời
     thành viên hiển thị khối "CỐ ĐỊNH" và biết mời vào đâu. 404 nếu chưa được cấp."""
-    ws = _resolve_workspace(db, user)
+    ws = _resolve_workspace(db, user, platform)
     if ws is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -86,13 +98,14 @@ def get_target_workspace(
 
 @router.get("/targets", response_model=dict)
 def get_target_workspaces(
+    platform: Platform = Query(default="gpt", description="Nhánh: 'gpt' | 'canva'"),
     db: Session = Depends(get_session),
     user: User = Depends(require_permission(Permission.MEMBER_INVITE)),
 ) -> dict:
     """Danh sách workspace ĐÍCH của người dùng cho email MỚI (id + tên + ghế) + cờ
     `all_workspaces`. Trang Mời thành viên chọn ngẫu nhiên 1 phần tử cho mỗi email mới.
     Danh sách rỗng → chưa được cấp không gian nào (FE hiện thông báo)."""
-    workspaces = _resolve_eligible_workspaces(db, user)
+    workspaces = _resolve_eligible_workspaces(db, user, platform)
     return {
         "all_workspaces": bool(user.invite_all_workspaces) and not user.is_super_admin,
         # Suất kèm ở đây chỉ để tương thích người gọi cũ và cho lần vẽ ĐẦU TIÊN.
@@ -104,6 +117,10 @@ def get_target_workspaces(
 
 class EmailHistoryIn(BaseModel):
     emails: list[str]
+    # Nhánh đang mời. Mặc định 'gpt' để client cũ giữ nguyên hành vi; lịch sử chỉ
+    # được trả trong CÙNG nhánh, nếu không một email từng dùng workspace ChatGPT sẽ
+    # kéo lệnh mời Canva về đúng workspace ChatGPT đó.
+    platform: Platform = "gpt"
 
 
 @router.post("/email-history", response_model=dict)
@@ -144,6 +161,7 @@ def get_email_history(
         .join(Workspace, Workspace.id == Member.workspace_id)
         .where(
             func.lower(Member.email).in_(wanted),
+            Workspace.platform == body.platform,
             Member.joined_at.isnot(None),
             or_(
                 # Lịch sử của CHÍNH mình (còn hạn hay hết hạn đều thấy).

@@ -151,6 +151,15 @@ class QueueProgressUpdate(BaseModel):
 # ---------- Workspace ----------
 WorkspacePlan = Literal["business", "enterprise"]
 
+# Nhánh sản phẩm của không gian làm việc: workspace ChatGPT Business hay team Canva.
+# Bỏ trống khi tạo = 'gpt' (giữ nguyên hành vi cũ của mọi client đang chạy).
+Platform = Literal["gpt", "canva"]
+
+# Vai trò trong team Canva mà dashboard cho phép chọn (user 2026-09-01). Vai trò
+# "Quản trị viên đội" cố tình KHÔNG mở: đại lý không có lý do gì để cấp quyền quản trị
+# cho khách, mà bấm nhầm thì khách xoá được cả đội.
+CanvaRole = Literal["member", "brand_designer"]
+
 # Ngôn ngữ giao diện ChatGPT admin của workspace (cấu hình HỆ THỐNG, super-admin
 # đặt theo từng workspace). Tách khỏi ngôn ngữ HIỂN THỊ dashboard (per-user).
 ChatGPTLocale = Literal["vi", "en", "zh"]
@@ -164,6 +173,9 @@ BillingStatus = Literal["PAID", "UNPAID", "UNKNOWN"]
 
 class WorkspaceCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
+    # Nhánh sản phẩm. Không gửi = 'gpt' → client cũ tạo workspace ChatGPT như trước.
+    # 'canva' → seat_total mặc định 50 (gói Canva có sẵn, không mua thêm được).
+    platform: Platform = "gpt"
     chatgpt_id: str | None = Field(default=None, max_length=128)
     plan: WorkspacePlan | None = None
     seat_total: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)
@@ -190,6 +202,7 @@ class WorkspaceOut(BaseModel):
 
     id: UUID
     name: str
+    platform: str = "gpt"
     chatgpt_id: str | None
     plan: str | None
     seat_total: int | None
@@ -222,6 +235,9 @@ class WorkspaceSeatsOut(BaseModel):
 
     workspace_id: UUID
     name: str
+    # Nhánh sản phẩm — trang mời dùng chung cho cả hai nhánh nên phải lọc được
+    # danh sách đích theo công tắc ChatGPT/Canva mà không gọi thêm endpoint.
+    platform: str = "gpt"
     seat_total: int | None
     seat_used: int
     seat_left: int | None
@@ -530,6 +546,9 @@ class MemberOut(BaseModel):
     last_invited_at: datetime | None = None
     subscription_months: int | None = None
     subscription_end_at: datetime | None = None
+    # Liên kết mời duy nhất của Canva (chỉ dùng được cho chính email này). NULL với
+    # member ChatGPT và với member Canva chưa mời qua extension.
+    invite_link: str | None = None
     # Ngày mua (mốc neo) admin đặt trong modal Đổi hạn. NULL = chưa đặt (UI mặc định về
     # ngày thêm log = COALESCE(last_invited_at, created_at)).
     subscription_purchased_at: datetime | None = None
@@ -820,6 +839,8 @@ class MemberBulkUpsert(BaseModel):
 class MemberInviteIn(BaseModel):
     email: EmailStr
     role: ChatGPTRole = "member"
+    # Vai trò áp cho lệnh mời vào TEAM CANVA. Bỏ qua ở nhánh ChatGPT.
+    canva_role: CanvaRole = "member"
     # Subscription tracking — Dashboard-only. Default 1 tháng = 30 ngày.
     # None = không giới hạn (admin tự quản lý). Range 1-60 để tránh nhập nhầm.
     subscription_months: int | None = Field(default=1, ge=1, le=60)
@@ -961,6 +982,8 @@ class MemberBulkInviteIn(BaseModel):
     emails: list[EmailStr] = Field(default_factory=list, max_length=200)
     invites: list[MemberInviteEntry] | None = Field(default=None, max_length=200)
     role: ChatGPTRole = "member"
+    # Vai trò áp cho lệnh mời vào TEAM CANVA. Bỏ qua ở nhánh ChatGPT.
+    canva_role: CanvaRole = "member"
     subscription_months: int | None = Field(default=1, ge=1, le=60)
 
     def resolved_entries(self) -> list[MemberInviteEntry]:
@@ -1659,6 +1682,46 @@ class FinancialReportAgent(BaseModel):
     renew_count: int
 
 
+class PlatformSplit(BaseModel):
+    """Một con số tiền tách theo nhánh sản phẩm. Hai nhánh dùng chung ví nên tổng
+    vẫn là tổng; tách ở đây để biết nhánh nào nuôi nhánh nào."""
+
+    gpt: int = 0
+    canva: int = 0
+
+
+# ---------- Canva: bảng giá bậc thang ----------
+class CanvaPriceTier(BaseModel):
+    """Một bậc giá: mua đúng `months` tháng thì trả `price_vnd` (giá TRỌN GÓI, không
+    phải đơn giá/tháng)."""
+
+    months: int = Field(..., ge=1, le=60)
+    price_vnd: int = Field(..., ge=0, le=100_000_000)
+
+
+class CanvaPriceTiersIn(BaseModel):
+    """Đặt bảng giá. `tiers` rỗng = xoá bảng riêng, quay về tầng dưới (đại lý → hệ
+    thống → bảng gốc trong code)."""
+
+    tiers: list[CanvaPriceTier] = Field(default_factory=list, max_length=24)
+
+
+class CanvaAgentPriceIn(CanvaPriceTiersIn):
+    """Đặt bảng giá cho NHIỀU đại lý một lần (user 2026-09-01: "có thể chỉnh nhanh
+    hàng loạt giá cho các đại lý")."""
+
+    user_ids: list[UUID] = Field(..., min_length=1, max_length=500)
+
+
+class CanvaPriceTiersOut(BaseModel):
+    tiers: list[CanvaPriceTier]
+    #: Các mốc tháng được phép chào bán = đúng các bậc trong bảng.
+    sellable_months: list[int]
+    #: Bảng đang có hiệu lực đến từ đâu: 'user' (riêng đại lý) | 'system' (mặc định
+    #: hệ thống) | 'builtin' (bảng gốc trong code, khi chưa ai cấu hình gì).
+    source: Literal["user", "system", "builtin"]
+
+
 class FinancialReportOut(BaseModel):
     from_date: str  # ISO date (YYYY-MM-DD) — đầu kỳ (bao gồm)
     to_date: str    # ISO date — cuối kỳ (bao gồm)
@@ -1667,6 +1730,10 @@ class FinancialReportOut(BaseModel):
     revenue_renew: int
     cost: int
     profit: int
+    # Tách THU/CHI theo nhánh (ChatGPT / Canva). CHI của Canva chỉ có khi đã NHẬP TAY
+    # hoá đơn gói Canva vào team — chưa nhập thì canva = 0 và lãi nhánh đó là ảo.
+    revenue_by_platform: PlatformSplit = PlatformSplit()
+    cost_by_platform: PlatformSplit = PlatformSplit()
     monthly: list[FinancialReportBucket]
     by_agent: list[FinancialReportAgent]
     # Số workspace chưa đồng bộ hoá đơn 'paid' → giá vốn thiếu (CHI có thể thấp hơn thực).

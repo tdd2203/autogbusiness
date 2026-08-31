@@ -297,7 +297,7 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
         # sẽ ghi đè `invited_by_user_id` (cướp email của người khác) / vượt trần seat.
         # Fail → raise (handle_order bắt → fulfillment_error, tiền QR ở lại ví, KHÔNG
         # tạo member/queue). Xem [[invite-owner-lock]].
-        _assert_email_ownership(db, [e for e, _ in entries], user)
+        _assert_email_ownership(db, [e for e, _ in entries], user, ws.platform)
         # Chỉ đếm email chiếm seat MỚI (email active = gia hạn, không thêm seat).
         _assert_seat_available(
             db, ws, _count_new_invite_seats(db, ws.id, [e for e, _ in entries]), user
@@ -307,9 +307,18 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
         # extension chạy tiền tố tìm-thu-hồi + quy tắc miễn phí còn-hạn khi replay.
         reinvite = bool(payload.get("reinvite"))
         queue_item, _members, chargeable, renew_members = perform_invite_core(
-            db, user, ws, entries, role, single=single, reinvite=reinvite
+            db,
+            user,
+            ws,
+            entries,
+            role,
+            single=single,
+            reinvite=reinvite,
+            # Vai trò Canva lưu trong hoá đơn lúc tạo QR — replay phải giữ đúng, kẻo
+            # người trả tiền cho suất "nhà thiết kế thương hiệu" nhận suất thường.
+            canva_role=payload.get("canva_role"),
         )
-        email_fees = _member_fees(user, chargeable, default_fee)
+        email_fees = _member_fees(db, user, chargeable, default_fee)
         if email_fees and queue_item is not None:
             wallet_service.charge_invite(db, user, queue_item.id, email_fees)
         # Gia hạn email đang active (nếu order gộp cả gia hạn) — phí renew per member.
@@ -328,10 +337,16 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
         if member is None:
             raise ValueError("order member missing")
         months = int(payload["months"])
-        # Phí = đơn giá/tháng × số tháng — KHỚP amount đã tạo ở _create_renew_order
-        # (nếu chỉ trừ phí phẳng, phần tiền QR dư months−1 sẽ kẹt lại trong ví).
-        fee = payment_flow.effective_fee_for_months(
-            member.fee_vnd, user, default_fee, months
+        # Phí phải KHỚP amount đã tạo ở _create_renew_order (nếu chỉ trừ phí phẳng,
+        # phần tiền QR dư months−1 sẽ kẹt lại trong ví). Nhánh lấy từ CHÍNH hoá đơn:
+        # workspace của member có thể đã đổi giữa lúc tạo QR và lúc tiền về.
+        fee = payment_flow.fee_for_months(
+            db,
+            user,
+            months=months,
+            platform=order.platform,
+            member_fee=member.fee_vnd,
+            default_fee=default_fee,
         )
         perform_renew_core(db, user, member, months)
         if fee > 0:
@@ -350,7 +365,7 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
         )
         # Tính lại phí tại thời điểm áp (member có thể đã đổi hạn giữa chừng). Phí =
         # đơn giá/tháng × số tháng kéo dài (subscription_fee), 0 nếu không kéo dài.
-        fee = subscription_fee(member, user, default_fee, body)
+        fee = subscription_fee(db, member, user, default_fee, body)
         perform_subscription_core(db, user, member, body)
         if fee > 0:
             wallet_service.charge_renew(db, user, member.id, fee, email=member.email)

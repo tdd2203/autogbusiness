@@ -7,6 +7,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import type { Platform } from "../types";
 
 export type AutoInviteTarget = {
   workspace_id: string;
@@ -34,10 +35,13 @@ export type AutoInviteTargets = {
   workspaces: AutoInviteTarget[];
 };
 
-export function useAutoInviteTargets() {
+export function useAutoInviteTargets(platform: Platform = "gpt") {
   return useQuery<AutoInviteTargets>({
-    queryKey: ["auto-invite-targets"],
-    queryFn: () => api<AutoInviteTargets>("/api/v1/auto-invite/targets"),
+    // Nhánh nằm TRONG queryKey: đổi công tắc ChatGPT/Canva là đổi hẳn danh sách đích,
+    // dùng chung một cache là mời nhầm nhánh.
+    queryKey: ["auto-invite-targets", platform],
+    queryFn: () =>
+      api<AutoInviteTargets>(`/api/v1/auto-invite/targets?platform=${platform}`),
     retry: false,
     // Cấu hình đích ít đổi → cache 5′, chỉ gọi lại DB khi hết hạn hoặc sau khi
     // lưu cấu hình (invalidate ở modal ⚙️). Tránh gọi thừa mỗi lần vào lại trang.
@@ -63,14 +67,16 @@ export type EmailHistory = Record<string, EmailHistoryEntry>;
  * tham gia (≥30 ngày, do chính tài khoản này mời) để hiện cột chọn lại workspace cũ.
  * Chỉ chạy khi có email; key theo tập email đã sắp xếp (ổn định giữa các lần gõ).
  */
-export function useEmailHistory(emails: string[]) {
+export function useEmailHistory(emails: string[], platform: Platform = "gpt") {
   const sorted = [...emails].map((e) => e.toLowerCase()).sort();
   return useQuery<EmailHistory>({
-    queryKey: ["auto-invite-email-history", sorted],
+    // Lịch sử chỉ tính TRONG nhánh đang mời — email từng dùng workspace ChatGPT không
+    // được kéo lệnh mời Canva về workspace đó.
+    queryKey: ["auto-invite-email-history", platform, sorted],
     queryFn: async () => {
       const resp = await api<{ emails: EmailHistory }>(
         "/api/v1/auto-invite/email-history",
-        { method: "POST", body: JSON.stringify({ emails: sorted }) },
+        { method: "POST", body: JSON.stringify({ emails: sorted, platform }) },
       );
       return resp.emails ?? {};
     },

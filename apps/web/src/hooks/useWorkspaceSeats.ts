@@ -15,11 +15,15 @@
 import { useMemo } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import type { Platform } from "../types";
 
 export type WorkspaceSeats = {
   workspace_id: string;
   name: string;
-  /** Tổng suất mua trên ChatGPT (scrape qua SYNC_BILLING). null = chưa từng sync. */
+  /** Nhánh sản phẩm — trang mời dùng chung cho cả hai nhánh nên lọc đích theo đây. */
+  platform: Platform;
+  /** Tổng suất. Nhánh GPT: scrape qua SYNC_BILLING, null = chưa từng sync. Nhánh
+   *  Canva: 50 suất có sẵn của gói, đặt lúc tạo team. */
   seat_total: number | null;
   /** Đang chiếm = thành viên + lời mời đang chờ, đếm lại trong DB mỗi lần đọc. */
   seat_used: number;

@@ -21,7 +21,7 @@ type NavEntry = {
   labelKey: string;
   perm?: string;
   icon: ReactNode;
-  section: "manage" | "org";
+  section: "manage" | "org" | "canva";
   // Ví (feature 003): mục chỉ hiện với user bật cờ wallet_beta.
   requireWalletBeta?: boolean;
   // Quản trị Ví: chỉ super-admin.
@@ -116,6 +116,18 @@ const ICONS = {
       <path d="M13.73 21a2 2 0 0 1-3.46 0" />
     </svg>
   ),
+  canvaTeams: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M15.5 9.5a3.5 3.5 0 1 0 0 5" />
+    </svg>
+  ),
+  canvaPricing: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M20.6 13.4 12 22l-9-9V3h10l7.6 7.6a2 2 0 0 1 0 2.8Z" />
+      <circle cx="7.5" cy="7.5" r="1.5" />
+    </svg>
+  ),
 };
 
 const NAV: NavEntry[] = [
@@ -146,6 +158,11 @@ const NAV: NavEntry[] = [
   // Báo cáo tài chính (feature 003) — chỉ super-admin: THU/CHI/lợi nhuận + theo đại lý.
   { to: "/admin/report", labelKey: "nav.report", icon: ICONS.report, section: "org", requireSuperAdmin: true },
   { to: "/settings", labelKey: "nav.settings", icon: ICONS.settings, section: "org" },
+  // ── Nhánh CANVA: nhóm RIÊNG ở thanh bên (user 2026-09-01: "làm riêng 1 nhánh
+  // canva riêng, không chung với chatgpt"). Trang mời thì dùng chung một trang, có
+  // công tắc nhánh, mặc định luôn là ChatGPT.
+  { to: "/canva/teams", labelKey: "nav.canvaTeams", icon: ICONS.canvaTeams, section: "canva", requireSuperAdmin: true },
+  { to: "/canva/pricing", labelKey: "nav.canvaPricing", icon: ICONS.canvaPricing, section: "canva", requireSuperAdmin: true },
 ];
 
 export default function Layout() {
@@ -200,6 +217,7 @@ export default function Layout() {
   };
   const manageItems = NAV.filter((n) => n.section === "manage" && navVisible(n));
   const orgItems = NAV.filter((n) => n.section === "org" && navVisible(n));
+  const canvaItems = NAV.filter((n) => n.section === "canva" && navVisible(n));
 
   return (
     <div
@@ -362,6 +380,15 @@ export default function Layout() {
               </SidebarItem>
             ))}
           </SidebarSection>
+          {canvaItems.length > 0 && (
+            <SidebarSection label={t("nav.sectionCanva")}>
+              {canvaItems.map((n) => (
+                <SidebarItem key={n.to} to={n.to} icon={n.icon}>
+                  {t(n.labelKey)}
+                </SidebarItem>
+              ))}
+            </SidebarSection>
+          )}
           {orgItems.length > 0 && (
             <SidebarSection label={t("nav.sectionOrg")}>
               {orgItems.map((n) => (

@@ -34,7 +34,15 @@ from app.deps import (
     require_permission,
     user_can_access_workspace,
 )
-from app.models import Invite, Member, QueueItem, User, Workspace
+from app.models import (
+    PLATFORM_CANVA,
+    PLATFORM_GPT,
+    Invite,
+    Member,
+    QueueItem,
+    User,
+    Workspace,
+)
 from app.permissions import Permission
 from app.routers.wallet._shared import get_payment_settings
 from app.services import payment_flow, seats, wallet_service
@@ -91,6 +99,7 @@ def perform_invite_core(
     *,
     single: bool,
     reinvite: bool = False,
+    canva_role: str | None = None,
 ) -> tuple[QueueItem | None, list[Member], list[Member], list[Member]]:
     """Tạo QueueItem + Member/Invite cho lệnh mời, VÀ gia hạn email đã ACTIVE.
     KHÔNG trừ phí, KHÔNG commit, KHÔNG publish SSE — caller lo (endpoint hoặc webhook
@@ -180,9 +189,19 @@ def perform_invite_core(
             exclude_workspace_id=workspace_id,
             owner_id=user.id,
             now=now,
+            platform=workspace.platform,
         )
         moved_from: dict[str, UUID] = {}
-        payload: dict = {"role": role, "verified_domain": workspace.verified_domain}
+        is_canva = workspace.platform == PLATFORM_CANVA
+        # Nhánh CANVA: bỏ hẳn các field chỉ có nghĩa với ChatGPT (tên miền xác minh,
+        # số suất cần mua thêm, gợi ý suất để bỏ qua hộp "Quản lý suất"). Canva không
+        # mua suất được và không có tên miền xác minh — gửi kèm chỉ khiến người đọc
+        # payload sau này tưởng có luồng đó.
+        payload: dict = (
+            {"role": role, "canva_role": canva_role or "member"}
+            if is_canva
+            else {"role": role, "verified_domain": workspace.verified_domain}
+        )
         # Số suất MỚI mà lệnh mời này thực sự chiếm trên ChatGPT. Extension dùng
         # con số này để biết cần MUA BÙ bao nhiêu suất trước khi mời.
         #
@@ -192,12 +211,13 @@ def perform_invite_core(
         # đây nên vẫn được tính — đúng, vì người đó đã rời ChatGPT và suất đã được
         # trả lại. Còn member active mà đồng bộ VẪN THẤY thì bị chặn 409 từ đầu,
         # không bao giờ chạy tới dòng này.
-        payload["new_seat_count"] = _count_new_invite_seats(
-            db, workspace_id, invite_emails
-        )
-        # Số suất dashboard đang biết → extension dùng để BỎ QUA bước mở hộp
-        # "Quản lý suất" khi thấy chắc chắn còn thừa chỗ. Xem `_seat_hint`.
-        payload["seat_hint"] = _seat_hint(db, workspace, invite_emails)
+        if not is_canva:
+            payload["new_seat_count"] = _count_new_invite_seats(
+                db, workspace_id, invite_emails
+            )
+            # Số suất dashboard đang biết → extension dùng để BỎ QUA bước mở hộp
+            # "Quản lý suất" khi thấy chắc chắn còn thừa chỗ. Xem `_seat_hint`.
+            payload["seat_hint"] = _seat_hint(db, workspace, invite_emails)
         if single and len(invite_entries) == 1:
             payload["email"] = invite_emails[0]
         else:
@@ -390,13 +410,23 @@ def perform_invite_core(
 
 # ── Phí: dự tính (quyết định trừ-ví/QR) + trừ thật (theo member đã tạo) ────────
 
-def _member_fees(user: User, members: list[Member], default_fee: int) -> list[tuple[str, int]]:
-    """(email, fee) cho từng member cần tính phí, bỏ phí ≤ 0. Phí 2 tầng × số tháng
-    (đơn giá/tháng × subscription_months của member)."""
+def _member_fees(
+    db: Session, user: User, members: list[Member], default_fee: int
+) -> list[tuple[str, int]]:
+    """(email, fee) cho từng member cần tính phí, bỏ phí ≤ 0.
+
+    Nhánh GPT: đơn giá/tháng × `subscription_months`. Nhánh Canva: tra bảng bậc theo
+    `subscription_months`. Nhánh đọc từ workspace của CHÍNH member (không truyền từ
+    ngoài vào) để không bao giờ lệch với nơi member thực sự nằm."""
     out: list[tuple[str, int]] = []
     for m in members:
-        fee = payment_flow.effective_fee_for_months(
-            m.fee_vnd, user, default_fee, m.subscription_months
+        fee = payment_flow.fee_for_months(
+            db,
+            user,
+            months=m.subscription_months,
+            platform=payment_flow.member_platform(m),
+            member_fee=m.fee_vnd,
+            default_fee=default_fee,
         )
         if fee > 0:
             out.append((m.email.lower(), fee))
@@ -410,8 +440,13 @@ def _charge_renewals(
     giao dịch `renew_fee`). Phí = đơn giá/tháng × số tháng vừa gia hạn
     (`subscription_months` do perform_renew_core set). Bỏ phí ≤ 0."""
     for m in renew_members:
-        fee = payment_flow.effective_fee_for_months(
-            m.fee_vnd, user, default_fee, m.subscription_months
+        fee = payment_flow.fee_for_months(
+            db,
+            user,
+            months=m.subscription_months,
+            platform=payment_flow.member_platform(m),
+            member_fee=m.fee_vnd,
+            default_fee=default_fee,
         )
         if fee > 0:
             wallet_service.charge_renew(db, user, m.id, fee, email=m.email)
@@ -505,6 +540,10 @@ def plan_invite_fees(
     TIỀN TỐ của extension (thu hồi lời mời cũ), không còn ảnh hưởng phí."""
     now = datetime.now(timezone.utc)
     emails = [e for e, _ in entries]
+    # Nhánh đọc thẳng từ workspace đích: bảng giá Canva khác hẳn công thức của GPT,
+    # truyền tay từ caller là sớm muộn cũng có chỗ quên.
+    ws_row = db.get(Workspace, workspace_id)
+    platform = ws_row.platform if ws_row is not None else PLATFORM_GPT
     existing = {
         m.email: m
         for m in db.execute(
@@ -522,6 +561,7 @@ def plan_invite_fees(
         exclude_workspace_id=workspace_id,
         owner_id=user.id,
         now=now,
+        platform=platform,
     )
     out: list[tuple[str, int]] = []
     for email, months in entries:
@@ -531,8 +571,13 @@ def plan_invite_fees(
             # (mirror perform_invite_core → perform_renew_core). BỎ QUA nếu months
             # None/≤0 (không gia hạn). Xem [[subscription-cycle-model]].
             if months is not None and months > 0:
-                fee = payment_flow.effective_fee_for_months(
-                    m.fee_vnd, user, default_fee, months
+                fee = payment_flow.fee_for_months(
+                    db,
+                    user,
+                    months=months,
+                    platform=platform,
+                    member_fee=m.fee_vnd,
+                    default_fee=default_fee,
                 )
                 if fee > 0:
                     out.append((email, fee))
@@ -548,9 +593,15 @@ def plan_invite_fees(
             # `m.status == "removed"` khớp core: pending local KHÔNG hợp nhất.
             continue
         member_fee = m.fee_vnd if m is not None else None
-        # Phí = đơn giá/tháng × số tháng của lời mời này (mirror _member_fees).
-        fee = payment_flow.effective_fee_for_months(
-            member_fee, user, default_fee, months
+        # Phí của lời mời này (mirror _member_fees): GPT nhân đơn giá/tháng, Canva
+        # tra bảng bậc.
+        fee = payment_flow.fee_for_months(
+            db,
+            user,
+            months=months,
+            platform=platform,
+            member_fee=member_fee,
+            default_fee=default_fee,
         )
         if fee > 0:
             out.append((email, fee))
@@ -567,6 +618,7 @@ def _create_invite_order_and_raise(
     settings_row,
     *,
     reinvite: bool = False,
+    canva_role: str | None = None,
 ) -> None:
     """Ví thiếu → tạo hoá đơn QR mời + HTTP 402. KHÔNG tạo member/queue (chờ trả tiền).
 
@@ -586,6 +638,11 @@ def _create_invite_order_and_raise(
         "role": role,
         "entries": [{"email": e, "subscription_months": m} for e, m in entries],
     }
+    if workspace.platform == PLATFORM_CANVA:
+        # Giữ vai trò Canva trong hoá đơn: webhook chạy lại lệnh mời SAU khi tiền về,
+        # thiếu nó thì người trả tiền cho suất "nhà thiết kế thương hiệu" lại nhận
+        # được suất thành viên thường.
+        order_payload["canva_role"] = canva_role or "member"
     if reinvite:
         order_payload["reinvite"] = True
     order = payment_flow.create_order(
@@ -595,6 +652,7 @@ def _create_invite_order_and_raise(
         amount=amount,
         payload=order_payload,
         workspace_id=workspace.id,
+        platform=workspace.platform,
     )
     log_event(
         db,
@@ -618,7 +676,9 @@ def _create_invite_order_and_raise(
     payment_flow.raise_payment_required(settings_row, order)
 
 
-def _assert_email_ownership(db: Session, emails: list[str], user: User) -> None:
+def _assert_email_ownership(
+    db: Session, emails: list[str], user: User, platform: str = PLATFORM_GPT
+) -> None:
     """CƠ CHẾ CHỦ SỞ HỮU (toàn hệ thống, chốt user 2026-07-13; NỚI 2026-07-20).
 
     Email đã được mời qua dashboard (có `Member` với `invited_by_user_id`) THUỘC VỀ
@@ -632,16 +692,23 @@ def _assert_email_ownership(db: Session, emails: list[str], user: User) -> None:
     của [[invite-owner-lock]] (khách ngừng trả tiền cho chủ cũ → email được giải
     phóng cho người khác).
 
-    Phạm vi GLOBAL (không lọc theo workspace_id). Lời mời FAILED tự xoá Member
-    (phantom cleanup ở completion.py). Chỉ xét member có `invited_by_user_id` NOT
-    NULL: member scrape thuần từ ChatGPT (không rõ ai mời) KHÔNG thiết lập sở hữu."""
+    Phạm vi: mọi workspace TRONG CÙNG NHÁNH (không lọc theo workspace_id). Chủ sở
+    hữu là chuyện của từng nhánh — một khách mua ChatGPT của đại lý A vẫn được mua
+    Canva của đại lý B (user 2026-09-01). Xét chung hai nhánh thì ai bán trước sẽ
+    khoá luôn email đó ở nhánh kia, chặn nhầm một khách hợp lệ.
+
+    Lời mời FAILED tự xoá Member (phantom cleanup ở completion.py). Chỉ xét member có
+    `invited_by_user_id` NOT NULL: member scrape thuần từ ChatGPT (không rõ ai mời)
+    KHÔNG thiết lập sở hữu."""
     if not emails:
         return
     now = datetime.now(timezone.utc)
     conflict = db.execute(
         select(Member.email, Member.invited_by_user_id)
+        .join(Workspace, Workspace.id == Member.workspace_id)
         .where(
             Member.email.in_(emails),
+            Workspace.platform == platform,
             Member.invited_by_user_id.isnot(None),
             Member.invited_by_user_id != user.id,
             # Chỉ email CÒN HẠN (end tương lai) hoặc VÔ HẠN (end NULL) mới còn chủ.
@@ -673,15 +740,22 @@ def _assert_single_workspace(
     Không xét member `removed` (đã rời workspace cũ → được add sang ws mới; luồng
     chuyển/hợp nhất giữ hạn ở perform_invite_core vẫn chạy, xem
     [[cross-workspace-move-keeps-paid]]). Áp cho MỌI tài khoản (kể cả super-admin),
-    độc lập cơ chế chủ sở hữu."""
+    độc lập cơ chế chủ sở hữu.
+
+    "Một" ở đây là một workspace TRONG CÙNG NHÁNH (user 2026-09-01): cùng một email
+    được vừa ngồi trong workspace ChatGPT vừa ngồi trong team Canva, vì đó là hai dịch
+    vụ khách mua riêng. Xét chung hai nhánh thì mua cái thứ hai bị chặn."""
     if not emails:
         return
+    target = db.get(Workspace, workspace_id)
+    platform = target.platform if target is not None else PLATFORM_GPT
     conflict = db.execute(
         select(Member.email, Workspace.name)
         .join(Workspace, Workspace.id == Member.workspace_id)
         .where(
             Member.email.in_(emails),
             Member.workspace_id != workspace_id,
+            Workspace.platform == platform,
             Member.status.in_(["active", "pending"]),
         )
         .limit(1)
@@ -745,10 +819,31 @@ def _assert_seat_available(
 
     Cho phép overcommit tới `seat_total * SEAT_OVERCOMMIT_RATIO` (vượt +50%). Chỉ
     khi vượt mốc này mới chặn và báo admin mở thêm seat.
+
+    NHÁNH CANVA CHẶN CỨNG ở đúng `seat_total` (50 suất của gói): nới +50% chỉ hợp lý
+    khi còn MUA THÊM được suất — Canva thì không, mời quá là Canva từ chối tại chỗ và
+    lệnh chết giữa chừng sau khi đã trừ tiền. Super-admin cũng KHÔNG được bỏ qua ở
+    nhánh này vì không có đường nào mở thêm suất.
     """
-    if user.is_super_admin or workspace.seat_total is None:
+    if workspace.seat_total is None:
+        return
+    is_canva = workspace.platform == PLATFORM_CANVA
+    if user.is_super_admin and not is_canva:
         return
     effective_used = seats.active_used(db, workspace.id)
+    if is_canva:
+        seat_cap = int(workspace.seat_total)
+        if effective_used + additional > seat_cap:
+            free = max(seat_cap - effective_used, 0)
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Team Canva đã kín chỗ: đang dùng {effective_used}/{seat_cap} suất, "
+                    f"còn {free} nhưng yêu cầu mời {additional}. Gói Canva không mua thêm "
+                    f"suất được — gỡ bớt thành viên hoặc dùng team khác."
+                ),
+            )
+        return
     seat_cap = int(workspace.seat_total * SEAT_OVERCOMMIT_RATIO)
     if effective_used + additional > seat_cap:
         free = max(seat_cap - effective_used, 0)
@@ -774,7 +869,7 @@ def invite_member(
     # Quyền workspace — nới cho email cũ user tự sở hữu (xem _assert_invite_workspace_access).
     _assert_invite_workspace_access(db, user, workspace_id, [email])
     # Cơ chế chủ sở hữu: chặn khi email đã thuộc tài khoản KHÁC (bất kỳ workspace).
-    _assert_email_ownership(db, [email], user)
+    _assert_email_ownership(db, [email], user, ws.platform)
     # 1 email chỉ ở 1 workspace: chặn nếu đang active/pending ở workspace khác.
     _assert_single_workspace(db, [email], workspace_id)
     existing = db.execute(
@@ -800,13 +895,16 @@ def invite_member(
     total = sum(f for _, f in planned)
     mode = payment_flow.decide_payment(db, user, total)
     if mode == payment_flow.DEFER:
-        _create_invite_order_and_raise(db, user, ws, entries, body.role, total, settings_row)
+        _create_invite_order_and_raise(
+            db, user, ws, entries, body.role, total, settings_row,
+            canva_role=body.canva_role,
+        )
 
     queue_item, members, chargeable, renew_members = perform_invite_core(
-        db, user, ws, entries, body.role, single=True
+        db, user, ws, entries, body.role, single=True, canva_role=body.canva_role
     )
     if mode == payment_flow.WALLET:
-        email_fees = _member_fees(user, chargeable, default_fee)
+        email_fees = _member_fees(db, user, chargeable, default_fee)
         if email_fees and queue_item is not None:
             wallet_service.charge_invite(db, user, queue_item.id, email_fees)
         _charge_renewals(db, user, renew_members, default_fee)
@@ -908,7 +1006,7 @@ def reinvite_member(
         db, user, ws, entries, role, single=True, reinvite=True
     )
     if mode == payment_flow.WALLET:
-        email_fees = _member_fees(user, chargeable, default_fee)
+        email_fees = _member_fees(db, user, chargeable, default_fee)
         if email_fees and queue_item is not None:
             wallet_service.charge_invite(db, user, queue_item.id, email_fees)
         _charge_renewals(db, user, renew_members, default_fee)
@@ -1066,7 +1164,7 @@ def bulk_invite_members(
     )
     # Cơ chế chủ sở hữu: chặn nếu BẤT KỲ email nào đã thuộc tài khoản khác (bulk
     # trước đây thiếu guard này → tài khoản khác có thể ghi đè invited_by_user_id).
-    _assert_email_ownership(db, [e for e, _ in entries], user)
+    _assert_email_ownership(db, [e for e, _ in entries], user, ws.platform)
     # 1 email chỉ ở 1 workspace: chặn nếu email nào đang active/pending ở ws khác.
     _assert_single_workspace(db, [e for e, _ in entries], workspace_id)
     settings_row = get_payment_settings(db)
@@ -1076,17 +1174,20 @@ def bulk_invite_members(
     total = sum(f for _, f in planned)
     mode = payment_flow.decide_payment(db, user, total)
     if mode == payment_flow.DEFER:
-        _create_invite_order_and_raise(db, user, ws, entries, body.role, total, settings_row)
+        _create_invite_order_and_raise(
+            db, user, ws, entries, body.role, total, settings_row,
+            canva_role=body.canva_role,
+        )
 
     # Cooldown đặt SAU nhánh 402 (ví thiếu → hoá đơn QR): nạp xong bấm lại ngay
     # phải chạy được, đừng tính lượt cho lần bị chặn vì thiếu tiền.
     enforce_action_cooldown(db, user, "MEMBER_BULK_INVITE", workspace_id)
 
     queue_item, members, chargeable, renew_members = perform_invite_core(
-        db, user, ws, entries, body.role, single=False
+        db, user, ws, entries, body.role, single=False, canva_role=body.canva_role
     )
     if mode == payment_flow.WALLET:
-        email_fees = _member_fees(user, chargeable, default_fee)
+        email_fees = _member_fees(db, user, chargeable, default_fee)
         if email_fees and queue_item is not None:
             wallet_service.charge_invite(db, user, queue_item.id, email_fees)
         _charge_renewals(db, user, renew_members, default_fee)

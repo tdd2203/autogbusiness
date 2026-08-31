@@ -36,6 +36,7 @@ from app.routers import (
     audit_logs,
     auth,
     auto_invite,
+    canva,
     dashboard,
     invite_config,
     members,
@@ -1245,6 +1246,7 @@ def create_app() -> FastAPI:
     app.include_router(telegram.router)
     app.include_router(admin_limits.router)
     app.include_router(dashboard.router)
+    app.include_router(canva.router)
 
     @app.get("/health", tags=["meta"])
     def health() -> dict[str, str]:

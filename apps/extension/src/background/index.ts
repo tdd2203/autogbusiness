@@ -1,5 +1,8 @@
 import { runUntilIdle } from "./runner";
 import { connectSSE, disconnectSSE } from "./sse";
+// Nhánh Canva chạy song song, khoá API riêng, runner riêng (xem canva-runner.ts).
+import { runCanvaUntilIdle } from "./canva-runner";
+import { connectCanvaSSE, disconnectCanvaSSE } from "./canva-sse";
 import {
   handleLabelMismatchReport,
   isLabelsAlarm,
@@ -117,6 +120,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
   if (alarm.name !== BACKUP_POLL_ALARM) return;
   console.log("[autogpt-poll] backup tick — checking pending tasks");
+  // Nhánh Canva có hàng đợi riêng theo khoá riêng — cùng nhịp an toàn này. Không có
+  // khoá Canva thì hàm tự thoát ngay, không tốn request nào.
+  runCanvaUntilIdle()
+    .then((r) => {
+      if (r.processed > 0) console.log(`[autogpt-canva] xong ${r.processed} lệnh (nhịp nền)`);
+    })
+    .catch((e) => console.warn("[autogpt-canva] nhịp nền lỗi", e));
+  void connectCanvaSSE();
   runUntilIdle()
     .then((r) => {
       if (r.processed > 0) {
@@ -140,6 +151,7 @@ chrome.runtime.onInstalled.addListener((details) => {
   // Auto-connect SSE — backend sẽ push task event tới đây, KHÔNG cần user
   // thao tác gì trên extension.
   void connectSSE();
+  void connectCanvaSSE();
 });
 
 chrome.runtime.onStartup.addListener(() => {
@@ -150,6 +162,7 @@ chrome.runtime.onStartup.addListener(() => {
   setupIdleCloseAlarm();
   void refreshLabelBundle();
   void connectSSE();
+  void connectCanvaSSE();
 });
 
 // User save/clear API key trong popup → reconnect SSE với credentials mới.
@@ -160,15 +173,18 @@ chrome.storage.onChanged.addListener((changes, area) => {
   console.log("[autogpt] config changed, reconnecting SSE");
   if (newConfig) {
     void connectSSE();
+    void connectCanvaSSE();
     void refreshLabelBundle();
   } else {
     disconnectSSE();
+    disconnectCanvaSSE();
   }
 });
 
 // Watchdog: nếu SW vừa wake từ idle mà SSE chưa kết nối, thử connect ngay.
 // (chrome.runtime.onStartup chỉ fire 1 lần khi browser khởi động.)
 void connectSSE();
+void connectCanvaSSE();
 setupBackupPoll();
 setupLabelsRefreshAlarm();
 setupIdleCloseAlarm();
@@ -192,12 +208,28 @@ runUntilIdle()
   })
   .catch((e) => console.warn("[autogpt-boot] failed", e));
 
+runCanvaUntilIdle()
+  .then((r) => {
+    if (r.processed > 0) {
+      console.log(`[autogpt-canva] drained ${r.processed} lệnh lúc SW khởi động`);
+    }
+  })
+  .catch((e) => console.warn("[autogpt-canva] boot drain lỗi", e));
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "run-pending") {
-    // User-triggered: drain task queue cho đến khi không còn PENDING
+    // User-triggered: drain task queue cho đến khi không còn PENDING.
+    // Chạy TUẦN TỰ ChatGPT rồi tới Canva (user 2026-09-01: một Chrome chạy cả hai).
+    // Song song thì hai tab tự động giành CPU, lệnh nào cũng chậm và dễ hỏng.
     (async () => {
       const result = await runUntilIdle();
-      sendResponse({ ok: true, ...result });
+      const canva = await runCanvaUntilIdle();
+      sendResponse({
+        ok: true,
+        ...result,
+        processed: result.processed + canva.processed,
+        canva_processed: canva.processed,
+      });
     })();
     return true;
   }

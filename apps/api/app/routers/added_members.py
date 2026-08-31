@@ -17,7 +17,14 @@ from sqlalchemy.orm import Session, selectinload
 from app.action_limit import enforce_action_cooldown
 from app.audit import log_event
 from app.deps import get_current_user, get_session
-from app.models import REMOVED_REASON_EMAIL_CHANGED, AuditLog, Member, MemberSubscriptionCycle, User
+from app.models import (
+    PLATFORM_GPT,
+    REMOVED_REASON_EMAIL_CHANGED,
+    AuditLog,
+    Member,
+    MemberSubscriptionCycle,
+    User,
+)
 from app.routers.members._shared import current_stint_cycles
 from app.routers.wallet._shared import get_payment_settings
 from app.schemas import (
@@ -655,8 +662,13 @@ def _payable_targets(
     for member_id, cycles in by_member.items():
         member = members[member_id]
         fee = sum(
-            payment_flow.effective_fee_for_months(
-                member.fee_vnd, user, default_fee, c.months
+            payment_flow.fee_for_months(
+                db,
+                user,
+                months=c.months,
+                platform=payment_flow.member_platform(member),
+                member_fee=member.fee_vnd,
+                default_fee=default_fee,
             )
             for c in cycles
         )
@@ -664,7 +676,14 @@ def _payable_targets(
     for member_id, member in legacy.items():
         if member_id in by_member:
             continue
-        fee = payment_flow.effective_fee_for_months(member.fee_vnd, user, default_fee, 1)
+        fee = payment_flow.fee_for_months(
+            db,
+            user,
+            months=1,
+            platform=payment_flow.member_platform(member),
+            member_fee=member.fee_vnd,
+            default_fee=default_fee,
+        )
         targets.append(_PayTarget(member, [], int(fee)))
     return targets
 
@@ -799,6 +818,12 @@ def pay_member_cycles(
                     "required": total,
                 },
             )
+        # Trả kỳ gom được nhiều email ở nhiều workspace cùng lúc, nên nhánh của hoá
+        # đơn chỉ rõ ràng khi CẢ LÔ cùng một nhánh — lúc đó mã mới mang đuôi 'cv'.
+        # Lô lẫn hai nhánh thì để 'gpt' (mã không đuôi): doanh thu vẫn tách đúng vì
+        # báo cáo đọc theo workspace của từng member, không đọc nhãn hoá đơn.
+        platforms = {payment_flow.member_platform(t.member) for t in targets}
+        order_platform = platforms.pop() if len(platforms) == 1 else PLATFORM_GPT
         order = payment_flow.create_order(
             db,
             user,
@@ -808,6 +833,7 @@ def pay_member_cycles(
                 "cycle_ids": [str(c.id) for t in targets for c in t.cycles],
                 "member_ids": [str(t.member.id) for t in targets if not t.cycles],
             },
+            platform=order_platform,
         )
         log_event(
             db,

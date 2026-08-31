@@ -33,5 +33,8 @@
   "popup.changelogKind.fix": "Sửa lỗi",
   "popup.changelogKind.chore": "Bảo trì",
   "popup.changelogMore": "Xem thêm bản cũ",
-  "popup.langSwitch": "Ngôn ngữ"
+  "popup.langSwitch": "Ngôn ngữ",
+  "popup.canvaApiKey": "Khoá API team Canva (tuỳ chọn)",
+  "popup.canvaApiKeyPlaceholder": "dán key của team Canva…",
+  "popup.canvaApiKeyHint": "Để trống nếu Chrome này chỉ chạy ChatGPT. Có key thì lệnh Canva chạy song song, mỗi lúc một lệnh."
 }

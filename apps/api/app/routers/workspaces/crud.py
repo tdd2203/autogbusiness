@@ -15,7 +15,7 @@ Endpoints (đăng ký lên router dùng chung từ `_shared`):
 
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -28,6 +28,8 @@ from app.deps import (
     require_super_admin,
 )
 from app.models import (
+    CANVA_SEAT_TOTAL,
+    PLATFORM_CANVA,
     User,
     Workspace,
     WorkspaceAssignment,
@@ -35,6 +37,7 @@ from app.models import (
 )
 from app.schemas import (
     ExtensionInfoIn,
+    Platform,
     WorkspaceCreate,
     WorkspaceOut,
     WorkspaceSeatsOut,
@@ -104,6 +107,10 @@ def _apply_effective_seat_used(db: Session, workspaces: list[Workspace]) -> None
 
 @router.get("/seats", response_model=list[WorkspaceSeatsOut])
 def list_workspace_seats(
+    platform: Platform | None = Query(
+        default=None,
+        description="Lọc theo nhánh ('gpt' | 'canva'). Bỏ trống = cả hai nhánh.",
+    ),
     db: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ) -> list[dict]:
@@ -120,6 +127,8 @@ def list_workspace_seats(
     được gán cái nào.
     """
     stmt = select(Workspace).order_by(Workspace.created_at.desc())
+    if platform is not None:
+        stmt = stmt.where(Workspace.platform == platform)
     if not (user.is_super_admin or user.invite_all_workspaces):
         stmt = stmt.join(
             WorkspaceAssignment,
@@ -130,10 +139,22 @@ def list_workspace_seats(
 
 @router.get("", response_model=list[WorkspaceOut])
 def list_workspaces(
+    platform: Platform | None = Query(
+        default=None,
+        description="Lọc theo nhánh ('gpt' | 'canva'). Bỏ trống = trả cả hai nhánh.",
+    ),
     db: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ) -> list[Workspace]:
+    """Danh sách không gian làm việc người dùng được nhìn.
+
+    `platform` KHÔNG mặc định thành 'gpt': bỏ trống phải trả cả hai nhánh, vì các
+    trang dùng chung (nhật ký, ví, báo cáo) cần nhìn thấy tất cả. Trang riêng của
+    từng nhánh tự truyền tham số.
+    """
     stmt = select(Workspace).order_by(Workspace.created_at.desc())
+    if platform is not None:
+        stmt = stmt.where(Workspace.platform == platform)
     # Sub-admin chỉ thấy workspace được gán (super-admin thấy tất cả).
     if not user.is_super_admin:
         stmt = stmt.join(
@@ -161,11 +182,19 @@ def create_workspace(
                 detail="Workspace với chatgpt_id này đã tồn tại",
             )
 
+    # Team Canva: gói trả phí có sẵn 50 suất và KHÔNG mua thêm được, nên seat_total
+    # là hằng số của gói chứ không phải số scrape về như ChatGPT. Vẫn cho ghi đè nếu
+    # admin nhập tay (gói Canva khác chẳng hạn).
+    seat_total = body.seat_total
+    if seat_total is None and body.platform == PLATFORM_CANVA:
+        seat_total = CANVA_SEAT_TOTAL
+
     ws = Workspace(
         name=body.name,
+        platform=body.platform,
         chatgpt_id=body.chatgpt_id,
         plan=body.plan,
-        seat_total=body.seat_total,
+        seat_total=seat_total,
         verified_domain=_normalize_domain(body.verified_domain),
         extension_api_key=_generate_api_key(),
         created_by_id=actor.id,
@@ -184,7 +213,12 @@ def create_workspace(
         result="SUCCESS",
         target_type="WORKSPACE",
         target_id=str(ws.id),
-        data={"name": ws.name, "chatgpt_id": ws.chatgpt_id, "plan": ws.plan},
+        data={
+            "name": ws.name,
+            "platform": ws.platform,
+            "chatgpt_id": ws.chatgpt_id,
+            "plan": ws.plan,
+        },
         commit=False,
     )
     db.commit()

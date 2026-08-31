@@ -21,6 +21,7 @@ from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    PLATFORM_GPT,
     Member,
     MemberSubscriptionCycle,
     QueueItem,
@@ -83,6 +84,7 @@ def find_movable_paid_members(
     exclude_workspace_id: UUID,
     owner_id: UUID,
     now: datetime,
+    platform: str = PLATFORM_GPT,
 ) -> dict[str, "Member"]:
     """Tìm member CÓ THỂ CHUYỂN WORKSPACE miễn phí: cùng email, CÙNG CHỦ SỞ HỮU
     (`invited_by_user_id == owner_id`), đã `removed` khỏi workspace KHÁC, và CÒN HẠN
@@ -99,16 +101,22 @@ def find_movable_paid_members(
     Chỉ xét `removed` — KHÔNG đụng email đang `active`/`pending` ở ws khác (đang dùng /
     đang mời dở nơi khác, không được "cướp" đi). Cơ chế chủ sở hữu (`_assert_email_
     ownership`) đã chặn email của tài khoản KHÁC trước khi tới đây. Nhiều ứng viên →
-    chọn kỳ hạn XA NHẤT (`order_by end desc`). Trả {email_lowercase: member}."""
+    chọn kỳ hạn XA NHẤT (`order_by end desc`). Trả {email_lowercase: member}.
+
+    CHỈ TRONG CÙNG NHÁNH (`platform`): gói ChatGPT còn hạn không được "dời" sang team
+    Canva — hai nhánh khác giá, khác dịch vụ, dời qua là vừa mất doanh thu vừa tặng
+    khách một chỗ họ chưa trả tiền."""
     if not emails:
         return {}
     rows = (
         db.execute(
             select(Member)
+            .join(Workspace, Workspace.id == Member.workspace_id)
             .where(
                 Member.email.in_([e.lower() for e in emails]),
                 Member.invited_by_user_id == owner_id,
                 Member.workspace_id != exclude_workspace_id,
+                Workspace.platform == platform,
                 Member.status == "removed",
                 Member.subscription_end_at.isnot(None),
                 Member.subscription_end_at > now,

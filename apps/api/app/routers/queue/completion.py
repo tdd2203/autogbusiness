@@ -26,6 +26,7 @@ from app.deps import (
     require_extension_workspace,
 )
 from app.models import (
+    PLATFORM_CANVA,
     REMOVED_REASON_BY_ADMIN,
     REMOVED_REASON_EMAIL_CHANGED,
     REMOVED_REASON_EXPIRED,
@@ -1191,6 +1192,12 @@ def _auto_buy_seats_for_pending(
     Trả về id task vừa tạo (caller publish SSE SAU commit), hoặc None.
     """
     if item.type != "SYNC_DATA" or not isinstance(result, dict):
+        return None
+    # NHÁNH CANVA KHÔNG BAO GIỜ MUA SUẤT: gói đã có sẵn 50 suất và không có đường nào
+    # mua thêm. Thực tế mẻ sync Canva cũng không mang `invites_scanned`/`seat_total`
+    # nên đã rơi ở rào dưới, nhưng chặn thẳng ở đây cho rõ ý — đây là chỗ tiêu tiền
+    # thật, không để nó phụ thuộc vào hình dạng payload của nhánh khác.
+    if workspace.platform == PLATFORM_CANVA:
         return None
     if result.get("invites_scanned") is not True:
         return None

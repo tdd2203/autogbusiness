@@ -20,9 +20,15 @@ export type BillingInvoice = {
   service_fee_vnd?: number | null;
 };
 
+/** Nhánh sản phẩm: workspace ChatGPT Business hay team Canva. Dữ liệu cũ đều là
+ *  "gpt"; nhánh quyết định trang nào hiện nó, extension mở tab nào, tính giá theo
+ *  bảng nào. */
+export type Platform = "gpt" | "canva";
+
 export type Workspace = {
   id: string;
   name: string;
+  platform: Platform;
   chatgpt_id: string | null;
   plan: string | null;
   seat_total: number | null;
@@ -157,6 +163,9 @@ export type Member = {
    *  months×30 ngày CHÍNH XÁC tới giây (KHÔNG chốt cuối ngày, KHÔNG −1). Gia hạn = hạn
    *  cũ + months×30. Chế độ "ngày cụ thể" đặt thẳng giá trị này. NULL = vô thời hạn. */
   subscription_end_at: string | null;
+  /** Liên kết mời DUY NHẤT của Canva — chỉ dùng được cho chính email này (extension
+   *  bắt lại lúc mời). null với member ChatGPT và member Canva chưa mời qua extension. */
+  invite_link?: string | null;
   /** "Ngày mua" (mốc neo) admin đặt trong modal Đổi hạn. NULL = chưa đặt → UI mặc định
    *  về ngày thêm log (last_invited_at ?? created_at). Hạn = ngày mua + months×30. */
   subscription_purchased_at: string | null;

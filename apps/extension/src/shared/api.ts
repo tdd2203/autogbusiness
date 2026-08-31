@@ -65,6 +65,21 @@ export async function fetchActiveTask(
   return request<ActiveTaskInfo>(config, "/api/v1/queue/active");
 }
 
+/**
+ * Lấy lệnh kế tiếp mà KHÔNG nhận mẻ gộp — dùng cho nhánh Canva.
+ *
+ * `pickNextTask` gửi `merge=1` để nói "bản này biết chạy mẻ gộp", và khi đó backend
+ * trả kèm danh sách lệnh anh em; extension PHẢI báo kết quả cho từng lệnh trong mẻ
+ * (`background/merged-report.ts`). Runner Canva chưa làm việc đó, nên nhận mẻ là
+ * những lệnh anh em kẹt IN_PROGRESS tới lúc bị dọn vì treo. Team Canva tối đa 50 người
+ * nên chạy từng lệnh không đáng kể gì về tốc độ.
+ */
+export async function pickNextTaskSingle(
+  config: ExtensionConfig,
+): Promise<QueueItem | null> {
+  return request<QueueItem | null>(config, "/api/v1/queue/next");
+}
+
 export async function pickNextTask(
   config: ExtensionConfig,
 ): Promise<QueueItem | null> {
@@ -245,4 +260,22 @@ export async function reconcileAfterInvite(
       }),
     },
   );
+}
+
+/**
+ * Lưu LIÊN KẾT MỜI DUY NHẤT của Canva cho từng email (nhánh Canva).
+ *
+ * Canva sinh link riêng cho mỗi người và chỉ email đó dùng được, nên phải gửi kèm
+ * đúng cặp email → link. Backend gắn vào `members.invite_link`; dashboard hiện nút
+ * "Sao chép liên kết" cho đại lý gửi khách.
+ */
+export async function postCanvaInviteLinks(
+  config: ExtensionConfig,
+  workspaceId: string,
+  links: Record<string, string>,
+): Promise<{ updated: number }> {
+  return request<{ updated: number }>(config, "/api/v1/canva/invite-links", {
+    method: "POST",
+    body: JSON.stringify({ workspace_id: workspaceId, links }),
+  });
 }

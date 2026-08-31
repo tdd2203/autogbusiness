@@ -1,6 +1,11 @@
 export type ExtensionConfig = {
   apiBaseUrl: string;
+  /** Khoá API của workspace ChatGPT. Giữ nguyên tên cũ — mọi code nhánh GPT đọc
+   *  trường này, đổi tên là phải sửa cả runner 3.7k dòng cho không được gì. */
   apiKey: string;
+  /** Khoá API của team CANVA (user 2026-09-01: một Chrome chạy cả hai nhánh).
+   *  Vắng mặt = máy này không chạy Canva; nhánh ChatGPT hoạt động y như trước. */
+  canvaApiKey?: string;
 };
 
 export type Workspace = {

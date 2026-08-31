@@ -143,6 +143,7 @@ def _create_renew_order_and_raise(
         amount=amount,
         payload={"member_id": str(member.id), "months": months},
         workspace_id=workspace_id,
+        platform=payment_flow.member_platform(member),
     )
     log_event(
         db,
@@ -189,8 +190,15 @@ def renew_member_subscription(
     settings_row = get_payment_settings(db)
     default_fee = int(settings_row.invite_fee_vnd or 0)
     # Phí gia hạn = đơn giá/tháng (2 tầng) × số tháng gia hạn (user 2026-07-13).
-    fee = payment_flow.effective_fee_for_months(
-        member.fee_vnd, user, default_fee, months
+    # GPT nhân đơn giá/tháng; Canva tra bảng bậc (mua dài rẻ hơn) — cùng một điểm vào.
+    fee = payment_flow.fee_for_months(
+        db,
+        user,
+        months=months,
+        platform=payment_flow.member_platform(member),
+        member_fee=member.fee_vnd,
+        default_fee=default_fee,
+        settings_row=settings_row,
     )
 
     # Ví trước, QR sau (chỉ user bị tính phí; decide_payment tự bỏ qua super/non-beta).

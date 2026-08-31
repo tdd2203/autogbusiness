@@ -41,14 +41,17 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.billing_fee import invoice_fee_vnd
 from app.deps import get_session, require_super_admin
-from app.models import Member, User, Workspace
+from app.models import PLATFORM_CANVA, PLATFORM_GPT, Member, User, Workspace
 from app.schemas import (
     FinancialReportAgent,
     FinancialReportBucket,
     FinancialReportCycle,
     FinancialReportCyclesOut,
     FinancialReportOut,
+    PlatformSplit,
 )
+
+from app.services import canva_price
 
 from ._shared import router, get_payment_settings
 
@@ -84,6 +87,9 @@ class _OwnerInfo(NamedTuple):
     email: str | None
     is_test: bool
     invite_fee_vnd: int | None
+    # Bảng giá Canva riêng của đại lý (None = dùng bảng mặc định hệ thống). Nhánh
+    # Canva bán theo BẬC nên không suy ra được từ `invite_fee_vnd`.
+    canva_price_tiers: list[dict] | None = None
 
 
 def _month_key(d: date) -> str:
@@ -347,12 +353,18 @@ def financial_report(
     rev_by_month: dict[str, int] = {k: 0 for k in months}
     cost_by_month: dict[str, int] = {k: 0 for k in months}
 
-    default_fee = int(get_payment_settings(db).invite_fee_vnd or 0)
+    settings_row = get_payment_settings(db)
+    default_fee = int(settings_row.invite_fee_vnd or 0)
     # RAM: chỉ lấy 5 cột báo cáo thực sự đọc, thay vì nạp nguyên ORM User của mọi
     # tài khoản vào identity map. Nội dung dùng tới không đổi (xem _OwnerInfo).
     users: dict[UUID, _OwnerInfo] = {
         row.id: _OwnerInfo(
-            row.id, row.username, row.email, row.is_test, row.invite_fee_vnd
+            row.id,
+            row.username,
+            row.email,
+            row.is_test,
+            row.invite_fee_vnd,
+            row.canva_price_tiers,
         )
         for row in db.execute(
             select(
@@ -361,9 +373,23 @@ def financial_report(
                 User.email,
                 User.is_test,
                 User.invite_fee_vnd,
+                User.canva_price_tiers,
             )
         )
     }
+    # Nhánh của từng workspace, đọc một lần (vài dòng) — vòng quét member bên dưới
+    # không join workspace để giữ nguyên cách đọc theo lô.
+    ws_platform: dict[UUID, str] = {
+        row.id: row.platform for row in db.execute(select(Workspace.id, Workspace.platform))
+    }
+    # Bảng giá Canva MẶC ĐỊNH của hệ thống, dùng khi đại lý chưa có bảng riêng.
+    default_canva_tiers = canva_price.normalize_tiers(settings_row.canva_price_tiers)
+    revenue_by_platform: dict[str, int] = {PLATFORM_GPT: 0, PLATFORM_CANVA: 0}
+    cost_by_platform: dict[str, int] = {PLATFORM_GPT: 0, PLATFORM_CANVA: 0}
+
+    def _canva_tiers_for(owner: _OwnerInfo | None) -> list[dict]:
+        own = canva_price.normalize_tiers(owner.canva_price_tiers) if owner else []
+        return own or default_canva_tiers or [dict(t) for t in canva_price.DEFAULT_TIERS]
 
     # ── THU: kỳ mở trong khoảng (loại test + chủ workspace) ─────────────────────
     revenue_invite = 0
@@ -394,9 +420,23 @@ def financial_report(
             # Member thuộc tài khoản test → loại khỏi báo cáo.
             if owner is not None and owner.is_test:
                 continue
-            per_month = _member_per_month_fee(m, owner, default_fee)
-            if per_month <= 0:
-                continue
+            platform = ws_platform.get(m.workspace_id, PLATFORM_GPT)
+            if platform == PLATFORM_CANVA:
+                # Canva bán theo GÓI: tiền của một kỳ tra thẳng bảng bậc theo số
+                # tháng của kỳ đó, KHÔNG nhân đơn giá (mua 12 tháng rẻ hơn 12 lần
+                # mua 1 tháng — nhân lên là báo cáo thổi doanh thu lên gấp rưỡi).
+                tiers = _canva_tiers_for(owner)
+                per_month = 0
+
+                def _amount(n: int, _tiers: list[dict] = tiers) -> int:
+                    return canva_price.fee_for_months(_tiers, n)
+            else:
+                per_month = _member_per_month_fee(m, owner, default_fee)
+                if per_month <= 0:
+                    continue
+
+                def _amount(n: int, _unit: int = per_month) -> int:
+                    return _unit * n
             owner_key = m.invited_by_user_id  # có thể None → nhóm "chưa có chủ"
             # Chỉ chu kỳ ĐÃ ĐÁNH DẤU TRẢ (chưa trả = công nợ, không phải doanh thu),
             # tính vào tháng BẮT ĐẦU KỲ — KHÔNG dùng paid_at (chốt user 2026-08-12).
@@ -438,7 +478,10 @@ def financial_report(
                 # chính họ vẫn tính. Đổi một cái lệch lấy một cái lệch to hơn. Thay
                 # vào đó: cảnh báo tháng nào có thu mà chưa có chi (xem months_no_cost).
                 n_months = int(c.months) if c.months else 1
-                amt = per_month * n_months
+                amt = _amount(n_months)
+                if amt <= 0:
+                    continue
+                revenue_by_platform[platform] = revenue_by_platform.get(platform, 0) + amt
                 seat_months_sold += n_months
                 agent_rev[owner_key] = agent_rev.get(owner_key, 0) + amt
                 if c.id in invite_cycle_ids:
@@ -464,6 +507,7 @@ def financial_report(
         Workspace.finance_start_at,
         Workspace.created_at,
         Workspace.bank_fee_percent,
+        Workspace.platform,
     ).execution_options(yield_per=_SCAN_CHUNK)
     cost = 0
     cost_missing = 0
@@ -473,7 +517,13 @@ def financial_report(
     # được số ghế·tháng (xem _seat_months_billed), để tử/mẫu cùng một tập hoá đơn.
     billed_seat_months = 0.0
     seat_cost_basis = 0
-    for ws_invoices, ws_finance_start_at, ws_created_at, ws_fee_pct in db.execute(ws_stmt):
+    for (
+        ws_invoices,
+        ws_finance_start_at,
+        ws_created_at,
+        ws_fee_pct,
+        ws_platform_value,
+    ) in db.execute(ws_stmt):
         invoices = ws_invoices or []
         paid = [inv for inv in invoices if inv.get("status") == "paid"]
         if not paid:
@@ -506,6 +556,9 @@ def financial_report(
             # TIỀN MẶT: TRỌN tiền hoá đơn vào tháng PHÁT HÀNH, không chia theo ngày.
             amt = _invoice_cost(inv, ws_fee_pct)
             cost += amt
+            cost_by_platform[ws_platform_value] = (
+                cost_by_platform.get(ws_platform_value, 0) + amt
+            )
             mk = _month_key(d)
             if mk in cost_by_month:
                 cost_by_month[mk] += amt
@@ -577,6 +630,14 @@ def financial_report(
         revenue_renew=revenue_renew,
         cost=cost,
         profit=profit,
+        revenue_by_platform=PlatformSplit(
+            gpt=revenue_by_platform.get(PLATFORM_GPT, 0),
+            canva=revenue_by_platform.get(PLATFORM_CANVA, 0),
+        ),
+        cost_by_platform=PlatformSplit(
+            gpt=cost_by_platform.get(PLATFORM_GPT, 0),
+            canva=cost_by_platform.get(PLATFORM_CANVA, 0),
+        ),
         monthly=monthly,
         by_agent=by_agent,
         cost_missing_workspaces=cost_missing,
@@ -629,6 +690,10 @@ def financial_report_cycles(
             Workspace.created_at,
             Workspace.bank_fee_percent,
         )
+        # CHỈ nhánh ChatGPT: bảng này cắt theo CHU KỲ HOÁ ĐƠN Stripe (period_start /
+        # period_end / đơn giá mỗi ghế) — team Canva không có hoá đơn nào như thế, đưa
+        # vào chỉ tạo ra dòng rỗng trông như thiếu dữ liệu.
+        .where(Workspace.platform == PLATFORM_GPT)
     ):
         ws_names[wid] = name
         anchor = fs or created

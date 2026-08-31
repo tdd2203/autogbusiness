@@ -24,7 +24,7 @@ import { useExtensionStatus } from "../hooks/useExtensionTrigger";
 import { queuePollInterval } from "../lib/queuePolling";
 import { formatVnd, getQrOrder, type OrderQr } from "../lib/wallet";
 import { toast } from "../components/Toast";
-import type { Member, QueueItem } from "../types";
+import type { Member, Platform, QueueItem } from "../types";
 import OrderQrModal from "../components/OrderQrModal";
 
 const DEFAULT_MONTHS = 1;
@@ -121,7 +121,13 @@ export default function InviteMembers() {
   const qc = useQueryClient();
 
   const { user } = useAuth();
-  const targets = useAutoInviteTargets();
+  // NHÁNH đang mời. Mặc định LUÔN là ChatGPT mỗi lần mở trang và KHÔNG ghi nhớ lựa
+  // chọn cũ (user 2026-09-01): nhớ thì sẽ có ngày dán cả mẻ email vào nhầm nhánh.
+  const [platform, setPlatform] = useState<Platform>("gpt");
+  // Vai trò áp cho lệnh mời Canva. Canva còn có "Quản trị viên đội" nhưng dashboard
+  // cố tình không mở: khách không cần quyền quản trị, bấm nhầm là họ xoá được cả đội.
+  const [canvaRole, setCanvaRole] = useState<"member" | "brand_designer">("member");
+  const targets = useAutoInviteTargets(platform);
   const eligibleWs = useMemo(
     () => targets.data?.workspaces ?? [],
     [targets.data],
@@ -184,7 +190,7 @@ export default function InviteMembers() {
   const renewCount = entries.filter((e) => isRenew(e.email)).length;
 
   // Lịch sử workspace của email đã từng tham gia (≥30 ngày, do chính user này mời).
-  const emailHistory = useEmailHistory(validUnique);
+  const emailHistory = useEmailHistory(validUnique, platform);
   const historyMap = emailHistory.data ?? {};
   const historyFor = (email: string) => historyMap[email.toLowerCase()];
   /** Workspace ĐÍCH của 1 email. Email cũ (có lịch sử): user chọn > default lịch sử.
@@ -324,7 +330,12 @@ export default function InviteMembers() {
             renewed_count?: number;
           }>(`/api/v1/workspaces/${ws}/members/bulk-invite`, {
             method: "POST",
-            body: JSON.stringify({ invites, role: "member" }),
+            body: JSON.stringify({
+              invites,
+              role: "member",
+              // Backend bỏ qua trường này ở nhánh ChatGPT.
+              canva_role: canvaRole,
+            }),
           });
           invited += resp.invited_count ?? resp.count;
           renewed += resp.renewed_count ?? 0;
@@ -578,13 +589,54 @@ export default function InviteMembers() {
 
       {/* Vùng nội dung — thu nhỏ ~10% cho gọn chữ toàn trang (modal không bị ảnh hưởng). */}
       <div style={{ zoom: 0.9 }}>
-      {/* Thanh trên: nút cấu hình đích (⚙️, super-admin) + trạng thái extension. */}
+      {/* Thanh trên: CÔNG TẮC NHÁNH + nút cấu hình đích (⚙️) + trạng thái extension. */}
+      <div
+        className="flex items-center"
+        style={{ marginBottom: 12, gap: 8, flexWrap: "wrap" }}
+      >
+        <span className="form-hint">{t("invite.platformLabel")}</span>
+        <div className="flex" style={{ gap: 4 }}>
+          {(["gpt", "canva"] as const).map((p) => (
+            <button
+              key={p}
+              type="button"
+              className={platform === p ? "btn btn-primary btn-sm" : "btn btn-ghost btn-sm"}
+              onClick={() => {
+                if (p === platform) return;
+                setPlatform(p);
+                // Đích của email cũ/mới thuộc nhánh cũ → xoá hết, chọn lại theo nhánh
+                // mới. Giữ lại là mời sang workspace của nhánh kia.
+                setWorkspaceByEmail({});
+                randomWsRef.current = {};
+              }}
+            >
+              {t(p === "gpt" ? "invite.platformGpt" : "invite.platformCanva")}
+            </button>
+          ))}
+        </div>
+        {platform === "canva" && (
+          <>
+            <select
+              className="form-input"
+              style={{ width: "auto" }}
+              value={canvaRole}
+              onChange={(e) =>
+                setCanvaRole(e.target.value as "member" | "brand_designer")
+              }
+            >
+              <option value="member">{t("invite.canvaRoleMember")}</option>
+              <option value="brand_designer">{t("invite.canvaRoleBrand")}</option>
+            </select>
+            <span className="form-hint">{t("invite.platformCanvaNote")}</span>
+          </>
+        )}
+      </div>
       {(user?.is_super_admin || workspaceId) && (
         <div
           className="flex items-center justify-end"
           style={{ marginBottom: 16, gap: 8 }}
         >
-          {user?.is_super_admin && (
+          {user?.is_super_admin && platform === "gpt" && (
             <button
               type="button"
               className="btn btn-ghost btn-sm"
