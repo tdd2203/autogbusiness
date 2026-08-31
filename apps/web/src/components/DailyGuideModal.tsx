@@ -230,23 +230,25 @@ function Step({
 const backdrop: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 130, padding: 16 };
 const modal: React.CSSProperties = { fontFamily: "var(--font-sans)", background: "var(--surface)", borderRadius: 18, width: 1120, maxWidth: "100%", maxHeight: "calc(92vh / var(--ui-scale))", display: "flex", flexDirection: "column", border: "1px solid var(--border)", boxShadow: "0 24px 70px -18px rgba(28,26,23,0.4), 0 2px 8px rgba(28,26,23,0.08)", overflow: "hidden" };
 const header: React.CSSProperties = { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, padding: "18px 22px 15px", borderBottom: "1px solid var(--border)" };
-// Nhãn nhỏ, gạch mục, số thứ tự: dùng NGUYÊN `cardKicker` của dự án (mono, cỡ 10,
-// giãn chữ .12em, viết hoa) — cùng một ngôn ngữ với kicker của các thẻ ở Tổng quan.
-const eyebrow: React.CSSProperties = { ...cardKicker, height: "auto", color: "var(--success)", marginBottom: 5 };
+// Nhãn nhỏ mượn cỡ chữ và độ giãn của `cardKicker` (10px, .12em, viết hoa) nhưng
+// ĐỔI SANG Inter: popup này không dùng chữ máy, cả bài chỉ một mặt chữ (chốt
+// 31/8/2026). `SANS` phải đứng SAU khi trải cardKicker, nếu không mono ghi đè lại.
+const SANS = { fontFamily: "var(--font-sans)" } as const;
+const eyebrow: React.CSSProperties = { ...cardKicker, ...SANS, height: "auto", color: "var(--success)", marginBottom: 5, fontWeight: 600 };
 const titleStyle: React.CSSProperties = { ...cardTitle, fontSize: 22, marginBottom: 0, lineHeight: 1.3 };
 const closeBtn: React.CSSProperties = { width: 30, height: 30, borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--ink-3)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
 const body: React.CSSProperties = { padding: "16px 22px 22px", overflowY: "auto", flex: 1 };
 const intro: React.CSSProperties = { margin: 0, fontSize: 15, lineHeight: 1.65, color: "var(--ink-2)" };
 const sectionHead: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
-const sectionHeadText: React.CSSProperties = { ...cardKicker, height: "auto", color: "var(--ink)", fontWeight: 600, flexShrink: 0 };
+const sectionHeadText: React.CSSProperties = { ...cardKicker, ...SANS, height: "auto", color: "var(--ink)", fontWeight: 700, flexShrink: 0 };
 const sectionRule: React.CSSProperties = { height: 1, flex: 1, background: "var(--border)" };
-const stepNum: React.CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 12.5, color: "var(--success)", width: 22, flex: "none", fontWeight: 600 };
+const stepNum: React.CSSProperties = { ...SANS, fontSize: 13, color: "var(--success)", width: 22, flex: "none", fontWeight: 700 };
 const stepTitle: React.CSSProperties = { ...cardTitle, fontSize: 16, marginBottom: 0, lineHeight: 1.4 };
 const stepBody: React.CSSProperties = { margin: "5px 0 0", fontSize: 14.5, lineHeight: 1.6, color: "var(--ink-2)" };
 const figure: React.CSSProperties = { margin: "12px 0 0 34px", display: "flex", flexDirection: "column", gap: 7 };
-const caption: React.CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-3)", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "baseline" };
+const caption: React.CSSProperties = { ...SANS, fontSize: 11.5, color: "var(--ink-3)", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "baseline" };
 const noteBox: React.CSSProperties = { marginTop: 30, padding: "16px 18px", border: "1px solid var(--border)", background: "var(--surface-2)", borderRadius: 12 };
-const noteHead: React.CSSProperties = { ...cardKicker, height: "auto", color: "var(--warning)", marginBottom: 10 };
+const noteHead: React.CSSProperties = { ...cardKicker, ...SANS, height: "auto", color: "var(--warning)", marginBottom: 10, fontWeight: 600 };
 const noteList: React.CSSProperties = { margin: 0, paddingLeft: 18, listStyleType: "disc", fontSize: 14, lineHeight: 1.6, color: "var(--ink-2)" };
 const footer: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 22px", borderTop: "1px solid var(--border)", background: "var(--surface-2)", flexWrap: "wrap" };
 const muteLabel: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--ink-2)", cursor: "pointer", userSelect: "none" };
