@@ -350,3 +350,44 @@ def test_order_allocations_mark_every_email_failed_when_task_failed(
         EMAIL: "failed",
         EMAIL_B: "failed",
     }
+
+
+def test_payments_inherit_money_from_changed_email(
+    client: TestClient, auth_header: dict
+) -> None:
+    """ĐỔI EMAIL: panel email NHẬN gom tiền của email cũ, gắn cờ `from_email`.
+
+    Ca thật 31/8/2026: `kr.lauhit@` trả 330k rồi đổi sang `arcturusssse@`. Email
+    nhận là member row MỚI (email khác, id khác) nên panel của nó hiện 0 ₫ trong khi
+    khách đã đóng đủ — nhìn vào tưởng ghế đang dùng miễn phí. Tiền phải theo ghế,
+    nhưng phải chỉ rõ nó phát sinh dưới tên email nào (web đóng khung riêng).
+    """
+    ws = create_ws(client, auth_header, "Cashflow Chain WS")
+    sub = make_beta_sub(client, auth_header, username="cashchain", balance=FEE)
+    assign(client, auth_header, ws["id"], sub["id"])
+
+    old_email = "chain-old@example.com"
+    new_email = "chain-new@example.com"
+    _bulk_invite(client, sub["token"], ws["id"], [old_email])
+    old = _member(client, ws["id"], old_email, auth_header)
+
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{old['id']}/change-email",
+        json={"new_email": new_email},
+        headers=auth_header,
+    )
+    assert r.status_code == 201, r.text
+    new_id = r.json()["id"]
+
+    data = _payments(client, ws["id"], new_id, auth_header)
+    assert data["inherited_emails"] == [old_email]
+    # Tiền của email cũ ĐƯỢC gom vào tổng — nếu không, ghế đang dùng hiện 0 ₫.
+    assert data["charged_total"] == FEE
+    assert data["net_total"] == FEE
+    assert [e["from_email"] for e in data["entries"]] == [old_email]
+
+    # Panel của CHÍNH email cũ không đổi: tiền của nó vẫn là tiền của nó.
+    own = _payments(client, ws["id"], old["id"], auth_header)
+    assert own["inherited_emails"] == []
+    assert own["net_total"] == FEE
+    assert [e["from_email"] for e in own["entries"]] == [None]

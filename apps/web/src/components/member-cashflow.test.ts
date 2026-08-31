@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { pairMemberCashflow, visibleMemberOrders } from "./MemberDetailModal";
+import {
+  pairMemberCashflow,
+  splitInheritedCashflow,
+  visibleMemberOrders,
+} from "./MemberDetailModal";
 
 /* Khối "Dòng tiền" của 1 email: lượt mời hỏng ghi phí (−) rồi hoàn (+) ở 2 thời
    điểm khác nhau. Gộp thành 1 dòng để khỏi phải trừ nhẩm — nhưng KHÔNG giấu như
@@ -149,5 +153,44 @@ describe("visibleMemberOrders", () => {
       created_at: "",
     });
     expect(visibleMemberOrders([o], [], NOW)).toHaveLength(1);
+  });
+});
+
+/* GOM TIỀN QUA CHUỖI ĐỔI EMAIL (user 31/8/2026): email nhận là bản ghi MỚI nên
+   panel của nó hiện 0 ₫ trong khi ghế đang dùng đã trả tiền dưới tên email cũ.
+   API gom sang (`from_email`), web tách ra thành khung riêng — gom nhưng không lẫn. */
+describe("splitInheritedCashflow", () => {
+  const own = pairMemberCashflow([entry({ id: "n1", kind: "renew_fee", amount: -FEE })]);
+  const inherited = pairMemberCashflow([
+    entry({ id: "o1", kind: "invite_fee", amount: -FEE, from_email: "old@example.com" }),
+  ]);
+
+  it("khoản của email cũ tách sang khung riêng, khoản email mới ở lại", () => {
+    const r = splitInheritedCashflow([...own, ...inherited], [], ["old@example.com"]);
+    expect(r.ownRows.map((x) => (x.type === "entry" ? x.entry.id : x.fee.id))).toEqual(["n1"]);
+    expect(r.groups).toHaveLength(1);
+    expect(r.groups[0].email).toBe("old@example.com");
+    expect(r.groups[0].rows).toHaveLength(1);
+  });
+
+  it("hoá đơn chia theo cùng một cờ", () => {
+    const mine = order({ id: "om" });
+    const theirs = order({ id: "ot", from_email: "old@example.com" });
+    const r = splitInheritedCashflow([], [mine, theirs], ["old@example.com"]);
+    expect(r.ownOrders.map((o) => o.id)).toEqual(["om"]);
+    expect(r.groups[0].orders.map((o) => o.id)).toEqual(["ot"]);
+  });
+
+  it("email cũ chưa từng trả đồng nào thì KHÔNG dựng khung rỗng", () => {
+    const r = splitInheritedCashflow(own, [], ["never-paid@example.com"]);
+    expect(r.groups).toEqual([]);
+    expect(r.ownRows).toHaveLength(1);
+  });
+
+  it("chưa từng đổi email: mọi thứ nằm ở phần của chính email đang xem", () => {
+    const r = splitInheritedCashflow(own, [order({ id: "om" })], undefined);
+    expect(r.groups).toEqual([]);
+    expect(r.ownRows).toHaveLength(1);
+    expect(r.ownOrders).toHaveLength(1);
   });
 });

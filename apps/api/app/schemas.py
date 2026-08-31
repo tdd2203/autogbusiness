@@ -432,6 +432,10 @@ class MemberPaymentEntryOut(BaseModel):
     # True ⇔ phí này đã được hoàn (xem WalletTxnOut.reversed).
     reversed: bool = False
     created_at: datetime
+    # Email CŨ mà khoản này thuộc về, khi panel đang xem email nhận của một lần đổi
+    # email. None = khoản của chính email đang xem. Web đóng khung riêng các khoản
+    # có `from_email` để tiền cũ không đọc lẫn thành tiền của email mới.
+    from_email: str | None = None
 
 
 class MemberPaymentAllocationOut(BaseModel):
@@ -479,6 +483,8 @@ class MemberPaymentOrderOut(BaseModel):
     member_refunded_at: datetime | None = None
     #: Phân bổ tiền của hoá đơn theo từng email (ai được mời, thành hay hỏng).
     allocations: list[MemberPaymentAllocationOut] = Field(default_factory=list)
+    #: Email CŨ mà hoá đơn này thuộc về (xem MemberPaymentEntryOut.from_email).
+    from_email: str | None = None
 
 
 class MemberPaymentsOut(BaseModel):
@@ -491,6 +497,8 @@ class MemberPaymentsOut(BaseModel):
     charged_total: int = 0
     refunded_total: int = 0
     net_total: int = 0
+    #: Chuỗi email CŨ đã gom tiền về đây (gần nhất trước), rỗng nếu chưa từng đổi.
+    inherited_emails: list[str] = Field(default_factory=list)
 
 
 class MemberOut(BaseModel):

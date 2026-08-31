@@ -463,6 +463,9 @@ type MemberPaymentEntry = {
   /** Chỉ ở `invite_fee`: true ⇔ phí đã được hoàn (lượt mời hỏng). */
   reversed?: boolean;
   created_at: string;
+  /** Email CŨ mà khoản này thuộc về (chỉ có khi email đang xem là email NHẬN của
+   *  một lần đổi email). null/undefined = khoản của chính email đang xem. */
+  from_email?: string | null;
 };
 
 /** 1 dòng của khối dòng tiền: khoản lẻ, hoặc CẶP phí ↔ hoàn của một lượt mời hỏng. */
@@ -584,6 +587,8 @@ type MemberPaymentOrder = {
   /** Lúc hoàn phí cho email đang xem — mốc đếm thời hạn còn hiện hoá đơn thất bại. */
   member_refunded_at?: string | null;
   allocations?: MemberPaymentAllocation[];
+  /** Email CŨ mà hoá đơn này thuộc về (xem MemberPaymentEntry.from_email). */
+  from_email?: string | null;
 };
 
 /* ── HOÁ ĐƠN THẤT BẠI Ở LẠI BAO LÂU ─────────────────────────────────────────
@@ -628,6 +633,8 @@ type MemberPayments = {
   charged_total: number;
   refunded_total: number;
   net_total: number;
+  /** Email CŨ đã được gom tiền về đây (gần nhất trước), rỗng nếu chưa từng đổi. */
+  inherited_emails?: string[];
 };
 
 const ORDER_STATUS_BADGE: Record<string, string> = {
@@ -691,6 +698,57 @@ function CashStat({
   );
 }
 
+/** Email CŨ mà một dòng sổ cái thuộc về (null = của chính email đang xem). */
+function cashRowFrom(row: CashRow): string | null {
+  const e = row.type === "voided" ? row.fee : row.entry;
+  return (e.from_email ?? null) || null;
+}
+
+const sameEmail = (a: string | null | undefined, b: string) =>
+  (a ?? "").toLowerCase() === b.toLowerCase();
+
+/** Một email cũ trong chuỗi đổi email + phần tiền phát sinh dưới tên nó. */
+type InheritedCashGroup = {
+  email: string;
+  rows: CashRow[];
+  orders: MemberPaymentOrder[];
+};
+
+/**
+ * Tách dòng tiền thành phần CỦA email đang xem và phần KẾ THỪA từ email cũ.
+ *
+ * API gom tiền của chuỗi đổi email về panel email nhận (`from_email` trên từng
+ * khoản) vì ghế đang dùng chính là ghế đã trả tiền đó — để riêng thì panel email
+ * mới hiện 0 ₫ trong khi khách đã đóng đủ (user 31/8/2026). Nhưng gom KHÔNG được
+ * lẫn: mỗi email cũ phải đứng trong một khung riêng ghi rõ tiền này của ai.
+ *
+ * Nhóm rỗng bị loại: chuỗi đổi email có thể dài mà chỉ một chặng từng trả tiền,
+ * hiện khung trống chỉ tổ làm người xem tưởng thiếu dữ liệu. Thứ tự nhóm theo đúng
+ * `inheritedEmails` (gần nhất trước) để đọc ngược dòng thời gian.
+ */
+export function splitInheritedCashflow(
+  rows: CashRow[],
+  orders: MemberPaymentOrder[],
+  inheritedEmails: string[] | undefined,
+): {
+  ownRows: CashRow[];
+  ownOrders: MemberPaymentOrder[];
+  groups: InheritedCashGroup[];
+} {
+  const groups = (inheritedEmails ?? [])
+    .map((email) => ({
+      email,
+      rows: rows.filter((r) => sameEmail(cashRowFrom(r), email)),
+      orders: orders.filter((o) => sameEmail(o.from_email, email)),
+    }))
+    .filter((g) => g.rows.length > 0 || g.orders.length > 0);
+  return {
+    ownRows: rows.filter((r) => !cashRowFrom(r)),
+    ownOrders: orders.filter((o) => !o.from_email),
+    groups,
+  };
+}
+
 // Export để dựng preview/test riêng khối này (không cần đăng nhập cả dashboard).
 export function MemberCashflow({
   data,
@@ -712,6 +770,16 @@ export function MemberCashflow({
   const rows = pairMemberCashflow(data.entries);
   // Hoá đơn thất bại chỉ ở lại 30/7 ngày (xem visibleMemberOrders).
   const visibleOrders = visibleMemberOrders(data.orders, data.entries);
+  /* ĐỔI EMAIL: tiền của email cũ được API gom sang đây (`from_email`) vì ghế đang
+     dùng chính là ghế đã trả tiền đó — để riêng thì panel email mới hiện 0 ₫ trong
+     khi khách đã đóng đủ (user 31/8/2026). Nhưng gom KHÔNG được lẫn: mỗi email cũ
+     đứng trong một KHUNG riêng ghi rõ tiền này của ai, còn phần trên chỉ là khoản
+     phát sinh dưới tên email hiện tại. */
+  const {
+    ownRows,
+    ownOrders,
+    groups: inheritedGroups,
+  } = splitInheritedCashflow(rows, visibleOrders, data.inherited_emails);
   return (
     <div>
       <div
@@ -773,6 +841,23 @@ export function MemberCashflow({
         />
       </div>
 
+      {/* 3 ô tổng đã cộng cả tiền kế thừa → nói ngay ra đây, kẻo người đối soát
+          tưởng email mới tự thu được từng đó. */}
+      {inheritedGroups.length > 0 && (
+        <div
+          style={{
+            fontSize: 10.5,
+            lineHeight: 1.45,
+            color: "var(--ink-3)",
+            marginBottom: 10,
+          }}
+        >
+          {t("memberDetail.cashInheritedNote", {
+            emails: inheritedGroups.map((g) => g.email).join(", "),
+          })}
+        </div>
+      )}
+
       {allRefunded && (
         <div
           style={{
@@ -795,179 +880,322 @@ export function MemberCashflow({
           {t("memberDetail.cashEmpty")}
         </div>
       ) : (
-        <div style={{ display: "grid", gap: 6 }}>
-          {rows.map((row) => {
-            /* Lượt mời HỎNG: phí trừ rồi hoàn lại đủ ⇒ email này không mất đồng nào
-               cho lượt đó. Một dòng, số tiền gạch ngang + 0 ₫ — thay vì 2 dòng ngược
-               dấu ở 2 chỗ để người xem tự trừ (user 2026-08-26). */
-            if (row.type === "voided") {
-              const { fee, refund } = row;
-              return (
-                <div
-                  key={fee.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 12,
-                    padding: "8px 11px",
-                    background: "var(--bg)",
-                    border: "1px dashed var(--border)",
-                    borderRadius: 10,
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)" }}>
-                      {t("memberDetail.cashVoidedTitle")}
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 10.5,
-                        color: "var(--ink-3)",
-                        marginTop: 2,
-                      }}
-                    >
-                      {formatDateTime(fee.created_at)} →{" "}
-                      {t("memberDetail.cashVoidedRefundedAt", {
-                        time: formatDateTime(refund.created_at),
-                      })}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <div
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 11,
-                        color: "var(--ink-3)",
-                        textDecoration: "line-through",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {formatVnd(fee.amount)}
-                    </div>
-                    <div
-                      style={{
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 12.5,
-                        fontWeight: 600,
-                        color: "var(--ink-2)",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {formatVnd(0)}
-                    </div>
-                  </div>
-                </div>
-              );
-            }
-            const e = row.entry;
-            const positive = e.amount > 0;
-            return (
-              <div
-                key={e.id}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 12,
-                  padding: "8px 11px",
-                  background: "var(--bg)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 10,
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink)" }}>
-                    {txnKind(e.kind)}
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 10.5,
-                      color: "var(--ink-3)",
-                      marginTop: 2,
-                    }}
-                  >
-                    {formatDateTime(e.created_at)}
-                  </div>
-                </div>
-                <div style={{ textAlign: "right", flexShrink: 0 }}>
-                  <div
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 12.5,
-                      fontWeight: 600,
-                      color: positive ? "var(--success)" : "var(--ink)",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {positive ? "+" : ""}
-                    {formatVnd(e.amount)}
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 10.5,
-                      color: "var(--ink-3)",
-                      marginTop: 2,
-                      whiteSpace: "nowrap",
-                    }}
-                    title={t("memberDetail.cashBalanceAfter")}
-                  >
-                    {formatVnd(e.balance_after)}
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <CashLedger rows={ownRows} t={t} txnKind={txnKind} formatDateTime={formatDateTime} />
       )}
 
-      {visibleOrders.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <div
-            style={{
-              fontSize: 11,
-              fontWeight: 600,
-              textTransform: "uppercase",
-              letterSpacing: "0.04em",
-              color: "var(--ink-3)",
-              marginBottom: 7,
-            }}
-          >
-            {t("memberDetail.cashOrdersTitle")}
-          </div>
-          {/* Chống hiểu nhầm (user 2026-08-04): nhìn "330.000 ₫ · Đã thanh toán" mà
-              không biết là tiền cộng hay trừ. Tiền QR là khách CHUYỂN VÀO ví; khoản
-              trừ phí nằm ở sổ cái phía trên. Nói thẳng ra đây + mỗi dòng có dấu +. */}
-          <div
-            style={{
-              fontSize: 10.5,
-              lineHeight: 1.45,
-              color: "var(--ink-3)",
-              marginBottom: 7,
-            }}
-          >
-            {t("memberDetail.cashOrdersHint")}
-          </div>
-          <div style={{ display: "grid", gap: 6 }}>
-            {visibleOrders.map((o) => (
-              <OrderCard
-                key={o.id}
-                order={o}
-                email={data.email}
-                t={t}
-                orderStatus={orderStatus}
-                formatDateTime={formatDateTime}
-              />
-            ))}
-          </div>
-        </div>
+      {ownOrders.length > 0 && (
+        <CashOrders
+          orders={ownOrders}
+          email={data.email}
+          t={t}
+          orderStatus={orderStatus}
+          formatDateTime={formatDateTime}
+        />
+      )}
+
+      {inheritedGroups.map((g) => (
+        <InheritedCashBox
+          key={g.email}
+          email={g.email}
+          rows={g.rows}
+          orders={g.orders}
+          t={t}
+          txnKind={txnKind}
+          orderStatus={orderStatus}
+          formatDateTime={formatDateTime}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** Khung riêng cho tiền của MỘT email cũ đã đổi sang email đang xem.
+
+    Gom sang là đúng (cùng một ghế, cùng một lần trả tiền) nhưng để trần lẫn vào sổ
+    cái của email mới thì đối soát sai: không ai biết khoản nào phát sinh dưới tên
+    nào. Vì vậy bọc lại — viền + nền khác + nhãn ghi thẳng email cũ (user
+    31/8/2026). */
+function InheritedCashBox({
+  email,
+  rows,
+  orders,
+  t,
+  txnKind,
+  orderStatus,
+  formatDateTime,
+}: {
+  email: string;
+  rows: CashRow[];
+  orders: MemberPaymentOrder[];
+  t: TFn;
+  txnKind: (value: string) => string;
+  orderStatus: (value: string) => string;
+  formatDateTime: (d: string) => string;
+}) {
+  return (
+    <div
+      style={{
+        marginTop: 12,
+        padding: "10px 11px 11px",
+        background: "var(--surface-2)",
+        border: "1px dashed var(--border)",
+        borderRadius: 12,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 10,
+          fontWeight: 600,
+          textTransform: "uppercase",
+          letterSpacing: "0.05em",
+          color: "var(--ink-3)",
+          marginBottom: 3,
+        }}
+      >
+        {t("memberDetail.cashInheritedTitle")}
+      </div>
+      <div
+        style={{
+          fontFamily: "var(--font-mono)",
+          fontSize: 11.5,
+          color: "var(--ink-2)",
+          wordBreak: "break-all",
+          marginBottom: 3,
+        }}
+      >
+        {email}
+      </div>
+      <div
+        style={{
+          fontSize: 10.5,
+          lineHeight: 1.45,
+          color: "var(--ink-3)",
+          marginBottom: 8,
+        }}
+      >
+        {t("memberDetail.cashInheritedHint")}
+      </div>
+      {rows.length > 0 && (
+        <CashLedger
+          rows={rows}
+          t={t}
+          txnKind={txnKind}
+          formatDateTime={formatDateTime}
+        />
+      )}
+      {orders.length > 0 && (
+        <CashOrders
+          orders={orders}
+          email={email}
+          t={t}
+          orderStatus={orderStatus}
+          formatDateTime={formatDateTime}
+        />
       )}
     </div>
   );
 }
+
+/** Danh sách hoá đơn QR (kèm tiêu đề + chú thích "tiền vào ví"). */
+function CashOrders({
+  orders,
+  email,
+  t,
+  orderStatus,
+  formatDateTime,
+}: {
+  orders: MemberPaymentOrder[];
+  email: string;
+  t: TFn;
+  orderStatus: (value: string) => string;
+  formatDateTime: (d: string) => string;
+}) {
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          textTransform: "uppercase",
+          letterSpacing: "0.04em",
+          color: "var(--ink-3)",
+          marginBottom: 7,
+        }}
+      >
+        {t("memberDetail.cashOrdersTitle")}
+      </div>
+      {/* Chống hiểu nhầm (user 2026-08-04): nhìn "330.000 ₫ · Đã thanh toán" mà
+          không biết là tiền cộng hay trừ. Tiền QR là khách CHUYỂN VÀO ví; khoản
+          trừ phí nằm ở sổ cái phía trên. Nói thẳng ra đây + mỗi dòng có dấu +. */}
+      <div
+        style={{
+          fontSize: 10.5,
+          lineHeight: 1.45,
+          color: "var(--ink-3)",
+          marginBottom: 7,
+        }}
+      >
+        {t("memberDetail.cashOrdersHint")}
+      </div>
+      <div style={{ display: "grid", gap: 6 }}>
+        {orders.map((o) => (
+          <OrderCard
+            key={o.id}
+            order={o}
+            email={email}
+            t={t}
+            orderStatus={orderStatus}
+            formatDateTime={formatDateTime}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Sổ cái ví: mỗi dòng là một khoản, hoặc CẶP phí ↔ hoàn của lượt mời hỏng. */
+function CashLedger({
+  rows,
+  t,
+  txnKind,
+  formatDateTime,
+}: {
+  rows: CashRow[];
+  t: TFn;
+  txnKind: (value: string) => string;
+  formatDateTime: (d: string) => string;
+}) {
+  return (
+    <div style={{ display: "grid", gap: 6 }}>
+      {rows.map((row) => {
+        /* Lượt mời HỎNG: phí trừ rồi hoàn lại đủ ⇒ email này không mất đồng nào
+           cho lượt đó. Một dòng, số tiền gạch ngang + 0 ₫ — thay vì 2 dòng ngược
+           dấu ở 2 chỗ để người xem tự trừ (user 2026-08-26). */
+        if (row.type === "voided") {
+          const { fee, refund } = row;
+          return (
+            <div
+              key={fee.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                padding: "8px 11px",
+                background: "var(--bg)",
+                border: "1px dashed var(--border)",
+                borderRadius: 10,
+              }}
+            >
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink-2)" }}>
+                  {t("memberDetail.cashVoidedTitle")}
+                </div>
+                <div
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 10.5,
+                    color: "var(--ink-3)",
+                    marginTop: 2,
+                  }}
+                >
+                  {formatDateTime(fee.created_at)} →{" "}
+                  {t("memberDetail.cashVoidedRefundedAt", {
+                    time: formatDateTime(refund.created_at),
+                  })}
+                </div>
+              </div>
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11,
+                    color: "var(--ink-3)",
+                    textDecoration: "line-through",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {formatVnd(fee.amount)}
+                </div>
+                <div
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12.5,
+                    fontWeight: 600,
+                    color: "var(--ink-2)",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {formatVnd(0)}
+                </div>
+              </div>
+            </div>
+          );
+        }
+        const e = row.entry;
+        const positive = e.amount > 0;
+        return (
+          <div
+            key={e.id}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              padding: "8px 11px",
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 10,
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--ink)" }}>
+                {txnKind(e.kind)}
+              </div>
+              <div
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 10.5,
+                  color: "var(--ink-3)",
+                  marginTop: 2,
+                }}
+              >
+                {formatDateTime(e.created_at)}
+              </div>
+            </div>
+            <div style={{ textAlign: "right", flexShrink: 0 }}>
+              <div
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  color: positive ? "var(--success)" : "var(--ink)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {positive ? "+" : ""}
+                {formatVnd(e.amount)}
+              </div>
+              <div
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 10.5,
+                  color: "var(--ink-3)",
+                  marginTop: 2,
+                  whiteSpace: "nowrap",
+                }}
+                title={t("memberDetail.cashBalanceAfter")}
+              >
+                {formatVnd(e.balance_after)}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 
 /** Một hoá đơn QR ở panel thành viên — bấm vào để xem tiền đó đã mời cho những ai.
 
