@@ -106,19 +106,22 @@ export default function Dashboard() {
                 setPeriod={setPeriod}
                 isMobile={isMobile}
               />
+              {/* `stretch` + cột `display: flex` = hai thẻ luôn cao bằng nhau.
+                  Trước đây `flex-start` để mỗi thẻ cao theo nội dung, nên thẻ
+                  "Việc cần làm" hụt một khoảng so với thẻ bên phải. */}
               <section
                 style={{
                   display: "flex",
                   gap: 14,
-                  alignItems: "flex-start",
+                  alignItems: "stretch",
                   marginTop: 14,
                   flexWrap: "wrap",
                 }}
               >
-                <div style={{ flex: "2 1 520px", minWidth: 0 }}>
+                <div style={{ flex: "2 1 520px", minWidth: 0, display: "flex" }}>
                   <TodoPanel data={data} />
                 </div>
-                <div style={{ flex: "1 1 300px", minWidth: 0 }}>
+                <div style={{ flex: "1 1 300px", minWidth: 0, display: "flex" }}>
                   <DuePanel data={data} isMobile={isMobile} />
                 </div>
               </section>
@@ -878,6 +881,18 @@ function Compare({
 
 // ── Việc cần làm ────────────────────────────────────────────────────────────
 
+/** Vỏ MỘT dòng việc.
+ *
+ *  `flex: 1 0 auto` — không bao giờ co dưới nội dung (nhãn dài xuống hai dòng vẫn
+ *  đủ chỗ), nhưng phần chỗ trống thừa khi thẻ bị kéo cao bằng thẻ "Sắp đến hạn"
+ *  được chia ĐỀU cho mọi dòng. Để mặc thì cả khoảng thừa dồn xuống đáy thẻ, nhìn
+ *  như danh sách bị hụt một mảng. */
+const todoRow: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  flex: "1 0 auto",
+};
+
 function TodoPanel({ data }: { data: DashboardOverview }) {
   const t = data.todos;
   // Dòng "lời mời lỗi" KHÔNG dẫn đi đâu mà bung ra ngay tại chỗ: email lời mời
@@ -937,14 +952,23 @@ function TodoPanel({ data }: { data: DashboardOverview }) {
   const nothing = rows.every((r) => r.n === 0);
 
   return (
-    <section style={{ ...card, marginTop: 14 }}>
+    <section
+      style={{
+        ...card,
+        marginTop: 14,
+        display: "flex",
+        flexDirection: "column",
+        flex: 1,
+        minWidth: 0,
+      }}
+    >
       <h2 style={{ ...cardTitle, marginBottom: nothing ? 8 : 12 }}>Việc cần làm</h2>
       {nothing && (
         <p style={{ margin: "0 0 10px", fontSize: 13, color: "var(--ink-2)" }}>
           Không có việc khẩn hôm nay.
         </p>
       )}
-      <div style={{ display: "flex", flexDirection: "column" }}>
+      <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
         {rows.map((r) => {
           const dim = r.n === 0;
           const expandable = r.key === "failed";
@@ -956,6 +980,7 @@ function TodoPanel({ data }: { data: DashboardOverview }) {
                 gap: 12,
                 padding: "10px 4px",
                 borderTop: "1px solid var(--border)",
+                flex: 1,
               }}
             >
               <span
@@ -1002,14 +1027,18 @@ function TodoPanel({ data }: { data: DashboardOverview }) {
               )}
             </div>
           );
-          if (dim) return <div key={r.key}>{body}</div>;
+          if (dim) return <div key={r.key} style={todoRow}>{body}</div>;
           if (expandable) {
             return (
-              <div key={r.key}>
+              // Dòng đang bung danh sách email thì thôi chia phần chỗ trống:
+              // nó đã cao sẵn, kéo thêm nữa là đẩy các dòng dưới dồn xuống đáy.
+              <div key={r.key} style={openFailed ? { ...todoRow, flex: "0 0 auto" } : todoRow}>
                 <button
                   onClick={() => setOpenFailed((v) => !v)}
                   style={{
-                    display: "block",
+                    display: "flex",
+                    flexDirection: "column",
+                    flex: 1,
                     width: "100%",
                     background: "none",
                     border: "none",
@@ -1026,7 +1055,7 @@ function TodoPanel({ data }: { data: DashboardOverview }) {
             );
           }
           return (
-            <Link key={r.key} to={r.to} style={{ textDecoration: "none" }}>
+            <Link key={r.key} to={r.to} style={{ ...todoRow, textDecoration: "none" }}>
               {body}
             </Link>
           );
@@ -1126,7 +1155,7 @@ function DuePanel({
   const short = first ? first.money - balance : 0;
 
   return (
-    <section style={{ ...card, marginTop: 14 }}>
+    <section style={{ ...card, marginTop: 14, flex: 1, minWidth: 0 }}>
       <h2 style={{ ...cardTitle, marginBottom: 4 }}>Sắp đến hạn 30 ngày</h2>
       <p style={{ margin: "0 0 10px", fontSize: 11.5, color: "var(--ink-3)" }}>
         Gom theo đợt 7 ngày từ hôm nay — bấm một đợt để xem danh sách và gia hạn.
