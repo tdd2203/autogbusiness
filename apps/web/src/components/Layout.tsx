@@ -1,5 +1,6 @@
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { RunningTaskBubble } from "./RunningTaskBubble";
+import DailyGuideModal from "./DailyGuideModal";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../hooks/useAuth";
 import {
@@ -534,6 +535,11 @@ export default function Layout() {
           thoại) khi có task đang chờ/chạy. Tự ẩn khi panel hàng đợi cột phải đã hiện.
           Xem RunningTaskBubble.md. */}
       <RunningTaskBubble />
+
+      {/* Popup hướng dẫn đầu ngày — mỗi ngày một bài, bốc ngẫu nhiên. Đặt ở Layout để
+          hiện trên MỌI trang sau khi đăng nhập, không phải chỉ trang Tổng quan.
+          Xem DailyGuideModal.md. */}
+      <DailyGuideModal />
     </div>
   );
 }

@@ -18,6 +18,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { openDailyGuide } from "../components/DailyGuideModal";
 import LoadError from "../components/LoadError";
 import DueWeekModal from "../components/DueWeekModal";
 import {
@@ -159,6 +160,11 @@ function Header({ data }: { data: DashboardOverview }) {
         </p>
       </div>
       <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+        {/* Bài hướng dẫn của hôm nay. Popup vẫn tự hiện đầu ngày; nút này để ai
+            lỡ tắt (hoặc muốn xem lại) không phải chờ sang hôm sau. */}
+        <button type="button" onClick={openDailyGuide} style={secondaryBtn}>
+          Hướng dẫn
+        </button>
         {data.wallet && (
           <Link to="/wallet" style={{ ...secondaryBtn, textDecoration: "none" }}>
             Nạp tiền

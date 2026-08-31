@@ -1547,5 +1547,9 @@
   "rateLimit.action.WALLET_TOPUP": "Tạo lệnh nạp tiền",
   "rateLimit.action.WALLET_WITHDRAW": "Tạo lệnh rút tiền",
   "rateLimit.action.MEMBER_PAY": "Thanh toán từ ví",
-  "invite.groupsFailed": "Chưa gửi được cho {names}. {reason}"
+  "invite.groupsFailed": "Chưa gửi được cho {names}. {reason}",
+  "guide.dontShowToday": "Không hiện lại hôm nay",
+  "guide.gotIt": "Đã hiểu",
+  "guide.notes": "Lưu ý",
+  "guide.zoomHint": "Bấm vào ảnh để xem cỡ đầy đủ"
 }
