@@ -658,8 +658,16 @@ def overview(
     rate_start = datetime.combine(
         today - timedelta(days=_RATE_DAYS - 1), time.min, tzinfo=VN_TZ
     )
-    due_limit = now_utc + timedelta(days=_DUE_DAYS)
-    soon_limit = now_utc + timedelta(days=_DUE_SOON_DAYS)
+    # ĐẾM TRỌN NGÀY (chốt user 2026-08-31): "trong 7 ngày" = tới HẾT ngày thứ 7
+    # theo lịch VN, không phải đúng 168 giờ kể từ bây giờ. Cắt theo giờ thì ghế hết
+    # hạn buổi chiều ngày cuối rơi ra ngoài, đại lý lo thiếu tiền cho đúng hôm đó.
+    def _end_of_day_after(days: int) -> datetime:
+        return datetime.combine(
+            today + timedelta(days=days + 1), time.min, tzinfo=VN_TZ
+        )
+
+    due_limit = _end_of_day_after(_DUE_DAYS)
+    soon_limit = _end_of_day_after(_DUE_SOON_DAYS)
     settings = get_payment_settings(db)
     default_fee = int(settings.invite_fee_vnd or 0)
 
