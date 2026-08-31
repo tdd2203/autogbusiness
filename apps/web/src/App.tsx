@@ -22,16 +22,12 @@ import WorkspaceSettings from "./pages/WorkspaceSettings";
 import Layout from "./components/Layout";
 import WorkspaceLayout from "./components/WorkspaceLayout";
 import ProtectedRoute from "./components/ProtectedRoute";
-import { useAuth } from "./hooks/useAuth";
 
-// Trang chủ tuỳ vai trò: super-admin → "Không gian làm việc" (mục Tổ chức, chỉ
-// admin thấy); còn lại → "Tổng quan". Trước đây đại lý rơi thẳng vào bảng "Email
-// đã thêm" — một bảng dài không trả lời được câu nào họ hỏi mỗi sáng.
+// "Tổng quan" là trang chủ chung cho mọi vai trò, kể cả super-admin (trước đây
+// admin rơi vào "Không gian làm việc"). Ai cần danh sách workspace vẫn bấm mục
+// đó ở thanh bên.
 function HomeRedirect() {
-  const { user } = useAuth();
-  return (
-    <Navigate to={user?.is_super_admin ? "/workspaces" : "/dashboard"} replace />
-  );
+  return <Navigate to="/dashboard" replace />;
 }
 
 export default function App() {

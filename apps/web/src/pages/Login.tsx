@@ -20,7 +20,7 @@ export default function Login() {
     setBusy(true);
     try {
       await login(identifier.trim(), password);
-      const to = location.state?.from?.pathname ?? "/workspaces";
+      const to = location.state?.from?.pathname ?? "/dashboard";
       navigate(to, { replace: true });
     } catch (err) {
       if (err instanceof ApiError) {
