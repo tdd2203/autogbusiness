@@ -144,6 +144,14 @@ button.danger {
   margin-bottom: 10px;
 }
 
+/* Dòng giải thích nhỏ dưới một ô nhập (vd khoá Canva là tuỳ chọn). */
+.hint {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #94a3b8;
+}
+
 .footer {
   margin-top: 14px;
   padding-top: 10px;
@@ -252,16 +260,17 @@ button.danger {
   letter-spacing: 0.4px;
 }
 
-.changelog-summary {
+.changelog-title {
   flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 600;
 }
 
-/* Đang mở thì cho câu tóm tắt xuống dòng, khỏi cắt cụt. */
-.changelog-summary.open {
+/* Đang mở thì cho tên mục xuống dòng, khỏi cắt cụt. */
+.changelog-title.open {
   overflow: visible;
   white-space: normal;
 }
@@ -282,16 +291,11 @@ button.danger {
   margin-bottom: 3px;
 }
 
-.changelog-details {
+.changelog-note {
   margin: 0;
-  padding-left: 16px;
   font-size: 11.5px;
   color: #475569;
   line-height: 1.5;
-}
-
-.changelog-details li {
-  margin-bottom: 2px;
 }
 
 .changelog-more {

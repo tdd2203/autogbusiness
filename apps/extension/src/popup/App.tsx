@@ -20,6 +20,9 @@ export default function App() {
   const { t, lang, setLang } = useI18n();
   const [apiBaseUrl, setApiBaseUrl] = useState("http://localhost:18000");
   const [apiKey, setApiKey] = useState("");
+  // Khoá của team CANVA (tuỳ chọn) — một Chrome chạy được cả hai nhánh. Để trống =
+  // máy này chỉ chạy ChatGPT, mọi thứ y như trước.
+  const [canvaApiKey, setCanvaApiKey] = useState("");
   const [status, setStatus] = useState<ConnectionStatus>({ state: "checking" });
   const [saving, setSaving] = useState(false);
   const [activeInfo, setActiveInfo] = useState<ActiveTaskInfo | null>(null);
@@ -65,6 +68,7 @@ export default function App() {
       }
       setApiBaseUrl(config.apiBaseUrl);
       setApiKey(config.apiKey);
+      setCanvaApiKey(config.canvaApiKey ?? "");
       await verify(config);
       await refreshActiveTask();
     })();
@@ -131,6 +135,8 @@ export default function App() {
     const config: ExtensionConfig = {
       apiBaseUrl: apiBaseUrl.trim().replace(/\/$/, ""),
       apiKey: apiKey.trim(),
+      // Bỏ trống → không lưu trường này (máy chỉ chạy nhánh ChatGPT).
+      ...(canvaApiKey.trim() ? { canvaApiKey: canvaApiKey.trim() } : {}),
     };
     await setConfig(config);
     await verify(config);
@@ -142,6 +148,7 @@ export default function App() {
     if (!window.confirm(t("popup.disconnectConfirm"))) return;
     await setConfig(null);
     setApiKey("");
+    setCanvaApiKey("");
     setStatus({ state: "disconnected" });
     setActiveInfo(null);
   }
@@ -179,20 +186,16 @@ export default function App() {
                     {t(`popup.changelogKind.${entry.kind}`)}
                   </span>
                   <span
-                    className={open ? "changelog-summary open" : "changelog-summary"}
+                    className={open ? "changelog-title open" : "changelog-title"}
                   >
-                    {entry.summary}
+                    {entry.title}
                   </span>
                   <span className="caret">{open ? "▴" : "▾"}</span>
                 </button>
                 {open && (
                   <div className="changelog-body">
                     <div className="changelog-date">{entry.date}</div>
-                    <ul className="changelog-details">
-                      {entry.details.map((d, i) => (
-                        <li key={i}>{d}</li>
-                      ))}
-                    </ul>
+                    <p className="changelog-note">{entry.note}</p>
                   </div>
                 )}
               </div>
@@ -259,6 +262,16 @@ export default function App() {
             placeholder={t("popup.apiKeyPlaceholder")}
           />
         </div>
+        <div className="field">
+          <label>{t("popup.canvaApiKey")}</label>
+          <input
+            type="password"
+            value={canvaApiKey}
+            onChange={(e) => setCanvaApiKey(e.target.value)}
+            placeholder={t("popup.canvaApiKeyPlaceholder")}
+          />
+          <div className="hint">{t("popup.canvaApiKeyHint")}</div>
+        </div>
         <div className="row">
           <button type="submit" className="secondary flex-1" disabled={saving}>
             {saving ? t("popup.connecting") : t("popup.connect")}
@@ -272,7 +285,7 @@ export default function App() {
       </form>
 
       <div className="footer" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{CHANGELOG[0].summary}</span>
+        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{CHANGELOG[0].note}</span>
         <span style={{ marginLeft: "auto" }}>
           <select
             value={lang}
