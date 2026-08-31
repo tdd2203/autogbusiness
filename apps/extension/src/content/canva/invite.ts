@@ -93,7 +93,14 @@ async function openInviteDialog(): Promise<HTMLElement | null> {
   return waitUntil(inviteDialogOpen, 15000);
 }
 
-/** "Đội của bạn có N người." / "Your team has N people." → N. */
+/** "Đội của bạn có N người." / "Your team has N people." → N.
+ *
+ * SỐ NÀY KỂ CẢ LỜI MỜI ĐANG CHỜ, khác tiêu đề trang. Đối chiếu ảnh user 2026-09-01:
+ * tiêu đề "People (2)" (2 người đã vào) trong khi hộp mời nói "Your team has 5
+ * people" — vì đội còn 3 lời mời treo. Tức đây mới là số CHIẾM CHỖ trong 50 suất của
+ * gói, và nó khớp đúng cách dashboard đếm (active + pending). Đừng thay bằng số ở
+ * tiêu đề: làm thế là tưởng còn trống 48 chỗ trong khi thực tế chỉ còn 45.
+ */
 const TEAM_SIZE_MARKS = ["doi cua ban co", "your team has"];
 
 function teamSizeIn(dialog: HTMLElement): number | null {
