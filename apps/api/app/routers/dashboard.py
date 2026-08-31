@@ -661,13 +661,18 @@ def overview(
     # ĐẾM TRỌN NGÀY (chốt user 2026-08-31): "trong 7 ngày" = tới HẾT ngày thứ 7
     # theo lịch VN, không phải đúng 168 giờ kể từ bây giờ. Cắt theo giờ thì ghế hết
     # hạn buổi chiều ngày cuối rơi ra ngoài, đại lý lo thiếu tiền cho đúng hôm đó.
-    def _end_of_day_after(days: int) -> datetime:
-        return datetime.combine(
-            today + timedelta(days=days + 1), time.min, tzinfo=VN_TZ
-        )
+    def _window_end(days: int) -> datetime:
+        """Hết ngày cuối của cửa sổ `days` ngày lịch TÍNH CẢ HÔM NAY.
 
-    due_limit = _end_of_day_after(_DUE_DAYS)
-    soon_limit = _end_of_day_after(_DUE_SOON_DAYS)
+        7 ngày = hôm nay + 6 ngày nữa, hết ngày thứ 7. Trước đây cộng đủ `days`
+        rồi mới lấy hết ngày nên "dưới 7 ngày" phủ 8 ngày lịch, và con số của nó
+        với tay sang cả ngày đầu tuần sau — đứng cạnh khối gom theo TUẦN LỊCH thì
+        hai số không bao giờ cộng khớp mà không ai hiểu vì sao.
+        """
+        return datetime.combine(today + timedelta(days=days), time.min, tzinfo=VN_TZ)
+
+    due_limit = _window_end(_DUE_DAYS)
+    soon_limit = _window_end(_DUE_SOON_DAYS)
     settings = get_payment_settings(db)
     default_fee = int(settings.invite_fee_vnd or 0)
 
