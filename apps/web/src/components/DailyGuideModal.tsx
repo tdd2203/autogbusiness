@@ -214,7 +214,12 @@ function Step({
               }}
             />
           </a>
-          {step.caption && <figcaption style={caption}>{step.caption}</figcaption>}
+          <figcaption style={caption}>
+            <span>{step.caption}</span>
+            {/* Nói thẳng ra là bấm được — ảnh chụp thu nhỏ đọc chữ không nổi, mà
+                không ai đoán được cái ảnh tĩnh lại mở ra cỡ đầy đủ. */}
+            <span style={{ color: "var(--ink-4)" }}>{zoomHint}</span>
+          </figcaption>
         </figure>
       )}
     </div>
@@ -222,24 +227,24 @@ function Step({
 }
 
 const backdrop: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 130, padding: 16 };
-const modal: React.CSSProperties = { background: "var(--surface)", borderRadius: 18, width: 720, maxWidth: "100%", maxHeight: "calc(88vh / var(--ui-scale))", display: "flex", flexDirection: "column", border: "1px solid var(--border)", boxShadow: "0 24px 70px -18px rgba(28,26,23,0.4), 0 2px 8px rgba(28,26,23,0.08)", overflow: "hidden" };
+const modal: React.CSSProperties = { background: "var(--surface)", borderRadius: 18, width: 1120, maxWidth: "100%", maxHeight: "calc(92vh / var(--ui-scale))", display: "flex", flexDirection: "column", border: "1px solid var(--border)", boxShadow: "0 24px 70px -18px rgba(28,26,23,0.4), 0 2px 8px rgba(28,26,23,0.08)", overflow: "hidden" };
 const header: React.CSSProperties = { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, padding: "18px 22px 15px", borderBottom: "1px solid var(--border)" };
 const eyebrow: React.CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.09em", textTransform: "uppercase", color: "var(--success)", marginBottom: 5 };
-const titleStyle: React.CSSProperties = { fontSize: 19, fontWeight: 700, color: "var(--ink)", lineHeight: 1.3 };
+const titleStyle: React.CSSProperties = { fontSize: 22, fontWeight: 700, color: "var(--ink)", lineHeight: 1.3 };
 const closeBtn: React.CSSProperties = { width: 30, height: 30, borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg)", color: "var(--ink-3)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
 const body: React.CSSProperties = { padding: "16px 22px 22px", overflowY: "auto", flex: 1 };
-const intro: React.CSSProperties = { margin: 0, fontSize: 14, lineHeight: 1.65, color: "var(--ink-2)" };
+const intro: React.CSSProperties = { margin: 0, fontSize: 15, lineHeight: 1.65, color: "var(--ink-2)" };
 const sectionHead: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
 const sectionHeadText: React.CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 11.5, letterSpacing: "0.07em", textTransform: "uppercase", color: "var(--ink)", fontWeight: 600, flexShrink: 0 };
 const sectionRule: React.CSSProperties = { height: 1, flex: 1, background: "var(--border)" };
 const stepNum: React.CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 12.5, color: "var(--success)", width: 22, flex: "none", fontWeight: 600 };
-const stepTitle: React.CSSProperties = { fontSize: 15, fontWeight: 600, color: "var(--ink)", lineHeight: 1.4 };
-const stepBody: React.CSSProperties = { margin: "5px 0 0", fontSize: 13.5, lineHeight: 1.6, color: "var(--ink-2)" };
+const stepTitle: React.CSSProperties = { fontSize: 16, fontWeight: 600, color: "var(--ink)", lineHeight: 1.4 };
+const stepBody: React.CSSProperties = { margin: "5px 0 0", fontSize: 14.5, lineHeight: 1.6, color: "var(--ink-2)" };
 const figure: React.CSSProperties = { margin: "12px 0 0 34px", display: "flex", flexDirection: "column", gap: 7 };
-const caption: React.CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-3)" };
+const caption: React.CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-3)", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "baseline" };
 const noteBox: React.CSSProperties = { marginTop: 30, padding: "16px 18px", border: "1px solid var(--border)", background: "var(--surface-2)", borderRadius: 12 };
 const noteHead: React.CSSProperties = { fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.09em", textTransform: "uppercase", color: "var(--warning)", marginBottom: 10 };
-const noteList: React.CSSProperties = { margin: 0, paddingLeft: 18, listStyleType: "disc", fontSize: 13, lineHeight: 1.6, color: "var(--ink-2)" };
+const noteList: React.CSSProperties = { margin: 0, paddingLeft: 18, listStyleType: "disc", fontSize: 14, lineHeight: 1.6, color: "var(--ink-2)" };
 const footer: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 22px", borderTop: "1px solid var(--border)", background: "var(--surface-2)", flexWrap: "wrap" };
 const muteLabel: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--ink-2)", cursor: "pointer", userSelect: "none" };
 const primaryBtn: React.CSSProperties = { padding: "9px 20px", background: "var(--ink)", color: "var(--surface)", border: "none", borderRadius: 9, fontSize: 13.5, fontWeight: 600, cursor: "pointer" };
