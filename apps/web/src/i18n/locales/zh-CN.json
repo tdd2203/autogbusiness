@@ -1549,6 +1549,9 @@
   "rateLimit.action.MEMBER_PAY": "从钱包付款",
   "invite.groupsFailed": "{names} 未能发送。{reason}",
   "guide.dontShowToday": "今天不再显示",
+  "guide.exportPdf": "导出 PDF",
+  "guide.exportPdfTitle": "把指南导出为 PDF",
+  "guide.exportPdfBlocked": "无法打开打印对话框，请为本站允许弹出窗口后重试。",
   "guide.gotIt": "我知道了",
   "guide.notes": "注意",
   "guide.zoomHint": "点击图片查看原图"

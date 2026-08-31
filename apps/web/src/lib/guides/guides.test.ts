@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { pickGuideId, shouldOpen, vnDayKey, type GuideState } from "./index";
-import type { Guide } from "./types";
+import {
+  guidePrintHtml,
+  pickGuideId,
+  shouldOpen,
+  vnDayKey,
+  type GuideState,
+} from "./index";
+import type { Guide, GuideContent } from "./types";
 
 const guide = (id: string): Guide => ({ id, content: {} as Guide["content"] });
 const A = guide("a");
@@ -59,5 +65,45 @@ describe("shouldOpen", () => {
     expect(shouldOpen("2026-08-31", {}, "2026-08-31", [A])).toBe(false);
     // Tab mở từ hôm qua, để qua đêm → hôm nay vẫn hiện.
     expect(shouldOpen("2026-08-31", {}, "2026-08-30", [A])).toBe(true);
+  });
+});
+
+describe("guidePrintHtml", () => {
+  const content: GuideContent = {
+    eyebrow: "Hướng dẫn",
+    title: "Tên bài <có dấu ngoặc>",
+    intro: "Mở **Cài đặt**",
+    sections: [
+      {
+        heading: "Cách 1",
+        steps: [
+          { title: "Bước một", body: "Bấm **Use reset**", image: "/assets/a.png", caption: "A" },
+          { title: "Bước hai", body: "Xong" },
+        ],
+      },
+    ],
+    notes: ["Chỉ **1 lần** mỗi tháng"],
+  };
+  const html = guidePrintHtml(content, {
+    lang: "vi",
+    notesLabel: "Lưu ý",
+    baseUrl: "https://gpt.lovevn.org/dashboard",
+  });
+
+  it("đủ bước, đủ lưu ý, đánh số lại từ 01", () => {
+    expect(html).toContain("Bước một");
+    expect(html).toContain("Bước hai");
+    expect(html).toContain(">01<");
+    expect(html).toContain(">02<");
+    expect(html).toContain("Chỉ <strong>1 lần</strong> mỗi tháng");
+  });
+
+  it("ảnh đổi sang URL tuyệt đối — cửa sổ in là about:blank", () => {
+    expect(html).toContain('src="https://gpt.lovevn.org/assets/a.png"');
+  });
+
+  it("escape trước rồi mới dựng **đậm**, không lọt HTML thô", () => {
+    expect(html).toContain("Tên bài &lt;có dấu ngoặc&gt;");
+    expect(html).toContain("Mở <strong>Cài đặt</strong>");
   });
 });

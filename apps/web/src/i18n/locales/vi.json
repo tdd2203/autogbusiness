@@ -1549,6 +1549,9 @@
   "rateLimit.action.MEMBER_PAY": "Thanh toán từ ví",
   "invite.groupsFailed": "Chưa gửi được cho {names}. {reason}",
   "guide.dontShowToday": "Không hiện lại hôm nay",
+  "guide.exportPdf": "Xuất PDF",
+  "guide.exportPdfTitle": "Xuất hướng dẫn dạng PDF",
+  "guide.exportPdfBlocked": "Không mở được hộp thoại in. Cho phép cửa sổ bật lên cho trang này rồi bấm lại.",
   "guide.gotIt": "Đã hiểu",
   "guide.notes": "Lưu ý",
   "guide.zoomHint": "Bấm vào ảnh để xem cỡ đầy đủ"

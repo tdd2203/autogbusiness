@@ -12,9 +12,16 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useI18n } from "../i18n";
-import { cardKicker, cardTitle, primaryBtn as sharedPrimaryBtn } from "./walletUi";
+import { toast } from "./Toast";
+import {
+  cardKicker,
+  cardTitle,
+  primaryBtn as sharedPrimaryBtn,
+  secondaryBtn,
+} from "./walletUi";
 import {
   findGuide,
+  openGuidePrint,
   markSeenThisSession,
   pickGuideId,
   readSessionSeenDay,
@@ -101,6 +108,18 @@ export default function DailyGuideModal() {
     setGuide(null);
   }
 
+  // Bản in dựng lại nội dung ở trang riêng (xem `lib/guides/printable.ts`), chứ
+  // in thẳng popup thì ra bản cụt: popup cuộn trong khung, ảnh còn lazy-load.
+  function exportPdf() {
+    if (!guide) return;
+    const printed = openGuidePrint(guide.content[lang] ?? guide.content.vi, {
+      lang,
+      notesLabel: t("guide.notes"),
+      baseUrl: window.location.href,
+    });
+    if (!printed) toast.warning(t("guide.exportPdfBlocked"));
+  }
+
   useEffect(() => {
     if (!guide) return;
     const onKey = (e: KeyboardEvent) => {
@@ -122,9 +141,19 @@ export default function DailyGuideModal() {
             <div style={eyebrow}>{content.eyebrow}</div>
             <div style={titleStyle}>{content.title}</div>
           </div>
-          <button onClick={close} style={closeBtn} aria-label={t("common.close")}>
-            ✕
-          </button>
+          <div style={headerActions}>
+            <button
+              onClick={exportPdf}
+              style={pdfBtn}
+              title={t("guide.exportPdfTitle")}
+            >
+              <DownloadIcon />
+              {t("guide.exportPdf")}
+            </button>
+            <button onClick={close} style={closeBtn} aria-label={t("common.close")}>
+              ✕
+            </button>
+          </div>
         </div>
 
         <div style={body}>
@@ -227,6 +256,21 @@ function Step({
   );
 }
 
+/** Mũi tên xuống khay — dấu "tải về" quen mắt, khỏi kéo thêm bộ icon. */
+function DownloadIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M8 2v8m0 0 3-3m-3 3L5 7M2.5 12.5h11"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 const backdrop: React.CSSProperties = { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 130, padding: 16 };
 const modal: React.CSSProperties = { fontFamily: "var(--font-sans)", background: "var(--surface)", borderRadius: 18, width: 1120, maxWidth: "100%", maxHeight: "calc(92vh / var(--ui-scale))", display: "flex", flexDirection: "column", border: "1px solid var(--border)", boxShadow: "0 24px 70px -18px rgba(28,26,23,0.4), 0 2px 8px rgba(28,26,23,0.08)", overflow: "hidden" };
 const header: React.CSSProperties = { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, padding: "18px 22px 15px", borderBottom: "1px solid var(--border)" };
@@ -236,6 +280,8 @@ const header: React.CSSProperties = { display: "flex", alignItems: "flex-start",
 const SANS = { fontFamily: "var(--font-sans)" } as const;
 const eyebrow: React.CSSProperties = { ...cardKicker, ...SANS, height: "auto", color: "var(--success)", marginBottom: 5, fontWeight: 600 };
 const titleStyle: React.CSSProperties = { ...cardTitle, fontSize: 22, marginBottom: 0, lineHeight: 1.3 };
+const headerActions: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, flexShrink: 0 };
+const pdfBtn: React.CSSProperties = { ...secondaryBtn, padding: "6px 11px", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", flexShrink: 0 };
 const closeBtn: React.CSSProperties = { width: 30, height: 30, borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--ink-3)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
 const body: React.CSSProperties = { padding: "16px 22px 22px", overflowY: "auto", flex: 1 };
 const intro: React.CSSProperties = { margin: 0, fontSize: 15, lineHeight: 1.65, color: "var(--ink-2)" };
