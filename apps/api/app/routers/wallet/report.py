@@ -266,12 +266,28 @@ def _member_per_month_fee(
     return default_fee
 
 
+def _starts_new_stint(prev_end: datetime | None, start: datetime) -> bool:
+    """Kỳ này MỞ ĐẦU một đợt tham gia mới? (⇒ tiền của nó là PHÍ MỜI, không phải gia
+    hạn). Kỳ đầu tiên luôn đúng; các kỳ sau chỉ đúng khi bắt đầu SAU hạn kỳ trước quá
+    1 phút — tức có khoảng hết hạn xen giữa (email bị gỡ rồi mời lại).
+
+    Chỉ tính lệch MỘT CHIỀU: kỳ bắt đầu TRƯỚC hạn kỳ trước (chồng lấn, do chỉnh tay)
+    vẫn là gia hạn — chồng lấn không phải khoảng ngừng. Sai số 1 phút cho mốc chỉnh
+    tay."""
+    if prev_end is None:
+        return True
+    return (start - prev_end).total_seconds() > 60
+
+
 def _member_revenue_events(
     member: Member, now: datetime
 ) -> list[tuple[bool, int, datetime, datetime]]:
     """Danh sách kỳ tính tiền của member → (is_invite, months, start, end).
 
-    - `is_invite`: chu kỳ 1 (mời lần đầu) vs gia hạn (chu kỳ > 1).
+    - `is_invite`: kỳ MỞ ĐẦU một đợt tham gia (phí mời) vs gia hạn (nối tiếp kỳ trước).
+      KHÔNG dùng `cycle_number == 1`: từ 31/8/2026 lịch sử kỳ được giữ qua các lần mời
+      lại, nên email hết hạn rồi mời lại có kỳ mở đầu mang số 2, 3… Dấu hiệu đúng là
+      KHOẢNG TRỐNG: kỳ không nối liền kỳ trước ⇒ đợt mới ⇒ phí mời.
     - `months`: số tháng của kỳ (đơn giá × months = phí kỳ đó).
     - `start`: mốc bắt đầu kỳ (kỳ 1 = ngày tham gia; gia hạn = hạn cũ).
     - `end`: mốc hết kỳ — phí được RẢI ĐỀU trên [start, end). Thiếu end_at (dữ liệu
@@ -280,9 +296,10 @@ def _member_revenue_events(
     Ưu tiên các chu kỳ đã vật chất hoá; member có hạn nhưng CHƯA có kỳ nào (mời trước
     bảng cycles) → suy 1 kỳ mời phủ [ngày tham gia → hạn]. Vô thời hạn (không hạn,
     không kỳ) → không có phí (owner/free)."""
-    cycles = list(member.subscription_cycles)
+    cycles = sorted(member.subscription_cycles, key=lambda c: c.cycle_number)
     if cycles:
         out: list[tuple[bool, int, datetime, datetime]] = []
+        prev_end: datetime | None = None
         for c in cycles:
             start = c.start_at or c.paid_at or member.created_at
             if start is None:
@@ -291,7 +308,8 @@ def _member_revenue_events(
             end = c.end_at
             if end is None or end <= start:
                 end = start + timedelta(days=_DAYS_PER_MONTH * months)
-            out.append((c.cycle_number == 1, months, start, end))
+            out.append((_starts_new_stint(prev_end, start), months, start, end))
+            prev_end = end
         return out
     if member.subscription_end_at is None:
         return []  # vô thời hạn / chưa có hạn → không tính phí
@@ -386,7 +404,26 @@ def financial_report(
             # 13/07/2026 (SePay go-live) có 172 kỳ được chốt cùng lúc, trong đó
             # 44,7tr là tiền của tháng 5 và 6 — dồn hết vào tháng 7 làm sai cả ba
             # tháng. start_at là dữ liệu thật, không phụ thuộc thao tác chốt sổ.
-            for c in m.subscription_cycles:
+            # Đánh dấu TRƯỚC kỳ nào là phí mời (kỳ mở đầu một đợt tham gia) — phải
+            # duyệt TRỌN danh sách theo thứ tự, kể cả kỳ chưa trả hay ngoài khoảng
+            # lọc, vì "nối liền hay không" đo bằng kỳ ngay trước nó.
+            ordered = sorted(m.subscription_cycles, key=lambda c: c.cycle_number)
+            invite_cycle_ids: set = set()
+            prev_end: datetime | None = None
+            for c in ordered:
+                c_start = c.start_at or c.paid_at
+                if c_start is None:
+                    continue
+                if _starts_new_stint(prev_end, c_start):
+                    invite_cycle_ids.add(c.id)
+                # Thiếu end_at (dữ liệu cũ) → suy từ months, giống _member_revenue_events;
+                # để prev_end tụt lại kỳ trước nữa thì kỳ sau bị chấm nhầm là "có khoảng
+                # trống" ⇒ đếm nhầm gia hạn thành phí mời.
+                prev_end = c.end_at or (
+                    c_start
+                    + timedelta(days=_DAYS_PER_MONTH * (int(c.months) if c.months else 1))
+                )
+            for c in ordered:
                 if c.payment_status != "paid":
                     continue
                 when = c.start_at or c.paid_at
@@ -404,7 +441,7 @@ def financial_report(
                 amt = per_month * n_months
                 seat_months_sold += n_months
                 agent_rev[owner_key] = agent_rev.get(owner_key, 0) + amt
-                if c.cycle_number == 1:
+                if c.id in invite_cycle_ids:
                     revenue_invite += amt
                     agent_invites[owner_key] = agent_invites.get(owner_key, 0) + 1
                 else:

@@ -218,14 +218,22 @@ def _ensure_cycles_materialized(
     )
 
 
-def _trim_cycles_to_end(member: Member, end_at: datetime | None) -> None:
+def _trim_cycles_to_end(
+    member: Member, end_at: datetime | None, *, now: datetime
+) -> None:
     """Đổi hạn RÚT NGẮN / VÔ THỜI HẠN: bỏ các chu kỳ vượt hạn mới.
 
-    - end_at None (vô thời hạn) → xoá HẾT chu kỳ (vô hạn không có kỳ tính tiền).
+    - end_at None (vô thời hạn) → bỏ các kỳ CÒN HIỆU LỰC (vô hạn không có kỳ tính
+      tiền), nhưng GIỮ kỳ của các đợt đã kết thúc: chuyển một ghế sang vô thời hạn
+      không xoá được tiền đã thu của những đợt trước đó.
     - Ngược lại: bỏ kỳ bắt đầu từ hạn mới trở đi (start_at ≥ end_at); kỳ còn lại mà
       kết thúc sau hạn mới → cắt end_at về đúng hạn mới. (delete-orphan tự xoá row.)"""
     if end_at is None:
-        member.subscription_cycles = []
+        member.subscription_cycles = [
+            c
+            for c in member.subscription_cycles
+            if c.end_at is not None and c.end_at <= now
+        ]
         return
     kept: list[MemberSubscriptionCycle] = []
     for c in member.subscription_cycles:
@@ -246,12 +254,14 @@ def _rebuild_paid_cycles(
     """Dựng LẠI 1 chu kỳ ĐÃ THANH TOÁN từ [mốc gia hạn mới → hạn] của member.
 
     Dùng khi RE-ANCHOR (sửa "Ngày gia hạn"): cả cửa sổ dời theo mốc gia hạn VỪA ĐẶT
-    (`subscription_purchased_at`), nên bỏ hết kỳ cũ rồi dựng lại (months suy từ cửa
-    sổ). Vô thời hạn (hạn None) → không còn kỳ."""
-    _reset_cycles(db, member)
+    (`subscription_purchased_at`), nên bỏ kỳ của ĐỢT HIỆN TẠI rồi dựng lại (months suy
+    từ cửa sổ). Kỳ của các đợt đã kết thúc TRƯỚC mốc neo mới được giữ — sửa ngày gia
+    hạn của đợt này không xoá được hoá đơn các đợt trước. Vô thời hạn (hạn None) →
+    đợt hiện tại không còn kỳ."""
     anchor = _clamp_future(
         member.subscription_purchased_at or member.joined_at, now
     )
+    _drop_open_cycles(db, member, boundary=anchor or now)
     _append_paid_cycle(
         member,
         start_at=anchor,
@@ -285,14 +295,20 @@ def _apply_invite_paid_cycle(
     """MỜI = phí thu TRƯỚC (ví/QR) → member ĐÃ THANH TOÁN NGAY (nhất quán với renew,
     chốt user 2026-07-13: không còn 'chưa thanh toán'/duyệt thủ công cho email mới mời).
 
-    Dựng LẠI 1 chu kỳ 'paid' phủ [ngày gia hạn → hạn] rồi đồng bộ trạng thái member.
-    Bỏ hết chu kỳ cũ vì mời/mời-lại = một chu kỳ tham gia MỚI (removed→mời lại reset cả
-    cửa sổ; pending mời lại cũng đặt lại hạn). Vô thời hạn (hạn None) → không có chu kỳ
-    nhưng member vẫn 'paid'. Xem [[subscription-cycle-model]]."""
-    _reset_cycles(db, member)
+    Dựng 1 chu kỳ 'paid' phủ [ngày gia hạn → hạn] rồi đồng bộ trạng thái member.
+
+    Chỉ bỏ kỳ CÒN PHỦ cửa sổ mới (mời lại khi đang `pending`: lượt mời trước chưa dùng
+    tới, cửa sổ bị đặt lại nên kỳ cũ phải nhường chỗ). Kỳ của các ĐỢT ĐÃ KẾT THÚC được
+    GIỮ: email hết hạn bị gỡ rồi vài tuần sau mời lại vẫn là tiền đã thu có hoá đơn
+    trong ví, xoá đi là lệch sổ (user báo 31/8/2026). Kỳ mới nối số tiếp (Kỳ 2, 3…) và
+    cách kỳ trước một khoảng — chính khoảng đó đánh dấu "đợt mới", xem
+    `current_stint_cycles`. Vô thời hạn (hạn None) → không nối kỳ nhưng member vẫn
+    'paid'. Xem [[subscription-cycle-model]]."""
+    start_at = _clamp_future(member.subscription_purchased_at, now)
+    _drop_open_cycles(db, member, boundary=start_at or now)
     _append_paid_cycle(
         member,
-        start_at=_clamp_future(member.subscription_purchased_at, now),
+        start_at=start_at,
         end_at=member.subscription_end_at,
         months=months,
         actor_id=actor_id,
@@ -301,14 +317,53 @@ def _apply_invite_paid_cycle(
     _mark_member_paid(member, now=now, actor_id=actor_id)
 
 
-def _reset_cycles(db: Session, member: Member) -> None:
-    """Xoá HẾT chu kỳ hiện có rồi FLUSH ngay. Bắt buộc flush trước khi nối lại kỳ số 1
-    (dựng lại từ đầu): nếu để delete-orphan cũ và INSERT kỳ mới cùng một flush,
-    SQLAlchemy có thể chèn (member_id, cycle_number=1) TRƯỚC khi xoá dòng cũ → vi phạm
-    unique `uq_member_cycle_number`. No-op nếu member chưa có kỳ nào."""
-    if member.subscription_cycles:
-        member.subscription_cycles = []
-        db.flush()
+def _drop_open_cycles(db: Session, member: Member, *, boundary: datetime) -> None:
+    """Bỏ các chu kỳ CÒN PHỦ mốc `boundary` (end_at > boundary), GIỮ NGUYÊN các kỳ đã
+    kết thúc trước đó.
+
+    Dùng ở các đường "dựng lại cửa sổ hiện tại" (mời lại tính phí, void hoàn phí, đổi
+    mốc gia hạn). Trước đây các đường này xoá SẠCH lịch sử kỳ, nên email hết hạn → bị
+    gỡ → vài tuần sau mời lại thì "Kỳ thanh toán" quay về đúng 1 dòng, trong khi ví vẫn
+    còn hoá đơn của các đợt trước ⇒ lệch sổ (user báo 31/8/2026). Kỳ đã kết thúc là
+    tiền ĐÃ THU, không được xoá theo lượt mua mới.
+
+    `boundary` = mốc bắt đầu cửa sổ mới. Kỳ còn hiệu lực tại mốc đó là kỳ của chính
+    lượt đang dựng lại (hoặc lượt mời hỏng vừa hoàn phí) → bỏ. Kỳ thiếu `end_at` (dữ
+    liệu cũ, không biết phủ tới đâu) cũng bỏ — giữ nguyên hành vi xoá sạch trước đây.
+
+    FLUSH ngay sau khi bỏ: `_append_paid_cycle` chèn liền sau đó, để delete-orphan và
+    INSERT cùng một flush thì SQLAlchemy có thể chèn (member_id, cycle_number) TRƯỚC
+    khi xoá dòng cũ → vi phạm unique `uq_member_cycle_number`."""
+    kept = [
+        c
+        for c in member.subscription_cycles
+        if c.end_at is not None and c.end_at <= boundary
+    ]
+    if len(kept) == len(member.subscription_cycles):
+        return
+    member.subscription_cycles = kept
+    db.flush()
+
+
+def current_stint_cycles(
+    cycles: list[MemberSubscriptionCycle],
+) -> list[MemberSubscriptionCycle]:
+    """Các kỳ thuộc ĐỢT THAM GIA HIỆN TẠI = chuỗi kỳ liền mạch cuối cùng.
+
+    Sau khi giữ lịch sử qua các lần mời lại, danh sách kỳ của một member có thể gồm
+    nhiều đợt cách nhau bởi khoảng hết hạn. Trạng thái/tiến độ của GHẾ ĐANG DÙNG chỉ
+    được tính trên đợt hiện tại — nợ cũ của một đợt đã đóng không được sống lại trên
+    ghế mới. Mở đợt mới = kỳ bắt đầu SAU hạn kỳ trước quá 1 phút; kỳ chồng lấn (mốc
+    chỉnh tay lùi lại) vẫn thuộc cùng đợt."""
+    ordered = sorted(cycles, key=lambda c: c.cycle_number)
+    stint_start = 0
+    for i in range(1, len(ordered)):
+        prev_end, start = ordered[i - 1].end_at, ordered[i].start_at
+        if prev_end is None or start is None:
+            continue
+        if (start - prev_end).total_seconds() > 60:
+            stint_start = i
+    return ordered[stint_start:]
 
 
 def void_refunded_invite_periods(
@@ -330,8 +385,9 @@ def void_refunded_invite_periods(
 
     CHỈ đụng member `pending`/`removed` (chưa thực sự dùng dịch vụ). KHÔNG đụng
     `active`: active = đang trong team, phí gia hạn đi luồng khác (kind != invite_fee)
-    nên không bao giờ bị hoàn qua đây. Member mời-mới/mời-lại-tính-phí có ĐÚNG 1 chu
-    kỳ = lời mời này (`_apply_invite_paid_cycle` reset về 1) nên xoá sạch an toàn.
+    nên không bao giờ bị hoàn qua đây. Chỉ void kỳ CÒN HIỆU LỰC (kỳ của chính lời mời
+    vừa hoàn); kỳ của các đợt tham gia TRƯỚC đã kết thúc thì giữ — tiền đợt đó không
+    được hoàn nên sổ phải còn.
 
     ⚠️ VOID = "HẾT HẠN NGAY" (`end_at = now`), KHÔNG PHẢI `None` (sửa 12/8/2026):
     theo `EXPIRY_RULES.md` §5, `subscription_end_at IS NULL` nghĩa là **VÔ THỜI HẠN** —
@@ -371,7 +427,7 @@ def void_refunded_invite_periods(
     for m in members:
         if m.subscription_end_at is None and not m.subscription_cycles:
             continue  # đã sạch (vô hạn / chưa có kỳ) → bỏ qua
-        _reset_cycles(db, m)
+        _drop_open_cycles(db, m, boundary=now)
         # `now`, KHÔNG `None` — xem cảnh báo "VOID = HẾT HẠN NGAY" ở docstring.
         # Member VỐN ĐÃ vô hạn (end_at None) thì giữ nguyên: 'vô hạn' đó do admin cố ý
         # đặt, hoàn 1 phí mời không phải lý do để cắt dịch vụ họ đang được cho.

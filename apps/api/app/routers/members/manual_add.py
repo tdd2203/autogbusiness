@@ -39,6 +39,7 @@ from app.schemas import MemberBulkInviteIn
 
 from ._shared import (
     router,
+    _drop_open_cycles,
     _end_from_purchase,
     _extend_subscription_end,
     _get_workspace_or_404,
@@ -191,9 +192,10 @@ def manual_add_members(
             # Mới hoàn toàn hoặc kích hoạt lại `removed` → chu kỳ tham gia mới từ now.
             end = _end_from_purchase(now, months)
             if existing is not None:
-                # Reactivate record `removed`: dựng lại từ đầu (bỏ chu kỳ cũ).
-                existing.subscription_cycles = []
-                db.flush()
+                # Reactivate record `removed` = ĐỢT tham gia mới: bỏ kỳ còn phủ cửa sổ
+                # mới, GIỮ kỳ của các đợt đã kết thúc (tiền đã thu, có hoá đơn trong
+                # ví — xem `_drop_open_cycles`).
+                _drop_open_cycles(db, existing, boundary=now)
                 existing.status = "active"
                 existing.chatgpt_role = role
                 existing.invited_by_user_id = user.id

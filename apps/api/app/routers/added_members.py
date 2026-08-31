@@ -18,6 +18,7 @@ from app.action_limit import enforce_action_cooldown
 from app.audit import log_event
 from app.deps import get_current_user, get_session
 from app.models import REMOVED_REASON_EMAIL_CHANGED, AuditLog, Member, MemberSubscriptionCycle, User
+from app.routers.members._shared import current_stint_cycles
 from app.routers.wallet._shared import get_payment_settings
 from app.schemas import (
     AddedMemberOut,
@@ -122,8 +123,13 @@ def _recompute_member_payment_status(member: Member) -> None:
     Member KHÔNG có chu kỳ nào (vd vô thời hạn, chưa từng gia hạn) → giữ nguyên
     payment_status cấp member (thao tác legacy trực tiếp trên field member).
     Đồng bộ payment_requested_*/paid_* cấp member để chuông thông báo hiển thị đúng.
+
+    CHỈ tính trên ĐỢT THAM GIA HIỆN TẠI: từ 31/8/2026 kỳ của các đợt trước được giữ
+    lại (email hết hạn → bị gỡ → mời lại), mà `payment_status` cấp member là trạng
+    thái của GHẾ ĐANG DÙNG. Đọc cả lịch sử thì một kỳ 'unpaid' của đợt đã đóng (thêm
+    thủ công ngày xưa) sẽ làm ghế vừa trả tiền hiện "chưa thanh toán" mãi.
     """
-    cycles = member.subscription_cycles
+    cycles = current_stint_cycles(member.subscription_cycles)
     if not cycles:
         return
     statuses = [c.payment_status for c in cycles]

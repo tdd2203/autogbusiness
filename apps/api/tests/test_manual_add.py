@@ -151,3 +151,55 @@ def test_manual_add_again_stacks_cycle(client: TestClient, auth_header: dict) ->
     row = next(r for r in added if r["email"] == "b@ndaigroup.org")
     assert len(row["cycles"]) == 2
     assert all(c["payment_status"] == "unpaid" for c in row["cycles"])
+
+
+def test_manual_add_reactivate_keeps_old_cycles(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Kích hoạt lại email `removed` = ĐỢT tham gia mới, nhưng kỳ của đợt cũ phải CÒN.
+
+    Xoá sạch như trước làm lịch sử kỳ lệch với hoá đơn đã thu (user báo 2026-08-31).
+    """
+    import uuid as _uuid
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import SessionLocal
+    from app.models import Member as _Member
+
+    ws = _ws(client, auth_header, name="Reactivate WS", domain="ndaigroup.org")
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/manual-add",
+        json={"invites": [{"email": "back@ndaigroup.org", "subscription_months": 1}]},
+        headers=auth_header,
+    )
+    assert resp.status_code == 201, resp.text
+
+    added = client.get("/api/v1/added-members", headers=auth_header).json()
+    row = next(r for r in added if r["email"] == "back@ndaigroup.org")
+    assert len(row["cycles"]) == 1
+
+    # Đợt cũ kết thúc 40 ngày trước, email đã bị gỡ khỏi team.
+    now = datetime.now(timezone.utc)
+    past_end = now - timedelta(days=40)
+    with SessionLocal() as db:
+        m = db.get(_Member, _uuid.UUID(row["id"]))
+        m.status = "removed"
+        m.removed_at = past_end
+        m.subscription_end_at = past_end
+        for c in m.subscription_cycles:
+            c.start_at = past_end - timedelta(days=30)
+            c.end_at = past_end
+        db.commit()
+
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/manual-add",
+        json={"invites": [{"email": "back@ndaigroup.org", "subscription_months": 1}]},
+        headers=auth_header,
+    )
+    assert resp.status_code == 201, resp.text
+
+    added = client.get("/api/v1/added-members", headers=auth_header).json()
+    row = next(r for r in added if r["email"] == "back@ndaigroup.org")
+    cycles = sorted(row["cycles"], key=lambda c: c["cycle_number"])
+    assert [c["cycle_number"] for c in cycles] == [1, 2], cycles
+    assert datetime.fromisoformat(cycles[0]["end_at"]) == past_end

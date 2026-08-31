@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
+import { currentStintCycles } from "../lib/cycles";
 import { useAuth } from "../hooks/useAuth";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useAddedEmails } from "../hooks/useAddedEmails";
@@ -1602,7 +1603,10 @@ function PaymentCell({
   t: ReturnType<typeof useT>;
   formatDate: ReturnType<typeof useFormatDate>;
 }) {
-  const cycles: SubscriptionCycle[] = m.cycles ?? [];
+  // CHỈ đợt tham gia hiện tại: kỳ của các đợt đã kết thúc được giữ lại để khớp hoá
+  // đơn (xem lib/cycles.ts), nhưng ô này nói về ghế ĐANG DÙNG — gộp cả lịch sử vào
+  // thì một kỳ chưa trả của đợt cũ biến ghế vừa mua thành "còn nợ".
+  const cycles: SubscriptionCycle[] = currentStintCycles(m.cycles ?? []);
   const busy = markPaid.isPending || payAction.isPending;
   // Kỳ nào đại lý còn bấm được: trả tiền thật thì cả kỳ đang chờ duyệt cũng trả được
   // (khỏi phải rút yêu cầu trước); gửi yêu cầu thì chỉ kỳ chưa gửi.

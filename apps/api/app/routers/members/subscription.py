@@ -158,7 +158,7 @@ def perform_subscription_core(
     #   - Từ vô thời hạn thành có hạn → dựng 1 kỳ từ mốc neo → hạn mới.
     #   - Rút ngắn / giữ nguyên → cắt kỳ về hạn mới.
     if target_end is None:
-        _trim_cycles_to_end(member, None)
+        _trim_cycles_to_end(member, None, now=now)
     elif old_end is not None and target_end > old_end:
         ext_months = (
             body.subscription_months
@@ -184,7 +184,7 @@ def perform_subscription_core(
             now=now,
         )
     else:
-        _trim_cycles_to_end(member, target_end)
+        _trim_cycles_to_end(member, target_end, now=now)
     _mark_member_paid(member, now=now, actor_id=user.id)
 
     # Bỏ duyệt → không còn trạng thái chờ; dọn dấu vết yêu cầu cũ (nếu có).

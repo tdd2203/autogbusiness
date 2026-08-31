@@ -1300,6 +1300,7 @@
   "memberDetail.purchasedAt": "Ngày mua",
   "memberDetail.cycleLabel": "Chu kỳ",
   "memberDetail.cycleValue": "{n} tháng",
+  "memberDetail.cycleGap": "Ngừng dịch vụ {days} ngày",
   "memberDetail.cyclesTitle": "Kỳ thanh toán",
   "memberDetail.cashflowTitle": "Dòng tiền",
   "memberDetail.cashCharged": "Đã thu",

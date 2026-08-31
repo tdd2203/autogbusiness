@@ -269,3 +269,61 @@ def test_cycles_cover_full_remaining_term_when_anchor_in_future(
     assert cycles[0]["months"] == 3
     assert cycles[0]["payment_status"] == "paid"
     assert datetime.fromisoformat(cycles[0]["end_at"]) == end
+
+
+def test_reinvite_after_expiry_keeps_old_cycles(
+    client: TestClient, auth_header: dict
+):
+    """Hết hạn → bị gỡ → vài tuần sau mời lại: kỳ CŨ phải còn (user báo 2026-08-31).
+
+    Xoá sạch như trước làm "Kỳ thanh toán" tụt về đúng 1 dòng trong khi ví vẫn giữ hoá
+    đơn của đợt trước ⇒ lệch sổ. Kỳ mới nối số tiếp và CÁCH kỳ cũ một khoảng — chính
+    khoảng đó đánh dấu đợt tham gia mới.
+    """
+    import uuid as _uuid
+    from datetime import timezone
+
+    from app.db import SessionLocal
+    from app.models import Member as _Member
+
+    ws = _create_ws(client, auth_header)
+    member = _invite(client, ws["id"], auth_header, "gap@example.com", months=1)
+    old_cycles = _cycles(client, auth_header, member["id"])
+    assert len(old_cycles) == 1
+
+    # Giả lập: kỳ đầu đã kết thúc 45 ngày trước, email bị job hết hạn gỡ khỏi team.
+    now = datetime.now(timezone.utc)
+    past_start = now - timedelta(days=75)
+    past_end = now - timedelta(days=45)
+    with SessionLocal() as db:
+        m = db.get(_Member, _uuid.UUID(member["id"]))
+        m.status = "removed"
+        m.removed_at = past_end
+        m.subscription_end_at = past_end
+        m.joined_at = past_start
+        m.subscription_purchased_at = past_start
+        for c in m.subscription_cycles:
+            c.start_at = past_start
+            c.end_at = past_end
+        db.commit()
+
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={
+            "email": "gap@example.com",
+            "role": "member",
+            "subscription_months": 1,
+        },
+        headers=auth_header,
+    )
+    assert resp.status_code == 201, resp.text
+
+    cycles = _cycles(client, auth_header, member["id"])
+    assert [c["cycle_number"] for c in cycles] == [1, 2], cycles
+    # Kỳ 1 giữ NGUYÊN cửa sổ cũ, không bị cắt/ghi đè.
+    assert datetime.fromisoformat(cycles[0]["end_at"]) == past_end
+    assert all(c["payment_status"] == "paid" for c in cycles)
+    # Kỳ 2 mở đợt mới: bắt đầu ~hôm nay, cách kỳ 1 một khoảng thật.
+    new_start = datetime.fromisoformat(cycles[1]["start_at"])
+    assert abs((new_start - now).total_seconds()) < 300
+    assert (new_start - past_end).days >= 44

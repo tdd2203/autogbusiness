@@ -17,11 +17,12 @@
  * chuyển từ bảng "Email đã add" sang, thao tác sửa sai hiếm dùng.
  * Xem MemberDetailModal.md TRƯỚC KHI SỬA.
  */
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { toast } from "./Toast";
 import { LICENSE_FEATURE_ENABLED } from "../lib/featureFlags";
+import { currentStintCycles, sortCycles, startsNewStint } from "../lib/cycles";
 import { useFormatDate, useFormatDateTime, useT, useTranslateEnum } from "../i18n";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useAuth } from "../hooks/useAuth";
@@ -2019,10 +2020,20 @@ function MemberDetailView({
   // Sidebar "Chu kỳ" phủ theo CÁC KỲ THỰC (kỳ đầu → hạn) để khớp danh sách "Kỳ thanh
   // toán" — kỳ luôn phủ toàn bộ thời gian còn hạn (mốc bắt đầu đã kẹp về ≤ hôm nay ở
   // backend). Fallback mốc gia hạn khi member chưa có kỳ nào.
-  const sortedCycles = [...cycles].sort(
-    (a, b) => a.cycle_number - b.cycle_number,
+  const sortedCycles = sortCycles(cycles);
+  // Danh sách kỳ nay có thể trải NHIỀU ĐỢT tham gia (backend giữ kỳ cũ khi mời lại,
+  // xem lib/cycles.ts) → đánh dấu kỳ mở đầu mỗi đợt để vẽ vạch ngăn.
+  const stintGapIds = new Set(
+    sortedCycles
+      .filter((c, i) =>
+        i > 0 ? startsNewStint(sortedCycles[i - 1].end_at, c.start_at) : false,
+      )
+      .map((c) => c.id),
   );
-  const cycleSpanStart = sortedCycles[0]?.start_at ?? renewAnchor;
+  // Vòng "Chu kỳ" ở sidebar chỉ phủ ĐỢT HIỆN TẠI: lấy kỳ đầu của cả danh sách thì mốc
+  // kéo ngược về đợt đã kết thúc từ lâu → "còn X / tổng Y ngày" sai bét.
+  const cycleSpanStart =
+    currentStintCycles(sortedCycles)[0]?.start_at ?? renewAnchor;
   const cycleSpanDays =
     cycleSpanStart && endMs != null
       ? Math.max(
@@ -2600,14 +2611,62 @@ function MemberDetailView({
                   </span>
                 </div>
                 <div style={{ display: "grid", gap: 8 }}>
-                  {cycles.map((c) => {
+                  {sortedCycles.map((c, i) => {
                     const range =
                       c.start_at && c.end_at
                         ? `${formatDate(c.start_at)} → ${formatDate(c.end_at)}`
                         : null;
+                    // Ranh giới hai đợt: không có vạch này thì hai kỳ cách nhau 2
+                    // tháng nhìn y hệt hai kỳ liền mạch, đọc ra lịch sử sai.
+                    const prevEnd = i > 0 ? sortedCycles[i - 1].end_at : null;
+                    const gapDays =
+                      stintGapIds.has(c.id) && prevEnd && c.start_at
+                        ? Math.max(
+                            0,
+                            Math.round(
+                              (new Date(c.start_at).getTime() -
+                                new Date(prevEnd).getTime()) /
+                                DAY,
+                            ),
+                          )
+                        : null;
                     return (
+                      <Fragment key={c.id}>
+                      {gapDays !== null && (
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 10,
+                            padding: "2px 4px",
+                          }}
+                        >
+                          <span
+                            style={{
+                              flex: 1,
+                              height: 1,
+                              background: "var(--border)",
+                            }}
+                          />
+                          <span
+                            style={{
+                              fontSize: 11,
+                              color: "var(--ink-3)",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {t("memberDetail.cycleGap", { days: gapDays })}
+                          </span>
+                          <span
+                            style={{
+                              flex: 1,
+                              height: 1,
+                              background: "var(--border)",
+                            }}
+                          />
+                        </div>
+                      )}
                       <div
-                        key={c.id}
                         style={{
                           display: "flex",
                           alignItems: "center",
@@ -2668,6 +2727,7 @@ function MemberDetailView({
                           <CyclePaymentBadge status={c.payment_status} t={t} />
                         </div>
                       </div>
+                      </Fragment>
                     );
                   })}
                 </div>

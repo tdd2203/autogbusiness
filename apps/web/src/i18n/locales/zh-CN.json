@@ -1300,6 +1300,7 @@
   "memberDetail.purchasedAt": "购买日期",
   "memberDetail.cycleLabel": "周期",
   "memberDetail.cycleValue": "{n} 个月",
+  "memberDetail.cycleGap": "服务中断 {days} 天",
   "memberDetail.cyclesTitle": "付款周期",
   "memberDetail.cashflowTitle": "资金流水",
   "memberDetail.cashCharged": "已收取",
