@@ -663,7 +663,7 @@ def overview(
     settings = get_payment_settings(db)
     default_fee = int(settings.invite_fee_vnd or 0)
 
-    active = pending = unpaid = due_soon = awaiting = unbound = 0
+    active = pending = unpaid = due_soon = unbound = 0
     due_by_day: dict[date_type, list[int]] = {}
     in_team: set[str] = set()
     member_rows = db.execute(
@@ -671,7 +671,6 @@ def overview(
             Member.email,
             Member.status,
             Member.payment_status,
-            Member.subscription_request_status,
             Member.subscription_end_at,
             Member.email_change_stuck_at,
             Member.notify_telegram_chat_id,
@@ -681,7 +680,7 @@ def overview(
             Member.status.in_(("active", "pending")),
         )
     ).all()
-    for email, status, pay, sub_req, end_at, _stuck_at, chat_id, fee_vnd in member_rows:
+    for email, status, pay, end_at, _stuck_at, chat_id, fee_vnd in member_rows:
         in_team.add(email.strip().lower())
         if status == "active":
             active += 1
@@ -689,8 +688,6 @@ def overview(
             pending += 1
         if pay == "unpaid":
             unpaid += 1
-        if pay == "requested" or sub_req == "requested":
-            awaiting += 1
         if chat_id is None:
             unbound += 1
         end_at = _aware(end_at)
@@ -739,7 +736,6 @@ def overview(
         pending=pending,
         unpaid=unpaid,
         due3=due_soon,
-        awaiting_approval=awaiting,
         unbound_notify=unbound,
     )
 

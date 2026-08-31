@@ -1883,7 +1883,9 @@ class DashboardTodos(BaseModel):
     unpaid: int = 0
     # Đến hạn gia hạn trong DƯỚI 3 NGÀY (user 2026-08-31, trước là 7).
     due3: int = 0
-    awaiting_approval: int = 0
+    # KHÔNG có "chờ admin duyệt" (gỡ 2026-08-31): duyệt thanh toán/đổi hạn hai bước
+    # đã bị SePay thay — tiền vào là đối chiếu tự động, kỳ sinh ra 'paid' luôn. Số
+    # liệu xác nhận: toàn hệ thống 0 yêu cầu treo, lần gửi cuối 13/07/2026.
     unbound_notify: int = 0
 
 

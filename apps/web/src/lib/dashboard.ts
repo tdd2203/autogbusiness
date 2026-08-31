@@ -63,8 +63,7 @@ export type DashboardTodos = {
   unpaid: number;
   /** Đến hạn gia hạn trong dưới 3 ngày. */
   due3: number;
-  /** Có sẵn từ API, chưa lên màn hình (bản thiết kế không có dòng này). */
-  awaiting_approval: number;
+  /** Có sẵn từ API, chưa lên màn hình. */
   unbound_notify: number;
 };
 
