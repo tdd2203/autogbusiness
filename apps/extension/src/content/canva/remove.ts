@@ -1,15 +1,22 @@
 /**
  * CANVA_REMOVE — gỡ thành viên (hoặc thu hồi lời mời đang chờ) khỏi team Canva.
  *
- * ⚠️ CHƯA KHẢO SÁT ĐƯỢC TRANG THẬT: ảnh user gửi 2026-09-01 mới có luồng MỜI. Menu
- * gỡ nằm sau dấu "⌄" cạnh vai trò, và chưa rõ Canva hỏi xác nhận thế nào.
+ * MENU THẬT (ảnh user 2026-09-01, giao diện tiếng Anh): bấm dấu "⌄" cạnh vai trò của
+ * dòng sẽ mở một menu hai phần —
  *
- * Vì vậy file này đi theo lối AN TOÀN: thử đúng những chữ Canva hay dùng, và nếu
- * không thấy thì DỪNG với lỗi rõ ràng chứ không bấm mò. Bấm nhầm trong menu quản trị
- * có thể đổi vai trò người khác hoặc xoá nhầm người — hỏng cái đó đắt hơn nhiều so
- * với việc báo "chưa làm được, gỡ tay giúp".
+ *   Roles    → Team admin · Team brand designer · Team member   (đổi vai trò)
+ *   Actions  → "Remove from team" — "Remove this member from your team, with the
+ *              option to also transfer their designs."
  *
- * Khi có ảnh menu thật thì chỉ cần bổ sung chữ vào các hằng dưới đây.
+ * Tức mục gỡ nằm CHUNG menu với mục đổi vai trò. Bấm trượt một dòng là ĐỔI VAI TRÒ
+ * người ta chứ không phải gỡ, nên `clickableByAnyText` chỉ nhận đúng chữ trong
+ * `REMOVE_TEXTS`, không đoán theo vị trí.
+ *
+ * CHƯA CÓ ẢNH: menu của dòng LỜI MỜI ĐANG CHỜ (nút thu hồi) và hộp xác nhận sau khi
+ * bấm "Remove from team" (Canva nói có tuỳ chọn chuyển lại thiết kế). Với hai chỗ đó
+ * file này vẫn đi lối AN TOÀN: thử các chữ hay gặp, không thấy thì DỪNG với lỗi rõ
+ * ràng chứ không bấm mò — báo "chưa làm được, gỡ tay giúp" rẻ hơn nhiều so với xoá
+ * nhầm người hoặc đổi nhầm quyền.
  */
 
 import type { CanvaActionRequest, CanvaActionResponse } from "../../shared/messages";
@@ -25,8 +32,11 @@ import {
 } from "./dom";
 import { scrapePeopleTable } from "./sync";
 
-/** Chữ trên mục menu gỡ thành viên / thu hồi lời mời. */
+/** Chữ trên mục menu gỡ thành viên / thu hồi lời mời.
+ *  "Remove from team" là chữ ĐÃ XÁC NHẬN trên bản tiếng Anh; các chữ còn lại là dự
+ *  phòng cho bản tiếng Việt và cho dòng lời mời đang chờ (chưa có ảnh). */
 const REMOVE_TEXTS = [
+  "Remove from team",
   "Xoá khỏi đội",
   "Xóa khỏi đội",
   "Gỡ khỏi đội",
@@ -34,7 +44,6 @@ const REMOVE_TEXTS = [
   "Thu hồi lời mời",
   "Huỷ lời mời",
   "Hủy lời mời",
-  "Remove from team",
   "Remove member",
   "Cancel invite",
   "Revoke invite",
