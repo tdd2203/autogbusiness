@@ -302,7 +302,7 @@ function StatCards({ data, isMobile }: { data: DashboardOverview; isMobile: bool
         // ngần đó đủ hay thiếu cho đợt sắp tới.
         <StatCard
           fixed={isMobile}
-          kicker={dueSoon.money > w.balance ? "CẦN GIA HẠN · THIẾU TIỀN" : "CẦN GIA HẠN 7 NGÀY"}
+          kicker={dueSoon.money > w.balance ? "CẦN GIA HẠN · THIẾU TIỀN" : "GIA HẠN"}
           value={money(dueSoon.money)}
           unit="đ"
           tone={dueSoon.money > w.balance ? "warn" : undefined}
