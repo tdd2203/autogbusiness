@@ -1106,7 +1106,7 @@ function DuePanel({
   data: DashboardOverview;
   isMobile: boolean;
 }) {
-  // Bấm một tuần → POPUP liệt kê từng email + gia hạn ngay tại chỗ (user
+  // Bấm một đợt → POPUP liệt kê từng email + gia hạn ngay tại chỗ (user
   // 2026-08-31). Trước đây chỉ bung ra dòng ngày: nhìn thấy cụm 277 ghế mà không
   // làm gì được ngay thì con số chỉ để ngắm.
   const [openWeek, setOpenWeek] = useState<{ from: string; to: string } | null>(
@@ -1123,7 +1123,7 @@ function DuePanel({
     <section style={{ ...card, marginTop: 14 }}>
       <h2 style={{ ...cardTitle, marginBottom: 4 }}>Sắp đến hạn 30 ngày</h2>
       <p style={{ margin: "0 0 10px", fontSize: 11.5, color: "var(--ink-3)" }}>
-        Gom theo tuần — bấm một tuần để xem danh sách và gia hạn.
+        Gom theo đợt 7 ngày từ hôm nay — bấm một đợt để xem danh sách và gia hạn.
       </p>
       {weeks.length === 0 ? (
         <p style={{ margin: 0, fontSize: 13, color: "var(--ink-2)" }}>

@@ -753,17 +753,27 @@ def overview(
         unbound_notify=unbound,
     )
 
-    # ── Sắp đến hạn, GOM THEO TUẦN (chốt user 2026-08-30) ──────────────────
+    # ── Sắp đến hạn, GOM THEO ĐỢT 7 NGÀY TRƯỢT TỪ HÔM NAY (user 2026-08-31) ──
     # Đáo hạn dồn cục: có ngày 127 ghế. Liệt kê từng ngày thì 23 dòng mà không ai
-    # nhìn ra cụm; gom tuần rồi mở ra từng ngày mới thấy được chỗ cần lo tiền.
-    weeks: dict[date_type, list[date_type]] = {}
+    # nhìn ra cụm, nên phải gom.
+    #
+    # Gom theo TUẦN LỊCH (thứ hai → chủ nhật) thì đợt đầu gần như không bao giờ
+    # bằng dòng "Đến hạn - dưới 7 ngày" bên trái: hôm nay là thứ năm thì cửa sổ 7
+    # ngày cắt ngang hai tuần lịch. Hai con số cạnh nhau lệch nhau mà không sai cái
+    # nào — thứ khó chịu nhất để giải thích. Đợt trượt từ hôm nay thì đợt đầu LUÔN
+    # trùng khít cửa sổ đó.
+    #
+    # Đợt cuối có thể ngắn hơn 7 ngày (30 ngày = 4 đợt đủ + 2 ngày lẻ).
+    buckets: dict[int, list[date_type]] = {}
     for d in sorted(due_by_day):
-        monday = d - timedelta(days=d.weekday())
-        weeks.setdefault(monday, []).append(d)
+        buckets.setdefault((d - today).days // _DUE_SOON_DAYS, []).append(d)
     due_weeks = [
         DashboardDueWeek(
-            from_date=monday.isoformat(),
-            to_date=(monday + timedelta(days=6)).isoformat(),
+            from_date=(today + timedelta(days=idx * _DUE_SOON_DAYS)).isoformat(),
+            to_date=min(
+                today + timedelta(days=(idx + 1) * _DUE_SOON_DAYS - 1),
+                today + timedelta(days=_DUE_DAYS - 1),
+            ).isoformat(),
             seats=sum(len(due_by_day[d]) for d in ds),
             money=sum(sum(due_by_day[d]) for d in ds),
             days=[
@@ -775,7 +785,7 @@ def overview(
                 for d in ds
             ],
         )
-        for monday, ds in sorted(weeks.items())
+        for idx, ds in sorted(buckets.items())
     ]
 
     # ── Chất lượng lượt mời 30 ngày ────────────────────────────────────────

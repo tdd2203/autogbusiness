@@ -77,6 +77,7 @@ export type DashboardFailedEmail = {
 
 export type DashboardDueDay = { date: string; seats: number; money: number };
 
+/** Một đợt 7 ngày đáo hạn, trượt từ hôm nay (đợt cuối có thể ngắn hơn). */
 export type DashboardDueWeek = {
   from_date: string;
   to_date: string;
