@@ -9,6 +9,9 @@ NGUỒN CỦA TỪNG SỐ — đây là chỗ dễ lệch nhất nên ghi rõ:
   • Thẻ "Hôm nay" gọi thẳng `_summary_for` của trang Ví. KHÔNG chép lại công thức:
     hai màn hình chốt số của cùng một ngày mà lệch nhau là lỗi người dùng thấy
     ngay (cùng lý do trang Quản trị Ví dùng chung code với trang Ví).
+  • TÀI KHOẢN MIỄN PHÍ (super-admin, đại lý chưa bật Ví) không có bút toán nào nên
+    mọi con số dựng từ sổ cái đứng im ở 0 — với họ, "mới / gia hạn" đọc từ NHẬT KÝ
+    (`_LogRows`), cả thẻ "Hôm nay" lẫn biểu đồ lẫn tỉ lệ gia hạn.
   • Add mới / gia hạn theo ngày (biểu đồ) áp ĐÚNG quy tắc của thẻ đó, mở rộng cho
     cả khoảng: mốc là NGÀY TRẢ TIỀN, và "gia hạn" = email ĐÃ từng trả tiền thành
     công trước ngày đó — kể cả khi lượt này đi qua luồng mời mới vì gói cũ đã hết
@@ -43,6 +46,7 @@ from app.deps import get_current_user, get_session
 from app.models import AuditLog, Member, User, Wallet, WalletTransaction, Workspace
 from app.routers.wallet._shared import get_payment_settings
 from app.routers.wallet.daily import _summary_for
+from app.services.payment_flow import is_chargeable_user
 from app.schemas import (
     DashboardCompare,
     DashboardDueDay,
@@ -79,6 +83,7 @@ _FEE_KINDS = ("invite_fee", "renew_fee")
 _QUEUED = ("MEMBER_INVITE_QUEUED", "MEMBER_BULK_INVITE_QUEUED")
 _NEW_OK = "MEMBER_INVITE_VERIFIED"
 _NEW_FAILED = "MEMBER_INVITE_FAILED"
+_RENEW_OK = "MEMBER_SUBSCRIPTION_RENEWED"
 
 # Cửa sổ của khối "Tỉ lệ gia hạn" và "Chất lượng lượt mời" — cố định 30 ngày, độc
 # lập với `days` của biểu đồ (đổi khoảng biểu đồ không được làm nhảy hai thẻ kia).
@@ -350,6 +355,128 @@ class _FeeRows:
         return new, renew
 
 
+class _LogRows:
+    """Add mới / gia hạn theo ngày cho tài khoản KHÔNG bị tính phí.
+
+    Super-admin và đại lý chưa bật Ví được miễn phí (`is_chargeable_user`) nên SỔ
+    CÁI không có một dòng nào của họ — mọi con số dựng từ bút toán đứng im ở 0 dù
+    họ mời và gia hạn thật (user 2026-08-31: tài khoản admin gia hạn 2 email ngày
+    30/8 mà biểu đồ trống trơn). Với những tài khoản đó, đọc NHẬT KÝ, đúng bộ sự
+    kiện của bảng thống kê email:
+
+      • MEMBER_INVITE_VERIFIED — lượt mời vào được team (email do CHÍNH user này
+        bấm mời, đã quy chủ sẵn trong `_Outcomes`);
+      • MEMBER_SUBSCRIPTION_RENEWED — gia hạn, sự kiện này có sẵn `actor_id`.
+
+    Đơn vị đếm vẫn là EMAIL-NGÀY như bên sổ cái: một email mời đi mời lại rồi gia
+    hạn trong cùng ngày chỉ tính MỘT lần. Ba nhóm phân đúng như thẻ "Đã add" của
+    trang Ví, chỉ đổi cách nhận ra "có bán thêm kỳ hay không" (không có tiền để
+    soi thì soi bản ghi ghế):
+
+      • MỚI = email chưa từng có bản ghi ghế trước ngày đó;
+      • GIA HẠN = có sự kiện gia hạn, HOẶC ghế cũ được mua thêm một kỳ ngay trong
+        ngày (mời lại email đã hết hạn — lượt này đi qua luồng mời nhưng vẫn là
+        bán tiếp một kỳ);
+      • MỜI LẠI MIỄN PHÍ = mời lại email ĐANG còn hạn: không thêm ghế, không bán
+        thêm kỳ nào, nên KHÔNG cộng vào tổng (y hệt quy ước bên sổ cái).
+
+    Dấu hiệu "có mua thêm kỳ" là `subscription_purchased_at` — mốc bắt đầu kỳ đang
+    dùng, chỉ nhảy khi thật sự mua (luồng mời đặt bằng NGÀY MỜI, mời lại gói còn
+    hạn thì giữ nguyên mốc cũ). KHÔNG soi được bằng `removed_at`/hạn: mời lại ghế
+    đã chết dùng LẠI đúng bản ghi cũ và xoá sạch dấu vết gỡ. Hệ quả phải chấp
+    nhận: ghế mua thêm kỳ rồi sau đó lại gia hạn nữa thì mốc dời theo kỳ mới nhất,
+    ngày mua cũ tụt về nhóm "mời lại" — thà hụt còn hơn khai khống một lượt bán.
+
+    KHÔNG lọc "email còn giữ ghế" như `_FeeRows`: bên kia đối chiếu được từng dòng
+    phí với ghế đang tồn, còn ở đây lọc thế là xoá luôn lịch sử của ghế đã hết hạn
+    rồi bị gỡ — ngày cũ tự rỗng đi mỗi lần nhìn lại.
+    """
+
+    def __init__(
+        self,
+        db: Session,
+        user_id: UUID,
+        outcomes: "_Outcomes",
+        start: datetime,
+        end: datetime,
+    ):
+        # ngày → email → ngày đó có sự kiện GIA HẠN hay không.
+        self.by_day: dict[date_type, dict[str, bool]] = {}
+        emails: set[str] = set()
+        for day, day_emails in outcomes.ok.items():
+            slot = self.by_day.setdefault(day, {})
+            for email in day_emails:
+                slot.setdefault(email, False)
+                emails.add(email)
+        for ts, data in db.execute(
+            select(AuditLog.timestamp, AuditLog.data).where(
+                AuditLog.action == _RENEW_OK,
+                AuditLog.actor_id == user_id,
+                AuditLog.timestamp >= start,
+                AuditLog.timestamp < end,
+            )
+        ).all():
+            email = str((data or {}).get("email") or "").strip().lower()
+            if not email:
+                continue
+            emails.add(email)
+            self.by_day.setdefault(_vn_day(ts), {})[email] = True
+
+        # Bản ghi ghế của từng email: mốc TẠO (email đã có mặt từ bao giờ) và mốc
+        # BẮT ĐẦU KỲ ĐANG DÙNG (mua thêm kỳ hay chưa).
+        self.records: dict[str, list[tuple[datetime, datetime | None]]] = {}
+        if emails:
+            for email, created, purchased in db.execute(
+                select(
+                    func.lower(Member.email),
+                    Member.created_at,
+                    Member.subscription_purchased_at,
+                ).where(
+                    Member.invited_by_user_id == user_id,
+                    func.lower(Member.email).in_(sorted(emails)),
+                )
+            ).all():
+                created = _aware(created)
+                if created is None:
+                    continue
+                self.records.setdefault(email, []).append((created, _aware(purchased)))
+
+    def _kind(self, day_start: datetime, day_end: datetime, email: str, renewed: bool) -> str:
+        """"renew" | "free" | "new" cho một email trong một ngày."""
+        if renewed:
+            return "renew"
+        records = self.records.get(email, ())
+        if not any(created < day_start for created, _p in records):
+            return "new"
+        bought = any(
+            p is not None and day_start <= p < day_end for _created, p in records
+        )
+        return "renew" if bought else "free"
+
+    def _split(self, day: date_type) -> tuple[int, int, int]:
+        """(mới, gia hạn, mời lại miễn phí) của một ngày."""
+        day_start = datetime.combine(day, time.min, tzinfo=VN_TZ)
+        day_end = day_start + timedelta(days=1)
+        new = renew = free = 0
+        for email, renewed in self.by_day.get(day, {}).items():
+            kind = self._kind(day_start, day_end, email, renewed)
+            if kind == "renew":
+                renew += 1
+            elif kind == "free":
+                free += 1
+            else:
+                new += 1
+        return new, renew, free
+
+    def count(self, day: date_type) -> tuple[int, int]:
+        """(mới, gia hạn) của một ngày — cùng chữ ký với `_FeeRows.count`."""
+        new, renew, _free = self._split(day)
+        return new, renew
+
+    def free_reinvite(self, day: date_type) -> int:
+        return self._split(day)[2]
+
+
 def _seats_curve(
     db: Session, user_id: UUID, days: list[date_type]
 ) -> dict[date_type, int]:
@@ -427,14 +554,30 @@ def overview(
     owned = _owned_emails(db, user.id, span_start - timedelta(days=_ATTR_LOOKBACK_DAYS))
     outcomes = _Outcomes(db, owned, span_start, end_excl)
     seats = _seats_curve(db, user.id, series_days)
+    # Nguồn của "mới / gia hạn": SỔ CÁI với đại lý có trả phí (khớp từng đồng với
+    # trang Ví), NHẬT KÝ với tài khoản được miễn phí (sổ cái của họ trống nên đọc
+    # bút toán là mọi con số nằm im ở 0 — xem `_LogRows`).
+    charged = is_chargeable_user(user)
+    flow: _FeeRows | _LogRows = (
+        fees if charged else _LogRows(db, user.id, outcomes, span_start, end_excl)
+    )
 
     # ── Thẻ "Hôm nay" — lấy nguyên số của trang Ví ─────────────────────────
     card = _summary_for(db, user.id, today)
+    if charged:
+        new_today = card.added_new_count
+        renew_today = card.added_renew_count
+        free_today = card.added_free_reinvite_count
+    else:
+        # Thẻ của trang Ví đếm bằng bút toán, tài khoản miễn phí không có dòng nào
+        # → lấy đúng bộ số của nhật ký, khỏi lệch với biểu đồ ngay bên dưới.
+        new_today, renew_today = flow.count(today)
+        free_today = flow.free_reinvite(today)
     today_card = DashboardToday(
         date=card.date,
-        new_count=card.added_new_count,
-        renew_count=card.added_renew_count,
-        free_reinvite_count=card.added_free_reinvite_count,
+        new_count=new_today,
+        renew_count=renew_today,
+        free_reinvite_count=free_today,
         failed_count=outcomes.failed_on(today),
         fee_net=card.fee_net,
         fee_refunded=card.fee_refunded,
@@ -443,7 +586,7 @@ def overview(
     # ── Biểu đồ ────────────────────────────────────────────────────────────
     series: list[DashboardSeriesDay] = []
     for d in series_days:
-        new, renew = fees.count(d)
+        new, renew = flow.count(d)
         if d == today:
             # Ép bằng thẻ: hai chỗ cùng một ngày phải ra cùng một số.
             new, renew = today_card.new_count, today_card.renew_count
@@ -461,7 +604,7 @@ def overview(
     def _flow(d: date_type) -> int:
         if d == today:
             return today_card.new_count + today_card.renew_count
-        new, renew = fees.count(d)
+        new, renew = flow.count(d)
         return new + renew
 
     def _sum(from_d: date_type, to_d: date_type) -> int:
@@ -496,7 +639,7 @@ def overview(
         if d == today:
             n, r = today_card.new_count, today_card.renew_count
         else:
-            n, r = fees.count(d)
+            n, r = flow.count(d)
         rate_new += n
         rate_renew += r
     rate_total = rate_new + rate_renew
