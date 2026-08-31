@@ -917,7 +917,8 @@ function TodoPanel({ data }: { data: DashboardOverview }) {
       label: "Lời mời đang chờ xử lý",
       note: "",
       tone: PLAIN,
-      to: "/added-emails",
+      // Mở thẳng tab "Chờ tham gia" — đúng danh sách của con số vừa bấm.
+      to: "/added-emails?tab=pending",
     },
     {
       key: "unpaid",
@@ -925,7 +926,9 @@ function TodoPanel({ data }: { data: DashboardOverview }) {
       label: "Chưa thanh toán",
       note: "",
       tone: PLAIN,
-      to: "/added-emails",
+      // Mở thẳng chip "Chưa thanh toán" — chip lọc xuyên cả hai tab nên khớp
+      // đúng con số đang hiện ở đây.
+      to: "/added-emails?filter=unpaid",
     },
   ];
   const nothing = rows.every((r) => r.n === 0);

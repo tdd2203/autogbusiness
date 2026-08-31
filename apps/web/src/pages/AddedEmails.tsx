@@ -101,16 +101,25 @@ export default function AddedEmails() {
   const canChangeEmail = canRemove && hasPermission("MEMBER_INVITE");
   const canChangeSubscription = hasPermission("MEMBER_INVITE");
 
-  // Khởi tạo filter từ ?filter= (chuông thông báo mở thẳng "Chờ xác nhận").
+  // Khởi tạo filter từ ?filter= (chuông thông báo mở thẳng "Chờ xác nhận", Tổng
+  // quan mở thẳng "Chưa thanh toán") và tab từ ?tab= (dòng "Lời mời đang chờ xử
+  // lý" mở thẳng "Chờ tham gia"). Bấm một con số ở Tổng quan là ra đúng danh
+  // sách của con số đó, khỏi bấm thêm nhát nữa vào tab hay chip.
   const [searchParams] = useSearchParams();
+  const filterParam = searchParams.get("filter");
   const initialFilter: PaymentFilter =
-    searchParams.get("filter") === "requested" ? "requested" : "all";
+    filterParam === "requested" || filterParam === "unpaid" || filterParam === "today"
+      ? filterParam
+      : "all";
+  const tabParam = searchParams.get("tab");
+  const initialTab: StatusTab =
+    tabParam === "pending" || tabParam === "removed" ? tabParam : "active";
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<PaymentFilter>(initialFilter);
   // Tab trạng thái: mặc định "Đã tham gia" (khớp Members.tsx). Chuyển sang "Chờ
   // tham gia" để xem + đồng bộ/thu hồi hàng loạt các lời mời pending mọi không gian.
-  const [statusTab, setStatusTab] = useState<StatusTab>("active");
+  const [statusTab, setStatusTab] = useState<StatusTab>(initialTab);
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
