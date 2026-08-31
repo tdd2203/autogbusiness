@@ -160,9 +160,9 @@ export function importantGroup(action: string): ImpGroup | null {
 }
 
 /* ------------------------------------------------------------------
- * PHÂN TAB (chốt user 2026-08-26, sửa 2026-08-30). Tab "Chính" CHỈ có 3 nhóm:
+ * PHÂN TAB (chốt user 2026-08-26, sửa 2026-08-31). Tab "Chính" CHỈ có 3 nhóm:
  *   • Bảo mật    — lịch sử đăng nhập / mật khẩu của các TÀI KHOẢN quản trị.
- *   • Thành viên — ĐÚNG 2 việc: lệnh MỜI và lệnh GIA HẠN.
+ *   • Thành viên — vòng đời LỜI MỜI (mời · đồng bộ lời mời) và lệnh GIA HẠN.
  *   • Thanh toán — TIỀN của chính các lệnh đó: trừ phí mời/gia hạn, hoàn phí,
  *     hoá đơn QR (mã ORDER) trả cho lệnh mời/gia hạn.
  * Mọi thứ còn lại rơi xuống tab "Khác" và TỰ chia nhóm phụ ở đó; riêng nhánh
@@ -206,9 +206,10 @@ const AUTH_OPS = new Set([
   "SUPER_ADMIN_SEEDED",
 ]);
 
-/* Chip "Thành viên" của tab "Chính" CHỈ có 2 việc: LỆNH MỜI và LỆNH GIA HẠN (chốt
-   user 2026-08-30). Mọi chuyện khác của một email — xoá, hết hạn, thu hồi lời mời,
-   đổi chủ, đổi email, đồng bộ — nằm ở tab "Khác" nhánh "Thành viên". Trước đây
+/* Chip "Thành viên" của tab "Chính" chỉ ôm VÒNG ĐỜI LỜI MỜI (mời, đồng bộ lời
+   mời) và LỆNH GIA HẠN (chốt user 2026-08-30, thêm đồng bộ lời mời 2026-08-31).
+   Mọi chuyện khác của một email — xoá, hết hạn, thu hồi lời mời, đổi chủ, đổi
+   email, các dòng đồng bộ lẻ — nằm ở tab "Khác" nhánh "Thành viên". Trước đây
    nhánh ấy gần như rỗng: lệnh xoá bị giữ lại ở tab Chính, còn các dòng đồng bộ
    trên email thì bị nhánh "Hàng đợi" nuốt. */
 const MAIN_MEMBER_OPS = new Set([
@@ -218,6 +219,14 @@ const MAIN_MEMBER_OPS = new Set([
   "MEMBER_INVITE_FAILED",
   "MEMBER_INVITE_VERIFY_RECONCILE",
   "MEMBER_SUBSCRIPTION_RENEWED",
+  /* Đồng bộ lời mời (nút "Đồng bộ lời mời" — task SYNC_MEMBERS_BATCH) là bước
+     CHỐT của lệnh mời: nó xác nhận email đã vào nhóm. Trước đây cả mẻ bị xếp
+     theo action KHỞI TẠO nên rơi xuống tab "Khác" nhánh "Hàng đợi" — chạy xong
+     42 email mà tab mặc định không thấy gì (user 2026-08-31). Ghi cả LỆNH lẫn
+     KẾT QUẢ: lệnh để luôn thấy dù chưa email nào đổi trạng thái, kết quả để dòng
+     "đã tham gia" còn ở lại tab Chính khi dòng khởi tạo bị đẩy khỏi cửa sổ. */
+  "SYNC_MEMBERS_BATCH_QUEUED",
+  "MEMBER_SYNC_PROMOTED_ACTIVE",
 ]);
 
 /** Đổi hạn có KÉO DÀI = một lần gia hạn. Nút "Gia hạn" ghi `MEMBER_SUBSCRIPTION_
@@ -461,7 +470,7 @@ const ACT_TITLE: Record<string, string> = {
   WALLET_BETA_TOGGLED: "Bật/tắt ví beta",
   WALLET_TEST_ACCOUNT_SEEDED: "Khởi tạo ví thử",
   SYNC_MEMBER_QUEUED: "Xếp lịch đồng bộ thành viên",
-  SYNC_MEMBERS_BATCH_QUEUED: "Xếp lịch đồng bộ hàng loạt",
+  SYNC_MEMBERS_BATCH_QUEUED: "Xếp lịch đồng bộ lời mời hàng loạt",
   PURCHASE_SEAT_QUEUED: "Xếp lịch mua seat",
   REVOKE_INVITES_QUEUED: "Xếp lịch thu hồi lời mời",
 };
@@ -766,7 +775,7 @@ const LIFECYCLE_TITLE_BY_INIT: Record<string, string> = {
   MEMBER_BULK_CHANGE_LICENSE_TYPE_QUEUED: "Đổi giấy phép hàng loạt",
   REVOKE_INVITES_QUEUED: "Thu hồi lời mời",
   SYNC_MEMBER_QUEUED: "Đồng bộ thành viên",
-  SYNC_MEMBERS_BATCH_QUEUED: "Đồng bộ hàng loạt",
+  SYNC_MEMBERS_BATCH_QUEUED: "Đồng bộ lời mời hàng loạt",
   WORKSPACE_SYNC_QUEUED: "Đồng bộ workspace",
   PURCHASE_SEAT_QUEUED: "Mua ghế",
 };
@@ -2448,9 +2457,13 @@ function groupView(g: Group, t: TFn) {
       ? t("audit.targetEmailCount", { n: g.emails.length })
       : t("audit.targetEmail");
   // Mã hoá đơn chỉ hiện trên LỆNH (mời/xoá/gia hạn) và các dòng TIỀN của lệnh —
-  // không rắc mã lên mọi việc hàng đợi/đồng bộ.
+  // không rắc mã lên mọi việc hàng đợi/đồng bộ. Mẻ đồng bộ lời mời nay đứng ở tab
+  // "Chính" chip "Thành viên" nhưng KHÔNG có đồng tiền nào của riêng nó (phí đã
+  // trừ ở lệnh mời) nên vẫn không mang mã.
   const payRef =
-    g.buckets.includes("member") || g.buckets.includes("billing")
+    (g.buckets.includes("member") || g.buckets.includes("billing")) &&
+    !g.code.startsWith("SYNC_MEMBERS_BATCH") &&
+    g.code !== "MEMBER_SYNC_PROMOTED_ACTIVE"
       ? (g.payRefs[0] ?? null)
       : null;
   // Chip hiện MÃ HOÁ ĐƠN (tra được ở sao kê + panel thành viên); lệnh trả bằng ví

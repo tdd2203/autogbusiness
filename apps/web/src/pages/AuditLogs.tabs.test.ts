@@ -100,6 +100,58 @@ describe("tab Chính chỉ gồm 3 nhóm", () => {
     expect(g.payRefs).toEqual([QID]);
   });
 
+  /* Nút "Đồng bộ lời mời" chốt xem email đã vào nhóm chưa — là bước cuối của lệnh
+     mời chứ không phải việc hàng đợi. Trước 31/8/2026 cả mẻ bị xếp theo action
+     KHỞI TẠO nên nằm tab "Khác" nhánh "Hàng đợi": chạy xong 42 email mà tab mặc
+     định trống trơn. */
+  it("mẻ đồng bộ lời mời nằm tab Chính chip Thành viên, không mang mã hoá đơn", () => {
+    const g = only([
+      ev({
+        id: "done",
+        action: "QUEUE_UPDATED:SYNC_MEMBERS_BATCH",
+        result: "COMPLETED",
+        target_type: "QUEUE_ITEM",
+        target_id: QID,
+        data: { status: "COMPLETED" },
+      }),
+      ev({
+        id: "promoted",
+        action: "MEMBER_SYNC_PROMOTED_ACTIVE",
+        target_type: "MEMBER",
+        target_id: MEMBER_ID,
+        data: { email: EMAIL, batch: true, found_in: "active", queue_item_id: QID },
+      }),
+      ev({
+        id: "queued",
+        timestamp: "2026-08-26T09:58:00.000Z",
+        action: "SYNC_MEMBERS_BATCH_QUEUED",
+        result: "PENDING",
+        target_type: "WORKSPACE",
+        target_id: null,
+        data: { count: 42, queue_item_id: QID },
+      }),
+    ]);
+    expect(g.buckets).toEqual(["member"]);
+    expect(g.otherBucket).toBeNull();
+    expect(g.title).toBe("Đồng bộ lời mời hàng loạt");
+  });
+
+  /* Lệnh đồng bộ chưa đổi được email nào vẫn phải thấy ở tab Chính — nếu chỉ xét
+     dòng kết quả thì mẻ "không có gì thay đổi" lại biến mất. */
+  it("mẻ đồng bộ không nâng được email nào vẫn ở tab Chính", () => {
+    const g = only([
+      ev({
+        id: "queued",
+        action: "SYNC_MEMBERS_BATCH_QUEUED",
+        result: "PENDING",
+        target_type: "WORKSPACE",
+        target_id: null,
+        data: { count: 3, queue_item_id: QID },
+      }),
+    ]);
+    expect(g.buckets).toEqual(["member"]);
+  });
+
   it("lệnh gia hạn và khoản trừ phí của nó dùng CHUNG mã hoá đơn (member_id)", () => {
     const renew = only([
       ev({
