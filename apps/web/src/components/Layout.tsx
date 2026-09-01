@@ -944,7 +944,28 @@ function PlatformSwitcher({
   onPick: (to: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  // Toạ độ mép phải của nút, để thả bảng chọn ra BÊN CẠNH.
+  const [anchor, setAnchor] = useState<{ left: number; top: number } | null>(null);
   const current = options.find((o) => o.branch === branch);
+
+  // Bảng chọn dùng position:fixed nên phải tự đo lại mỗi khi mở, và bám theo lúc
+  // cuộn/đổi cỡ cửa sổ. Không thả nổi bằng absolute được: vùng nav có thanh cuộn
+  // riêng (overflow-y:auto ở index.css) nên absolute bị CẮT ngay mép sidebar.
+  useEffect(() => {
+    if (!open) return;
+    const measure = () => {
+      const r = btnRef.current?.getBoundingClientRect();
+      if (r) setAnchor({ left: r.right, top: r.top - 6 });
+    };
+    measure();
+    window.addEventListener("scroll", measure, true);
+    window.addEventListener("resize", measure);
+    return () => {
+      window.removeEventListener("scroll", measure, true);
+      window.removeEventListener("resize", measure);
+    };
+  }, [open]);
 
   return (
     <div
@@ -956,10 +977,10 @@ function PlatformSwitcher({
       }}
     >
       <button
+        ref={btnRef}
         type="button"
         aria-expanded={open}
         aria-haspopup="menu"
-        title={label}
         onClick={() => setOpen((v) => !v)}
         style={{
           display: "flex",
@@ -1009,66 +1030,81 @@ function PlatformSwitcher({
           stroke="currentColor"
           strokeWidth={2}
           aria-hidden
-          style={{
-            width: 13,
-            height: 13,
-            flexShrink: 0,
-            transform: open ? "rotate(180deg)" : "none",
-            transition: "transform 0.12s ease",
-          }}
+          style={{ width: 13, height: 13, flexShrink: 0 }}
         >
-          <path d="M6 9l6 6 6-6" />
+          {/* Mũi tên chỉ SANG PHẢI — bảng chọn bung ra bên cạnh chứ không xổ xuống. */}
+          <path d="M9 18l6-6-6-6" />
         </svg>
       </button>
 
-      {open && (
-        <div role="menu" style={{ paddingLeft: 27, marginTop: 2 }}>
-          {options.map((o) => {
-            const active = o.branch === branch;
-            return (
-              <button
-                key={o.branch}
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  onPick(o.to);
-                }}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  width: "100%",
-                  padding: "7px 11px",
-                  marginBottom: 2,
-                  borderRadius: "var(--radius)",
-                  border: "none",
-                  background: active ? "var(--ink)" : "transparent",
-                  color: active ? "var(--surface)" : "var(--ink-2)",
-                  fontSize: 13.5,
-                  fontWeight: 500,
-                  fontFamily: "inherit",
-                  cursor: "pointer",
-                  textAlign: "left",
-                  transition: "background 0.12s ease, color 0.12s ease",
-                }}
-              >
-                <span style={{ flex: 1, minWidth: 0 }}>{o.label}</span>
-                {active && (
-                  <svg
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2.2}
-                    aria-hidden
-                    style={{ width: 13, height: 13, flexShrink: 0 }}
-                  >
-                    <path d="M20 6L9 17l-5-5" />
-                  </svg>
-                )}
-              </button>
-            );
-          })}
+      {open && anchor && (
+        <div
+          role="menu"
+          style={{
+            position: "fixed",
+            left: anchor.left,
+            top: anchor.top,
+            zIndex: 60,
+            // Dải trong suốt 8px nối liền nút với bảng: chuột đi qua khe không bị
+            // coi là rời khỏi vùng, nếu không thì menu chớp tắt giữa chừng.
+            paddingLeft: 8,
+          }}
+        >
+          <div
+            style={{
+              minWidth: 168,
+              padding: 4,
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: "var(--radius)",
+              boxShadow: "0 12px 40px rgba(0,0,0,0.18)",
+            }}
+          >
+            {options.map((o) => {
+              const active = o.branch === branch;
+              return (
+                <button
+                  key={o.branch}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setOpen(false);
+                    onPick(o.to);
+                  }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    width: "100%",
+                    padding: "8px 11px",
+                    borderRadius: "var(--radius)",
+                    border: "none",
+                    background: active ? "var(--ink)" : "transparent",
+                    color: active ? "var(--surface)" : "var(--ink-2)",
+                    fontSize: 13.5,
+                    fontWeight: 500,
+                    fontFamily: "inherit",
+                    cursor: "pointer",
+                    textAlign: "left",
+                  }}
+                >
+                  <span style={{ flex: 1, minWidth: 0 }}>{o.label}</span>
+                  {active && (
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={2.2}
+                      aria-hidden
+                      style={{ width: 13, height: 13, flexShrink: 0 }}
+                    >
+                      <path d="M20 6L9 17l-5-5" />
+                    </svg>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
