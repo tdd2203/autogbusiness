@@ -117,3 +117,29 @@ def test_tong_quan_dem_rieng_tung_nhanh(
     assert serving() == 2
     assert serving("?platform=gpt") == 1
     assert serving("?platform=canva") == 1
+
+
+def test_nhat_ky_khong_lan_dong_hang_doi_cua_nhanh_kia(
+    client: TestClient, auth_header: dict[str, str]
+) -> None:
+    """Dòng cấp hàng đợi chỉ mang `queue_item_id` — phải quy được về nhánh của task.
+
+    Không quy được thì mỗi lệnh mời của ChatGPT đẻ ra một cặp dòng "vô chủ" nằm
+    trong nhật ký Canva (đo trên dữ liệu thật 2026-09-01: 140/200 dòng gần nhất).
+    """
+    gpt = _ws(client, auth_header, "WS ChatGPT", seat_total=25)
+    _ws(client, auth_header, "Team Canva", platform="canva")
+    _invite(client, auth_header, gpt["id"], "hangdoi-gpt@example.com")
+    # Extension nhận task của nhánh ChatGPT → sinh QUEUE_PICKED (chỉ có queue_item_id).
+    picked = client.get(
+        "/api/v1/queue/next", headers={"X-API-KEY": gpt["extension_api_key"]}
+    )
+    assert picked.status_code == 200, picked.text
+
+    def queue_actions(query: str) -> list[str]:
+        resp = client.get(f"/api/v1/audit-logs?limit=200{query}", headers=auth_header)
+        assert resp.status_code == 200, resp.text
+        return [r["action"] for r in resp.json() if r["action"].startswith("QUEUE_")]
+
+    assert queue_actions("&platform=gpt"), "nhánh ChatGPT phải thấy dòng hàng đợi của nó"
+    assert queue_actions("&platform=canva") == []

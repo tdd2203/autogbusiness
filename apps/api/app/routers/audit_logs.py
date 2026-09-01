@@ -9,6 +9,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.deps import get_session, require_permission
 from app.models import (
+    PLATFORM_CANVA,
     PLATFORMS,
     AuditLog,
     Member,
@@ -303,7 +304,37 @@ def _log_platforms(db: Session, logs: list[AuditLog]) -> dict[UUID, set[str]]:
             if plat:
                 out[log.id].add(plat)
 
-    # 3. email — một email có thể nằm ở CẢ HAI nhánh (khách mua cả ChatGPT lẫn
+    # 3. task hàng đợi — dòng cấp hàng đợi (QUEUE_PICKED/QUEUE_UPDATED) chỉ mang
+    # `queue_item_id`, không mang workspace lẫn email. Thiếu bước này thì mỗi lệnh
+    # mời/đồng bộ của ChatGPT đẻ ra một cặp dòng "vô chủ" nằm chình ình trong nhật ký
+    # Canva (đo trên dữ liệu thật 2026-09-01: 140/200 dòng gần nhất).
+    q_ids: set[UUID] = set()
+    for log in logs:
+        if out[log.id]:
+            continue
+        qid = _queue_item_id_of(log)
+        if qid:
+            try:
+                q_ids.add(UUID(qid))
+            except ValueError:
+                pass
+    q_platform: dict[str, str] = {}
+    if q_ids:
+        for qid, plat in db.execute(
+            select(QueueItem.id, Workspace.platform)
+            .join(Workspace, QueueItem.workspace_id == Workspace.id)
+            .where(QueueItem.id.in_(q_ids))
+        ).all():
+            q_platform[str(qid)] = plat
+    for log in logs:
+        if out[log.id]:
+            continue
+        qid = _queue_item_id_of(log)
+        plat = q_platform.get(qid) if qid else None
+        if plat:
+            out[log.id].add(plat)
+
+    # 4. email — một email có thể nằm ở CẢ HAI nhánh (khách mua cả ChatGPT lẫn
     # Canva); khi đó dòng log hiện ở cả hai, vì không có gì trong log nói nó thuộc
     # bên nào.
     emails: set[str] = set()
@@ -324,6 +355,12 @@ def _log_platforms(db: Session, logs: list[AuditLog]) -> dict[UUID, set[str]]:
             continue
         for em in _emails_in_log_data(log.data):
             out[log.id] |= email_platform.get(em, set())
+
+    # 5. hành động mang tên nhánh (CANVA_PRICE_TIERS_UPDATED…): không gắn workspace
+    # nào nhưng rõ ràng là việc của nhánh đó, đừng để nó hiện bên ChatGPT.
+    for log in logs:
+        if not out[log.id] and log.action.startswith("CANVA_"):
+            out[log.id].add(PLATFORM_CANVA)
 
     return out
 
