@@ -19,7 +19,6 @@ import WorkspaceQueue from "./pages/WorkspaceQueue";
 import WorkspaceBilling from "./pages/WorkspaceBilling";
 import WorkspaceExtension from "./pages/WorkspaceExtension";
 import WorkspaceSettings from "./pages/WorkspaceSettings";
-import CanvaPricing from "./pages/canva/CanvaPricing";
 import Layout from "./components/Layout";
 import WorkspaceLayout from "./components/WorkspaceLayout";
 import ProtectedRoute from "./components/ProtectedRoute";
@@ -270,14 +269,6 @@ export default function App() {
             }
           />
         </Route>
-        <Route
-          path="canva/pricing"
-          element={
-            <ProtectedRoute requireSuperAdmin>
-              <CanvaPricing />
-            </ProtectedRoute>
-          }
-        />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

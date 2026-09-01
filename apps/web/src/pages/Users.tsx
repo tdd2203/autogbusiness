@@ -8,6 +8,10 @@ import {
   type PermissionKey,
 } from "../lib/permissions";
 import { useFormatDate, useT } from "../i18n";
+import { useAuth } from "../hooks/useAuth";
+import PlatformPricingModal from "../components/PlatformPricingModal";
+import UserPriceModal from "../components/UserPriceModal";
+import { RowActionsMenu } from "../components/RowActionsMenu";
 import { SearchInput } from "./Members";
 
 type UserItem = {
@@ -82,7 +86,9 @@ export default function Users() {
     queryFn: () => api<UserItem[]>("/api/v1/users"),
   });
 
+  const { user: me } = useAuth();
   const [showForm, setShowForm] = useState(false);
+  const [showPricing, setShowPricing] = useState(false);
   const [search, setSearch] = useState("");
 
   const data = users.data ?? [];
@@ -112,22 +118,34 @@ export default function Users() {
           </div>
           <h1 className="display-h1">{t("users.title")}</h1>
         </div>
-        <button
-          onClick={() => setShowForm((v) => !v)}
-          className="btn btn-primary"
-        >
-          {showForm ? (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
-          ) : (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-              <path d="M12 5v14M5 12h14" />
-            </svg>
+        <div className="flex items-center" style={{ gap: 8 }}>
+          {me?.is_super_admin && (
+            <button onClick={() => setShowPricing(true)} className="btn btn-ghost">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+              </svg>
+              {t("pricing.button")}
+            </button>
           )}
-          {showForm ? t("users.close") : t("users.create")}
-        </button>
+          <button
+            onClick={() => setShowForm((v) => !v)}
+            className="btn btn-primary"
+          >
+            {showForm ? (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            ) : (
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+            )}
+            {showForm ? t("users.close") : t("users.create")}
+          </button>
+        </div>
       </div>
+
+      {showPricing && <PlatformPricingModal onClose={() => setShowPricing(false)} />}
 
       {showForm && (
         <CreateUserForm
@@ -368,6 +386,8 @@ function UserRow({ user }: { user: UserItem }) {
   const t = useT();
   const formatDate = useFormatDate();
   const qc = useQueryClient();
+  const { user: me } = useAuth();
+  const [pricing, setPricing] = useState(false);
   const toggleActive = useMutation({
     mutationFn: () =>
       api(`/api/v1/users/${user.id}`, {
@@ -486,15 +506,29 @@ function UserRow({ user }: { user: UserItem }) {
             <button onClick={openEdit} className="row-action neutral">
               {t("users.editPerms")}
             </button>
-            <button
-              onClick={() => toggleActive.mutate()}
-              className="row-action neutral"
-            >
-              {user.is_active ? t("users.disable") : t("users.enable")}
-            </button>
-            <button onClick={onReset} className="row-action neutral">
-              {t("users.resetPassword")}
-            </button>
+            {me?.is_super_admin && (
+              <button onClick={() => setPricing(true)} className="row-action neutral">
+                {t("pricing.rowAction")}
+              </button>
+            )}
+            {/* Vô hiệu hoá + reset password nằm trong kebab: hai việc ít dùng mà lại
+                nặng tay, để trần ngoài dòng dễ bấm nhầm. */}
+            <RowActionsMenu
+              ariaLabel={t("users.actionsCol")}
+              items={[
+                {
+                  key: "toggle-active",
+                  label: user.is_active ? t("users.disable") : t("users.enable"),
+                  danger: user.is_active,
+                  onClick: () => toggleActive.mutate(),
+                },
+                {
+                  key: "reset-password",
+                  label: t("users.resetPassword"),
+                  onClick: onReset,
+                },
+              ]}
+            />
           </div>
         )}
         {user.is_super_admin && (
@@ -504,6 +538,19 @@ function UserRow({ user }: { user: UserItem }) {
         )}
       </td>
     </tr>
+
+    {pricing && (
+      <tr>
+        <td colSpan={5} style={{ padding: 0 }}>
+          <UserPriceModal
+            userId={user.id}
+            username={user.username}
+            email={user.email}
+            onClose={() => setPricing(false)}
+          />
+        </td>
+      </tr>
+    )}
 
     {/* Modal sửa quyền tài khoản phụ. */}
     {editing && (
