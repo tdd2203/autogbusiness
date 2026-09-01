@@ -3,6 +3,14 @@ import type { LicenseType } from "../../../../shared/messages";
 // Ký tự caret/mũi tên hay đi kèm dropdown ("ChatGPT ▾") — strip trước khi so.
 const CARET_RE = /[▼▾▿⌄⇣]/g;
 
+/**
+ * Chữ của cột "Loại suất" đời mới (Tiêu chuẩn/Cao cấp) — CHỈ dùng để viết câu
+ * cảnh báo cho đúng nguyên nhân, KHÔNG map thành giá trị `license_type`:
+ * Tiêu chuẩn/Cao cấp là BẬC SUẤT (Cao cấp đắt hơn 12 lần), không phải
+ * ChatGPT/Codex. Coi hai thứ là một là ghi sai dữ liệu tính tiền.
+ */
+const SEAT_TIER_RE = /tiêu chuẩn|cao cấp|standard|premium|标准|高级/i;
+
 // Log tối đa N row đầu khi KHÔNG tìm được license — đủ để user copy console
 // báo lại DOM mà không spam (list dài cả trăm row).
 let debugLogged = 0;
@@ -45,6 +53,15 @@ export function findLicenseTypeInRow(row: HTMLElement): LicenseType | null {
     console.warn(
       `[autogpt-sync] license-type KHÔNG tìm thấy trong row. row.text="${snippet}"`,
     );
+    if (SEAT_TIER_RE.test(snippet)) {
+      console.warn(
+        "[autogpt-sync] row đang hiển thị LOẠI SUẤT (Tiêu chuẩn/Cao cấp · " +
+          "Standard/Premium · 标准/高级) chứ không phải loại giấy phép " +
+          "ChatGPT/Codex — ảnh user 2026-09-01 cho thấy ChatGPT đã đổi cột này. " +
+          "Cột 'license_type' vì vậy KHÔNG còn nguồn để đồng bộ, và " +
+          "CHANGE_LICENSE_TYPE sẽ không tìm được option.",
+      );
+    }
   }
   return null;
 }

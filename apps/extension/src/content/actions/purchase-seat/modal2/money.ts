@@ -96,7 +96,7 @@ const MONEY_RE = /[₫đ$¥]\s*\d[\d.,]*|\d[\d.,]*\s*(?:[₫đ¥]|VND|USD)/i;
  * không có tiền (trả null) chứ KHÔNG mượn số của dòng dưới.
  */
 const SECTION_BOUNDARY =
-  /hoa\s*don|tam\s*tinh|thue\s*ban\s*hang|tong\s*phai\s*tra|tong\s*den\s*han|tong\s*thanh\s*toan|current\s*monthly|new\s*monthly|prorated|sales\s*tax|total\s*due/i;
+  /hoa\s*don|tam\s*tinh|thue\s*ban\s*hang|tong\s*phai\s*tra|tong\s*den\s*han|tong\s*thanh\s*toan|current\s*monthly|new\s*monthly|prorated|sales\s*tax|total\s*due|月度账单|按比例|销售税|应付总额/i;
 
 /**
  * Cắt đoạn text nằm SAU `label`, dừng tại nhãn dòng kế tiếp. Trả cả bản gốc
@@ -145,7 +145,12 @@ function seatsAfter(
 ): number | null {
   const seg = tailAfter(collapsed, norm, label, window);
   if (!seg) return null;
-  const m = seg.tailNorm.match(/(\d{1,4})\s*(?:ghe|cho\s*ngoi|suat|seat|席位)/i);
+  // "316 标准 · 0 高级" (zh): dòng hoá đơn KHÔNG lặp lại chữ "席位", số ghế đứng
+  // ngay trước TÊN LOẠI SUẤT. Nhận thêm 2 chữ đó, nếu không dòng hoá đơn tiếng
+  // Trung không ra số ghế nào.
+  const m = seg.tailNorm.match(
+    /(\d{1,4})\s*(?:ghe|cho\s*ngoi|suat|seat|席位|标准|高级)/i,
+  );
   if (!m) return null;
   const n = parseInt(m[1], 10);
   return Number.isFinite(n) && n >= 0 && n <= 9999 ? n : null;
@@ -190,6 +195,8 @@ export function extractChargeAmountFromModal(text: string): string | null {
     /total\s*due\s*today/i,
     /due\s*today/i,
     /total\s*today/i,
+    // zh: "今日应付总额" (ảnh user 2026-09-01) và biến thể "今天应付总额".
+    /今[天日]\s*应付\s*总额/,
     /今天?\s*应付?总额/,
   ];
   for (const label of labels) {
@@ -247,6 +254,10 @@ export function extractProrationSubtotal(text: string): string | null {
     /tam\s*tinh\s*theo\s*ty\s*le/i,
     /tam\s*tinh\s*ty\s*le/i,
     /prorated\s*(?:subtotal|amount|total|charge)/i,
+    // zh: "按比例计费小计" — nhãn ĐẦY ĐỦ, KHÔNG rút thành /按比例/ vì phụ đề hộp
+    // ("新增席位将按比例计费至下个账单周期") cũng chứa cụm đó, y hệt bẫy của bản vi.
+    /按比例计费小计/,
+    /按比例\s*小计/,
   ];
   for (const label of labels) {
     const money = moneyAfter(collapsed, norm, label);
@@ -315,6 +326,9 @@ export function extractMonthlyBills(text: string): MonthlyBills {
     /hoa\s*don\s*hien\s*tai/i,
     /current\s*monthly\s*(?:bill|invoice|total)/i,
     /current\s*bill/i,
+    // zh: "当前月度账单" (ảnh user 2026-09-01).
+    /当前\s*月度\s*账单/,
+    /当前\s*账单/,
   ];
   const NEW_LABELS = [
     /hoa\s*don\s*moi\s*hang\s*thang/i,
@@ -322,6 +336,9 @@ export function extractMonthlyBills(text: string): MonthlyBills {
     /hoa\s*don\s*moi/i,
     /new\s*monthly\s*(?:bill|invoice|total)/i,
     /new\s*bill/i,
+    // zh: "新的月度账单".
+    /新的?\s*月度\s*账单/,
+    /新\s*账单/,
   ];
 
   const currentRow = readRow(CURRENT_LABELS);

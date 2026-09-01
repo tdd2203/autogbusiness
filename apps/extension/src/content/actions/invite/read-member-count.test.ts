@@ -35,4 +35,12 @@ describe("parseMemberCount", () => {
   it("không thấy số nào → null", () => {
     expect(parseMemberCount("Thành viên")).toBeNull();
   });
+
+  it("bản chữ Trung có lượng từ: 'Business · 314 位成员' → 314", () => {
+    expect(parseMemberCount("Business · 314 位成员")).toBe(314);
+  });
+
+  it("bản chữ Trung không lượng từ: '314 成员' → 314", () => {
+    expect(parseMemberCount("314 成员")).toBe(314);
+  });
 });

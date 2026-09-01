@@ -3,6 +3,26 @@ import { ROLE_LABELS } from "../i18n-ui";
 import { SELECTORS } from "../selectors";
 import type { ChatGPTRole } from "../../shared/messages";
 
+/**
+ * Chữ trên dropdown CỘT LOẠI SUẤT của một row member — dùng để LOẠI TRỪ khi đi
+ * tìm dropdown VAI TRÒ (hai dropdown nằm cạnh nhau trong cùng row).
+ *
+ * Cột này đổi tên hai lần: cũ in loại giấy phép ("ChatGPT"/"Codex"), UI
+ * 2026-09-01 in loại suất ("Tiêu chuẩn"/"Cao cấp" · "Standard"/"Premium" ·
+ * "标准"/"高级"). Giữ CẢ HAI thế hệ chữ vì workspace chưa được bật UI mới vẫn
+ * hiện chữ cũ. Đã lowercase sẵn để so bằng `includes`.
+ */
+const SEAT_TYPE_DROPDOWN_TEXTS = [
+  "chatgpt",
+  "codex",
+  "tiêu chuẩn",
+  "cao cấp",
+  "standard",
+  "premium",
+  "标准",
+  "高级",
+];
+
 export function findMemberRow(email: string): HTMLElement | null {
   const lower = email.toLowerCase();
   for (const sel of SELECTORS.memberRow) {
@@ -121,8 +141,11 @@ export function findRowRoleDropdown(
     const haspopup = el.getAttribute("aria-haspopup");
     if (haspopup === "menu" || haspopup === "listbox") {
       const text = (el.textContent ?? "").trim().toLowerCase();
-      // Loại "ChatGPT" / "Codex" seat dropdown (không phải role)
-      if (text.includes("chatgpt") || text.includes("codex")) continue;
+      // Loại dropdown CỘT LOẠI SUẤT (không phải vai trò). Cột này từng in
+      // "ChatGPT"/"Codex"; UI 2026-09-01 (ảnh user) đổi sang "Tiêu chuẩn" /
+      // "Standard" / "标准" — chỉ chặn 2 chữ cũ là dropdown loại suất lọt vào
+      // đây và lệnh đổi vai trò đi mở nhầm menu.
+      if (SEAT_TYPE_DROPDOWN_TEXTS.some((t) => text.includes(t))) continue;
       return el;
     }
   }

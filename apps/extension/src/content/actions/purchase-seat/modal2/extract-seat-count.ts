@@ -25,8 +25,11 @@ export function extractAdditionalSeatCountFromModal(text: string): number | null
     // EN
     /add\s*(\d{1,3})\s*(?:standard\s*|plus\s*|business\s*)?(?:seat|user|license)/i,
     /(\d{1,3})\s*additional\s*(?:seat|user|license)/i,
-    // ZH
-    /添加?\s*(\d{1,3})\s*(?:个\s*)?(?:用户|席位|许可)/,
+    // ZH — "添加 1 个 标准 席位" (ảnh user 2026-09-01): giữa lượng từ "个" và chữ
+    // "席位" còn chen TÊN LOẠI SUẤT ("标准"/"高级"), nên phải cho phép một cụm
+    // chữ Hán ngắn ở giữa. Không cho phép thì hộp tiếng Trung đọc ra null, mà
+    // null cả 2 nguồn số suất là luồng mua DỪNG (chốt #3) dù hộp bình thường.
+    /添加?\s*(\d{1,3})\s*(?:个\s*)?(?:[\u4e00-\u9fff]{1,4}\s*)?(?:用户|席位|许可)/,
   ];
   for (const re of patterns) {
     const m = norm.match(re);
@@ -65,8 +68,8 @@ export function detectMixedSeatTypes(text: string): string | null {
   const norm = normalizeForMatch(collapsed);
 
   // (1) loại suất KHÁC gọi đúng tên — cả hai thứ tự chữ:
-  //     vi/zh: "1 suất Cao cấp" · en: "1 Premium seat".
-  const OTHER = /(?:(\d{1,3})\s*(?:suat|seats?|licenses?|席位)\s*(cao\s*cap|premium|高级))|(?:(\d{1,3})\s*(cao\s*cap|premium|高级)\s*(?:suat|seats?|licenses?|席位))/i;
+  //     vi/zh: "1 suất Cao cấp" · en: "1 Premium seat" · zh: "1 个 高级 席位".
+  const OTHER = /(?:(\d{1,3})\s*(?:suat|seats?|licenses?|席位)\s*(cao\s*cap|premium|高级))|(?:(\d{1,3})\s*(?:个\s*)?(cao\s*cap|premium|高级)\s*(?:suat|seats?|licenses?|席位))/i;
   const other = norm.match(OTHER);
   if (other) {
     const count = parseInt(other[1] ?? other[3], 10);
@@ -88,7 +91,12 @@ export function detectMixedSeatTypes(text: string): string | null {
   // Cho phép tên loại chen giữa số và chữ "suất" (tiếng Anh: "1 Premium seat"),
   // và CHỈ đếm cụm có số > 0 — cụm "0 suất …" không mua gì thì không phải mua
   // kèm.
-  const GROUP = /(\d{1,3})\s*(?:[\p{L}]{1,12}\s+){0,2}(?:suat|seats?|席位)/giu;
+  //
+  // Nhánh CJK riêng (`[\u4e00-\u9fff]{1,4}`) vì tiếng Trung KHÔNG có dấu cách:
+  // "添加1个标准席位和1个高级席位" thì nhánh có `\s+` không nuốt nổi "标准" nên
+  // đếm ra 0 cụm và ca mua kèm suất đắt gấp 12 lần lọt lưới.
+  const GROUP =
+    /(\d{1,3})\s*(?:个\s*)?(?:(?:[\p{L}]{1,12}\s+){0,2}|[\u4e00-\u9fff]{1,4})(?:suat|seats?|席位)/giu;
   for (const lead of norm.matchAll(/them|add\b|添加/gi)) {
     const at = lead.index ?? 0;
     const clause = norm.slice(at, at + 80);

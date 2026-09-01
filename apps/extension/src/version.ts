@@ -25,7 +25,7 @@
  * chỉ hiện 8 mục đầu, phần còn lại nằm sau nút "Xem thêm".
  */
 
-export const VERSION = "0.15.6";
+export const VERSION = "0.15.7";
 
 export type ChangelogEntry = {
   version: string;
@@ -44,6 +44,13 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.15.7",
+    date: "2026-09-01",
+    kind: "fix",
+    title: "Giao diện mới",
+    note: "Bắt kịp giao diện ChatGPT mới, mua suất và đổi vai trò hết bấm nhầm chỗ.",
+  },
   {
     version: "0.15.6",
     date: "2026-09-01",

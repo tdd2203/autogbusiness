@@ -185,6 +185,9 @@ export const TEXT_FALLBACKS = {
     "Pending requests",
     "Join requests",
     "Requests",
+    // UI 2026-09-01 (ảnh user, bản dịch zh): tab là "待处理请求" — KHÔNG có chữ
+    // "的" ở giữa. Khớp kiểu chứa-chuỗi nên "待处理的请求" không đỡ được ca này.
+    "待处理请求",
     "待处理申请",
     "待处理的请求",
     "待批准",
@@ -382,6 +385,42 @@ export function parseChatGPTRole(
   return null;
 }
 
+/**
+ * Vùng được phép dò option "trần" (`button` / `li`) khi menu/hộp đang mở.
+ *
+ * VÌ SAO PHẢI GIỚI HẠN: thanh bên trái của /admin nay có sẵn mục "Codex",
+ * "Thành viên"/"成员", "GPT"… (ảnh user 2026-09-01) và ChatGPT dựng menu bằng
+ * `<li><a>`. Dò `li`/`button` trên CẢ TRANG thì nhãn "Codex" hay "Thành viên"
+ * khớp trúng mục thanh bên: extension bấm vào đó là rời trang (Codex mở tab
+ * mới) giữa lúc đang đổi vai trò / đổi loại suất, rồi báo lỗi lạc đề.
+ *
+ * Các role ARIA (`menuitem`/`option`/`menuitemradio`) thì KHÔNG cần giới hạn —
+ * thanh bên không mang mấy role đó.
+ */
+function openMenuRoots(): ParentNode[] {
+  const roots = Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[role="menu"], [role="listbox"], [role="dialog"], [role="alertdialog"], ' +
+        '[aria-modal="true"], [data-radix-menu-content], [data-radix-popper-content-wrapper]',
+    ),
+  );
+  return roots;
+}
+
+/** Dò `button`/`li` chỉ trong các menu/hộp đang mở (xem `openMenuRoots`). */
+function queryLooseInOpenMenus(
+  label: string,
+  root: ParentNode,
+): HTMLElement | null {
+  // Caller đã tự thu hẹp phạm vi (truyền root khác `document`) thì tôn trọng.
+  const roots = root === document ? openMenuRoots() : [root];
+  for (const r of roots) {
+    const el = queryByText("button", label, r) ?? queryByText("li", label, r);
+    if (el) return el;
+  }
+  return null;
+}
+
 export function findRoleOption(
   role: ChatGPTRole,
   root: ParentNode = document,
@@ -394,8 +433,7 @@ export function findRoleOption(
       queryByText('[role="menuitem"]', label, root) ??
       queryByText('[role="option"]', label, root) ??
       queryByText('[role="menuitemradio"]', label, root) ??
-      queryByText("button", label, root) ??
-      queryByText("li", label, root);
+      queryLooseInOpenMenus(label, root);
     if (el) return el;
   }
   if (dbLabels.length > 0) {
@@ -423,8 +461,7 @@ export function findLicenseTypeOption(
       queryByText('[role="menuitemradio"]', label, root) ??
       queryByText('[role="menuitem"]', label, root) ??
       queryByText('[role="option"]', label, root) ??
-      queryByText("button", label, root) ??
-      queryByText("li", label, root);
+      queryLooseInOpenMenus(label, root);
     if (el) return el;
   }
   return null;
@@ -748,4 +785,17 @@ export const EXTERNAL_INVITE_EXCLUDE_PATTERNS = [
   "自动创建账号",
   "自动账户创建",
   "自动帐号创建",
+  // Toggle THỨ BA của /admin/identity (ảnh user 2026-09-01): "Cho phép khám phá
+  // không gian làm việc" — cho người cùng miền tự tìm và xin vào workspace. Nó
+  // đứng NGAY DƯỚI toggle mời-ngoài-miền và câu mô tả cũng nói về "miền", nên
+  // khi walk-up ancestor với trượt lên khung chứa cả hai hàng thì đây là hàng dễ
+  // bị vơ nhầm nhất. Bật nhầm nó = mở cửa cho người lạ xin vào workspace.
+  "allow workspace discovery",
+  "workspace discovery",
+  "discover this workspace",
+  "cho phép khám phá không gian làm việc",
+  "khám phá không gian làm việc",
+  "允许工作区发现",
+  "工作区发现",
+  "发现工作区",
 ];

@@ -310,3 +310,61 @@ describe("extractAdditionalSeatCountFromModal — chốt an toàn số suất", 
     expect(extractAdditionalSeatCountFromModal("Add 2 Standard seats")).toBe(2);
   });
 });
+
+/**
+ * Ảnh user 2026-09-01: cùng hộp đó nhưng giao diện ra CHỮ TRUNG ("核对购买信息").
+ * Mọi nhãn của hộp đổi hết, mà chốt an toàn của luồng mua đều bám theo nhãn:
+ * không đọc được số suất từ BẤT KỲ nguồn nào là task dừng ở chốt #3 dù hộp
+ * hoàn toàn bình thường.
+ */
+const MODAL_ZH =
+  "核对购买信息" +
+  "新增席位将按比例计费至下个账单周期。" +
+  "添加 1 个 标准 席位" +
+  "立即生效" +
+  "+ ₫260,500/月" +
+  "当前月度账单" +
+  "₫82,318,000 + 税费" +
+  "316 标准 · 0 高级" +
+  "新的月度账单" +
+  "₫82,578,500 + 税费" +
+  "317 标准 · 0 高级" +
+  "按比例计费小计" +
+  "₫86,673" +
+  "销售税 (10%)" +
+  "₫8,667" +
+  "今日应付总额" +
+  "₫95,340" +
+  "Visa •••• 8795" +
+  "更改" +
+  "返回" +
+  "确认购买";
+
+describe("Giao diện chữ Trung (ảnh user 2026-09-01)", () => {
+  it("số suất thêm = 1 — tên loại suất chen giữa '个' và '席位'", () => {
+    expect(extractAdditionalSeatCountFromModal(MODAL_ZH)).toBe(1);
+  });
+
+  it("số ghế 316 → 317, chênh đúng 1 suất đang mua", () => {
+    const m = extractMonthlyBills(MODAL_ZH);
+    expect(m.currentSeats).toBe(316);
+    expect(m.newSeats).toBe(317);
+    expect(m.seatDelta).toBe(1);
+  });
+
+  it("mức tăng hằng tháng = 260.500 đ (82.578.500 − 82.318.000)", () => {
+    expect(extractMonthlyBills(MODAL_ZH).deltaVnd).toBe(260_500);
+  });
+
+  it("tổng phải trả hôm nay = ₫95,340, KHÔNG phải đơn giá ₫260,500", () => {
+    expect(extractChargeAmountFromModal(MODAL_ZH)).toBe("₫95,340");
+  });
+
+  it("tạm tính theo tỷ lệ = ₫86,673 (không lẫn thuế ₫8,667)", () => {
+    expect(extractProrationSubtotal(MODAL_ZH)).toBe("₫86,673");
+  });
+
+  it("thuế bán hàng = ₫8,667, tỷ lệ 10%", () => {
+    expect(extractSalesTax(MODAL_ZH)).toEqual({ text: "₫8,667", percent: "10" });
+  });
+});

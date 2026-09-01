@@ -16,8 +16,15 @@
 
 import { normalizeForMatch } from "../purchase-seat/modal2/money";
 
-/** "146 thành viên" · "146 members" · "146 成员" (bản thường hoá bỏ dấu). */
-const COUNT_RE = /(\d{1,5})\s*(?:thanh vien|members?|成员)/gi;
+/**
+ * "146 thành viên" · "146 members" · "146 成员" / "146 位成员"
+ * (bản thường hoá bỏ dấu).
+ *
+ * Bản zh chèn lượng từ "位" giữa số và chữ "成员" (ảnh user 2026-09-01:
+ * "Business · 314 位成员") — thiếu nó là trang tiếng Trung đọc ra null rồi phải
+ * mở hộp "Quản lý suất" như cũ.
+ */
+const COUNT_RE = /(\d{1,5})\s*(?:位\s*)?(?:thanh vien|members?|成员)/gi;
 
 /**
  * @param text mặc định lấy nguyên trang. Truyền vào để test.

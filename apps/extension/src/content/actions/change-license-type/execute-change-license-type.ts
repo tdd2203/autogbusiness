@@ -226,7 +226,10 @@ export async function executeChangeLicenseType(
       error_code: "UI_ELEMENT_NOT_FOUND",
       error_message:
         `Mở menu "..." nhưng KHÔNG tìm thấy option '${newLicenseType}'. ` +
-        `Xem console [autogpt-license] để biết menu items thật.`,
+        "Ảnh user 2026-09-01: menu row chỉ còn Xuất dữ liệu / Xoá dữ liệu / " +
+        "Loại bỏ thành viên, còn cột giấy phép đổi thành 'Loại suất' với giá trị " +
+        "Tiêu chuẩn / Cao cấp — nhiều khả năng ChatGPT đã bỏ hẳn ChatGPT/Codex " +
+        "khỏi workspace này. Xem console [autogpt-license] để biết menu items thật.",
     };
   }
 

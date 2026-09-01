@@ -62,7 +62,7 @@ export function findPurchaseReviewModal(): HTMLElement | null {
     const norm = normalizeForMatch(text);
 
     const hasTitle =
-      /xem\s*lai\s*giao\s*dich\s*mua|xem\s*lai\s*thay\s*doi\s*(?:nguoi\s*dung)?|review\s*(?:your\s*)?purchase|review\s*(?:user\s*)?changes|review\s*order|quan\s*ly\s*cho\s*ngoi|查看购买|确认购买|查看用户更改/i.test(
+      /xem\s*lai\s*giao\s*dich\s*mua|xem\s*lai\s*thay\s*doi\s*(?:nguoi\s*dung)?|review\s*(?:your\s*)?purchase|review\s*(?:user\s*)?changes|review\s*order|quan\s*ly\s*cho\s*ngoi|查看购买|核对购买|确认购买|查看用户更改/i.test(
         norm,
       );
     const hasTodayTotal = extractChargeAmountFromModal(text) !== null;

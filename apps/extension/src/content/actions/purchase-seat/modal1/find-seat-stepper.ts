@@ -300,8 +300,14 @@ const SEAT_ROW_LABELS: Array<{ standard: boolean; re: RegExp }> = [
   // Chặn hậu tố bằng "không phải chữ cái" chứ không phải `\b`: khi ChatGPT dán
   // nhãn liền giá trong một node ("Tiêu chuẩn260.500 đ/tháng") thì giữa "n" và
   // "2" KHÔNG có ranh giới từ, `\b` trượt và không ghim được hàng nào.
-  { standard: true, re: /^(tieu chuan|standard|标准)(?!\p{L})/u },
-  { standard: false, re: /^(cao cap|premium|高级)(?!\p{L})/u },
+  //
+  // Chữ Hán KHÔNG áp được rào "không phải chữ cái": nhãn thật là "高级版" /
+  // "标准席位" (ảnh user 2026-09-01), chữ ngay sau vẫn là chữ cái nên rào chặn
+  // luôn cả nhãn đúng. Mà nhận không ra hàng Cao cấp thì hộp 2 loại suất bị coi
+  // là hộp 1 loại — đúng ca dễ bấm nhầm bộ đếm hàng đắt gấp 12 lần. Nhánh CJK
+  // vì vậy chỉ cần khớp ĐẦU CHUỖI.
+  { standard: true, re: /^(?:(?:tieu chuan|standard)(?!\p{L})|标准)/u },
+  { standard: false, re: /^(?:(?:cao cap|premium)(?!\p{L})|高级)/u },
 ];
 
 type RowLabel = { standard: boolean; el: HTMLElement };

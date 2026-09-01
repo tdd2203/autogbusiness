@@ -256,6 +256,34 @@ describe("findSeatStepper — hộp có 2 loại suất (UI 26/8/2026)", () => {
   });
 });
 
+describe("findSeatStepper — giao diện chữ Trung (ảnh user 2026-09-01)", () => {
+  it("ghim đúng hàng '标准' dù hàng kia là '高级版' (có chữ đuôi)", () => {
+    openModal(
+      seatRow("标准", "₫260,500 + tax/mo", 316, 0),
+      seatRow("高级版", "₫3,245,000 + tax/mo", 0, 100),
+    );
+    const stepper = findSeatStepper()!;
+    expect(stepper).not.toBeNull();
+    expect(stepper.read()).toBe(316);
+    expect(stepper.scope).toBe("standard_row");
+    expect(
+      (stepper.getIncrementButton()! as unknown as E).getBoundingClientRect().top,
+    ).toBe(0);
+  });
+
+  it("nhãn '标准席位' / '高级席位' cũng ghim được đúng hàng", () => {
+    openModal(
+      seatRow("高级席位", "₫3,245,000", 0, 0),
+      seatRow("标准席位", "₫260,500", 316, 100),
+    );
+    const stepper = findSeatStepper()!;
+    expect(stepper.read()).toBe(316);
+    expect(
+      (stepper.getIncrementButton()! as unknown as E).getBoundingClientRect().top,
+    ).toBe(100);
+  });
+});
+
 describe("findSeatStepper — biến thể nhãn", () => {
   it("nhãn gộp chung với giá trong MỘT node vẫn ghim được hàng", () => {
     // ChatGPT có thể render "Tiêu chuẩn 260.500 đ/tháng" thành một text node.
