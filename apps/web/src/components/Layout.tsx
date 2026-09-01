@@ -25,7 +25,7 @@ type NavEntry = {
   labelKey: string;
   perm?: string;
   icon: ReactNode;
-  section: "manage" | "org";
+  section: "manage" | "wallet" | "org";
   // Mục thuộc nhánh nào (bỏ trống = cụm dùng chung, nhánh nào cũng thấy).
   branch?: Branch;
   // Ví (feature 003): mục chỉ hiện với user bật cờ wallet_beta.
@@ -183,9 +183,9 @@ const NAV: NavEntry[] = [
   { to: "/admin/wallet", labelKey: "nav.walletAdmin", icon: ICONS.wallet, section: "org", requireSuperAdmin: true },
   // Báo cáo tài chính (feature 003) — chỉ super-admin: THU/CHI/lợi nhuận + theo đại lý.
   { to: "/admin/report", labelKey: "nav.report", icon: ICONS.report, section: "org", requireSuperAdmin: true },
-  // Ví nằm ở cụm dưới cùng Cài đặt (user 2026-09-01): tiền là của TÀI KHOẢN, không
-  // thuộc nhánh nào, để trong cụm "Quản lý" của một nhánh là hiểu sai.
-  { to: "/wallet", labelKey: "nav.wallet", icon: ICONS.wallet, section: "org", requireWalletBeta: true },
+  // Ví đứng RIÊNG ngay dưới nút "Nền tảng", trên cả nhóm Tổ chức (user 2026-09-01):
+  // tiền là của TÀI KHOẢN, không thuộc nhánh nào mà cũng không phải việc tổ chức.
+  { to: "/wallet", labelKey: "nav.wallet", icon: ICONS.wallet, section: "wallet", requireWalletBeta: true },
   { to: "/settings", labelKey: "nav.settings", icon: ICONS.settings, section: "org" },
 ];
 
@@ -245,6 +245,7 @@ export default function Layout() {
   const manageItems = NAV.filter(
     (n) => n.section === "manage" && n.branch === branch && navVisible(n),
   );
+  const walletItems = NAV.filter((n) => n.section === "wallet" && navVisible(n));
   const orgItems = NAV.filter(
     (n) =>
       n.section === "org" &&
@@ -424,15 +425,24 @@ export default function Layout() {
               </SidebarItem>
             ))}
           </SidebarSection>
-          {/* Nút "Nền tảng" — chốt giữa "Nhật ký" và cụm "Tổ chức" (user 2026-09-01).
-              Di chuột (hoặc bấm, cho điện thoại) là xổ danh sách nền tảng. */}
-          {platformOptions.length > 1 && (
-            <PlatformSwitcher
-              label={t("nav.platform")}
-              branch={branch}
-              options={platformOptions}
-              onPick={(to) => navigate(to)}
-            />
+          {/* Cụm giữa: nút "Nền tảng" rồi tới Ví, đứng giữa "Nhật ký" và nhóm "Tổ
+              chức" (user 2026-09-01). Di chuột vào nút là xổ danh sách nền tảng. */}
+          {(platformOptions.length > 1 || walletItems.length > 0) && (
+            <div style={{ marginBottom: 24 }}>
+              {platformOptions.length > 1 && (
+                <PlatformSwitcher
+                  label={t("nav.platform")}
+                  branch={branch}
+                  options={platformOptions}
+                  onPick={(to) => navigate(to)}
+                />
+              )}
+              {walletItems.map((n) => (
+                <SidebarItem key={n.to} to={n.to} icon={n.icon}>
+                  {t(n.labelKey)}
+                </SidebarItem>
+              ))}
+            </div>
           )}
           {orgItems.length > 0 && (
             <SidebarSection label={t("nav.sectionOrg")}>
@@ -970,7 +980,6 @@ function PlatformSwitcher({
 
   return (
     <div
-      style={{ marginBottom: 24 }}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
       onKeyDown={(e) => {
