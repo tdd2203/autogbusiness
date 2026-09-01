@@ -344,6 +344,30 @@ function partOf(
   };
 
   if (row.type === "voided") {
+    // Tiền hoá đơn QR của mẻ hỏng đã gộp vào dòng này trên màn hình
+    // (`mergeStrandedInvoice`), nhưng sổ thì phải đủ bút toán: thiếu một khoản tiền
+    // VÀO là cột số dư đứt mạch, đúng cái lỗi 30/8 "tiền từ đâu rơi ra".
+    for (const t of row.credit ?? []) {
+      const c = codeAt(t);
+      entries.push({
+        date: vnDateKey(t.created_at),
+        time: vnTime(t.created_at),
+        at: t.created_at,
+        ord: ord.get(t.id) ?? 0,
+        label: TXN_KIND_LABEL[t.kind] ?? t.kind,
+        outcome: "",
+        channel: CHANNEL_LABEL.in,
+        email: str(t.meta?.email),
+        moneyIn: t.amount > 0 ? t.amount : 0,
+        moneyOut: t.amount < 0 ? -t.amount : 0,
+        balanceBefore: t.balance_after - t.amount,
+        balanceAfter: t.balance_after,
+        refCode: c.ref,
+        providerTxn: c.provider,
+        note: str(t.meta?.reason) || str(t.meta?.note) || KIND_NOTE[t.kind] || "",
+        voided: false,
+      });
+    }
     // KHÔNG gộp phí với khoản hoàn của nó: hai bút toán cách nhau vài phút và ở giữa
     // thường có bút toán khác, gộp lại thì cột số dư không nối được (dữ liệu thật ví
     // hdh2102 30/8: 34 chỗ đứt mạch). Gộp chỉ đúng với cặp hoá đơn + phí vì chúng
@@ -359,7 +383,7 @@ function partOf(
         ord: ord.get(p.fee.id) ?? 0,
         label: "Phí mời - Đã hoàn",
         outcome: "Lỗi, đã hoàn phí",
-        channel,
+        channel: CHANNEL_LABEL.voided,
         email,
         moneyIn: 0,
         moneyOut: -p.fee.amount,
@@ -384,7 +408,7 @@ function partOf(
         ord: ord.get(p.refund.id) ?? 0,
         label: "Hoàn phí mời",
         outcome: "",
-        channel,
+        channel: CHANNEL_LABEL.voided,
         email,
         moneyIn: p.refund.amount,
         moneyOut: 0,
@@ -396,7 +420,7 @@ function partOf(
         voided: true,
       });
     }
-    return { entries, charged, voided, spend, viaInvoice: false, kind: "Lệnh mời" };
+    return { entries, charged, voided, spend, viaInvoice: (row.credit?.length ?? 0) > 0, kind: "Lệnh mời" };
   }
 
   // Lượt trả THẲNG qua hoá đơn ghi 2 bút toán cùng lúc: `order_topup` (+X vào ví) rồi

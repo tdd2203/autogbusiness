@@ -381,6 +381,24 @@ describe("gộp dòng hoá đơn vào dòng phí", () => {
     expect(es[0].refCode).toBe("ORD1");
   });
 
+  /* Màn hình gộp khoản QR của mẻ hỏng vào luôn dòng lỗi mời (`mergeStrandedInvoice`).
+     Sổ thì không được gộp: thiếu bút toán tiền VÀO là cột số dư đứt mạch. */
+  it("hỏng cả mẻ trả qua hoá đơn: sổ vẫn còn đủ dòng 'Nạp qua hoá đơn'", () => {
+    const r = report([
+      txn({ kind: "invite_refund", amount: FEE, balance_after: FEE, meta: { email: "a@x.com" }, created_at: "2026-08-30T02:30:00Z" }),
+      txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, meta: { email: "a@x.com" }, created_at: at, reversed: true }),
+      txn({ kind: "order_topup", amount: FEE, balance_after: FEE, ref_type: "order", ref_code: "ORD1", created_at: at }),
+    ]);
+    const es = r.days[0].clusters.flatMap((c) => c.entries);
+    expect(es.map((e) => e.label)).toEqual(["Nạp qua hoá đơn", "Phí mời - Đã hoàn", "Hoàn phí mời"]);
+    expect(es[0].moneyIn).toBe(FEE);
+    expect(es[0].balanceBefore).toBe(0);
+    expect(es[0].balanceAfter).toBe(FEE);
+    // Số dư chạy liền mạch: mỗi dòng nối đúng dòng trên nó.
+    expect(es.map((e) => e.balanceBefore)).toEqual([0, FEE, 0]);
+    expect(es.map((e) => e.balanceAfter)).toEqual([FEE, 0, FEE]);
+  });
+
   it("trừ thẳng số dư ví ⇒ ghi 'Phí mời - Số dư ví', không có dòng hoá đơn", () => {
     const r = report([
       txn({ kind: "invite_fee", amount: -FEE, balance_after: 0, meta: { email: "a@x.com" }, created_at: at }),

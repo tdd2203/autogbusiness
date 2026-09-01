@@ -59,21 +59,54 @@ describe("buildTxnRows — mời hỏng đã hoàn phí", () => {
     expect(voided.pairs).toHaveLength(1);
   });
 
-  it("trả qua hoá đơn mà mời hỏng: dòng hoá đơn Ở LẠI, kèm số tiền đọng trong ví", () => {
+  /* Cả mẻ hỏng mà trả qua QR: trước đây ra 2 dòng cùng mốc, cùng số tiền, cùng email
+     ("Lỗi mời 0 đ · số dư không đổi" + "Hoàn tiền lỗi mời +X · số dư còn X") nên đọc
+     lên như hoàn hai lần và mâu thuẫn nhau (user 2026-09-01). */
+  it("trả qua hoá đơn mà hỏng CẢ MẺ: gộp tiền hoá đơn vào đúng dòng lỗi mời", () => {
     const at = "2026-08-26T08:00:00Z";
     const rows = buildTxnRows([
       refundOf("a@x.com"),
       feeOf("a@x.com", at, true),
       txn({ kind: "order_topup", amount: FEE, created_at: at, ref_type: "order" }),
     ]);
+    expect(rows).toHaveLength(1);
+    if (rows[0].type !== "voided") throw new Error("thiếu dòng");
+    // Tiền hoá đơn đã vào ví rồi phí hoàn về ⇒ ví DÔI RA, không được giấu đi.
+    expect(rows[0].invoiceStranded).toBe(FEE);
+    expect(rows[0].credit?.map((t) => t.kind)).toEqual(["order_topup"]);
+    // Dòng tiền VÀO thật ⇒ không bị công tắc "lượt mời hỏng" giấu mất.
+    expect(rowChannel(rows[0])).toBe("in");
+    expect(groupRowsByDay(rows)[0].rows).toHaveLength(1);
+    expect(countVoidedInvites(rows)).toBe(0);
+  });
+
+  it("hỏng MỘT PHẦN mẻ: dòng mời vẫn đứng riêng, không nuốt vào dòng lỗi", () => {
+    const at = "2026-08-26T08:00:00Z";
+    const rows = buildTxnRows([
+      refundOf("b@x.com"),
+      feeOf("b@x.com", at, true),
+      feeOf("a@x.com", at),
+      txn({ kind: "order_topup", amount: 2 * FEE, created_at: at, ref_type: "order" }),
+    ]);
     const group = rows.find((r) => r.type === "group");
     const voided = rows.find((r) => r.type === "voided");
     if (group?.type !== "group" || voided?.type !== "voided") throw new Error("thiếu dòng");
-    // Tiền hoá đơn đã vào ví rồi phí hoàn về ⇒ ví DÔI RA, không được giấu đi.
-    expect(group.txns).toHaveLength(1);
-    expect(group.txns[0].kind).toBe("order_topup");
-    expect(group.invoiceStranded).toBe(FEE);
-    expect(voided.invoiceStranded).toBe(FEE);
+    expect(group.txns.map((t) => t.kind)).toEqual(["invite_fee", "order_topup"]);
+    expect(voided.credit).toBeUndefined();
+  });
+
+  it("hoá đơn trả DƯ so với phí: không gộp, phần dôi không được biến mất", () => {
+    const at = "2026-08-26T08:00:00Z";
+    const rows = buildTxnRows([
+      refundOf("a@x.com"),
+      feeOf("a@x.com", at, true),
+      txn({ kind: "order_topup", amount: FEE + 50_000, created_at: at, ref_type: "order" }),
+    ]);
+    const group = rows.find((r) => r.type === "group");
+    const voided = rows.find((r) => r.type === "voided");
+    if (group?.type !== "group" || voided?.type !== "voided") throw new Error("thiếu dòng");
+    expect(voided.credit).toBeUndefined();
+    expect(group.txns[0].amount).toBe(FEE + 50_000);
   });
 
   it("bút toán hoàn không tìm thấy phí (rơi ngoài trang) thì vẫn hiện, không giấu", () => {
@@ -225,8 +258,9 @@ describe("countHiddenRows — danh sách rỗng vì công tắc, không phải v
       txn({ kind: "invite_fee", amount: -FEE, created_at: bad, meta: { email: "bad@x.com" }, reversed: true }),
       txn({ kind: "order_topup", amount: FEE, created_at: bad, ref_type: "order" }),
     ]);
-    const creditRow = rows.find((r) => r.type === "group" && r.txns[0].kind === "order_topup");
-    expect(countHiddenRows(rows, { hidden: new Set([creditRow!]) })).toEqual({ voided: 1, settled: 1 });
+    // Lượt hỏng và khoản QR của nó nay là MỘT dòng ⇒ chỉ còn một dòng bị giấu.
+    const creditRow = rows.find((r) => r.type === "voided");
+    expect(countHiddenRows(rows, { hidden: new Set([creditRow!]) })).toEqual({ voided: 0, settled: 1 });
   });
 
   it("ngày có dòng thật thì vẫn đếm phần đang ẩn (dùng cho nhãn công tắc)", () => {
@@ -267,7 +301,7 @@ describe("traceRefundUsage — lần nguồn gốc tiền hoàn", () => {
   it("khoản hoàn bị tiêu hết ⇒ triệt tiêu, mặc định ẩn khỏi lịch sử", () => {
     const rows = scene();
     const { usage } = traceRefundUsage(rows);
-    const creditRow = rows.find((r) => r.type === "group" && r.txns[0].kind === "order_topup");
+    const creditRow = rows.find((r) => r.type === "voided");
     expect(usage.get(creditRow!)).toMatchObject({ used: FEE, total: FEE, emails: ["bad@x.com"] });
 
     const hidden = new Set([creditRow!]);
@@ -285,9 +319,11 @@ describe("traceRefundUsage — lần nguồn gốc tiền hoàn", () => {
       txn({ kind: "order_topup", amount: FEE, created_at: bad, balance_after: FEE, ref_type: "order" }),
     ]);
     const { usage, funding } = traceRefundUsage(rows);
-    const creditRow = rows.find((r) => r.type === "group" && r.txns[0].kind === "order_topup");
+    const creditRow = rows.find((r) => r.type === "voided");
     expect(usage.get(creditRow!)).toMatchObject({ used: 0, total: FEE });
     expect(funding.size).toBe(0);
+    // Chưa ai tiêu tới ⇒ hiện mặc định, không cần bật công tắc lượt hỏng.
+    expect(groupRowsByDay(rows).flatMap((g) => g.rows)).toContain(creditRow);
   });
 
   it("tiêu FIFO: khoản hoàn CŨ bị ăn trước", () => {

@@ -34,7 +34,16 @@ export type TxnRow =
       invoiceStranded: number;
     }
   /** Các lượt mời hỏng ĐÃ HOÀN đủ tại cùng một mốc — mặc định ẩn. */
-  | { type: "voided"; key: string; pairs: VoidedPair[]; invoiceStranded: number }
+  | {
+      type: "voided";
+      key: string;
+      pairs: VoidedPair[];
+      invoiceStranded: number;
+      /** Bút toán hoá đơn QR của CHÍNH mẻ này, khi CẢ MẺ hỏng: tiền đã vào ví rồi ở
+       *  lại đó. Gộp vào đây để một lượt mời hỏng chỉ còn MỘT dòng (xem
+       *  `mergeStrandedInvoice`). Không có ⇒ lượt hỏng trừ thẳng ví. */
+      credit?: WalletTxn[];
+    }
   | { type: "withdraw"; id: string; txns: WalletTxn[] };
 
 function emailOf(t: WalletTxn): string {
@@ -151,12 +160,49 @@ export function buildTxnRows(txns: WalletTxn[]): TxnRow[] {
       }
     }
   }
-  return rows;
+  return mergeStrandedInvoice(rows);
 }
 
-/** Số LƯỢT mời hỏng đã hoàn đủ (để đếm trên nút "hiện/ẩn"). */
+/**
+ * CẢ MẺ hỏng mà trả qua QR: nhập khoản `order_topup` vào luôn dòng lỗi mời.
+ *
+ * Để rời thì cùng một giây, cùng một email hiện ra hai dòng cùng số tiền: "Lỗi mời ·
+ * 0 đ · số dư không đổi" rồi ngay dưới "Hoàn tiền lỗi mời · +330.000 đ · số dư còn
+ * 330.000 đ". Đọc lên như hoàn hai lần, mà hai dòng còn nói ngược nhau về số dư —
+ * "không đổi" chỉ đúng với cặp phí ↔ hoàn, trong khi ví thật sự dôi thêm đúng khoản
+ * QR đó (user 2026-09-01: "gây hiểu nhầm"). Một việc thì một dòng.
+ *
+ * Chỉ gộp khi dòng cùng mốc CHỈ có `order_topup` — tức mọi email trong mẻ đều hỏng.
+ * Mẻ hỏng một phần thì dòng đó còn phí của các email chạy được, phải để nguyên làm
+ * dòng mời.
+ */
+function mergeStrandedInvoice(rows: TxnRow[]): TxnRow[] {
+  const creditAt = new Map<string, number>(); // mốc → chỉ số dòng chỉ có tiền hoá đơn
+  rows.forEach((r, i) => {
+    if (r.type === "group" && r.txns.every((t) => t.kind === "order_topup")) creditAt.set(r.key, i);
+  });
+  const drop = new Set<number>();
+  for (const r of rows) {
+    if (r.type !== "voided" || r.invoiceStranded <= 0) continue;
+    const at = creditAt.get(r.key);
+    if (at == null) continue;
+    const credit = (rows[at] as { txns: WalletTxn[] }).txns;
+    // Hoá đơn trả DƯ so với phí của mẻ thì phần dôi không thuộc lượt hỏng nào — gộp
+    // vào là dòng chỉ kể phần đọng lại, phần dư biến mất khỏi lịch sử. Ca đó để
+    // nguyên hai dòng.
+    if (credit.reduce((n, t) => n + t.amount, 0) !== r.invoiceStranded) continue;
+    r.credit = credit;
+    drop.add(at);
+  }
+  return drop.size === 0 ? rows : rows.filter((_, i) => !drop.has(i));
+}
+
+/** Số LƯỢT mời hỏng đã hoàn đủ (để đếm trên nút "hiện/ẩn").
+ *
+ *  Lượt ôm tiền QR nằm lại ví KHÔNG tính: nó không bị công tắc giấu (xem
+ *  `rowChannel`) nên đếm vào nhãn "hiện N lượt lỗi mời" là hứa hão. */
 export function countVoidedInvites(rows: TxnRow[]): number {
-  return rows.reduce((n, r) => (r.type === "voided" ? n + r.pairs.length : n), 0);
+  return rows.reduce((n, r) => (r.type === "voided" && !r.credit ? n + r.pairs.length : n), 0);
 }
 
 // ── Lọc/gom theo NGÀY cho giao diện Ví (mockup "Vi-standalone" 2026-08-26) ──
@@ -178,7 +224,10 @@ export type TxnChannel = "wallet" | "invoice" | "in" | "voided";
 const FEE_KINDS = new Set(["invite_fee", "renew_fee"]);
 
 export function rowChannel(row: TxnRow): TxnChannel {
-  if (row.type === "voided") return "voided";
+  // Lượt hỏng ôm tiền QR nằm lại ví là dòng tiền VÀO thật: giấu nó theo luật "lượt
+  // hỏng không phải dòng tiền" là giấu mất một khoản đang chờ tiêu trong ví. Chỉ khi
+  // khoản ấy bị lượt sau tiêu hết thì mới ẩn, và ẩn theo `hidden` chứ không theo đây.
+  if (row.type === "voided") return row.credit ? "in" : "voided";
   if (row.type === "withdraw") return "wallet";
   const hasFee = row.txns.some((t) => FEE_KINDS.has(t.kind));
   if (hasFee) return row.txns.some((t) => t.kind === "order_topup") ? "invoice" : "wallet";
@@ -414,8 +463,24 @@ export function traceRefundUsage(rows: TxnRow[]): RefundTrace {
    *  (chốt user 2026-08-30). */
   const lots: { row: TxnRow; email: string; remaining: number; open: boolean }[] = [];
 
+  /** Mở một lô tiền hoàn còn nằm trong ví, chia đều cho các email hỏng của lô đó —
+   *  phí mỗi lượt bằng nhau nên chia đều là đúng, không phải ước lượng. */
+  const openLot = (row: TxnRow, total: number, emails: string[], open: boolean) => {
+    usage.set(row, { used: 0, total, emails });
+    const per = total / emails.length;
+    for (const email of emails) lots.push({ row, email, remaining: per, open });
+  };
+
   // API trả mới→cũ; dòng tiền phải lần theo chiều CŨ→MỚI mới đúng nhân quả.
   for (const row of [...rows].reverse()) {
+    // Lượt hỏng đã ôm luôn khoản QR nằm lại ví (`mergeStrandedInvoice`): lô mở ngay
+    // trên dòng đó. Lượt hỏng không tiêu tiền của ai nên xét xong là đi tiếp.
+    if (row.type === "voided") {
+      if (row.credit) {
+        openLot(row, row.invoiceStranded, voidedEmailsAt.get(row.key) ?? ["(không rõ email)"], true);
+      }
+      continue;
+    }
     if (row.type !== "group") continue;
 
     // 1) Sinh lô tiền hoàn.
@@ -426,12 +491,8 @@ export function traceRefundUsage(rows: TxnRow[]): RefundTrace {
         ? [typeof row.txns[0].meta?.email === "string" ? row.txns[0].meta.email : "(không rõ email)"]
         : voidedEmailsAt.get(row.key) ?? ["(không rõ email)"];
       const total = loneRefund ? row.txns[0].amount : strandedInvoice;
-      usage.set(row, { used: 0, total, emails });
-      // Chia đều cho các email hỏng cùng mốc — phí mỗi lượt bằng nhau nên chia đều
-      // là đúng, không phải ước lượng.
-      const per = total / emails.length;
-      const open = !loneRefund; // tiền hoá đơn đọng lại ví, không thuộc riêng email nào
-      for (const email of emails) lots.push({ row, email, remaining: per, open });
+      // tiền hoá đơn đọng lại ví không thuộc riêng email nào
+      openLot(row, total, emails, !loneRefund);
     }
 
     // 2) Lượt mời TRỪ VÍ ăn dần các lô, tính riêng TỪNG lượt phí để biết khoản hoàn

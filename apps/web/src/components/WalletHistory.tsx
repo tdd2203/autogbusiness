@@ -24,7 +24,7 @@ import {
   groupRowsByDay,
   traceRefundUsage,
 } from "../lib/wallet-history";
-import type { DayGroup, RefundSource, RefundTrace, TxnChannel, TxnRow, VoidedPair } from "../lib/wallet-history";
+import type { DayGroup, RefundSource, RefundTrace, TxnChannel, TxnRow } from "../lib/wallet-history";
 import {
   bigNumber,
   bigVnd,
@@ -530,7 +530,7 @@ function DayClosingRow({ date, amount }: { date: string; amount: number }) {
 
 function HistoryRow({ row, trace }: { row: TxnRow; trace: RefundTrace }) {
   if (row.type === "withdraw") return <WithdrawRow txns={row.txns} />;
-  if (row.type === "voided") return <VoidedRow pairs={row.pairs} />;
+  if (row.type === "voided") return <VoidedRow row={row} usage={trace.usage.get(row)} />;
 
   const fees = row.txns.filter((t) => t.kind === "invite_fee" || t.kind === "renew_fee");
   if (fees.length > 0) return <FeeRow row={row} fees={fees} funding={trace.funding.get(row)} perFee={trace.perFee} />;
@@ -557,10 +557,12 @@ function hiddenLabel(voided: number, settled: number): string {
 }
 
 /**
- * TIỀN HOÀN còn trong ví: lượt mời trả thẳng qua hoá đơn QR nhưng hỏng ⇒ tiền đã
- * vào ví rồi ở lại. Trước đây dòng này ghi "Nạp qua hoá đơn" — nghe như nạp mới,
- * trong khi bản chất là hoàn (user 2026-08-26). Ăn hết bởi lượt mời sau ⇒ triệt
- * tiêu, mặc định ẩn.
+ * TIỀN HOÀN LẺ còn trong ví: bút toán hoàn của một lượt mời hỏng mà dòng phí của nó
+ * rơi sang trang khác, nên không ghép cặp được. Trước đây dòng này ghi "Nạp qua hoá
+ * đơn" — nghe như nạp mới, trong khi bản chất là hoàn (user 2026-08-26). Ăn hết bởi
+ * lượt mời sau ⇒ triệt tiêu, mặc định ẩn.
+ *
+ * Ca ghép được cặp thì khoản hoàn nằm luôn trong dòng lỗi mời (xem `VoidedRow`).
  */
 function RefundCreditRow({ row, usage }: { row: Extract<TxnRow, { type: "group" }>; usage: { used: number; total: number; emails: string[] } }) {
   const [open, setOpen] = useState(false);
@@ -571,7 +573,7 @@ function RefundCreditRow({ row, usage }: { row: Extract<TxnRow, { type: "group" 
     <RowShell
       face={FACE.refund}
       title={`Hoàn tiền lỗi mời · ${usage.emails.length} email`}
-      meta={`Hoàn từ ${who} · đã trả qua QR nhưng lỗi mời nên tiền ở lại trong ví`}
+      meta={`Hoàn phí lượt mời lỗi của ${who} · tiền trả lại vào ví`}
       note={
         left <= 0
           ? `Đã dùng hết cho lượt mời sau — khoản này triệt tiêu, không phải tiền mới.`
@@ -783,28 +785,50 @@ function fundingNote(funding: RefundSource[]): string {
  * Các lượt MỜI HỎNG cùng một lúc: phí đã trừ rồi hoàn lại đủ ⇒ thực chi 0 đ. Gộp cả
  * cặp phí ↔ hoàn vào 1 dòng, đặt đúng chỗ lượt mời trong dòng thời gian, thay vì để
  * "Phí mời −X" ở một chỗ và "Hoàn phí mời +X" ở chỗ khác.
+ *
+ * Mẻ trả qua QR mà hỏng cả mẻ thì dòng này ôm luôn khoản tiền QR nằm lại ví
+ * (`row.credit`): tiền vào ví thật nên số bên phải là +X chứ không phải 0 đ. Tách làm
+ * hai dòng thì cùng một giây hiện hai lần cùng một số tiền, còn nói ngược nhau về số
+ * dư (user 2026-09-01). Khoản đó còn hay đã tiêu hết chỉ nói bằng MÀU của số tiền —
+ * user chốt bỏ hết câu giải thích, dòng chỉ giữ số.
  */
-function VoidedRow({ pairs }: { pairs: VoidedPair[] }) {
+function VoidedRow({
+  row,
+  usage,
+}: {
+  row: Extract<TxnRow, { type: "voided" }>;
+  usage?: { used: number; total: number; emails: string[] };
+}) {
   const [open, setOpen] = useState(false);
+  const { pairs } = row;
   const fee = pairs.reduce((s, p) => s - p.fee.amount, 0); // tổng phí đã trừ (dương)
+  // Số dư ghi bên phải lấy ở bút toán hoá đơn: cả mẻ hỏng thì phí trừ rồi hoàn về
+  // đúng chỗ cũ, nên đó cũng là số dư sau khi cả lượt này xong.
+  const credit = row.credit && usage ? { ...usage, balanceAfter: row.credit[0].balance_after } : null;
+  const left = credit ? credit.total - credit.used : 0;
+  const per = credit ? credit.total / pairs.length : 0;
   return (
     <RowShell
       face={FACE.voided}
       title={`Lỗi mời · ${pairs.length} email`}
-      meta={`Đã trừ ${formatVnd(fee)} rồi hoàn lại đủ · không mất tiền`}
+      meta={
+        credit
+          ? `Đã trả ${formatVnd(credit.total)}`
+          : `Đã trừ ${formatVnd(fee)} rồi hoàn lại đủ · không mất tiền`
+      }
       at={stamp(pairs[0].fee.created_at)}
-      amount="0 ₫"
-      amountFg="var(--ink-3)"
-      balance="Số dư không đổi"
+      amount={credit ? `+${formatVnd(credit.total)}` : "0 ₫"}
+      amountFg={credit && left > 0 ? "var(--success)" : "var(--ink-3)"}
+      balance={credit ? `Số dư còn ${formatVnd(credit.balanceAfter)}` : "Số dư không đổi"}
       open={open}
       onToggle={() => setOpen((v) => !v)}
-      txns={pairs.flatMap((p) => [p.fee, p.refund])}
+      txns={[...(row.credit ?? []), ...pairs.flatMap((p) => [p.fee, p.refund])]}
       detail={
         <EmailList
           items={pairs.map((p) => ({
             key: p.fee.id,
             email: p.fee.meta?.email ? String(p.fee.meta.email) : "(không rõ email)",
-            amount: `hoàn ${stamp(p.refund.created_at)}`,
+            amount: credit ? `tiền QR ${formatVnd(per)} ở lại ví` : `hoàn ${stamp(p.refund.created_at)}`,
             tone: "var(--ink-3)",
           }))}
         />
