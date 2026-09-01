@@ -229,7 +229,8 @@ export default function Members() {
     queryKey: ["recent-tasks", workspaceId],
     queryFn: () =>
       api<QueueItem[]>(`/api/v1/queue?workspace_id=${workspaceId}&limit=50`),
-    enabled: !!workspaceId,
+    // Cần QUEUE_VIEW — xem chú thích cùng truy vấn ở WorkspaceLayout.
+    enabled: !!workspaceId && hasPermission("QUEUE_VIEW"),
     // Poll 2s khi có task chạy; lúc idle nhịp tim 10s (KHÔNG dừng hẳn) để panel
     // hàng đợi hiện task do người/phiên khác tạo — "người thực hiện" mở dashboard
     // theo dõi vẫn thấy task Xoá/Đồng bộ admin khác vừa tạo dù phiên này không tự

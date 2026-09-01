@@ -94,7 +94,9 @@ export default function WorkspaceLayout() {
     queryKey: ["recent-tasks", workspaceId],
     queryFn: () =>
       api<QueueItem[]>(`/api/v1/queue?workspace_id=${workspaceId}&limit=50`),
-    enabled: !!workspaceId,
+    // Cần QUEUE_VIEW: nhánh Canva mở khung này cho tài khoản phụ, ai bị gỡ quyền
+    // xem hàng đợi mà vẫn poll thì chỉ tổ nã 403 vài giây một lần.
+    enabled: !!workspaceId && hasPermission("QUEUE_VIEW"),
     // Poll 2s khi có task chạy; lúc idle KHÔNG dừng hẳn mà nhịp tim 10s. Lý do:
     // panel hàng đợi (WorkspaceTaskRail) phải hiện task do NGƯỜI/PHIÊN KHÁC tạo
     // (vd admin chính bấm Xoá/Đồng bộ trong khi "người thực hiện" mở dashboard ở

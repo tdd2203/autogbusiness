@@ -231,10 +231,14 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        {/* Khung team Canva mở cho tài khoản phụ có MEMBER_VIEW (giữ đúng quyền của
+            trang Canva cũ, khác nhánh ChatGPT vốn khoá super-admin). Backend vẫn chốt
+            thật: `assert_workspace_access` trả 404 nếu họ không được gán team này, và
+            các tab Extension / Cài đặt bên dưới vẫn đòi super-admin. */}
         <Route
           path="canva/teams/:workspaceId"
           element={
-            <ProtectedRoute requireSuperAdmin>
+            <ProtectedRoute requirePermission="MEMBER_VIEW">
               <WorkspaceLayout />
             </ProtectedRoute>
           }
