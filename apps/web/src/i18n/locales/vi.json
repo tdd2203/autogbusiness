@@ -1643,5 +1643,6 @@
   "invite.canvaRoleMember": "Thành viên đội",
   "invite.canvaRoleBrand": "Nhà thiết kế thương hiệu của đội",
   "canva.recentTasks": "Lệnh gần đây",
-  "canva.noTasks": "Chưa có lệnh nào cho team này."
+  "canva.noTasks": "Chưa có lệnh nào cho team này.",
+  "invite.canvaRoleLabel": "Vai trò trong đội"
 }

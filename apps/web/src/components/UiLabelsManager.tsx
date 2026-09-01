@@ -112,7 +112,8 @@ export function UiLabelsManager() {
 
   const workspacesQ = useQuery({
     queryKey: ["workspaces-for-harvest"],
-    queryFn: () => api<WorkspaceListItem[]>("/api/v1/workspaces"),
+    // Thu thập nhãn giao diện chatgpt.com — không liên quan team Canva.
+    queryFn: () => api<WorkspaceListItem[]>("/api/v1/workspaces?platform=gpt"),
   });
 
   const saveBulk = useMutation({

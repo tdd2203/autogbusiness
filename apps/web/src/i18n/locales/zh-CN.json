@@ -1643,5 +1643,6 @@
   "invite.canvaRoleMember": "团队成员",
   "invite.canvaRoleBrand": "团队品牌设计师",
   "canva.recentTasks": "最近任务",
-  "canva.noTasks": "该团队还没有任务。"
+  "canva.noTasks": "该团队还没有任务。",
+  "invite.canvaRoleLabel": "团队角色"
 }

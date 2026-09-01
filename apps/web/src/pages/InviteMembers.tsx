@@ -11,7 +11,6 @@
  * Logic mời/phí TÁI SỬ DỤNG bulk-invite; gom nhóm theo workspace đích khi dán trộn.
  */
 import { useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useFormatDate, useT, useTranslateEnum } from "../i18n";
@@ -123,12 +122,10 @@ export default function InviteMembers() {
   const qc = useQueryClient();
 
   const { user } = useAuth();
-  // NHÁNH đang mời = NHÁNH CỦA ĐƯỜNG DẪN, không phải một công tắc nhớ trong trang:
-  // /invite là ChatGPT, /canva/invite là Canva. Bấm công tắc bên dưới thực chất là
-  // đi sang route của nhánh kia, nên trang dựng lại từ đầu — mọi email đang dán và
-  // workspace đã chọn bị xoá sạch, không còn cửa dán cả mẻ email vào nhầm nhánh
-  // (user 2026-09-01).
-  const navigate = useNavigate();
+  // NHÁNH đang mời = NHÁNH CỦA ĐƯỜNG DẪN: /invite là ChatGPT, /canva/invite là Canva.
+  // Đổi nhánh bằng nút "Nền tảng" ở thanh bên — đi sang route khác nên trang dựng lại
+  // từ đầu, mọi email đang dán bị xoá sạch. Nhờ vậy không có cửa nào dán cả mẻ email
+  // rồi mới đổi nhánh và gửi nhầm chỗ (user 2026-09-01).
   const platform = usePlatform();
   // Vai trò áp cho lệnh mời Canva. Canva còn có "Quản trị viên đội" nhưng dashboard
   // cố tình không mở: khách không cần quyền quản trị, bấm nhầm là họ xoá được cả đội.
@@ -595,44 +592,26 @@ export default function InviteMembers() {
 
       {/* Vùng nội dung — thu nhỏ ~10% cho gọn chữ toàn trang (modal không bị ảnh hưởng). */}
       <div style={{ zoom: 0.9 }}>
-      {/* Thanh trên: CÔNG TẮC NHÁNH + nút cấu hình đích (⚙️) + trạng thái extension. */}
-      <div
-        className="flex items-center"
-        style={{ marginBottom: 12, gap: 8, flexWrap: "wrap" }}
-      >
-        <span className="form-hint">{t("invite.platformLabel")}</span>
-        <div className="flex" style={{ gap: 4 }}>
-          {(["gpt", "canva"] as const).map((p) => (
-            <button
-              key={p}
-              type="button"
-              className={platform === p ? "btn btn-primary btn-sm" : "btn btn-ghost btn-sm"}
-              onClick={() => {
-                if (p === platform) return;
-                navigate(p === "canva" ? "/canva/invite" : "/invite");
-              }}
-            >
-              {t(p === "gpt" ? "invite.platformGpt" : "invite.platformCanva")}
-            </button>
-          ))}
+      {/* Nhánh KHÔNG có công tắc riêng ở đây nữa (user 2026-09-01): thanh bên đã có nút
+          "Nền tảng" đổi cả ứng dụng sang Canva, hai chỗ chọn cùng một thứ chỉ tổ làm
+          người dùng phải đoán cái nào thắng. Trang này đọc nhánh từ đường dẫn. */}
+      {platform === "canva" && (
+        <div
+          className="flex items-center"
+          style={{ marginBottom: 12, gap: 8, flexWrap: "wrap" }}
+        >
+          <span className="form-hint">{t("invite.canvaRoleLabel")}</span>
+          <select
+            className="form-input"
+            style={{ width: "auto" }}
+            value={canvaRole}
+            onChange={(e) => setCanvaRole(e.target.value as "member" | "brand_designer")}
+          >
+            <option value="member">{t("invite.canvaRoleMember")}</option>
+            <option value="brand_designer">{t("invite.canvaRoleBrand")}</option>
+          </select>
         </div>
-        {platform === "canva" && (
-          <>
-            <select
-              className="form-input"
-              style={{ width: "auto" }}
-              value={canvaRole}
-              onChange={(e) =>
-                setCanvaRole(e.target.value as "member" | "brand_designer")
-              }
-            >
-              <option value="member">{t("invite.canvaRoleMember")}</option>
-              <option value="brand_designer">{t("invite.canvaRoleBrand")}</option>
-            </select>
-            <span className="form-hint">{t("invite.platformCanvaNote")}</span>
-          </>
-        )}
-      </div>
+      )}
       {(user?.is_super_admin || workspaceId) && (
         <div
           className="flex items-center justify-end"

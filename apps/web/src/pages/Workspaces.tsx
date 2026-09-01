@@ -53,8 +53,11 @@ export default function Workspaces() {
   // (hoá đơn/cấu hình nặng và ít đổi).
   const { seatMap } = useSeatMap();
   const { data: workspaces = [], isLoading } = useQuery({
-    queryKey: ["workspaces"],
-    queryFn: () => api<Workspace[]>("/api/v1/workspaces"),
+    // CHỈ nhánh ChatGPT: team Canva có trang riêng ở mục Canva, trộn vào đây là
+    // đúng thứ user không muốn ("tách riêng, không lẫn"). Khoá cache mang theo nhánh
+    // để không đè lên danh sách đầy đủ mà modal chi tiết đang dùng để tra tên.
+    queryKey: ["workspaces", "gpt"],
+    queryFn: () => api<Workspace[]>("/api/v1/workspaces?platform=gpt"),
   });
 
   const create = useMutation({

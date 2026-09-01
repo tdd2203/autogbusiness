@@ -21,8 +21,9 @@ export function SystemLanguageManager() {
   const qc = useQueryClient();
 
   const { data: workspaces, isLoading } = useQuery({
-    queryKey: ["workspaces"],
-    queryFn: () => api<Workspace[]>("/api/v1/workspaces"),
+    // Ngôn ngữ giao diện ChatGPT — team Canva không có thứ đó.
+    queryKey: ["workspaces", "gpt"],
+    queryFn: () => api<Workspace[]>("/api/v1/workspaces?platform=gpt"),
   });
 
   const save = useMutation({

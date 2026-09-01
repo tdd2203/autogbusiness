@@ -50,8 +50,9 @@ export default function InviteWorkspaceConfigModal({
     staleTime: 2 * 60_000,
   });
   const workspacesQ = useQuery({
-    queryKey: ["workspaces"],
-    queryFn: () => api<Workspace[]>("/api/v1/workspaces"),
+    // Cấu hình đích của trang Mời nhánh ChatGPT (nút ⚙️ chỉ hiện ở nhánh đó).
+    queryKey: ["workspaces", "gpt"],
+    queryFn: () => api<Workspace[]>("/api/v1/workspaces?platform=gpt"),
     staleTime: 2 * 60_000,
   });
 
