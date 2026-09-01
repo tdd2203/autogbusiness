@@ -1366,6 +1366,7 @@
   "memberDetail.badgeRemovedMovedTo": "Đã xoá · hạn theo {email}",
   "memberDetail.badgeRemovalUnconfirmed": "Đã ra lệnh xoá · chưa xác nhận",
   "memberDetail.badgeRemovalUnconfirmedMovedTo": "Chưa gỡ được · hạn đã theo {email}",
+  "memberDetail.removalStuckConfirmedNote": "Đồng bộ vừa thấy email này VẪN CÒN trên ChatGPT trong khi hạn đã theo email mới đi — nó đang chiếm thêm một suất. Lệnh gỡ đã được xếp lại tự động; gỡ xong dòng này sẽ về Đã xoá.",
   "memberDetail.removalUnconfirmedNote": "Hạn đã chuyển sang email mới nhưng lệnh gỡ email này khỏi ChatGPT chưa thành công — nó có thể vẫn đang chiếm một suất. Chạy Đồng bộ (cả hai tab) để chốt: nếu email còn đó, hệ thống tự xếp lại lệnh gỡ.",
   "memberDetail.daysOverdueLabel": "ngày quá hạn",
   "memberDetail.badgeActive": "Còn hạn",

@@ -76,6 +76,7 @@ describe("removalBadge", () => {
         "memberDetail.badgeRemovalUnconfirmed",
         "memberDetail.badgeRemovalUnconfirmedMovedTo",
         "memberDetail.removalUnconfirmedNote",
+        "memberDetail.removalStuckConfirmedNote",
         "memberDetail.removedUnconfirmedRingLabel",
         "memberLog.action.MEMBER_EMAIL_CHANGE_REMOVE_FAILED",
       ]) {

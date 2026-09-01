@@ -2236,7 +2236,13 @@ function MemberDetailView({
   // (hoặc đồng bộ vẫn thấy email ở đó) thì backend gắn `email_change_stuck_at` —
   // lúc đó email CÓ THỂ vẫn đang ăn một ghế thật, và nói "đã xoá" là nói dối đúng
   // vào lúc nguy hiểm nhất (một suất đã trả tiền đang nuôi hai ghế).
-  const removalUnconfirmed = isRemoved && !!member.email_change_stuck_at;
+  //
+  // ⚠️ KHÔNG gác thêm `isRemoved`. Cờ này xuất hiện ở HAI trạng thái, và cái nguy
+  // hiểm hơn lại là cái KHÔNG `removed`: đồng bộ thấy email vẫn trên ChatGPT thì nó
+  // HỒI SINH dòng về `active` rồi mới gắn cờ (`members/reconcile.py`). Gác bằng
+  // `isRemoved` là đúng lúc email đang ăn ghế thật thì modal câm — chỉ còn chip đỏ
+  // "hết hạn" (hạn đã bị đóng khi chuyển sang email mới) không nói gì về nguyên nhân.
+  const removalUnconfirmed = !!member.email_change_stuck_at;
   const stuckMovedTo =
     member.email_change_stuck_to ?? emailChain[emailChain.length - 1] ?? null;
 
@@ -2295,7 +2301,9 @@ function MemberDetailView({
           ? "var(--warning-accent)"
           : "var(--success-strong)";
   const ringDeg = Math.round(ringFraction * 360);
-  const ringBig = isRemoved
+  // Ca mắc kẹt cũng "—": hạn của dòng này đã theo email mới đi (backend đóng về
+  // thời điểm đổi), nên đếm "0 ngày quá hạn" là đo một cái hạn không còn của nó.
+  const ringBig = isRemoved || removalUnconfirmed
     ? "—"
     : !hasSub
       ? "∞"
@@ -2778,7 +2786,13 @@ function MemberDetailView({
                     textAlign: "left",
                   }}
                 >
-                  {t("memberDetail.removalUnconfirmedNote")}
+                  {/* Hai mức độ chắc chắn khác nhau, đừng gộp: dòng vẫn `removed`
+                      = lệnh gỡ hỏng, CHƯA ai kiểm chứng email còn hay hết. Dòng đã
+                      bị đồng bộ hồi sinh = ChatGPT VỪA trả về email này, tức nó
+                      đang ăn ghế thật, không còn là "có thể". */}
+                  {isRemoved
+                    ? t("memberDetail.removalUnconfirmedNote")
+                    : t("memberDetail.removalStuckConfirmedNote")}
                 </div>
               )}
               {hasSub && (

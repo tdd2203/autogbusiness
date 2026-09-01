@@ -1366,6 +1366,7 @@
   "memberDetail.badgeRemovedMovedTo": "已删除 · 有效期已转到 {email}",
   "memberDetail.badgeRemovalUnconfirmed": "已下达删除指令 · 尚未确认",
   "memberDetail.badgeRemovalUnconfirmedMovedTo": "尚未移除 · 有效期已转到 {email}",
+  "memberDetail.removalStuckConfirmedNote": "同步刚发现此邮箱仍在 ChatGPT 中，而有效期已转到新邮箱 — 它正额外占用一个席位。移除指令已自动重新排入；移除完成后此行将变为已删除。",
   "memberDetail.removalUnconfirmedNote": "有效期已转到新邮箱，但从 ChatGPT 移除此邮箱的指令尚未成功 — 它可能仍占用一个席位。请运行同步（两个标签页）确认：若邮箱仍在，系统会自动重新排入移除指令。",
   "memberDetail.daysOverdueLabel": "逾期天数",
   "memberDetail.badgeActive": "有效",
