@@ -1,6 +1,6 @@
 /**
- * Mảnh dùng chung cho MỌI chỗ sửa giá bán (trang "Bảng giá Canva" và modal sửa giá
- * trong "Tài khoản phụ").
+ * Mảnh dùng chung cho MỌI chỗ sửa giá bán — popup giá chung và popup giá của một
+ * tài khoản, đều mở từ trang "Tài khoản phụ".
  *
  * Gom về một chỗ vì công thức đọc/ghi bậc giá phải khớp backend
  * (`app/services/canva_price.py`): hiện một đằng mà lúc trừ ví ra một nẻo là mất
