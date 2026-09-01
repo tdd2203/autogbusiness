@@ -135,12 +135,6 @@ const ICONS = {
       <path d="M3 17.5 12 22l9-4.5" />
     </svg>
   ),
-  canvaPricing: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
-      <path d="M20.6 13.4 12 22l-9-9V3h10l7.6 7.6a2 2 0 0 1 0 2.8Z" />
-      <circle cx="7.5" cy="7.5" r="1.5" />
-    </svg>
-  ),
 };
 
 const NAV: NavEntry[] = [
@@ -177,7 +171,6 @@ const NAV: NavEntry[] = [
   { to: "/workspaces", labelKey: "nav.workspaces", icon: ICONS.workspaces, section: "org", branch: "gpt", requireSuperAdmin: true },
   // Hai mục dưới đây là "không gian làm việc" + bảng giá của riêng nhánh Canva.
   { to: "/canva/teams", labelKey: "nav.canvaTeams", icon: ICONS.canvaTeams, section: "org", branch: "canva", requireSuperAdmin: true },
-  { to: "/canva/pricing", labelKey: "nav.canvaPricing", icon: ICONS.canvaPricing, section: "org", branch: "canva", requireSuperAdmin: true },
   { to: "/users", labelKey: "nav.users", perm: "USER_MANAGE", icon: ICONS.users, section: "org" },
   // Quản trị Ví (feature 003) — chỉ super-admin: cấu hình phí/bank, cờ beta, duyệt rút.
   { to: "/admin/wallet", labelKey: "nav.walletAdmin", icon: ICONS.wallet, section: "org", requireSuperAdmin: true },
