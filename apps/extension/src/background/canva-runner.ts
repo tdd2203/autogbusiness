@@ -510,8 +510,45 @@ async function runOneInner(config: ExtensionConfig, task: QueueItem): Promise<vo
 
   await updateTask(config, task.id, {
     status: "COMPLETED",
-    result: data as Record<string, unknown>,
+    result: completionResult(request, data),
   });
+}
+
+/**
+ * Gói kết quả cho lệnh gỡ/thu hồi theo ĐÚNG hợp đồng backend đang đọc.
+ *
+ * Backend tìm `result.data.results[].ok` (thu hồi lời mời) và `result.data.verified`
+ * (gỡ thành viên) — không thấy thì nó KHÔNG dám đổi trạng thái member, còn ghi
+ * `MEMBER_INVITE_REVOKE_FAILED` vào nhật ký. Nhánh Canva trước đây trả thẳng
+ * `res.data` (không bọc `data`, không có `results`) nên lệnh chạy xong thật trên
+ * Canva mà dashboard vẫn báo thất bại và giữ member ở "chờ tham gia"
+ * (lệnh 98342b59, 1/9/2026: `{"failed": [], "removed_emails": ["wiliamdio@..."]}`).
+ *
+ * `verified` = MỌI email hỏi tới đều gỡ được. `removeOne` chỉ trả ok sau khi thấy
+ * dòng biến mất khỏi bảng, hoặc khi bảng còn người mà không có email đó — cả hai
+ * đều là bằng chứng dương, xem `tableLooksLoaded` bên content script.
+ */
+export function completionResult(
+  request: CanvaActionRequest,
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  if (request.kind !== "CANVA_REMOVE") return data;
+  const rows = Array.isArray(data.results)
+    ? (data.results as { email?: unknown; ok?: unknown }[])
+    : [];
+  const okSet = new Set(
+    rows
+      .filter((r) => r?.ok === true && typeof r.email === "string")
+      .map((r) => (r.email as string).toLowerCase()),
+  );
+  const asked = request.emails.map((e) => e.toLowerCase()).filter(Boolean);
+  return {
+    data: {
+      ...data,
+      results: asked.map((email) => ({ email, ok: okSet.has(email) })),
+      verified: asked.length > 0 && asked.every((email) => okSet.has(email)),
+    },
+  };
 }
 
 let inFlight: Promise<{ processed: number }> | null = null;

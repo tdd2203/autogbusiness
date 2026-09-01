@@ -176,9 +176,22 @@ async function removeViaRowMenu(
   return (await waitGone(email)) ? { ok: true } : { ok: false, reason: "still_in_team" };
 }
 
+/**
+ * "Không thấy dòng" chỉ được coi là ĐÃ GỠ khi bảng thật sự có người.
+ *
+ * Bảng chưa đổ xong thì `rowOf` cũng trả null, mà đó là lối DUY NHẤT kết luận "đã
+ * gỡ" mà không có cú bấm nào — đứt gánh là gỡ-giả: email vẫn ăn suất trên Canva
+ * còn dashboard đã xoá khỏi danh sách. Nhánh ChatGPT từng dính đúng lỗi này
+ * (4 email, 03→12/8/2026) nên ở đây đòi bằng chứng bảng còn sống trước.
+ */
+function tableLooksLoaded(): boolean {
+  return scrapePeopleTable().length > 0;
+}
+
 async function removeOne(email: string): Promise<{ ok: boolean; reason?: string }> {
   const row = rowOf(email);
   if (!row) {
+    if (!tableLooksLoaded()) return { ok: false, reason: "table_empty" };
     // Không còn trong đội = kết quả mong muốn. Backend coi như đã gỡ.
     return { ok: true, reason: "not_in_team" };
   }
@@ -188,7 +201,10 @@ async function removeOne(email: string): Promise<{ ok: boolean; reason?: string 
 
   // Dòng có thể đã đổi sau lượt thử trên → đọc lại trước khi đi lối dự phòng.
   const again = rowOf(email);
-  if (!again) return { ok: true, reason: "not_in_team" };
+  if (!again) {
+    if (!tableLooksLoaded()) return { ok: false, reason: "table_empty" };
+    return { ok: true, reason: "not_in_team" };
+  }
   const fallback = await removeViaRowMenu(email, again);
   return fallback.ok
     ? fallback
@@ -208,6 +224,11 @@ export async function executeCanvaRemove(
   const emails = msg.emails.map((e) => e.toLowerCase()).filter(Boolean);
   const removed: string[] = [];
   const failed: { email: string; reason: string }[] = [];
+  // Kết quả TỪNG EMAIL theo đúng hợp đồng chốt lệnh dùng chung với nhánh ChatGPT:
+  // backend đọc `data.results[].ok` để chỉ đánh dấu email THẬT SỰ gỡ được, phần còn
+  // lại giữ nguyên trạng. Thiếu mảng này là backend không thấy bằng chứng nào ⇒ coi
+  // như hỏng cả mẻ (user 2026-09-01: thu hồi xong trên Canva mà nhật ký báo lỗi).
+  const results: { email: string; ok: boolean; reason?: string }[] = [];
 
   for (const email of emails) {
     // Nhịp giữ service worker sống + cho dashboard biết đang tới email nào.
@@ -220,6 +241,7 @@ export async function executeCanvaRemove(
       true,
     );
     const r = await removeOne(email);
+    results.push({ email, ok: r.ok, reason: r.reason });
     if (r.ok) removed.push(email);
     else failed.push({ email, reason: r.reason ?? "unknown" });
     await sleep(400);
@@ -234,9 +256,9 @@ export async function executeCanvaRemove(
         `lối menu vai trò đều không dựng được. Lý do từng email: ${failed
           .map((f) => `${f.email}=${f.reason}`)
           .join(", ")}`,
-      data: { failed },
+      data: { failed, results },
     };
   }
 
-  return { ok: true, data: { removed_emails: removed, failed } };
+  return { ok: true, data: { removed_emails: removed, failed, results } };
 }
