@@ -15,7 +15,8 @@
  */
 
 import type { CanvaActionResponse, CanvaScrapedMember } from "../../shared/messages";
-import { waitForCountStable } from "../human";
+import { sleep, waitForCountStable } from "../human";
+import { reportProgress } from "../progress";
 import { emailIn, norm, numberIn, onPeoplePage, visible } from "./dom";
 
 // Dấu hiệu một dòng là LỜI MỜI ĐANG CHỜ chứ không phải thành viên đã tham gia.
@@ -123,7 +124,26 @@ export function headerMemberCount(): number | null {
   return heading ? numberIn(heading.textContent) : null;
 }
 
-export async function executeCanvaSync(): Promise<CanvaActionResponse> {
+export async function executeCanvaSync(taskId?: string): Promise<CanvaActionResponse> {
+  // Nhịp báo tiến độ vừa cho dashboard xem, vừa GIỮ SERVICE WORKER SỐNG trong lúc
+  // chờ Canva render (xem chú thích dài ở invite.ts — lệnh chết im vì SW ngủ).
+  const beat = setInterval(() => {
+    if (taskId) {
+      void reportProgress(
+        taskId,
+        { phase: "scanning", message: `Đang đọc bảng thành viên (${memberRows().length} dòng)` },
+        true,
+      );
+    }
+  }, 5000);
+  try {
+    return await scanAndBuild(taskId);
+  } finally {
+    clearInterval(beat);
+  }
+}
+
+async function scanAndBuild(taskId?: string): Promise<CanvaActionResponse> {
   if (!onPeoplePage()) {
     return {
       ok: false,
@@ -140,6 +160,14 @@ export async function executeCanvaSync(): Promise<CanvaActionResponse> {
   });
 
   const members = scrapePeopleTable();
+  if (taskId) {
+    await reportProgress(
+      taskId,
+      { phase: "scanned", message: `Đọc được ${members.length} dòng` },
+      true,
+    );
+  }
+  await sleep(0);
   if (members.length === 0) {
     // Đội rỗng là chuyện không xảy ra (ít nhất có chủ đội) → nhiều khả năng chưa
     // đăng nhập hoặc trang đổi cấu trúc. Báo lỗi thay vì để backend gỡ sạch người.

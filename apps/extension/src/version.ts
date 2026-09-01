@@ -25,7 +25,7 @@
  * chỉ hiện 8 mục đầu, phần còn lại nằm sau nút "Xem thêm".
  */
 
-export const VERSION = "0.15.1";
+export const VERSION = "0.15.2";
 
 export type ChangelogEntry = {
   version: string;
@@ -44,6 +44,13 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.15.2",
+    date: "2026-09-01",
+    kind: "fix",
+    title: "Mời Canva",
+    note: "Lệnh mời Canva không còn đứng im hay chết sớm khi trang chưa vẽ xong.",
+  },
   {
     version: "0.15.1",
     date: "2026-09-01",

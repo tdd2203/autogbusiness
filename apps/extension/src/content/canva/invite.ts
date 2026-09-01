@@ -24,6 +24,7 @@
 
 import type { CanvaActionRequest, CanvaActionResponse, CanvaRole } from "../../shared/messages";
 import { humanClick, humanType, sleep } from "../human";
+import { reportProgress } from "../progress";
 import {
   clickableByAnyText,
   emailIn,
@@ -83,14 +84,36 @@ function fail(
   return { ok: false, error_code: code, error_message: message, data };
 }
 
-/** Mở hộp "Mời mọi người vào đội". Trả hộp đang mở, null nếu không mở được. */
+/**
+ * Mở hộp "Mời mọi người vào đội". Trả hộp đang mở, null nếu không mở được.
+ *
+ * PHẢI CHỜ nút hiện ra chứ không tìm một phát rồi bỏ cuộc. Content script nạp ở
+ * `document_idle` nên trả lời PING xong từ rất lâu trước khi ứng dụng React của
+ * Canva vẽ xong bảng thành viên. Ca thật 31/8/2026 (lệnh 3effabd4): lệnh chết
+ * UI_ELEMENT_NOT_FOUND đúng 1,1 giây sau khi nhận — lúc đó trang chưa vẽ nút nào.
+ */
 async function openInviteDialog(): Promise<HTMLElement | null> {
   const existing = inviteDialogOpen();
   if (existing) return existing;
-  const opener = clickableByAnyText(OPEN_INVITE_TEXTS);
+  const opener = await waitUntil(() => clickableByAnyText(OPEN_INVITE_TEXTS), 25000);
   if (!opener) return null;
   await humanClick(opener);
   return waitUntil(inviteDialogOpen, 15000);
+}
+
+/** Nhãn mọi nút đang hiện — đính vào thông báo lỗi để biết Canva đã đổi chữ thành gì.
+ *
+ * Không có nó thì mỗi lần Canva đổi nhãn nút, lệnh chỉ báo "không thấy nút" và phải
+ * ngồi đoán; có nó là đọc nhật ký ra ngay chữ mới để bổ sung vào OPEN_INVITE_TEXTS. */
+function visibleButtonLabels(): string[] {
+  const labels = new Set<string>();
+  for (const el of document.querySelectorAll<HTMLElement>('button, [role="button"]')) {
+    if (labels.size >= 25) break;
+    if (!visible(el)) continue;
+    const label = (el.textContent ?? "").trim().replace(/\s+/g, " ");
+    if (label && label.length <= 40) labels.add(label);
+  }
+  return [...labels];
 }
 
 /** "Đội của bạn có N người." / "Your team has N people." → N.
@@ -134,7 +157,10 @@ async function pickRole(dialog: HTMLElement, index: number, role: CanvaRole): Pr
  * Best-effort: thiếu link KHÔNG làm hỏng lệnh mời đã gửi thành công — chỉ là đại lý
  * phải vào Canva copy tay. Đừng đánh đổi một lệnh mời đã trả tiền lấy một cái link.
  */
-async function collectInviteLinks(dialog: HTMLElement): Promise<Record<string, string>> {
+async function collectInviteLinks(
+  dialog: HTMLElement,
+  step: (phase: string, message: string) => Promise<void>,
+): Promise<Record<string, string>> {
   const links: Record<string, string> = {};
   const buttons = [...dialog.querySelectorAll<HTMLElement>("button, [role='button']")].filter(
     (el) => visible(el) && COPY_LINK_TEXTS.some((t) => norm(el.textContent).includes(norm(t))),
@@ -153,6 +179,7 @@ async function collectInviteLinks(dialog: HTMLElement): Promise<Record<string, s
     await humanClick(btn);
     const copied = await waitForCopiedText(4000);
     if (copied && /^https?:\/\//i.test(copied)) links[email] = copied;
+    await step("copy_links", `Đã lấy liên kết cho ${Object.keys(links).length} email`);
     await sleep(150);
   }
   return links;
@@ -171,15 +198,28 @@ export async function executeCanvaInvite(
 
   installCopyCapture();
 
+  // BÁO TIẾN ĐỘ Ở TỪNG CHẶNG — không chỉ để nhìn cho vui. Mỗi tin nhắn gửi về
+  // background là một lần chạm vào service worker, giữ nó khỏi bị Chrome cho ngủ
+  // giữa lượt gọi dài. Thiếu nhịp này thì lệnh mời Canva chạy xong mà KHÔNG AI BÁO:
+  // service worker chết, backend đợi đủ 8 phút rồi tự đánh hỏng (ca thật
+  // wiliamdio@ 2026-09-01, y hệt lỗi nhánh ChatGPT đã chữa 26/8).
+  const step = (phase: string, message: string) =>
+    reportProgress(msg.taskId, { phase, message }, true);
+
+  await step("open_dialog", "Đang mở hộp mời trên Canva…");
   const dialog = await openInviteDialog();
   if (!dialog) {
+    const labels = visibleButtonLabels();
     return fail(
       "UI_ELEMENT_NOT_FOUND",
-      'Không mở được hộp mời (không thấy nút "Mời thành viên" / "Mời mọi người").',
+      'Không mở được hộp mời (không thấy nút "Mời thành viên" / "Mời mọi người"). ' +
+        `Nút đang hiện: ${labels.length ? labels.join(" | ") : "(trang không có nút nào)"}.`,
+      { visible_buttons: labels },
     );
   }
 
   const teamSize = teamSizeIn(dialog);
+  await step("dialog_open", `Đã mở hộp mời${teamSize ? ` (đội đang có ${teamSize} người)` : ""}`);
 
   // Nhập từng email: gõ xong ô này Canva mới hiện ô trống kế tiếp.
   for (let i = 0; i < entries.length; i += 1) {
@@ -192,6 +232,7 @@ export async function executeCanvaInvite(
     }
     await humanType(input, entries[i].email);
     await pickRole(dialog, i, entries[i].role);
+    await step("typing", `Đã nhập ${i + 1}/${entries.length} email`);
     await sleep(200);
   }
 
@@ -203,6 +244,7 @@ export async function executeCanvaInvite(
     return fail("UI_ELEMENT_NOT_FOUND", 'Không bấm được nút "Xác nhận và mời".');
   }
   await humanClick(submit);
+  await step("submitted", "Đã bấm gửi, đang chờ Canva xác nhận…");
 
   // Hộp kết quả: "Lời mời đã được gửi!…" — cũng là chỗ lấy liên kết duy nhất.
   // "Lời mời đã được gửi! …liên kết duy nhất" / "Invite sent! Follow up with a unique
@@ -223,12 +265,14 @@ export async function executeCanvaInvite(
 
   let inviteLinks: Record<string, string> = {};
   if (sentDialog) {
-    inviteLinks = await collectInviteLinks(sentDialog);
+    await step("copy_links", "Đang lấy liên kết mời của từng email…");
+    inviteLinks = await collectInviteLinks(sentDialog, step);
     const done = clickableByAnyText(DONE_TEXTS, sentDialog);
     if (done) await humanClick(done);
   }
 
   // XÁC MINH ở danh sách: email phải thành dòng "Đã mời" (hoặc đã là thành viên).
+  await step("verify", "Đang đọc lại danh sách để xác minh…");
   const wanted = entries.map((e) => e.email.toLowerCase());
   const seen = await waitUntil(() => {
     const rows = scrapePeopleTable();

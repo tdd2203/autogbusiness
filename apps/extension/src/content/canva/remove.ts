@@ -21,6 +21,7 @@
 
 import type { CanvaActionRequest, CanvaActionResponse } from "../../shared/messages";
 import { humanClick, sleep } from "../human";
+import { reportProgress } from "../progress";
 import {
   clickableByAnyText,
   emailIn,
@@ -151,6 +152,15 @@ export async function executeCanvaRemove(
   const failed: { email: string; reason: string }[] = [];
 
   for (const email of emails) {
+    // Nhịp giữ service worker sống + cho dashboard biết đang tới email nào.
+    await reportProgress(
+      msg.taskId,
+      {
+        phase: "removing",
+        message: `Đang gỡ ${removed.length + failed.length + 1}/${emails.length}: ${email}`,
+      },
+      true,
+    );
     const r = await removeOne(email);
     if (r.ok) removed.push(email);
     else failed.push({ email, reason: r.reason ?? "unknown" });

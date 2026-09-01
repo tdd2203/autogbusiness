@@ -21,14 +21,28 @@ import {
   bulkUpsertMembers,
   pickNextTaskSingle,
   postCanvaInviteLinks,
+  updateProgress,
   updateTask,
 } from "../shared/api";
 import { getCanvaConfig } from "../shared/storage";
 
 const PEOPLE_URL = "https://www.canva.com/settings/people";
+const PEOPLE_URL_RE = /canva\.com\/settings\/(people|members)/i;
 
-/** Chờ tab nạp xong (hoặc hết giờ) rồi trả lại thông tin tab. */
-async function waitTabLoaded(tabId: number, timeoutMs = 30000): Promise<chrome.tabs.Tab | null> {
+/**
+ * Chờ tab nạp xong (hoặc hết giờ) rồi trả lại thông tin tab.
+ *
+ * `expectUrl` = vừa ra lệnh điều hướng: phải chờ tab ĐỔI HẲN sang địa chỉ mới, không
+ * chỉ chờ `status === "complete"`. Ngay sau `tabs.update`, Chrome vẫn báo trang CŨ
+ * đang "complete" → hàm này trả về tức thì, rồi background ping vào content script
+ * đang bị gỡ và nhận đủ 20 lượt im lặng (ca thật 31/8/2026: lệnh 53e28888 chết
+ * TIMEOUT sau đúng 10,2 giây — vừa bằng 20 lượt ping).
+ */
+async function waitTabLoaded(
+  tabId: number,
+  timeoutMs = 30000,
+  expectUrl: RegExp | null = null,
+): Promise<chrome.tabs.Tab | null> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     let tab: chrome.tabs.Tab | undefined;
@@ -37,16 +51,25 @@ async function waitTabLoaded(tabId: number, timeoutMs = 30000): Promise<chrome.t
     } catch {
       return null; // tab bị đóng giữa chừng
     }
-    if (tab.status === "complete") return tab;
+    const urlOk = !expectUrl || expectUrl.test(tab.url ?? "");
+    if (tab.status === "complete" && urlOk) return tab;
     if (Date.now() >= deadline) return tab ?? null;
     await new Promise((r) => setTimeout(r, 300));
   }
 }
 
-/** Tab canva.com đang mở (nếu có), ưu tiên tab đang ở đúng trang thành viên. */
-async function findCanvaTab(): Promise<chrome.tabs.Tab | null> {
-  const tabs = await chrome.tabs.query({ url: ["https://www.canva.com/*", "https://canva.com/*"] });
-  const onPeople = tabs.find((t) => /\/settings\/(people|members)/.test(t.url ?? ""));
+/**
+ * Tab canva.com đang ở TRANG CÀI ĐẶT (nếu có), ưu tiên tab đúng trang thành viên.
+ *
+ * Chỉ nhận tab `/settings/`: bản cũ lấy bừa `tabs[0]` — bất kỳ tab canva.com nào —
+ * rồi điều hướng nó sang trang thành viên, tức là cướp luôn tab thiết kế người dùng
+ * đang mở dở. Không có tab cài đặt thì mở tab nền mới, rẻ hơn nhiều so với việc đó.
+ */
+async function findCanvaSettingsTab(): Promise<chrome.tabs.Tab | null> {
+  const tabs = await chrome.tabs.query({
+    url: ["https://www.canva.com/settings/*", "https://canva.com/settings/*"],
+  });
+  const onPeople = tabs.find((t) => PEOPLE_URL_RE.test(t.url ?? ""));
   return onPeople ?? tabs[0] ?? null;
 }
 
@@ -59,11 +82,14 @@ async function findCanvaTab(): Promise<chrome.tabs.Tab | null> {
 async function ensurePeopleTab(): Promise<
   { tabId: number } | { error: CanvaActionResponse & { ok: false } }
 > {
-  let tab = await findCanvaTab();
+  let tab = await findCanvaSettingsTab();
+  let navigating = false;
   if (!tab?.id) {
     tab = await chrome.tabs.create({ url: PEOPLE_URL, active: false });
-  } else if (!/\/settings\/(people|members)/.test(tab.url ?? "")) {
+    navigating = true;
+  } else if (!PEOPLE_URL_RE.test(tab.url ?? "")) {
     await chrome.tabs.update(tab.id, { url: PEOPLE_URL });
+    navigating = true;
   }
   if (!tab?.id) {
     return {
@@ -74,7 +100,7 @@ async function ensurePeopleTab(): Promise<
       },
     };
   }
-  const loaded = await waitTabLoaded(tab.id);
+  const loaded = await waitTabLoaded(tab.id, 30000, navigating ? PEOPLE_URL_RE : null);
   if (!loaded?.url) {
     return {
       error: { ok: false, error_code: "TIMEOUT", error_message: "Tab Canva không nạp xong." },
@@ -91,8 +117,9 @@ async function ensurePeopleTab(): Promise<
     };
   }
 
-  // Content script sẵn sàng chưa (trang vừa nạp xong vẫn cần vài trăm ms).
-  for (let i = 0; i < 20; i += 1) {
+  // Content script sẵn sàng chưa (trang vừa nạp xong vẫn cần vài trăm ms). 20 giây:
+  // máy chậm + mạng chậm vẫn kịp, mà tab chết thật thì cũng chỉ tốn thêm 10 giây.
+  for (let i = 0; i < 40; i += 1) {
     const pong = await sendToTab(tab.id, { kind: "CANVA_PING" });
     if (pong?.ok) return { tabId: tab.id };
     await new Promise((r) => setTimeout(r, 500));
@@ -130,7 +157,52 @@ function emailsFromPayload(payload: Record<string, unknown>): string[] {
   return typeof one === "string" ? [one] : [];
 }
 
+/** Bao nhiêu lâu báo nhịp một lần trong lúc content script đang thao tác. */
+const HEARTBEAT_MS = 20000;
+
+/**
+ * Bơm nhịp tiến độ suốt lượt chạy, trả về hàm tắt nhịp.
+ *
+ * Hai việc trong một. (1) `stuck_verdict` bên API đếm im lặng TỪ TICK GẦN NHẤT chứ
+ * không từ lúc nhận lệnh, nên lệnh đang chạy thật không bị dọn oan giữa chừng.
+ * (2) Mỗi tick là một lượt gọi mạng của extension — đủ để Chrome không coi service
+ * worker là đang rảnh rồi giết nó trong lúc nó đứng chờ tab trả lời.
+ *
+ * Nhánh Canva trước đây KHÔNG báo nhịp nào (khác hẳn nhánh ChatGPT): lệnh mời
+ * wiliamdio ngày 1/9/2026 nằm im ở IN_PROGRESS, không lỗi, không kết quả, và kéo cả
+ * hàng đợi Canva đứng theo vì hàng đợi chạy tuần tự một lệnh một lúc.
+ */
+function startHeartbeat(config: ExtensionConfig, taskId: string, phase: string): () => void {
+  let stopped = false;
+  void (async () => {
+    for (let beat = 1; !stopped; beat += 1) {
+      await new Promise((r) => setTimeout(r, HEARTBEAT_MS));
+      if (stopped) break;
+      try {
+        await updateProgress(config, taskId, {
+          phase,
+          message: `Đang thao tác trên trang Canva (${(beat * HEARTBEAT_MS) / 1000}s)`,
+        });
+      } catch {
+        /* rớt một nhịp vì mạng — nhịp sau thử lại, không được làm hỏng lượt chạy */
+      }
+    }
+  })();
+  return () => {
+    stopped = true;
+  };
+}
+
 async function runOne(config: ExtensionConfig, task: QueueItem): Promise<void> {
+  const stopHeartbeat = startHeartbeat(config, task.id, task.type.toLowerCase());
+  try {
+    await runOneInner(config, task);
+  } finally {
+    stopHeartbeat();
+  }
+}
+
+async function runOneInner(config: ExtensionConfig, task: QueueItem): Promise<void> {
   const payload = (task.payload ?? {}) as Record<string, unknown>;
   const ready = await ensurePeopleTab();
   if ("error" in ready) {
@@ -155,6 +227,15 @@ async function runOne(config: ExtensionConfig, task: QueueItem): Promise<void> {
       break;
     }
     case "SYNC_DATA":
+    // SYNC_MEMBER / SYNC_MEMBERS_BATCH: backend tự sinh sau lệnh mời để tra lại vài
+    // email cụ thể ("đã vào đội chưa"). Bên ChatGPT phải lọc từng email vì danh sách
+    // dài và chia trang; trang Canva chỉ có tối đa 50 người trên MỘT trang nên quét
+    // trọn bảng đã trả lời luôn câu hỏi đó — dùng chung kịch bản đồng bộ.
+    //
+    // Không nhận hai loại này thì mỗi lần mời xong lại đẻ một lệnh FAILED
+    // "chưa hỗ trợ" nằm chình ình trong nhật ký (ca thật 2026-09-01).
+    case "SYNC_MEMBER":
+    case "SYNC_MEMBERS_BATCH":
       request = { kind: "CANVA_SYNC", taskId: task.id };
       break;
     case "REMOVE_MEMBER":
@@ -194,7 +275,8 @@ async function runOne(config: ExtensionConfig, task: QueueItem): Promise<void> {
 
   // ── Thành công: đẩy dữ liệu quét được rồi mới chốt lệnh ────────────────────
   const data = res.data ?? {};
-  if (task.type === "SYNC_DATA" && task.workspace_id && Array.isArray(data.members)) {
+  const SCRAPE_TYPES = ["SYNC_DATA", "SYNC_MEMBER", "SYNC_MEMBERS_BATCH"];
+  if (SCRAPE_TYPES.includes(task.type) && task.workspace_id && Array.isArray(data.members)) {
     const members = data.members.map((m) => ({
       email: m.email,
       name: m.name ?? null,

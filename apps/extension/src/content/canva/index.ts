@@ -53,7 +53,7 @@ async function dispatch(msg: CanvaActionRequest): Promise<CanvaActionResponse> {
     case "CANVA_PING":
       return { ok: true, data: { url: location.href, loadId: LOAD_ID } };
     case "CANVA_SYNC":
-      return executeCanvaSync();
+      return executeCanvaSync(msg.taskId);
     case "CANVA_INVITE":
       return executeCanvaInvite(msg);
     case "CANVA_REMOVE":
