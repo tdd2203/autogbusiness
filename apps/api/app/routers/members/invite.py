@@ -823,7 +823,9 @@ def _assert_seat_available(
     NHÁNH CANVA CHẶN CỨNG ở đúng `seat_total` (50 suất của gói): nới +50% chỉ hợp lý
     khi còn MUA THÊM được suất — Canva thì không, mời quá là Canva từ chối tại chỗ và
     lệnh chết giữa chừng sau khi đã trừ tiền. Super-admin cũng KHÔNG được bỏ qua ở
-    nhánh này vì không có đường nào mở thêm suất.
+    nhánh này vì không có đường nào mở thêm suất. 50 suất ấy ĐÃ KỂ CẢ chủ đội, nên
+    trần phải trừ suất giữ chỗ của họ khi bảng member chưa quét được chủ đội
+    (`seats.owner_reserve`) — thiếu chỗ đó là cho mời tràn đúng một người.
     """
     if workspace.seat_total is None:
         return
@@ -832,7 +834,7 @@ def _assert_seat_available(
         return
     effective_used = seats.active_used(db, workspace.id)
     if is_canva:
-        seat_cap = int(workspace.seat_total)
+        seat_cap = max(int(workspace.seat_total) - seats.owner_reserve(db, workspace), 0)
         if effective_used + additional > seat_cap:
             free = max(seat_cap - effective_used, 0)
             raise HTTPException(

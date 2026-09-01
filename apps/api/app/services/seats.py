@@ -18,6 +18,10 @@ Hai con số, hai nguồn KHÁC nhau:
 `seat_used` đếm member CHƯA bị gỡ = `active` + `pending`: lời mời đang chờ cũng nợ
 một suất vì người ta bấm nhận lúc nào cũng được. Riêng guard chặn mời
 (`active_used`) chỉ đếm `active` — xem docstring hàm đó.
+
+Nhánh Canva có thêm SUẤT GIỮ CHỖ CHO CHỦ ĐỘI: 50 suất của gói đã kể cả chủ đội, mà
+chủ đội chỉ vào bảng `members` sau khi CANVA_SYNC quét trang People. Xem
+`owner_reserve_map`.
 """
 
 from uuid import UUID
@@ -25,7 +29,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Member, Workspace
+from app.models import PLATFORM_CANVA, Member, Workspace
 
 # Trần overcommit khi mời: cho phép vượt `seat_total` tới +50% rồi mới chặn, vì
 # `seat_total` là số scrape có thể cũ — chặn đúng bằng nó sẽ khoá oan lúc admin vừa
@@ -97,6 +101,41 @@ def active_used(db: Session, workspace_id: UUID) -> int:
     )
 
 
+def owner_reserve_map(db: Session, workspaces: list[Workspace]) -> dict[UUID, int]:
+    """workspace_id -> suất phải GIỮ CHỖ cho chủ đội Canva (1 hoặc 0).
+
+    Gói Canva có 50 suất và chủ đội ngồi một trong số đó (user chốt 2026-09-01).
+    Chủ đội chỉ vào bảng `members` sau khi CANVA_SYNC quét được trang People —
+    trước lần sync đầu, hay khi sync hỏng, không giữ chỗ thì dashboard báo thừa
+    một suất và guard mời cho tràn thêm một người: Canva từ chối tại chỗ sau khi
+    đã trừ tiền khách.
+
+    Trả 0 khi đã có dòng member vai trò `owner` chưa bị gỡ — lúc đó họ nằm sẵn
+    trong `seat_used`, cộng thêm nữa là đếm hai lần. Nhánh GPT luôn 0: tổng suất
+    bên đó scrape từ billing, chủ đội đã nằm trong danh sách quét về.
+    """
+    canva_ids = [ws.id for ws in workspaces if ws.platform == PLATFORM_CANVA]
+    if not canva_ids:
+        return {}
+    have_owner = set(
+        db.execute(
+            select(Member.workspace_id)
+            .where(
+                Member.workspace_id.in_(canva_ids),
+                Member.status != "removed",
+                Member.chatgpt_role == "owner",
+            )
+            .distinct()
+        ).scalars()
+    )
+    return {wid: (0 if wid in have_owner else 1) for wid in canva_ids}
+
+
+def owner_reserve(db: Session, workspace: Workspace) -> int:
+    """Bản một workspace của `owner_reserve_map`."""
+    return owner_reserve_map(db, [workspace]).get(workspace.id, 0)
+
+
 def seat_left(seat_total: int | None, used: int) -> int | None:
     """Suất còn TRỐNG để hiển thị. `None` khi workspace chưa từng sync `seat_total`
     (chưa biết tổng thì không được đoán bừa là 0 — người dùng sẽ tưởng hết suất).
@@ -107,11 +146,17 @@ def seat_left(seat_total: int | None, used: int) -> int | None:
 
 
 def seat_snapshot(db: Session, workspaces: list[Workspace]) -> list[dict]:
-    """Ảnh chụp suất của nhiều workspace cho endpoint/hiển thị — một truy vấn gộp."""
+    """Ảnh chụp suất của nhiều workspace cho endpoint/hiển thị — hai truy vấn gộp.
+
+    `seat_used` trả về ĐÃ CỘNG suất giữ chỗ của chủ đội Canva, nên có thể lớn hơn số
+    dòng trong bảng thành viên đúng 1 — chủ đội là người chiếm suất thật nhưng chưa
+    chắc đã nằm trong danh sách quét về.
+    """
     used = seat_used_map(db, [ws.id for ws in workspaces])
+    reserve = owner_reserve_map(db, workspaces)
     out: list[dict] = []
     for ws in workspaces:
-        u = used.get(ws.id, 0)
+        u = used.get(ws.id, 0) + reserve.get(ws.id, 0)
         out.append(
             {
                 "workspace_id": str(ws.id),

@@ -23,9 +23,11 @@ export type WorkspaceSeats = {
   /** Nhánh sản phẩm — trang mời dùng chung cho cả hai nhánh nên lọc đích theo đây. */
   platform: Platform;
   /** Tổng suất. Nhánh GPT: scrape qua SYNC_BILLING, null = chưa từng sync. Nhánh
-   *  Canva: 50 suất có sẵn của gói, đặt lúc tạo team. */
+   *  Canva: 50 suất có sẵn của gói, đặt lúc tạo team — ĐÃ KỂ CẢ chủ đội. */
   seat_total: number | null;
-  /** Đang chiếm = thành viên + lời mời đang chờ, đếm lại trong DB mỗi lần đọc. */
+  /** Đang chiếm = thành viên + lời mời đang chờ, đếm lại trong DB mỗi lần đọc.
+   *  Nhánh Canva cộng thêm suất giữ chỗ cho chủ đội khi bảng thành viên chưa quét
+   *  được họ, nên có thể lớn hơn số dòng trong danh sách đúng 1. */
   seat_used: number;
   /** Còn trống. null = CHƯA BIẾT (chưa sync tổng) — khác hẳn 0 = hết suất. */
   seat_left: number | null;

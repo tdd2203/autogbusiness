@@ -101,8 +101,11 @@ def _apply_effective_seat_used(db: Session, workspaces: list[Workspace]) -> None
     if not workspaces:
         return
     counts = seats.seat_used_map(db, [ws.id for ws in workspaces])
+    # Team Canva: cộng suất giữ chỗ cho chủ đội khi bảng member chưa có họ — 50 suất
+    # của gói đã KỂ CẢ chủ đội (xem `seats.owner_reserve_map`).
+    reserve = seats.owner_reserve_map(db, workspaces)
     for ws in workspaces:
-        ws.seat_used = counts.get(ws.id, 0)
+        ws.seat_used = counts.get(ws.id, 0) + reserve.get(ws.id, 0)
 
 
 @router.get("/seats", response_model=list[WorkspaceSeatsOut])

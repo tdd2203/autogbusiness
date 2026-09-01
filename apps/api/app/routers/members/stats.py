@@ -49,7 +49,7 @@ def member_stats(
     own_count = _count(
         Member.status != "removed", Member.invited_by_user_id == user.id
     )
-    used = seats.seat_used(db, workspace_id)
+    used = seats.seat_used(db, workspace_id) + seats.owner_reserve(db, ws)
     return WorkspaceMemberStats(
         total=active + pending,
         active=active,

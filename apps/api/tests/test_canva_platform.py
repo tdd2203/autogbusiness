@@ -76,9 +76,10 @@ def test_anh_chup_suat_mang_theo_nhanh(
     assert [r["workspace_id"] for r in rows] == [canva["id"]]
     assert rows[0]["platform"] == "canva"
     assert rows[0]["seat_total"] == 50
-    # Team mới chưa có ai → còn trống đúng 50 suất.
-    assert rows[0]["seat_used"] == 0
-    assert rows[0]["seat_left"] == 50
+    # 50 suất của gói ĐÃ KỂ CẢ chủ đội. Team mới chưa quét được ai nhưng chủ đội vẫn
+    # ngồi đó → giữ chỗ 1 suất, còn mời được 49.
+    assert rows[0]["seat_used"] == 1
+    assert rows[0]["seat_left"] == 49
 
     resp_all = client.get("/api/v1/workspaces/seats", headers=auth_header)
     assert len(resp_all.json()) == 2
@@ -293,3 +294,59 @@ def test_khoa_api_cua_team_khac_khong_ghi_duoc_lien_ket(
         headers={"X-API-KEY": ws_b["extension_api_key"]},
     )
     assert r.status_code == 403, r.text
+
+
+def test_suat_giu_cho_chu_doi_canva(
+    client: TestClient, auth_header: dict[str, str]
+) -> None:
+    """50 suất của gói Canva đã kể cả chủ đội (user chốt 2026-09-01).
+
+    Chủ đội chỉ vào bảng thành viên sau khi CANVA_SYNC quét được trang People. Trước
+    lúc đó phải giữ chỗ cho họ, còn sau đó thì thôi — cộng cả hai là đếm hai lần và
+    dashboard báo thiếu một suất.
+    """
+    ws = _create(client, auth_header, name="Canva chủ đội", platform="canva")
+    key = {"X-API-KEY": ws["extension_api_key"]}
+
+    def snapshot() -> dict:
+        rows = client.get(
+            "/api/v1/workspaces/seats?platform=canva", headers=auth_header
+        ).json()
+        return next(r for r in rows if r["workspace_id"] == ws["id"])
+
+    # Chưa quét được ai: giữ chỗ chủ đội → 1/50.
+    assert snapshot()["seat_used"] == 1
+
+    # Hai khách được mời, chủ đội vẫn chưa quét về → 3/50.
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-upsert",
+        json={"members": [
+            {"email": "kh1@example.com", "chatgpt_role": "member", "status": "pending"},
+            {"email": "kh2@example.com", "chatgpt_role": "member", "status": "pending"},
+        ]},
+        headers=key,
+    )
+    assert r.status_code in (200, 201), r.text
+    assert snapshot()["seat_used"] == 3
+    assert snapshot()["seat_left"] == 47
+
+    # Sync quét được chủ đội → hết giữ chỗ, vẫn đúng 3 chứ không nhảy lên 4.
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-upsert",
+        json={"members": [
+            {"email": "chudoi@example.com", "chatgpt_role": "owner", "status": "active"},
+            {"email": "kh1@example.com", "chatgpt_role": "member", "status": "pending"},
+            {"email": "kh2@example.com", "chatgpt_role": "member", "status": "pending"},
+        ]},
+        headers=key,
+    )
+    assert r.status_code in (200, 201), r.text
+    assert snapshot()["seat_used"] == 3
+    assert snapshot()["seat_left"] == 47
+
+    # Thống kê thành viên đọc cùng con số, không được nói khác trang mời.
+    stats = client.get(
+        f"/api/v1/workspaces/{ws['id']}/members/stats", headers=auth_header
+    ).json()
+    assert stats["seat_used"] == 3
+    assert stats["seat_left"] == 47
