@@ -370,7 +370,15 @@ export type CanvaActionRequest =
       entries: { email: string; role: CanvaRole }[];
     }
   | { kind: "CANVA_SYNC"; taskId: string }
-  | { kind: "CANVA_REMOVE"; taskId: string; emails: string[] };
+  | { kind: "CANVA_REMOVE"; taskId: string; emails: string[] }
+  | { kind: "CANVA_RESEND_INVITE"; taskId: string; email: string }
+  | {
+      kind: "CANVA_CHANGE_ROLE";
+      taskId: string;
+      email: string;
+      /** Chỉ hai vai trò này — Canva còn "Team admin" nhưng dashboard không cho đặt. */
+      role: CanvaRole;
+    };
 
 export type CanvaActionResponse =
   | {

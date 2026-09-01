@@ -1,41 +1,33 @@
 /**
  * CANVA_REMOVE — gỡ thành viên (hoặc thu hồi lời mời đang chờ) khỏi team Canva.
  *
- * MENU THẬT (ảnh user 2026-09-01, giao diện tiếng Anh): bấm dấu "⌄" cạnh vai trò của
- * dòng sẽ mở một menu hai phần —
+ * LỐI CHÍNH = TICK Ô VUÔNG RỒI BẤM THÙNG RÁC (user mô tả kèm ảnh 2026-09-01):
  *
- *   Roles    → Team admin · Team brand designer · Team member   (đổi vai trò)
- *   Actions  → "Remove from team" — "Remove this member from your team, with the
- *              option to also transfer their designs."
+ *   1. Tick ô vuông nhỏ đầu dòng của người cần gỡ.
+ *   2. Thanh thao tác hiện ra ở đáy trang: "1 of 4 selected" kèm bốn nút chỉ có hình
+ *      — "Change roles", "Resend invite (1)", thêm vào nhóm, và "Remove users".
+ *   3. Bấm "Remove users".
  *
- * Tức mục gỡ nằm CHUNG menu với mục đổi vai trò. Bấm trượt một dòng là ĐỔI VAI TRÒ
- * người ta chứ không phải gỡ, nên `clickableByAnyText` chỉ nhận đúng chữ trong
- * `REMOVE_TEXTS`, không đoán theo vị trí.
+ * Lối này chạy cho CẢ thành viên thật lẫn lời mời đang chờ — dòng lời mời không có
+ * mục gỡ trong menu vai trò, nên trước đây thu hồi lời mời là bế tắc.
  *
- * CHƯA CÓ ẢNH: menu của dòng LỜI MỜI ĐANG CHỜ (nút thu hồi) và hộp xác nhận sau khi
- * bấm "Remove from team" (Canva nói có tuỳ chọn chuyển lại thiết kế). Với hai chỗ đó
- * file này vẫn đi lối AN TOÀN: thử các chữ hay gặp, không thấy thì DỪNG với lỗi rõ
- * ràng chứ không bấm mò — báo "chưa làm được, gỡ tay giúp" rẻ hơn nhiều so với xoá
- * nhầm người hoặc đổi nhầm quyền.
+ * Phần chọn dòng + đọc thanh thao tác nằm ở `selection.ts` (dùng chung với đổi vai
+ * trò), kể cả chốt chặn "chỉ bấm khi đúng 1 dòng đang được chọn".
+ *
+ * LỐI DỰ PHÒNG = menu vai trò của dòng ("⌄" → mục "Remove from team"), giữ nguyên vì
+ * đã xác nhận chạy được với thành viên thật. Chỉ dùng khi lối chính không dựng được.
  */
 
 import type { CanvaActionRequest, CanvaActionResponse } from "../../shared/messages";
 import { humanClick, sleep } from "../human";
 import { reportProgress } from "../progress";
-import {
-  clickableByAnyText,
-  emailIn,
-  norm,
-  onPeoplePage,
-  openDialog,
-  visible,
-  waitUntil,
-} from "./dom";
+import { clickableByAnyText, norm, onPeoplePage, openDialog, visible, waitUntil } from "./dom";
+import { bulkBarButton, rowOf, selectRowAlone, untick } from "./selection";
 import { scrapePeopleTable } from "./sync";
 
-/** Chữ trên mục menu gỡ thành viên / thu hồi lời mời.
+/** Chữ trên mục menu gỡ thành viên / thu hồi lời mời (lối dự phòng).
  *  "Remove from team" là chữ ĐÃ XÁC NHẬN trên bản tiếng Anh; các chữ còn lại là dự
- *  phòng cho bản tiếng Việt và cho dòng lời mời đang chờ (chưa có ảnh). */
+ *  phòng cho bản tiếng Việt và cho dòng lời mời đang chờ. */
 const REMOVE_TEXTS = [
   "Remove from team",
   "Xoá khỏi đội",
@@ -51,18 +43,38 @@ const REMOVE_TEXTS = [
 ];
 
 /** Chữ trên nút xác nhận trong hộp thoại hỏi lại. */
-const CONFIRM_TEXTS = ["Xoá", "Xóa", "Gỡ", "Thu hồi", "Xác nhận", "Remove", "Confirm"];
+const CONFIRM_TEXTS = [
+  "Remove users",
+  "Remove from team",
+  "Xoá",
+  "Xóa",
+  "Gỡ",
+  "Thu hồi",
+  "Xác nhận",
+  "Remove",
+  "Confirm",
+];
 
-/** Dòng của email trong bảng thành viên. */
-function rowOf(email: string): HTMLElement | null {
-  const want = email.toLowerCase();
-  const rows = [...document.querySelectorAll<HTMLElement>("tr, li, [role='row']")].filter(
-    (r) => visible(r) && emailIn(r.textContent) === want,
-  );
-  if (rows.length === 0) return null;
-  // Dòng NHỎ NHẤT chứa email (tránh chọn cả bảng khi bảng dựng bằng div).
-  return rows.sort((a, b) => (a.textContent?.length ?? 0) - (b.textContent?.length ?? 0))[0];
-}
+/** Nhãn nút thùng rác trên thanh thao tác. "Remove users" là chữ đã xác nhận trên
+ *  bản tiếng Anh; phần còn lại dự phòng cho bản tiếng Việt. */
+const BULK_REMOVE_MARKS = [
+  "remove users",
+  "remove user",
+  "xoa nguoi dung",
+  "go nguoi dung",
+  "xoa thanh vien",
+  "go thanh vien",
+];
+
+/** Ba nút CÒN LẠI trên thanh — chặn cứng để không bao giờ bấm nhầm sang chúng. */
+const BULK_OTHER_MARKS = [
+  "change role",
+  "doi vai tro",
+  "resend invite",
+  "gui lai loi moi",
+  "add to group",
+  "them vao nhom",
+];
 
 /** Chữ trên nút vai trò của dòng (nơi có dấu "⌄" mở menu) — Việt + Anh. */
 const ROLE_BUTTON_MARKS = [
@@ -98,18 +110,50 @@ function rowMenuButton(row: HTMLElement): HTMLElement | null {
   if (iconOnly) return iconOnly;
   // Cuối cùng mới đoán, nhưng TUYỆT ĐỐI không đụng "Gửi lại lời mời" / "Sao chép liên
   // kết": bấm nhầm là gửi thư cho khách hoặc ghi đè clipboard của người dùng.
-  const safe = buttons.filter(
-    (b) => !NOT_MENU_MARKS.some((m) => norm(b.textContent).includes(m)),
-  );
+  const safe = buttons.filter((b) => !NOT_MENU_MARKS.some((m) => norm(b.textContent).includes(m)));
   return safe.length ? safe[safe.length - 1] : null;
 }
 
-async function removeOne(email: string): Promise<{ ok: boolean; reason?: string }> {
-  const row = rowOf(email);
-  if (!row) {
-    // Không còn trong đội = kết quả mong muốn. Backend coi như đã gỡ.
-    return { ok: true, reason: "not_in_team" };
+/** Email đã biến khỏi bảng chưa. */
+async function waitGone(email: string): Promise<boolean> {
+  const gone = await waitUntil(() => {
+    const emails = new Set(scrapePeopleTable().map((m) => m.email));
+    return emails.has(email) ? null : true;
+  }, 15000);
+  return gone === true;
+}
+
+/** Lối chính: tick ô vuông → thanh thao tác → "Remove users". */
+async function removeViaSelection(
+  email: string,
+  row: HTMLElement,
+): Promise<{ ok: boolean; reason?: string }> {
+  const picked = await selectRowAlone(row);
+  if (!picked.ok) return { ok: false, reason: picked.reason };
+
+  const del = bulkBarButton(BULK_REMOVE_MARKS, BULK_OTHER_MARKS);
+  if (!del) {
+    await untick(picked.checkbox);
+    return { ok: false, reason: "no_remove_users_button" };
   }
+  await humanClick(del);
+
+  const dlg = await waitUntil(() => openDialog(), 4000);
+  if (dlg) {
+    const confirm = clickableByAnyText(CONFIRM_TEXTS, dlg);
+    if (confirm) await humanClick(confirm);
+  }
+
+  if (await waitGone(email)) return { ok: true };
+  await untick(picked.checkbox);
+  return { ok: false, reason: "still_in_team" };
+}
+
+/** Lối dự phòng: menu vai trò của dòng → "Remove from team". */
+async function removeViaRowMenu(
+  email: string,
+  row: HTMLElement,
+): Promise<{ ok: boolean; reason?: string }> {
   const menuBtn = rowMenuButton(row);
   if (!menuBtn) return { ok: false, reason: "no_menu_button" };
   await humanClick(menuBtn);
@@ -129,12 +173,26 @@ async function removeOne(email: string): Promise<{ ok: boolean; reason?: string 
     if (confirm) await humanClick(confirm);
   }
 
-  // Xác minh: email biến khỏi bảng.
-  const gone = await waitUntil(() => {
-    const emails = new Set(scrapePeopleTable().map((m) => m.email));
-    return emails.has(email.toLowerCase()) ? null : true;
-  }, 15000);
-  return gone ? { ok: true } : { ok: false, reason: "still_in_team" };
+  return (await waitGone(email)) ? { ok: true } : { ok: false, reason: "still_in_team" };
+}
+
+async function removeOne(email: string): Promise<{ ok: boolean; reason?: string }> {
+  const row = rowOf(email);
+  if (!row) {
+    // Không còn trong đội = kết quả mong muốn. Backend coi như đã gỡ.
+    return { ok: true, reason: "not_in_team" };
+  }
+
+  const picked = await removeViaSelection(email, row);
+  if (picked.ok) return picked;
+
+  // Dòng có thể đã đổi sau lượt thử trên → đọc lại trước khi đi lối dự phòng.
+  const again = rowOf(email);
+  if (!again) return { ok: true, reason: "not_in_team" };
+  const fallback = await removeViaRowMenu(email, again);
+  return fallback.ok
+    ? fallback
+    : { ok: false, reason: `${picked.reason ?? "unknown"}+${fallback.reason ?? "unknown"}` };
 }
 
 export async function executeCanvaRemove(
@@ -172,7 +230,10 @@ export async function executeCanvaRemove(
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
       error_message:
-        "Không tìm thấy mục gỡ thành viên trong menu Canva — cần chụp lại màn hình menu để cập nhật kịch bản.",
+        'Không gỡ được ai trên trang Canva: cả lối tick ô vuông rồi bấm "Remove users" lẫn ' +
+        `lối menu vai trò đều không dựng được. Lý do từng email: ${failed
+          .map((f) => `${f.email}=${f.reason}`)
+          .join(", ")}`,
       data: { failed },
     };
   }

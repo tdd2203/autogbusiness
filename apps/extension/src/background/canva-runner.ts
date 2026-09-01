@@ -73,6 +73,135 @@ async function findCanvaSettingsTab(): Promise<chrome.tabs.Tab | null> {
   return onPeople ?? tabs[0] ?? null;
 }
 
+/** File JS của content script Canva, đọc từ MANIFEST ĐANG CHẠY.
+ *
+ * Vite build đổi tên `src/content/canva/index.ts` thành `assets/index.ts-<hash>.js`,
+ * hash đổi mỗi lần build. Không hardcode được, mà cũng không dò trong `dist/` được:
+ * thư mục đó không bao giờ được dọn nên chứa cả file của những bản build cũ. Chỉ
+ * manifest của bản đang chạy mới nói đúng file nào.
+ */
+function canvaContentScriptFiles(): string[] {
+  const scripts = (chrome.runtime.getManifest().content_scripts ?? []) as Array<{
+    matches?: string[];
+    js?: string[];
+  }>;
+  const entry = scripts.find((cs) =>
+    (cs.matches ?? []).some((m) => m.includes("canva.com/settings")),
+  );
+  return entry?.js ?? [];
+}
+
+/** Diễn biến lần chữa gần nhất — nhét vào thông báo lỗi khi cả ba nấc đều hỏng. */
+let healLog: string[] = [];
+
+async function pingCanva(tabId: number): Promise<boolean> {
+  return (await sendToTab(tabId, { kind: "CANVA_PING" }))?.ok === true;
+}
+
+/** Ping lại theo lịch chờ cho sẵn; trả `true` ngay khi có tiếng trả lời. */
+async function pingRetries(tabId: number, delaysMs: number[]): Promise<boolean> {
+  for (const ms of delaysMs) {
+    await new Promise((r) => setTimeout(r, ms));
+    if (await pingCanva(tabId)) return true;
+  }
+  return false;
+}
+
+/**
+ * Đảm bảo content script Canva còn sống trong tab — TỰ CHỮA, không bắt người dùng F5.
+ *
+ * Vì sao cần: reload extension (hoặc build lại bản mới) giết mọi content script đã
+ * nạp trong các tab đang mở. Tab vẫn nằm đúng trang thành viên, nhìn không khác gì,
+ * nhưng không còn ai trả lời ping. Ca thật 1/9/2026: lệnh lúc 03:06 chết TIMEOUT sau
+ * 20 giây ping, người dùng F5 tay thì lệnh ngay sau đó xong trong 2,7 giây — tức là
+ * extension đã biết thừa phải làm gì mà lại đi bảo người dùng làm hộ.
+ *
+ * Ba nấc, xong ở nấc nào thì dừng ở đó:
+ *   1. Tiêm lại content script (`scripting.executeScript`) — rẻ nhất, giữ nguyên trang.
+ *   2. F5 tab rồi tiêm lại — đúng thao tác người dùng đang phải làm tay.
+ *   3. Đóng tab, mở tab nền mới.
+ *
+ * Trả về tabId dùng được (có thể là tab MỚI ở nấc 3), hoặc null nếu chịu thua.
+ */
+async function ensureCanvaContentAlive(tabId: number): Promise<number | null> {
+  healLog = [];
+  const note = (m: string): void => {
+    healLog.push(m);
+    console.log(`[autogpt-canva] ${m}`);
+  };
+
+  // Trang vừa nạp xong vẫn cần vài trăm ms để content script kịp đăng ký.
+  if (await pingCanva(tabId)) return tabId;
+  if (await pingRetries(tabId, [300, 500, 700, 1000, 1500])) return tabId;
+  note("ping đầu im lặng");
+
+  const files = canvaContentScriptFiles();
+  if (files.length === 0) {
+    note("manifest không khai content script cho canva.com/settings");
+    return null;
+  }
+
+  // Nấc 1 — tiêm lại.
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files });
+    note("đã tiêm lại content script");
+  } catch (e) {
+    note(`tiêm lại hỏng: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (await pingRetries(tabId, [250, 500, 700, 800, 1000])) {
+    note("tiêm lại ăn");
+    return tabId;
+  }
+
+  // Nấc 2 — F5 tab rồi tiêm lại.
+  try {
+    await chrome.tabs.reload(tabId);
+    const reloaded = await waitTabLoaded(tabId, 20000, PEOPLE_URL_RE);
+    note(`đã F5 tab, url=${reloaded?.url ?? "?"}`);
+    if (reloaded?.url && PEOPLE_URL_RE.test(reloaded.url)) {
+      if (await pingRetries(tabId, [500, 800, 1000])) {
+        note("F5 xong là ăn");
+        return tabId;
+      }
+      try {
+        await chrome.scripting.executeScript({ target: { tabId }, files });
+      } catch (e) {
+        note(`tiêm sau F5 hỏng: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (await pingRetries(tabId, [500, 800, 1000, 1500, 2000])) {
+        note("F5 kèm tiêm lại ăn");
+        return tabId;
+      }
+    }
+  } catch (e) {
+    note(`F5 tab hỏng: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // Nấc 3 — bỏ hẳn tab cũ, mở tab nền mới.
+  try {
+    await chrome.tabs.remove(tabId);
+  } catch {
+    /* tab có thể đã đóng — không sao, đằng nào cũng đang bỏ nó */
+  }
+  const fresh = await chrome.tabs.create({ url: PEOPLE_URL, active: false });
+  if (fresh.id === undefined) {
+    note("mở tab mới không ra tabId");
+    return null;
+  }
+  note(`đã mở tab mới ${fresh.id}`);
+  const loaded = await waitTabLoaded(fresh.id, 30000, PEOPLE_URL_RE);
+  if (!loaded?.url || !PEOPLE_URL_RE.test(loaded.url)) {
+    note(`tab mới không vào được trang thành viên (url=${loaded?.url ?? "?"})`);
+    return null;
+  }
+  if (await pingRetries(fresh.id, [500, 800, 1000, 1500, 2000, 2000])) {
+    note("tab mới ăn");
+    return fresh.id;
+  }
+  note("tab mới vẫn im lặng");
+  return null;
+}
+
 /**
  * Đảm bảo có một tab đang ở trang thành viên Canva và content script đã sẵn sàng.
  *
@@ -117,20 +246,19 @@ async function ensurePeopleTab(): Promise<
     };
   }
 
-  // Content script sẵn sàng chưa (trang vừa nạp xong vẫn cần vài trăm ms). 20 giây:
-  // máy chậm + mạng chậm vẫn kịp, mà tab chết thật thì cũng chỉ tốn thêm 10 giây.
-  for (let i = 0; i < 40; i += 1) {
-    const pong = await sendToTab(tab.id, { kind: "CANVA_PING" });
-    if (pong?.ok) return { tabId: tab.id };
-    await new Promise((r) => setTimeout(r, 500));
+  const alive = await ensureCanvaContentAlive(tab.id);
+  if (alive === null) {
+    return {
+      error: {
+        ok: false,
+        error_code: "TIMEOUT",
+        error_message:
+          "Content script Canva không phản hồi kể cả sau khi tiêm lại, tải lại tab và mở tab mới " +
+          `— kiểm tra extension còn bật và đã đăng nhập Canva chưa. Diễn biến: ${healLog.join(" › ")}`,
+      },
+    };
   }
-  return {
-    error: {
-      ok: false,
-      error_code: "TIMEOUT",
-      error_message: "Content script Canva không phản hồi — thử tải lại tab canva.com.",
-    },
-  };
+  return { tabId: alive };
 }
 
 /** Gửi message vào tab; lỗi kênh trả `null` thay vì ném (tab có thể vừa đóng). */
@@ -148,6 +276,27 @@ async function sendToTab(
 /** Vai trò Canva lấy từ payload lệnh; thiếu/không hợp lệ → thành viên thường. */
 function roleFromPayload(payload: Record<string, unknown>): CanvaRole {
   return payload.canva_role === "brand_designer" ? "brand_designer" : "member";
+}
+
+/**
+ * Vai trò cho lệnh ĐỔI VAI TRÒ. Trả null khi xin một vai trò Canva không cho đặt.
+ *
+ * Không có mặc định ở đây, khác hẳn `roleFromPayload` của lệnh mời: mời thì đoán
+ * thành viên thường là an toàn, còn đổi vai trò mà đoán bừa là tự ý nâng hoặc hạ
+ * quyền một người đang dùng thật. Xin "admin"/"owner" thì DỪNG và báo rõ.
+ *
+ * Đọc cả `canva_role` lẫn `new_role` vì endpoint đổi vai trò đang dùng chung với
+ * nhánh ChatGPT (payload bên đó đặt tên là `new_role`).
+ */
+function changeRoleFromPayload(payload: Record<string, unknown>): CanvaRole | null {
+  const raw = payload.canva_role ?? payload.new_role ?? payload.role;
+  if (typeof raw !== "string") return null;
+  const v = raw.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (v === "brand_designer" || v === "team_brand_designer" || v === "designer") {
+    return "brand_designer";
+  }
+  if (v === "member" || v === "team_member") return "member";
+  return null;
 }
 
 function emailsFromPayload(payload: Record<string, unknown>): string[] {
@@ -219,10 +368,20 @@ async function runOneInner(config: ExtensionConfig, task: QueueItem): Promise<vo
   switch (task.type) {
     case "INVITE_MEMBER": {
       const role = roleFromPayload(payload);
+      const emails = emailsFromPayload(payload);
+      // "Gửi lại lời mời" trên dashboard đẻ ra INVITE_MEMBER kèm cờ `reinvite`. Nhánh
+      // ChatGPT hiểu cờ đó là "thu hồi lời mời cũ rồi mời lại" vì bên đó không có nút
+      // gửi lại. Canva CÓ nút "Resend invite" ngay trong dòng — đi lối thu hồi rồi
+      // mời lại là làm hỏng link cũ khách đang giữ, và hộp mời cũng sẽ từ chối vì
+      // email đã có lời mời treo. Xem `content/canva/resend.ts`.
+      if (payload.reinvite === true && emails.length === 1) {
+        request = { kind: "CANVA_RESEND_INVITE", taskId: task.id, email: emails[0] };
+        break;
+      }
       request = {
         kind: "CANVA_INVITE",
         taskId: task.id,
-        entries: emailsFromPayload(payload).map((email) => ({ email, role })),
+        entries: emails.map((email) => ({ email, role })),
       };
       break;
     }
@@ -238,6 +397,32 @@ async function runOneInner(config: ExtensionConfig, task: QueueItem): Promise<vo
     case "SYNC_MEMBERS_BATCH":
       request = { kind: "CANVA_SYNC", taskId: task.id };
       break;
+    case "CHANGE_ROLE": {
+      const email = emailsFromPayload(payload)[0];
+      const role = changeRoleFromPayload(payload);
+      if (!email) {
+        await updateTask(config, task.id, {
+          status: "FAILED",
+          error_code: "UNKNOWN",
+          error_message: "Lệnh đổi vai trò không có email.",
+        });
+        return;
+      }
+      if (!role) {
+        await updateTask(config, task.id, {
+          status: "FAILED",
+          error_code: "UNSUPPORTED",
+          error_message:
+            "Team Canva chỉ đặt được hai vai trò: Thành viên đội và Nhà thiết kế thương hiệu " +
+            `của đội. Lệnh này xin "${String(
+              payload.canva_role ?? payload.new_role ?? payload.role,
+            )}".`,
+        });
+        return;
+      }
+      request = { kind: "CANVA_CHANGE_ROLE", taskId: task.id, email, role };
+      break;
+    }
     case "REMOVE_MEMBER":
     // REVOKE_INVITES = thu hồi lời mời của người CHƯA bấm nhận. Trên Canva vẫn là
     // cùng một thao tác trong menu của dòng đó, nên dùng chung kịch bản gỡ. Job
@@ -254,7 +439,24 @@ async function runOneInner(config: ExtensionConfig, task: QueueItem): Promise<vo
       return;
   }
 
-  const res = await sendToTab(tabId, request);
+  let res = await sendToTab(tabId, request);
+
+  // Gửi lại lời mời mà email không còn trong bảng ⇒ chưa từng mời, hoặc lời mời đã
+  // hết hạn rơi khỏi danh sách. Mời mới luôn thay vì bắt đại lý bấm lại lần nữa.
+  if (
+    request.kind === "CANVA_RESEND_INVITE" &&
+    res?.ok === true &&
+    res.data?.fallback_invite === true
+  ) {
+    console.log("[autogpt-canva] không còn lời mời để gửi lại — chuyển sang mời mới");
+    request = {
+      kind: "CANVA_INVITE",
+      taskId: task.id,
+      entries: [{ email: request.email, role: roleFromPayload(payload) }],
+    };
+    res = await sendToTab(tabId, request);
+  }
+
   if (!res) {
     await updateTask(config, task.id, {
       status: "FAILED",

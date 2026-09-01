@@ -12,6 +12,8 @@ import type { CanvaActionRequest, CanvaActionResponse } from "../../shared/messa
 import { installCopyCapture } from "./clipboard-capture";
 import { executeCanvaInvite } from "./invite";
 import { executeCanvaRemove } from "./remove";
+import { executeCanvaResendInvite } from "./resend";
+import { executeCanvaChangeRole } from "./role";
 import { executeCanvaSync } from "./sync";
 
 console.log("[autogpt-canva] injected vào", location.href);
@@ -58,6 +60,10 @@ async function dispatch(msg: CanvaActionRequest): Promise<CanvaActionResponse> {
       return executeCanvaInvite(msg);
     case "CANVA_REMOVE":
       return executeCanvaRemove(msg);
+    case "CANVA_CHANGE_ROLE":
+      return executeCanvaChangeRole(msg);
+    case "CANVA_RESEND_INVITE":
+      return executeCanvaResendInvite(msg);
     default:
       return {
         ok: false,

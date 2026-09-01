@@ -25,7 +25,7 @@
  * chỉ hiện 8 mục đầu, phần còn lại nằm sau nút "Xem thêm".
  */
 
-export const VERSION = "0.15.2";
+export const VERSION = "0.15.5";
 
 export type ChangelogEntry = {
   version: string;
@@ -44,6 +44,27 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.15.5",
+    date: "2026-09-01",
+    kind: "feature",
+    title: "Thao tác Canva",
+    note: "Canva đổi được vai trò và gửi lại lời mời, giống hệt bên ChatGPT.",
+  },
+  {
+    version: "0.15.4",
+    date: "2026-09-01",
+    kind: "fix",
+    title: "Gỡ Canva",
+    note: "Gỡ thành viên và thu hồi lời mời Canva đi đúng nút thùng rác của Canva.",
+  },
+  {
+    version: "0.15.3",
+    date: "2026-09-01",
+    kind: "fix",
+    title: "Mời Canva",
+    note: "Tab Canva hết nhận lệnh thì extension tự tải lại, không cần bấm F5 tay.",
+  },
   {
     version: "0.15.2",
     date: "2026-09-01",
