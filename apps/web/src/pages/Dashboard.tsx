@@ -18,6 +18,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { usePlatform } from "../hooks/usePlatform";
 import { openDailyGuide } from "../components/DailyGuideModal";
 import LoadError from "../components/LoadError";
 import DueWeekModal from "../components/DueWeekModal";
@@ -51,11 +52,15 @@ export default function Dashboard() {
   const { user } = useAuth();
   const isMobile = useIsMobile();
   const [period, setPeriod] = useState<number>(30);
+  // Số của NHÁNH đang mở: /dashboard là ChatGPT, /canva/dashboard là Canva.
+  const platform = usePlatform();
 
   const { data, isLoading, error, refetch } = useQuery({
-    queryKey: ["dashboard-overview", period],
+    queryKey: ["dashboard-overview", period, platform],
     queryFn: () =>
-      api<DashboardOverview>(`/api/v1/dashboard/overview?days=${period}`),
+      api<DashboardOverview>(
+        `/api/v1/dashboard/overview?days=${period}&platform=${platform}`,
+      ),
     // Hạn dùng trôi theo giờ và job nền vẫn gỡ/gia hạn trong lúc trang đang mở
     // (cùng nhịp với trang Gia hạn), nên tự nạp lại mỗi phút thay vì đứng im.
     refetchInterval: 60_000,

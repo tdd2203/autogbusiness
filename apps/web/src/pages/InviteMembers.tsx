@@ -11,11 +11,13 @@
  * Logic mời/phí TÁI SỬ DỤNG bulk-invite; gom nhóm theo workspace đích khi dán trộn.
  */
 import { useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useFormatDate, useT, useTranslateEnum } from "../i18n";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useAuth } from "../hooks/useAuth";
+import { usePlatform } from "../hooks/usePlatform";
 import { parseEmailsFromText } from "../lib/emailParser";
 import { useAutoInviteTargets, useEmailHistory } from "../hooks/useAutoInvite";
 import { invalidateWorkspaceSeats, useSeatMap } from "../hooks/useWorkspaceSeats";
@@ -24,7 +26,7 @@ import { useExtensionStatus } from "../hooks/useExtensionTrigger";
 import { queuePollInterval } from "../lib/queuePolling";
 import { formatVnd, getQrOrder, type OrderQr } from "../lib/wallet";
 import { toast } from "../components/Toast";
-import type { Member, Platform, QueueItem } from "../types";
+import type { Member, QueueItem } from "../types";
 import OrderQrModal from "../components/OrderQrModal";
 
 const DEFAULT_MONTHS = 1;
@@ -121,9 +123,13 @@ export default function InviteMembers() {
   const qc = useQueryClient();
 
   const { user } = useAuth();
-  // NHÁNH đang mời. Mặc định LUÔN là ChatGPT mỗi lần mở trang và KHÔNG ghi nhớ lựa
-  // chọn cũ (user 2026-09-01): nhớ thì sẽ có ngày dán cả mẻ email vào nhầm nhánh.
-  const [platform, setPlatform] = useState<Platform>("gpt");
+  // NHÁNH đang mời = NHÁNH CỦA ĐƯỜNG DẪN, không phải một công tắc nhớ trong trang:
+  // /invite là ChatGPT, /canva/invite là Canva. Bấm công tắc bên dưới thực chất là
+  // đi sang route của nhánh kia, nên trang dựng lại từ đầu — mọi email đang dán và
+  // workspace đã chọn bị xoá sạch, không còn cửa dán cả mẻ email vào nhầm nhánh
+  // (user 2026-09-01).
+  const navigate = useNavigate();
+  const platform = usePlatform();
   // Vai trò áp cho lệnh mời Canva. Canva còn có "Quản trị viên đội" nhưng dashboard
   // cố tình không mở: khách không cần quyền quản trị, bấm nhầm là họ xoá được cả đội.
   const [canvaRole, setCanvaRole] = useState<"member" | "brand_designer">("member");
@@ -603,11 +609,7 @@ export default function InviteMembers() {
               className={platform === p ? "btn btn-primary btn-sm" : "btn btn-ghost btn-sm"}
               onClick={() => {
                 if (p === platform) return;
-                setPlatform(p);
-                // Đích của email cũ/mới thuộc nhánh cũ → xoá hết, chọn lại theo nhánh
-                // mới. Giữ lại là mời sang workspace của nhánh kia.
-                setWorkspaceByEmail({});
-                randomWsRef.current = {};
+                navigate(p === "canva" ? "/canva/invite" : "/invite");
               }}
             >
               {t(p === "gpt" ? "invite.platformGpt" : "invite.platformCanva")}

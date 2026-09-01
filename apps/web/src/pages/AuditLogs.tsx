@@ -6,6 +6,7 @@ import { useT } from "../i18n";
 import { Chip } from "./Queue";
 import { SearchInput } from "./Members";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { usePlatform } from "../hooks/usePlatform";
 
 type AuditLog = {
   id: string;
@@ -3080,11 +3081,16 @@ export default function AuditLogs() {
   // thì tải tiếp lô cũ hơn (user 2026-08-26: "show từng ngày, cần đến đâu tải đến
   // đó"). Con trỏ là (timestamp, id) của dòng cuối lô trước — phải kèm id vì nhiều
   // log ghi trong CÙNG một request mang y hệt timestamp.
+  // NHÁNH đang mở đi kèm mọi lời gọi: /audit-logs là ChatGPT, /canva/audit-logs là
+  // Canva. Dòng nào truy được về workspace/email của nhánh thì chỉ hiện ở nhánh đó.
+  const platform = usePlatform();
   const logs = useInfiniteQuery({
-    queryKey: ["audit-logs"],
+    queryKey: ["audit-logs", platform],
     initialPageParam: "",
     queryFn: ({ pageParam }) =>
-      api<AuditLog[]>(`/api/v1/audit-logs?limit=${AUDIT_PAGE_SIZE}${pageParam}`),
+      api<AuditLog[]>(
+        `/api/v1/audit-logs?limit=${AUDIT_PAGE_SIZE}&platform=${platform}${pageParam}`,
+      ),
     // Lô trả về NGẮN hơn một trang ⇒ đã chạm đáy nhật ký.
     getNextPageParam: (last) => {
       if (last.length < AUDIT_PAGE_SIZE) return undefined;
@@ -3113,12 +3119,12 @@ export default function AuditLogs() {
   const q = useDebounced(search.trim(), 300);
   const searching = q.length >= AUDIT_SEARCH_MIN;
   const searchLogs = useInfiniteQuery({
-    queryKey: ["audit-logs", "search", q],
+    queryKey: ["audit-logs", "search", q, platform],
     enabled: searching,
     initialPageParam: "",
     queryFn: ({ pageParam }) =>
       api<AuditLog[]>(
-        `/api/v1/audit-logs?limit=${AUDIT_PAGE_SIZE}&q=${encodeURIComponent(q)}${pageParam}`,
+        `/api/v1/audit-logs?limit=${AUDIT_PAGE_SIZE}&platform=${platform}&q=${encodeURIComponent(q)}${pageParam}`,
       ),
     getNextPageParam: (last) => {
       if (last.length < AUDIT_PAGE_SIZE) return undefined;
@@ -3146,8 +3152,9 @@ export default function AuditLogs() {
   const autoRefresh =
     !searching && (day === null || day === vnToday()) && loadedPages <= LIVE_MAX_PAGES;
   const head = useQuery({
-    queryKey: ["audit-logs", "head"],
-    queryFn: () => api<{ id: string | null }>("/api/v1/audit-logs/head"),
+    queryKey: ["audit-logs", "head", platform],
+    queryFn: () =>
+      api<{ id: string | null }>(`/api/v1/audit-logs/head?platform=${platform}`),
     enabled: autoRefresh,
     retry: false,
     // Hỏi hụt (API chưa có /head, rớt mạng) thì thôi hẳn — không nã lỗi mỗi 15s.

@@ -19,7 +19,7 @@ import { useAuth } from "./useAuth";
 import { useT } from "../i18n";
 import { toast } from "../components/Toast";
 import { isRenewalDue } from "../components/RenewalsPanel";
-import type { AddedMember, PaymentRequestNotice } from "../types";
+import type { AddedMember, PaymentRequestNotice, Platform } from "../types";
 
 /**
  * Đếm số email đang "Chờ xác nhận" (payment_status='requested') để hiện badge
@@ -44,7 +44,7 @@ export function usePendingPaymentCount() {
 /**
  * Đếm số thành viên "cần gia hạn" (sắp/đã hết hạn — cùng điều kiện `isRenewalDue`
  * mà RenewalsPanel dùng) để hiện badge trên mục "Gia hạn" ở sidebar. Dùng CHUNG
- * queryKey ["added-members", "self"] với trang Gia hạn → react-query tái dùng
+ * queryKey ["added-members", "self", <nhánh>] với trang Gia hạn → react-query tái dùng
  * cache, không gọi API thừa. Bật cho mọi ai xem được member (MEMBER_VIEW).
  *
  * Phục vụ TỪ CACHE (staleTime=Infinity) — KHÔNG còn poll 60s / refetch khi focus tab
@@ -52,12 +52,13 @@ export function usePendingPaymentCount() {
  * chỉ cập nhật khi ["added-members"] bị invalidate bởi mutation hoặc watcher task nền.
  * (User 2026-07-20: dữ liệu lấy cache, chỉ khi thay đổi mới get từ DB.)
  */
-export function useRenewalDueCount() {
+export function useRenewalDueCount(platform: Platform) {
   const { hasPermission } = useAuth();
   const enabled = hasPermission("MEMBER_VIEW");
   const query = useQuery({
-    queryKey: ["added-members", "self"],
-    queryFn: () => api<AddedMember[]>("/api/v1/added-members"),
+    queryKey: ["added-members", "self", platform],
+    queryFn: () =>
+      api<AddedMember[]>(`/api/v1/added-members?platform=${platform}`),
     enabled,
     staleTime: Infinity,
   });

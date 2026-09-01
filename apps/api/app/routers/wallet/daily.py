@@ -55,7 +55,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.deps import get_session, require_super_admin, require_wallet_enabled
-from app.models import Member, User, WalletTransaction
+from app.models import Member, User, WalletTransaction, Workspace
 from app.schemas import WalletDailyKindOut, WalletDailySummaryOut
 
 from ._shared import router
@@ -74,24 +74,53 @@ def _fee_email(row) -> str:
     return str(meta.get("email") or "").lower()
 
 
-def _summary_for(db: Session, user_id: UUID, date: date_type | None) -> WalletDailySummaryOut:
+def _summary_for(
+    db: Session,
+    user_id: UUID,
+    date: date_type | None,
+    platform: str | None = None,
+) -> WalletDailySummaryOut:
     """Thân chung của báo cáo ngày. Tách ra vì trang Quản trị Ví hiện ĐÚNG giao diện
     trang Ví cho tài khoản người khác — hai thẻ tổng kết ngày phải tính y hệt, không
-    được chép lại một bản gần giống rồi lệch số (user 2026-08-29)."""
+    được chép lại một bản gần giống rồi lệch số (user 2026-08-29).
+
+    `platform` (gpt|canva) chỉ do trang Tổng quan của từng nhánh truyền vào: khi có,
+    phần EMAIL và phần PHÍ chỉ đếm email của nhánh đó. Trang Ví gọi không kèm tham số
+    nên đường đi và con số của nó không đổi một ly. Các mục thuần tài khoản (nạp,
+    hoàn, by_kind) KHÔNG lọc: tiền nằm ở ví chung, không thuộc nhánh nào."""
     target = date or datetime.now(VN_TZ).date()
     start = datetime.combine(target, time.min, tzinfo=VN_TZ)
     end = start + timedelta(days=1)
 
+    # Email của nhánh đang xem — None = không lọc nhánh (đường cũ của trang Ví).
+    platform_emails: set[str] | None = None
+    if platform is not None:
+        platform_emails = {
+            e
+            for (e,) in db.execute(
+                select(func.lower(Member.email))
+                .join(Workspace, Member.workspace_id == Workspace.id)
+                .where(
+                    Member.invited_by_user_id == user_id,
+                    Workspace.platform == platform,
+                )
+            ).all()
+        }
+
     # ── Email đã thêm trong ngày ───────────────────────────────────────────
     added_at = func.coalesce(Member.last_invited_at, Member.created_at)
-    member_rows = db.execute(
-        select(func.lower(Member.email), Member.status, Member.created_at)
-        .where(
-            Member.invited_by_user_id == user_id,
-            added_at >= start,
-            added_at < end,
-        )
-    ).all()
+    member_stmt = select(
+        func.lower(Member.email), Member.status, Member.created_at
+    ).where(
+        Member.invited_by_user_id == user_id,
+        added_at >= start,
+        added_at < end,
+    )
+    if platform is not None:
+        member_stmt = member_stmt.join(
+            Workspace, Member.workspace_id == Workspace.id
+        ).where(Workspace.platform == platform)
+    member_rows = db.execute(member_stmt).all()
     emails_added = sum(1 for _e, status, _c in member_rows if status != "removed")
     emails_removed = sum(1 for _e, status, _c in member_rows if status == "removed")
 
@@ -132,7 +161,13 @@ def _summary_for(db: Session, user_id: UUID, date: date_type | None) -> WalletDa
     def count_of(kind: str) -> int:
         return per_kind.get(kind, [0, 0])[0]
 
-    fee_rows = [r for r in rows if r[0] in _FEE_KINDS]
+    def _of_platform(r: tuple) -> bool:
+        """Bút toán phí này có thuộc nhánh đang xem không (None = lấy tất)."""
+        if platform_emails is None:
+            return True
+        return (_fee_email(r) or "") in platform_emails
+
+    fee_rows = [r for r in rows if r[0] in _FEE_KINDS and _of_platform(r)]
     fee_total = -sum(int(r[1]) for r in fee_rows)  # bút toán phí âm → đổi dấu
     fee_refunded = -sum(int(r[1]) for r in fee_rows if r[2])
     fee_net = fee_total - fee_refunded
@@ -237,7 +272,7 @@ def _summary_for(db: Session, user_id: UUID, date: date_type | None) -> WalletDa
     # cũng chưa tốn đồng nào) → mời lại nó vẫn là New. Ngược lại, email trả tiền
     # thành công rồi thì mọi lượt trả sau đó đều là Renew, kể cả khi lượt sau đi
     # qua luồng mời mới (`invite_fee`) vì gói cũ đã hết hạn.
-    live_fees = [r for r in rows if r[0] in _FEE_KINDS and not r[2]]
+    live_fees = [r for r in rows if r[0] in _FEE_KINDS and not r[2] and _of_platform(r)]
     emails = {_fee_email(r) for r in live_fees} - {""}
     first_seq: dict[str, int] = {}
     if emails:

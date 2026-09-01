@@ -16,12 +16,17 @@ import { useFormatDate, useI18n, useT, type Lang } from "../i18n";
 import type { ReactNode } from "react";
 import type { PaymentRequestNotice } from "../types";
 
+/** Nhánh nền tảng đang xem — mỗi nhánh có menu quản trị riêng. */
+type Branch = "gpt" | "canva";
+
 type NavEntry = {
   to: string;
   labelKey: string;
   perm?: string;
   icon: ReactNode;
-  section: "manage" | "org" | "canva";
+  section: "manage" | "org";
+  // Mục thuộc nhánh nào (bỏ trống = cụm dùng chung, nhánh nào cũng thấy).
+  branch?: Branch;
   // Ví (feature 003): mục chỉ hiện với user bật cờ wallet_beta.
   requireWalletBeta?: boolean;
   // Quản trị Ví: chỉ super-admin.
@@ -122,6 +127,13 @@ const ICONS = {
       <path d="M15.5 9.5a3.5 3.5 0 1 0 0 5" />
     </svg>
   ),
+  platform: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <path d="M12 3 3 7.5 12 12l9-4.5L12 3Z" />
+      <path d="M3 12.5 12 17l9-4.5" />
+      <path d="M3 17.5 12 22l9-4.5" />
+    </svg>
+  ),
   canvaPricing: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
       <path d="M20.6 13.4 12 22l-9-9V3h10l7.6 7.6a2 2 0 0 1 0 2.8Z" />
@@ -131,38 +143,49 @@ const ICONS = {
 };
 
 const NAV: NavEntry[] = [
+  // ── Cụm "Quản lý" của nhánh ChatGPT ──────────────────────────────────────────
   // "Tổng quan" — trang chủ của đại lý, không gắn quyền: nó chỉ hiện số của chính
   // người đang đăng nhập.
-  { to: "/dashboard", labelKey: "nav.dashboard", icon: ICONS.dashboard, section: "manage" },
+  { to: "/dashboard", labelKey: "nav.dashboard", icon: ICONS.dashboard, section: "manage", branch: "gpt" },
   // Trang "Mời thành viên" phía người dùng — hiện cho user có quyền MEMBER_INVITE
   // (super-admin luôn có). Đích workspace do super-admin cấu hình qua nút ⚙️.
-  { to: "/invite", labelKey: "nav.inviteMembers", perm: "MEMBER_INVITE", icon: ICONS.invite, section: "manage" },
-  { to: "/added-emails", labelKey: "nav.addedEmails", perm: "MEMBER_VIEW", icon: ICONS.addedEmails, section: "manage" },
+  { to: "/invite", labelKey: "nav.inviteMembers", perm: "MEMBER_INVITE", icon: ICONS.invite, section: "manage", branch: "gpt" },
+  { to: "/added-emails", labelKey: "nav.addedEmails", perm: "MEMBER_VIEW", icon: ICONS.addedEmails, section: "manage", branch: "gpt" },
   // "Gia hạn" tách khỏi sub-tab trong "Email đã add" → mục riêng ở sidebar.
-  { to: "/renewals", labelKey: "nav.renewals", perm: "MEMBER_VIEW", icon: ICONS.renewals, section: "manage" },
+  { to: "/renewals", labelKey: "nav.renewals", perm: "MEMBER_VIEW", icon: ICONS.renewals, section: "manage", branch: "gpt" },
   // "Thông báo" (feature 004): kết nối Telegram, người nhận, mẫu nội dung, và trạng
   // thái thông báo của TỪNG email. Mở cho MỌI người dùng — ai add email cũng cần gửi
   // link nhắc gia hạn cho khách của mình.
-  { to: "/notifications", labelKey: "nav.notifications", icon: ICONS.notifications, section: "manage" },
-  // Ví (feature 003) — chỉ hiện với user bật cờ thử nghiệm wallet_beta.
-  { to: "/wallet", labelKey: "nav.wallet", icon: ICONS.wallet, section: "manage", requireWalletBeta: true },
+  { to: "/notifications", labelKey: "nav.notifications", icon: ICONS.notifications, section: "manage", branch: "gpt" },
   // Queue toàn cục đã BỎ khỏi sidebar (2026-06-17): dư thừa vì mỗi workspace đã có
   // tab "Hàng đợi" riêng. Route /queue + page Queue.tsx vẫn còn nhưng không còn nav.
-  { to: "/audit-logs", labelKey: "nav.auditLog", perm: "AUDIT_LOG_VIEW", icon: ICONS.audit, section: "manage" },
+  { to: "/audit-logs", labelKey: "nav.auditLog", perm: "AUDIT_LOG_VIEW", icon: ICONS.audit, section: "manage", branch: "gpt" },
+
+  // ── Cụm "Quản lý" của nhánh CANVA — ĐÚNG BẤY NHIÊU MỤC như ChatGPT, chỉ khác
+  // đường dẫn (/canva/...) nên dữ liệu mỗi nhánh đi một đằng, không lẫn nhau.
+  { to: "/canva/dashboard", labelKey: "nav.dashboard", icon: ICONS.dashboard, section: "manage", branch: "canva" },
+  { to: "/canva/invite", labelKey: "nav.inviteMembers", perm: "MEMBER_INVITE", icon: ICONS.invite, section: "manage", branch: "canva" },
+  { to: "/canva/added-emails", labelKey: "nav.addedEmails", perm: "MEMBER_VIEW", icon: ICONS.addedEmails, section: "manage", branch: "canva" },
+  { to: "/canva/renewals", labelKey: "nav.renewals", perm: "MEMBER_VIEW", icon: ICONS.renewals, section: "manage", branch: "canva" },
+  { to: "/canva/notifications", labelKey: "nav.notifications", icon: ICONS.notifications, section: "manage", branch: "canva" },
+  { to: "/canva/audit-logs", labelKey: "nav.auditLog", perm: "AUDIT_LOG_VIEW", icon: ICONS.audit, section: "manage", branch: "canva" },
+
+  // ── Cụm dưới: mục của tổ chức + Ví + Cài đặt ─────────────────────────────────
   // "Không gian làm việc" chuyển xuống ĐẦU nhóm Tổ chức + CHỈ super-admin thấy
   // (sub-admin quản lý qua "Email đã thêm", không thao tác trực tiếp workspace).
-  { to: "/workspaces", labelKey: "nav.workspaces", icon: ICONS.workspaces, section: "org", requireSuperAdmin: true },
+  { to: "/workspaces", labelKey: "nav.workspaces", icon: ICONS.workspaces, section: "org", branch: "gpt", requireSuperAdmin: true },
+  // Hai mục dưới đây là "không gian làm việc" + bảng giá của riêng nhánh Canva.
+  { to: "/canva/teams", labelKey: "nav.canvaTeams", icon: ICONS.canvaTeams, section: "org", branch: "canva", requireSuperAdmin: true },
+  { to: "/canva/pricing", labelKey: "nav.canvaPricing", icon: ICONS.canvaPricing, section: "org", branch: "canva", requireSuperAdmin: true },
   { to: "/users", labelKey: "nav.users", perm: "USER_MANAGE", icon: ICONS.users, section: "org" },
   // Quản trị Ví (feature 003) — chỉ super-admin: cấu hình phí/bank, cờ beta, duyệt rút.
   { to: "/admin/wallet", labelKey: "nav.walletAdmin", icon: ICONS.wallet, section: "org", requireSuperAdmin: true },
   // Báo cáo tài chính (feature 003) — chỉ super-admin: THU/CHI/lợi nhuận + theo đại lý.
   { to: "/admin/report", labelKey: "nav.report", icon: ICONS.report, section: "org", requireSuperAdmin: true },
+  // Ví nằm ở cụm dưới cùng Cài đặt (user 2026-09-01): tiền là của TÀI KHOẢN, không
+  // thuộc nhánh nào, để trong cụm "Quản lý" của một nhánh là hiểu sai.
+  { to: "/wallet", labelKey: "nav.wallet", icon: ICONS.wallet, section: "org", requireWalletBeta: true },
   { to: "/settings", labelKey: "nav.settings", icon: ICONS.settings, section: "org" },
-  // ── Nhánh CANVA: nhóm RIÊNG ở thanh bên (user 2026-09-01: "làm riêng 1 nhánh
-  // canva riêng, không chung với chatgpt"). Trang mời thì dùng chung một trang, có
-  // công tắc nhánh, mặc định luôn là ChatGPT.
-  { to: "/canva/teams", labelKey: "nav.canvaTeams", icon: ICONS.canvaTeams, section: "canva", requireSuperAdmin: true },
-  { to: "/canva/pricing", labelKey: "nav.canvaPricing", icon: ICONS.canvaPricing, section: "canva", requireSuperAdmin: true },
 ];
 
 export default function Layout() {
@@ -185,8 +208,11 @@ export default function Layout() {
   const pendingPayments = usePendingPaymentCount();
   // Số yêu cầu đổi hạn dùng đang chờ duyệt → badge chuông thứ 2 (0 với sub-admin).
   const pendingSubscriptions = usePendingSubscriptionCount();
-  // Số thành viên sắp/đã hết hạn → badge trên mục "Gia hạn" ở sidebar.
-  const renewalDueCount = useRenewalDueCount();
+  // NHÁNH đang xem: đọc thẳng từ đường dẫn (mọi trang Canva đều nằm dưới /canva/...)
+  // nên bấm tới bấm lui sidebar luôn khớp trang đang mở, không cần nhớ trạng thái.
+  const branch: Branch = location.pathname.startsWith("/canva") ? "canva" : "gpt";
+  // Số thành viên sắp/đã hết hạn CỦA NHÁNH ĐANG XEM → badge trên mục "Gia hạn".
+  const renewalDueCount = useRenewalDueCount(branch);
 
   // Đóng drawer mỗi khi chuyển trang (mobile).
   useEffect(() => {
@@ -215,9 +241,26 @@ export default function Layout() {
     if (n.perm && !hasPermission(n.perm)) return false;
     return true;
   };
-  const manageItems = NAV.filter((n) => n.section === "manage" && navVisible(n));
-  const orgItems = NAV.filter((n) => n.section === "org" && navVisible(n));
-  const canvaItems = NAV.filter((n) => n.section === "canva" && navVisible(n));
+  const manageItems = NAV.filter(
+    (n) => n.section === "manage" && n.branch === branch && navVisible(n),
+  );
+  const orgItems = NAV.filter(
+    (n) =>
+      n.section === "org" &&
+      (n.branch === undefined || n.branch === branch) &&
+      navVisible(n),
+  );
+  // Nền tảng nào có ít nhất một mục người này được xem thì mới đưa vào menu chọn;
+  // bấm vào là nhảy tới mục đầu tiên của nhánh đó.
+  const branchHome = (b: Branch): string | null =>
+    NAV.find((n) => n.section === "manage" && n.branch === b && navVisible(n))?.to ??
+    null;
+  const platformOptions = ([
+    { branch: "gpt", labelKey: "nav.platformGpt" },
+    { branch: "canva", labelKey: "nav.platformCanva" },
+  ] as const)
+    .map((o) => ({ branch: o.branch, label: t(o.labelKey), to: branchHome(o.branch) }))
+    .filter((o): o is { branch: Branch; label: string; to: string } => o.to !== null);
 
   return (
     <div
@@ -374,20 +417,21 @@ export default function Layout() {
                 key={n.to}
                 to={n.to}
                 icon={n.icon}
-                badge={n.to === "/renewals" ? renewalDueCount : 0}
+                badge={n.labelKey === "nav.renewals" ? renewalDueCount : 0}
               >
                 {t(n.labelKey)}
               </SidebarItem>
             ))}
           </SidebarSection>
-          {canvaItems.length > 0 && (
-            <SidebarSection label={t("nav.sectionCanva")}>
-              {canvaItems.map((n) => (
-                <SidebarItem key={n.to} to={n.to} icon={n.icon}>
-                  {t(n.labelKey)}
-                </SidebarItem>
-              ))}
-            </SidebarSection>
+          {/* Nút "Nền tảng" — chốt giữa "Nhật ký" và cụm "Tổ chức" (user 2026-09-01).
+              Di chuột (hoặc bấm, cho điện thoại) là xổ danh sách nền tảng. */}
+          {platformOptions.length > 1 && (
+            <PlatformSwitcher
+              label={t("nav.platform")}
+              branch={branch}
+              options={platformOptions}
+              onPick={(to) => navigate(to)}
+            />
           )}
           {orgItems.length > 0 && (
             <SidebarSection label={t("nav.sectionOrg")}>
@@ -872,6 +916,159 @@ function NotificationBell({
           >
             {t("notif.viewAll")}
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Nút "Nền tảng" ở thanh bên — đứng giữa "Nhật ký" và cụm "Tổ chức".
+ *
+ * Di chuột vào là xổ danh sách nền tảng (ChatGPT / Canva); trên điện thoại không có
+ * di chuột nên bấm cũng xổ. Chọn nền tảng nào thì nhảy tới trang đầu của nhánh đó,
+ * cụm "Quản lý" phía trên đổi theo luôn.
+ *
+ * Danh sách xổ NGAY TRONG thanh bên (không thả nổi ra ngoài): vùng nav có thanh cuộn
+ * riêng, thả nổi ra ngoài sẽ bị cắt mất.
+ */
+function PlatformSwitcher({
+  label,
+  branch,
+  options,
+  onPick,
+}: {
+  label: string;
+  branch: Branch;
+  options: { branch: Branch; label: string; to: string }[];
+  onPick: (to: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const current = options.find((o) => o.branch === branch);
+
+  return (
+    <div
+      style={{ marginBottom: 24 }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") setOpen(false);
+      }}
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        title={label}
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 11,
+          width: "100%",
+          padding: "9px 11px",
+          borderRadius: "var(--radius)",
+          border: "none",
+          background: open ? "var(--surface-2)" : "transparent",
+          color: "var(--ink-2)",
+          fontSize: 14,
+          fontWeight: 500,
+          fontFamily: "inherit",
+          cursor: "pointer",
+          textAlign: "left",
+          transition: "background 0.12s ease, color 0.12s ease",
+        }}
+      >
+        <span
+          aria-hidden
+          style={{
+            width: 16,
+            height: 16,
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          {ICONS.platform}
+        </span>
+        <span style={{ flex: 1, minWidth: 0 }}>{label}</span>
+        {/* Tên nền tảng đang xem, để liếc là biết mình đang ở nhánh nào. */}
+        <span
+          style={{
+            flexShrink: 0,
+            fontSize: 11.5,
+            color: "var(--ink-3)",
+            fontFamily: "var(--font-mono)",
+          }}
+        >
+          {current?.label ?? ""}
+        </span>
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          aria-hidden
+          style={{
+            width: 13,
+            height: 13,
+            flexShrink: 0,
+            transform: open ? "rotate(180deg)" : "none",
+            transition: "transform 0.12s ease",
+          }}
+        >
+          <path d="M6 9l6 6 6-6" />
+        </svg>
+      </button>
+
+      {open && (
+        <div role="menu" style={{ paddingLeft: 27, marginTop: 2 }}>
+          {options.map((o) => {
+            const active = o.branch === branch;
+            return (
+              <button
+                key={o.branch}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  onPick(o.to);
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  width: "100%",
+                  padding: "7px 11px",
+                  marginBottom: 2,
+                  borderRadius: "var(--radius)",
+                  border: "none",
+                  background: active ? "var(--ink)" : "transparent",
+                  color: active ? "var(--surface)" : "var(--ink-2)",
+                  fontSize: 13.5,
+                  fontWeight: 500,
+                  fontFamily: "inherit",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  transition: "background 0.12s ease, color 0.12s ease",
+                }}
+              >
+                <span style={{ flex: 1, minWidth: 0 }}>{o.label}</span>
+                {active && (
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2.2}
+                    aria-hidden
+                    style={{ width: 13, height: 13, flexShrink: 0 }}
+                  >
+                    <path d="M20 6L9 17l-5-5" />
+                  </svg>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

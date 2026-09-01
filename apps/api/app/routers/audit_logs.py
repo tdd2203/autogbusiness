@@ -1,14 +1,22 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import Select, Text, and_, cast, func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.deps import get_session, require_permission
-from app.models import AuditLog, Member, PaymentOrder, QueueItem, User, Workspace
+from app.models import (
+    PLATFORMS,
+    AuditLog,
+    Member,
+    PaymentOrder,
+    QueueItem,
+    User,
+    Workspace,
+)
 from app.permissions import Permission
 from app.schemas import AuditLogOut
 
@@ -33,8 +41,15 @@ class AuditLogHeadOut(BaseModel):
 def audit_log_head(
     db: Session = Depends(get_session),
     user: User = Depends(require_permission(Permission.AUDIT_LOG_VIEW)),
+    platform: str | None = Query(default=None),
 ) -> AuditLogHeadOut:
-    """Dòng nhật ký mới nhất (chỉ id + thời điểm) để web biết có gì mới hay chưa."""
+    """Dòng nhật ký mới nhất (chỉ id + thời điểm) để web biết có gì mới hay chưa.
+
+    `platform` nhận cho khớp lời gọi của trang nhưng CỐ TÌNH không lọc: đây chỉ là
+    mã đổi/không đổi để web biết có nên tải lại danh sách hay không, mà quy nhánh
+    thì phải tra bảng khác — trả giá đó cho mỗi nhịp poll 15s là không đáng.
+    """
+    del platform
     row = db.execute(
         select(AuditLog.id, AuditLog.timestamp)
         .order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
@@ -221,6 +236,98 @@ def _audit_log_visible(
     return False
 
 
+def _log_platforms(db: Session, logs: list[AuditLog]) -> dict[UUID, set[str]]:
+    """Nhánh sản phẩm mà TỪNG dòng nhật ký nói tới. Rỗng = không quy được nhánh nào.
+
+    audit_logs KHÔNG có cột nhánh (và cố tình không thêm: nguồn thật là workspace của
+    member — xem models.PLATFORM_*), nên quy nhánh lúc đọc, theo thứ tự rẻ→đắt:
+      1. workspace_id trong `data` / target WORKSPACE  → nhánh của workspace đó.
+      2. member_ids / target MEMBER                     → nhánh workspace của member.
+      3. email trong `data`                             → nhánh của member mang email.
+
+    Dòng không quy được (đăng nhập, nạp ví, đổi cấu hình…) là việc CỦA TÀI KHOẢN chứ
+    không của nhánh nào: hàm trả tập rỗng và người gọi cho nó hiện ở CẢ HAI nhánh —
+    giấu đi thì nhật ký kể thiếu chuyện đã thật sự xảy ra.
+    """
+    out: dict[UUID, set[str]] = {log.id: set() for log in logs}
+
+    # 1. workspace
+    ws_ids: set[UUID] = set()
+    for log in logs:
+        wid = _workspace_id_of(log)
+        if wid:
+            try:
+                ws_ids.add(UUID(wid))
+            except ValueError:
+                pass
+    ws_platform: dict[str, str] = {}
+    if ws_ids:
+        for wid, plat in db.execute(
+            select(Workspace.id, Workspace.platform).where(Workspace.id.in_(ws_ids))
+        ).all():
+            ws_platform[str(wid)] = plat
+    for log in logs:
+        wid = _workspace_id_of(log)
+        if wid and wid in ws_platform:
+            out[log.id].add(ws_platform[wid])
+
+    # 2. member id
+    mem_ids: set[UUID] = set()
+    for log in logs:
+        if out[log.id]:
+            continue
+        raw = set(_member_ids_in_log_data(log.data))
+        if log.target_type == "MEMBER" and log.target_id:
+            raw.add(log.target_id)
+        for mid in raw:
+            try:
+                mem_ids.add(UUID(mid))
+            except (ValueError, TypeError):
+                pass
+    mem_platform: dict[str, str] = {}
+    if mem_ids:
+        for mid, plat in db.execute(
+            select(Member.id, Workspace.platform)
+            .join(Workspace, Member.workspace_id == Workspace.id)
+            .where(Member.id.in_(mem_ids))
+        ).all():
+            mem_platform[str(mid)] = plat
+    for log in logs:
+        if out[log.id]:
+            continue
+        raw = set(_member_ids_in_log_data(log.data))
+        if log.target_type == "MEMBER" and log.target_id:
+            raw.add(log.target_id)
+        for mid in raw:
+            plat = mem_platform.get(mid)
+            if plat:
+                out[log.id].add(plat)
+
+    # 3. email — một email có thể nằm ở CẢ HAI nhánh (khách mua cả ChatGPT lẫn
+    # Canva); khi đó dòng log hiện ở cả hai, vì không có gì trong log nói nó thuộc
+    # bên nào.
+    emails: set[str] = set()
+    for log in logs:
+        if out[log.id]:
+            continue
+        emails |= _emails_in_log_data(log.data)
+    email_platform: dict[str, set[str]] = {}
+    if emails:
+        for em, plat in db.execute(
+            select(func.lower(Member.email), Workspace.platform)
+            .join(Workspace, Member.workspace_id == Workspace.id)
+            .where(func.lower(Member.email).in_(emails))
+        ).all():
+            email_platform.setdefault(em, set()).add(plat)
+    for log in logs:
+        if out[log.id]:
+            continue
+        for em in _emails_in_log_data(log.data):
+            out[log.id] |= email_platform.get(em, set())
+
+    return out
+
+
 # Quét tối đa N dòng gần nhất rồi post-filter — tránh SQL prefilter bỏ sót log
 # hàng loạt (member_ids JSONB), extension (actor_id NULL), gán chủ cũ, v.v.
 _SUB_ADMIN_AUDIT_SCAN = 3000
@@ -315,10 +422,16 @@ def list_audit_logs(
     before: datetime | None = Query(default=None),
     before_id: UUID | None = Query(default=None),
     q: str | None = Query(default=None, max_length=200),
+    platform: str | None = Query(default=None),
 ) -> list[AuditLogOut]:
     """Một TRANG nhật ký, mới→cũ. `before`/`before_id` = con trỏ (dòng cuối của
     trang trước) để trang sau tải tiếp phần cũ hơn. Trả về ÍT HƠN `limit` dòng
-    nghĩa là đã hết nhật ký — UI dựa vào đó để ẩn nút "xem thêm"."""
+    nghĩa là đã hết nhật ký — UI dựa vào đó để ẩn nút "xem thêm".
+
+    `platform=gpt|canva` → chỉ dòng của MỘT nhánh (xem `_log_platforms`). Lọc nhánh
+    phải làm sau khi đọc dòng ra (nhánh nằm trong JSONB / phải tra bảng khác), nên
+    khi có tham số này thì cả super-admin cũng đi đường QUÉT THEO LÔ như sub-admin:
+    quét lùi tới khi gom đủ `limit` dòng, giữ nguyên quy ước "ít hơn limit = hết"."""
     base = select(AuditLog).order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
     if action:
         base = base.where(AuditLog.action == action)
@@ -329,12 +442,21 @@ def list_audit_logs(
     if q and q.strip():
         base = base.where(_search_clause(db, q.strip()))
 
-    if user.is_super_admin:
+    if platform is not None and platform not in PLATFORMS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="platform không hợp lệ"
+        )
+
+    if user.is_super_admin and platform is None:
         rows = list(
             db.execute(_before_cursor(base, before, before_id).limit(limit)).scalars()
         )
     else:
-        owned_ids, owned_emails = _owned_member_sets(db, user.id)
+        owned_ids, owned_emails = (
+            (set(), set())
+            if user.is_super_admin
+            else _owned_member_sets(db, user.id)
+        )
         rows = []
         ts, log_id = before, before_id
         for _ in range(_SUB_ADMIN_MAX_CHUNKS):
@@ -345,12 +467,23 @@ def list_audit_logs(
             )
             if not raw:
                 break
-            own_queue_ids = _own_queue_item_ids(db, user.id, raw)
+            own_queue_ids = (
+                set() if user.is_super_admin else _own_queue_item_ids(db, user.id, raw)
+            )
+            of_platform = _log_platforms(db, raw) if platform is not None else {}
             for r in raw:
-                if _audit_log_visible(r, user, owned_ids, owned_emails, own_queue_ids):
-                    rows.append(r)
-                    if len(rows) >= limit:
-                        break
+                if not user.is_super_admin and not _audit_log_visible(
+                    r, user, owned_ids, owned_emails, own_queue_ids
+                ):
+                    continue
+                if platform is not None:
+                    plats = of_platform.get(r.id) or set()
+                    # Tập rỗng = việc của tài khoản, không của nhánh nào → hiện ở cả hai.
+                    if plats and platform not in plats:
+                        continue
+                rows.append(r)
+                if len(rows) >= limit:
+                    break
             if len(rows) >= limit or len(raw) < _SUB_ADMIN_AUDIT_SCAN:
                 break
             ts, log_id = raw[-1].timestamp, raw[-1].id

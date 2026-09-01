@@ -38,12 +38,20 @@ from datetime import date as date_type
 from datetime import datetime, time, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_session
-from app.models import AuditLog, Member, User, Wallet, WalletTransaction, Workspace
+from app.models import (
+    PLATFORMS,
+    AuditLog,
+    Member,
+    User,
+    Wallet,
+    WalletTransaction,
+    Workspace,
+)
 from app.routers.wallet._shared import get_payment_settings
 from app.routers.wallet.daily import _summary_for
 from app.services.payment_flow import is_chargeable_user
@@ -130,9 +138,37 @@ def _emails_of_queued(ev: AuditLog) -> list[str]:
     return out
 
 
-def _owned_emails(db: Session, user_id: UUID, since: datetime) -> set[str]:
+def _platform_emails(db: Session, user_id: UUID, platform: str) -> set[str]:
+    """Email của user này nằm ở MỘT nhánh — suy từ workspace của member.
+
+    Sổ cái KHÔNG ghi nhánh (bút toán phí chỉ mang email), nên muốn tách số của
+    Tổng quan theo nhánh thì phải đi vòng qua đây: lấy trước tập email của nhánh
+    rồi lọc mọi nguồn số bằng tập đó.
+
+    Một email mua CẢ HAI nhánh sẽ nằm trong cả hai tập; bút toán của nó không nói
+    được là tiền của bên nào nên bị đếm ở cả hai. Hiếm, và thà thế còn hơn giấu.
+    """
+    return {
+        e
+        for (e,) in db.execute(
+            select(func.lower(Member.email))
+            .join(Workspace, Member.workspace_id == Workspace.id)
+            .where(
+                Member.invited_by_user_id == user_id,
+                Workspace.platform == platform,
+            )
+        ).all()
+    }
+
+
+def _owned_emails(
+    db: Session, user_id: UUID, since: datetime, only: set[str] | None = None
+) -> set[str]:
     """Email mà CHÍNH user này đã bấm mời từ `since` — dùng quy chủ cho các sự kiện
-    kết quả (VERIFIED/FAILED) vốn không mang actor_id."""
+    kết quả (VERIFIED/FAILED) vốn không mang actor_id.
+
+    `only` = tập email của nhánh đang xem (xem `_platform_emails`); None = cả hai.
+    """
     rows = db.execute(
         select(AuditLog).where(
             AuditLog.action.in_(_QUEUED),
@@ -143,6 +179,8 @@ def _owned_emails(db: Session, user_id: UUID, since: datetime) -> set[str]:
     owned: set[str] = set()
     for ev in rows:
         owned.update(_emails_of_queued(ev))
+    if only is not None:
+        owned &= only
     return owned
 
 
@@ -269,7 +307,14 @@ class _FeeRows:
         `removed` vì ĐỔI EMAIL vẫn tính là còn ghế — ghế đó nằm dưới tên mới.
     """
 
-    def __init__(self, db: Session, user_id: UUID, start: datetime, end: datetime):
+    def __init__(
+        self,
+        db: Session,
+        user_id: UUID,
+        start: datetime,
+        end: datetime,
+        only: set[str] | None = None,
+    ):
         rows = db.execute(
             select(
                 WalletTransaction.kind,
@@ -292,6 +337,9 @@ class _FeeRows:
         for kind, _rev, created, meta in rows:
             email = str((meta or {}).get("email") or "").lower()
             if not email:
+                continue
+            # Chỉ giữ bút toán của nhánh đang xem (None = không lọc).
+            if only is not None and email not in only:
                 continue
             emails.add(email)
             self.by_day.setdefault(_vn_day(created), {}).setdefault(email, set()).add(kind)
@@ -399,6 +447,7 @@ class _LogRows:
         outcomes: "_Outcomes",
         start: datetime,
         end: datetime,
+        only: set[str] | None = None,
     ):
         # ngày → email → ngày đó có sự kiện GIA HẠN hay không.
         self.by_day: dict[date_type, dict[str, bool]] = {}
@@ -418,6 +467,8 @@ class _LogRows:
         ).all():
             email = str((data or {}).get("email") or "").strip().lower()
             if not email:
+                continue
+            if only is not None and email not in only:
                 continue
             emails.add(email)
             self.by_day.setdefault(_vn_day(ts), {})[email] = True
@@ -478,7 +529,7 @@ class _LogRows:
 
 
 def _seats_curve(
-    db: Session, user_id: UUID, days: list[date_type]
+    db: Session, user_id: UUID, days: list[date_type], platform: str | None = None
 ) -> dict[date_type, int]:
     """Số ghế còn phục vụ tính tới CUỐI mỗi ngày trong `days`.
 
@@ -490,11 +541,14 @@ def _seats_curve(
     # created_at) như cột "Ngày thêm". Đây là đường TỒN KHO: ghế mời từ tháng 6 mà
     # hôm qua mời lại vẫn là ghế đã tồn tại suốt, lấy mốc mời lại thì cả kho dồn
     # hết về mấy ngày gần đây và đường vẽ ra một cú tăng trưởng không có thật.
-    rows = db.execute(
-        select(Member.created_at, Member.removed_at, Member.status).where(
-            Member.invited_by_user_id == user_id
-        )
-    ).all()
+    seats_stmt = select(Member.created_at, Member.removed_at, Member.status).where(
+        Member.invited_by_user_id == user_id
+    )
+    if platform is not None:
+        seats_stmt = seats_stmt.join(
+            Workspace, Member.workspace_id == Workspace.id
+        ).where(Workspace.platform == platform)
+    rows = db.execute(seats_stmt).all()
     out: dict[date_type, int] = {}
     marks = [datetime.combine(d, time.max, tzinfo=VN_TZ) for d in days]
     for i, d in enumerate(days):
@@ -531,12 +585,22 @@ def overview(
     db: Session = Depends(get_session),
     user: User = Depends(get_current_user),
     days: int = Query(default=30, ge=1, le=_MAX_DAYS),
+    platform: str | None = Query(default=None),
 ) -> DashboardOverviewOut:
     """Toàn bộ số của trang Tổng quan cho CHÍNH người đang đăng nhập.
 
     `days` chỉ đổi khoảng của biểu đồ tăng trưởng; thẻ tỉ lệ gia hạn và khối chất
     lượng lượt mời luôn là 30 ngày.
+
+    `platform=gpt|canva` → chỉ số của MỘT nhánh. Nhánh của một con số suy từ EMAIL
+    (xem `_platform_emails`) vì sổ cái không ghi nhánh; bỏ trống thì gộp cả hai như
+    trước. Thẻ Ví KHÔNG lọc: tiền là của tài khoản, không thuộc nhánh nào.
     """
+    if platform is not None and platform not in PLATFORMS:
+        # 400 viết thẳng số: trong file này `status` bị dùng làm tên biến vòng lặp
+        # member (email, status, …) nên `status.HTTP_400_BAD_REQUEST` là UnboundLocal.
+        raise HTTPException(status_code=400, detail="platform không hợp lệ")
+    only = _platform_emails(db, user.id, platform) if platform is not None else None
     now_vn = datetime.now(VN_TZ)
     today = now_vn.date()
     series_days = [today - timedelta(days=i) for i in range(days - 1, -1, -1)]
@@ -550,20 +614,22 @@ def overview(
     span_start = datetime.combine(span_from, time.min, tzinfo=VN_TZ)
     end_excl = datetime.combine(today + timedelta(days=1), time.min, tzinfo=VN_TZ)
 
-    fees = _FeeRows(db, user.id, span_start, end_excl)
-    owned = _owned_emails(db, user.id, span_start - timedelta(days=_ATTR_LOOKBACK_DAYS))
+    fees = _FeeRows(db, user.id, span_start, end_excl, only)
+    owned = _owned_emails(
+        db, user.id, span_start - timedelta(days=_ATTR_LOOKBACK_DAYS), only
+    )
     outcomes = _Outcomes(db, owned, span_start, end_excl)
-    seats = _seats_curve(db, user.id, series_days)
+    seats = _seats_curve(db, user.id, series_days, platform)
     # Nguồn của "mới / gia hạn": SỔ CÁI với đại lý có trả phí (khớp từng đồng với
     # trang Ví), NHẬT KÝ với tài khoản được miễn phí (sổ cái của họ trống nên đọc
     # bút toán là mọi con số nằm im ở 0 — xem `_LogRows`).
     charged = is_chargeable_user(user)
     flow: _FeeRows | _LogRows = (
-        fees if charged else _LogRows(db, user.id, outcomes, span_start, end_excl)
+        fees if charged else _LogRows(db, user.id, outcomes, span_start, end_excl, only)
     )
 
     # ── Thẻ "Hôm nay" — lấy nguyên số của trang Ví ─────────────────────────
-    card = _summary_for(db, user.id, today)
+    card = _summary_for(db, user.id, today, platform)
     if charged:
         new_today = card.added_new_count
         renew_today = card.added_renew_count
@@ -679,7 +745,7 @@ def overview(
     active = pending = unpaid = due_soon = due_soon_money = unbound = 0
     due_by_day: dict[date_type, list[int]] = {}
     in_team: set[str] = set()
-    member_rows = db.execute(
+    member_stmt = (
         select(
             Member.email,
             Member.status,
@@ -692,7 +758,12 @@ def overview(
             Member.invited_by_user_id == user.id,
             Member.status.in_(("active", "pending")),
         )
-    ).all()
+    )
+    if platform is not None:
+        member_stmt = member_stmt.join(
+            Workspace, Member.workspace_id == Workspace.id
+        ).where(Workspace.platform == platform)
+    member_rows = db.execute(member_stmt).all()
     for email, status, pay, end_at, _stuck_at, chat_id, fee_vnd in member_rows:
         in_team.add(email.strip().lower())
         if status == "active":
@@ -856,6 +927,7 @@ def due_members(
     user: User = Depends(get_current_user),
     from_: str = Query(alias="from"),
     to: str = Query(),
+    platform: str | None = Query(default=None),
 ) -> list[DashboardDueMember]:
     """Ghế của CHÍNH user đến hạn trong [from, to] (ISO date, giờ VN, bao gồm 2 đầu).
 
@@ -871,7 +943,12 @@ def due_members(
     end = datetime.combine(to_date + timedelta(days=1), time.min, tzinfo=VN_TZ)
     default_fee = int(get_payment_settings(db).invite_fee_vnd or 0)
 
-    rows = db.execute(
+    if platform is not None and platform not in PLATFORMS:
+        # 400 viết thẳng số: trong file này `status` bị dùng làm tên biến vòng lặp
+        # member (email, status, …) nên `status.HTTP_400_BAD_REQUEST` là UnboundLocal.
+        raise HTTPException(status_code=400, detail="platform không hợp lệ")
+
+    due_stmt = (
         select(Member, Workspace.name)
         .join(Workspace, Workspace.id == Member.workspace_id, isouter=True)
         .where(
@@ -881,7 +958,10 @@ def due_members(
             Member.subscription_end_at < end,
         )
         .order_by(Member.subscription_end_at)
-    ).all()
+    )
+    if platform is not None:
+        due_stmt = due_stmt.where(Workspace.platform == platform)
+    rows = db.execute(due_stmt).all()
     return [
         DashboardDueMember(
             member_id=str(m.id),

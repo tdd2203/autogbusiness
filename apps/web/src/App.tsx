@@ -183,7 +183,44 @@ export default function App() {
         />
         <Route path="settings" element={<Settings />} />
         {/* ── Nhánh CANVA: đường dẫn riêng, không lồng vào /workspaces của ChatGPT
-            (user 2026-09-01). Trang mời vẫn dùng chung /invite, có công tắc nhánh. */}
+            (user 2026-09-01). Sidebar của Canva có ĐỦ các mục như ChatGPT: mỗi mục là
+            một route /canva/... dùng lại chính trang của ChatGPT, còn dữ liệu thì mỗi
+            nhánh một đằng — trang đọc nhánh qua `usePlatform()` (suy từ đường dẫn) rồi
+            gắn `?platform=` vào lời gọi API. */}
+        <Route path="canva/dashboard" element={<Dashboard />} />
+        <Route
+          path="canva/invite"
+          element={
+            <ProtectedRoute requirePermission="MEMBER_INVITE">
+              <InviteMembers />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="canva/added-emails"
+          element={
+            <ProtectedRoute requirePermission="MEMBER_VIEW">
+              <AddedEmails />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="canva/renewals"
+          element={
+            <ProtectedRoute requirePermission="MEMBER_VIEW">
+              <Renewals />
+            </ProtectedRoute>
+          }
+        />
+        <Route path="canva/notifications" element={<Notifications />} />
+        <Route
+          path="canva/audit-logs"
+          element={
+            <ProtectedRoute requirePermission="AUDIT_LOG_VIEW">
+              <AuditLogs />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="canva/teams"
           element={

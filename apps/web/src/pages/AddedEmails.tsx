@@ -6,6 +6,7 @@ import { queuePollInterval } from "../lib/queuePolling";
 import { currentStintCycles } from "../lib/cycles";
 import { useAuth } from "../hooks/useAuth";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { usePlatform } from "../hooks/usePlatform";
 import { useAddedEmails } from "../hooks/useAddedEmails";
 import { useFormatDate, useFormatDateTime, useT } from "../i18n";
 import type { AddedMember, QueueItem, SubscriptionCycle } from "../types";
@@ -181,6 +182,8 @@ export default function AddedEmails() {
     onPaymentRequired: (order) => setQrOrder(order),
   });
 
+  const platform = usePlatform();
+
   // Super-admin: danh sách tài khoản phụ để xem riêng từng người.
   const { data: subAccounts = [] } = useQuery({
     queryKey: ["users"],
@@ -189,15 +192,18 @@ export default function AddedEmails() {
     select: (rows) => rows.filter((u) => !u.is_super_admin),
   });
 
-  const queryParam = !isSuper
+  // NHÁNH luôn đi kèm mọi lời gọi: /added-emails là ChatGPT, /canva/added-emails là
+  // Canva — hai bên không dùng chung danh sách lẫn cache.
+  const ownerParam = !isSuper
     ? ""
     : selectedUserId === UNASSIGNED_OWNER
-      ? "?unassigned=true"
+      ? "&unassigned=true"
       : selectedUserId
-        ? `?user_id=${selectedUserId}`
+        ? `&user_id=${selectedUserId}`
         : "";
+  const queryParam = `?platform=${platform}${ownerParam}`;
   const { data: members = [], isLoading } = useQuery({
-    queryKey: ["added-members", isSuper ? selectedUserId : "self"],
+    queryKey: ["added-members", isSuper ? selectedUserId : "self", platform],
     queryFn: () => api<AddedMember[]>(`/api/v1/added-members${queryParam}`),
     // Phục vụ TỪ CACHE — KHÔNG refetch theo thời gian / khi vào lại trang / focus
     // tab. Chỉ gọi lại DB khi dữ liệu THỰC SỰ đổi, qua invalidate ["added-members"]
@@ -218,11 +224,14 @@ export default function AddedEmails() {
   // Key giữ TIỀN TỐ ["added-members", ...] → mọi invalidate ["added-members"] sẵn có
   // (mutation + watcher task nền) cũng làm mới tab này, khỏi đi thêm đường riêng.
   const { data: removedMembers = [], isLoading: removedLoading } = useQuery({
-    queryKey: ["added-members", isSuper ? selectedUserId : "self", "removed"],
+    queryKey: [
+      "added-members",
+      isSuper ? selectedUserId : "self",
+      platform,
+      "removed",
+    ],
     queryFn: () =>
-      api<AddedMember[]>(
-        `/api/v1/added-members${queryParam ? `${queryParam}&` : "?"}removed=true`,
-      ),
+      api<AddedMember[]>(`/api/v1/added-members${queryParam}&removed=true`),
     enabled: statusTab === "removed",
     staleTime: Infinity,
     refetchOnWindowFocus: false,

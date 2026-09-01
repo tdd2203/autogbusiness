@@ -19,6 +19,7 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useAuth } from "../hooks/useAuth";
+import { usePlatform } from "../hooks/usePlatform";
 import { toast } from "./Toast";
 import OrderQrModal from "./OrderQrModal";
 import { getQrOrder, type OrderQr } from "../lib/wallet";
@@ -61,11 +62,13 @@ export default function DueWeekModal({
   const [error, setError] = useState<string | null>(null);
   const [qrOrder, setQrOrder] = useState<OrderQr | null>(null);
 
+  // Danh sách tới hạn của NHÁNH đang mở (mở từ Tổng quan nào thì lấy số nhánh đó).
+  const platform = usePlatform();
   const { data: rows = [], isLoading } = useQuery({
-    queryKey: ["due-members", from, to],
+    queryKey: ["due-members", from, to, platform],
     queryFn: () =>
       api<DueMember[]>(
-        `/api/v1/dashboard/due-members?from=${from}&to=${to}`,
+        `/api/v1/dashboard/due-members?from=${from}&to=${to}&platform=${platform}`,
       ),
   });
 

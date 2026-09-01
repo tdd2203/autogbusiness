@@ -10,7 +10,7 @@ paid) qua /mark-paid. Super-admin có thể xem theo từng tài khoản phụ (
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -19,11 +19,13 @@ from app.audit import log_event
 from app.deps import get_current_user, get_session
 from app.models import (
     PLATFORM_GPT,
+    PLATFORMS,
     REMOVED_REASON_EMAIL_CHANGED,
     AuditLog,
     Member,
     MemberSubscriptionCycle,
     User,
+    Workspace,
 )
 from app.routers.members._shared import current_stint_cycles
 from app.routers.wallet._shared import get_payment_settings
@@ -176,6 +178,7 @@ def list_added_members(
     user_id: UUID | None = None,
     unassigned: bool = False,
     removed: bool = False,
+    platform: str | None = Query(default=None),
     db: Session = Depends(get_session),
     user: User = Depends(get_current_user),
 ) -> list[AddedMemberOut]:
@@ -186,6 +189,9 @@ def list_added_members(
         ?user_id=<id>   → xem riêng 1 tài khoản phụ
         ?unassigned=true → xem "email còn lại" (CHƯA có chủ) — super-admin quản lý
         bỏ trống         → tất cả email đã có chủ (add qua dashboard)
+    - ?platform=gpt|canva → chỉ email của MỘT nhánh (suy từ workspace của member —
+      nguồn thật duy nhất, xem models.PLATFORM_*). Thanh bên web tách hẳn hai nhánh
+      nên trang nào cũng gửi tham số này; bỏ trống thì trả cả hai như trước.
     - ?removed=true → ĐẢO danh sách sang tab "Đã xoá": chỉ email đã rời team trong
       `REMOVED_TAB_WINDOW` (90 ngày) gần nhất, mới xoá xếp trước. Quy tắc ai-thấy-gì
       giữ NGUYÊN như trên. Email `removed` mà thiếu `removed_at` (dữ liệu cũ trước
@@ -197,11 +203,20 @@ def list_added_members(
         target_user_id = user.id
         unassigned = False  # sub-admin không xem pool email còn lại
 
+    if platform is not None and platform not in PLATFORMS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="platform không hợp lệ"
+        )
+
     stmt = select(Member).options(
         selectinload(Member.workspace),
         selectinload(Member.invited_by),
         selectinload(Member.subscription_cycles),
     )
+    if platform is not None:
+        stmt = stmt.join(Workspace, Member.workspace_id == Workspace.id).where(
+            Workspace.platform == platform
+        )
     if removed:
         cutoff = datetime.now(timezone.utc) - REMOVED_TAB_WINDOW
         stmt = stmt.where(

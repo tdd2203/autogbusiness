@@ -8,6 +8,7 @@ import { TelegramConnectGate } from "../components/TelegramConnectGate";
 import { NotifyLinkModal } from "../components/NotifyLinkModal";
 import { NotificationTemplateModal } from "../components/NotificationTemplateModal";
 import { useTelegramConnect } from "../hooks/useTelegramConnect";
+import { usePlatform } from "../hooks/usePlatform";
 
 /**
  * Trang "Thông báo" (mục riêng ở sidebar, mở cho MỌI người dùng).
@@ -29,10 +30,13 @@ export default function Notifications() {
   const [notifyMember, setNotifyMember] = useState<AddedMember | null>(null);
   const [editTemplate, setEditTemplate] = useState(false);
   const { status: tg } = useTelegramConnect();
+  // Bảng email lọc theo nhánh đang mở — kênh Telegram thì dùng chung cả hai nhánh.
+  const platform = usePlatform();
 
   const { data: members = [], isLoading } = useQuery({
-    queryKey: ["added-members", "self"],
-    queryFn: () => api<AddedMember[]>("/api/v1/added-members"),
+    queryKey: ["added-members", "self", platform],
+    queryFn: () =>
+      api<AddedMember[]>(`/api/v1/added-members?platform=${platform}`),
   });
 
   const rows = useMemo(() => {
