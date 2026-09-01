@@ -334,7 +334,36 @@ def _log_platforms(db: Session, logs: list[AuditLog]) -> dict[UUID, set[str]]:
         if plat:
             out[log.id].add(plat)
 
-    # 4. email — một email có thể nằm ở CẢ HAI nhánh (khách mua cả ChatGPT lẫn
+    # 4. hoá đơn — dòng tiền của một lệnh (`PAYMENT_ORDER_CREATED`,
+    # `WALLET_ORDER_CREDITED`) chỉ mang id hoá đơn. `payment_orders` CÓ cột nhánh
+    # nên quy được, khỏi để tiền của ChatGPT nằm trong nhật ký Canva.
+    order_ids: set[UUID] = set()
+    for log in logs:
+        if out[log.id]:
+            continue
+        oid = _order_id_of(log)
+        if oid:
+            try:
+                order_ids.add(UUID(oid))
+            except ValueError:
+                pass
+    order_platform: dict[str, str] = {}
+    if order_ids:
+        for oid, plat in db.execute(
+            select(PaymentOrder.id, PaymentOrder.platform).where(
+                PaymentOrder.id.in_(order_ids)
+            )
+        ).all():
+            order_platform[str(oid)] = plat
+    for log in logs:
+        if out[log.id]:
+            continue
+        oid = _order_id_of(log)
+        plat = order_platform.get(oid) if oid else None
+        if plat:
+            out[log.id].add(plat)
+
+    # 5. email — một email có thể nằm ở CẢ HAI nhánh (khách mua cả ChatGPT lẫn
     # Canva); khi đó dòng log hiện ở cả hai, vì không có gì trong log nói nó thuộc
     # bên nào.
     emails: set[str] = set()
@@ -356,7 +385,7 @@ def _log_platforms(db: Session, logs: list[AuditLog]) -> dict[UUID, set[str]]:
         for em in _emails_in_log_data(log.data):
             out[log.id] |= email_platform.get(em, set())
 
-    # 5. hành động mang tên nhánh (CANVA_PRICE_TIERS_UPDATED…): không gắn workspace
+    # 6. hành động mang tên nhánh (CANVA_PRICE_TIERS_UPDATED…): không gắn workspace
     # nào nhưng rõ ràng là việc của nhánh đó, đừng để nó hiện bên ChatGPT.
     for log in logs:
         if not out[log.id] and log.action.startswith("CANVA_"):

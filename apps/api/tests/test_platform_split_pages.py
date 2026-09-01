@@ -143,3 +143,60 @@ def test_nhat_ky_khong_lan_dong_hang_doi_cua_nhanh_kia(
 
     assert queue_actions("&platform=gpt"), "nhánh ChatGPT phải thấy dòng hàng đợi của nó"
     assert queue_actions("&platform=canva") == []
+
+
+def test_nhat_ky_tien_theo_nhanh_cua_hoa_don(
+    client: TestClient, auth_header: dict[str, str]
+) -> None:
+    """Dòng tiền chỉ mang id hoá đơn — quy nhánh theo `payment_orders.platform`.
+
+    Không quy thì mỗi lần khách trả tiền cho ChatGPT lại hiện trong nhật ký Canva
+    (đo trên dữ liệu thật 2026-09-01: 108/200 dòng gần nhất).
+    """
+    from uuid import uuid4
+
+    from app.db import SessionLocal
+    from app.models import AuditLog, PaymentOrder, User
+
+    db = SessionLocal()
+    try:
+        admin = db.query(User).filter(User.is_super_admin.is_(True)).first()
+        assert admin is not None
+        orders = {}
+        for plat in ("gpt", "canva"):
+            o = PaymentOrder(
+                user_id=admin.id,
+                ref_code=f"TEST{plat.upper()}",
+                platform=plat,
+                kind="invite",
+                amount_vnd=10_000,
+                status="paid",
+            )
+            db.add(o)
+            db.flush()
+            orders[plat] = o.id
+            db.add(
+                AuditLog(
+                    id=uuid4(),
+                    actor_type="SYSTEM",
+                    actor_label="test",
+                    action="WALLET_ORDER_CREDITED",
+                    result="SUCCESS",
+                    data={"ref_type": "order", "ref_id": str(o.id)},
+                )
+            )
+        db.commit()
+    finally:
+        db.close()
+
+    def refs(query: str) -> set[str]:
+        resp = client.get(f"/api/v1/audit-logs?limit=200{query}", headers=auth_header)
+        assert resp.status_code == 200, resp.text
+        return {
+            (r.get("data") or {}).get("ref_id")
+            for r in resp.json()
+            if r["action"] == "WALLET_ORDER_CREDITED"
+        }
+
+    assert refs("&platform=gpt") == {str(orders["gpt"])}
+    assert refs("&platform=canva") == {str(orders["canva"])}
