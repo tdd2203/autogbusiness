@@ -111,6 +111,7 @@ const IMP_OP_GROUP: Record<string, ImpGroup> = {
   REVOKE_INVITES_QUEUED: "remove",
   MEMBER_INVITE_REVOKED: "remove",
   MEMBER_INVITE_REVOKE_FAILED: "remove",
+  MEMBER_EMAIL_CHANGE_REMOVE_FAILED: "remove",
   // Cảnh báo: đã tự động gỡ nhiều lần nhưng member vẫn còn trên ChatGPT → cần gỡ
   // tay. Thuộc nhóm remove để nổi lên tab "Chính" (admin phải thấy).
   MEMBER_REMOVE_STUCK: "remove",
@@ -430,6 +431,7 @@ const ACT_TITLE: Record<string, string> = {
   MEMBER_EXPIRED_REMOVE_QUEUED: "Xoá do hết hạn",
   MEMBER_REMOVE_STUCK: "Gỡ thất bại — cần gỡ tay",
   MEMBER_REMOVE_UNVERIFIED: "Gỡ chưa xác minh (giữ nguyên)",
+  MEMBER_EMAIL_CHANGE_REMOVE_FAILED: "Đổi email — gỡ email cũ thất bại",
   MEMBER_EMAIL_CHANGED: "Đổi email thành viên",
   MEMBER_ADD_DATE_CORRECTED: "Sửa ngày thêm",
   MEMBER_EXPIRY_BULK_SET: "Đặt hạn hàng loạt",
@@ -658,6 +660,7 @@ const LIFECYCLE_SUCCESS_OPS = new Set([
 const LIFECYCLE_FAIL_OPS = new Set([
   "MEMBER_INVITE_FAILED",
   "MEMBER_INVITE_REVOKE_FAILED",
+  "MEMBER_EMAIL_CHANGE_REMOVE_FAILED",
   "MEMBER_REMOVE_STUCK",
 ]);
 

@@ -24,6 +24,37 @@ const REASON_BADGE: Record<string, string> = {
   invite_seat_credit: "badge badge-info badge-plain",
 };
 
+/** Badge lý do rời team của 1 dòng: class + key i18n + email kế thừa (nếu có).
+ *
+ * Tách khỏi JSX để kiểm chứng được ranh giới quan trọng nhất của bảng này: "đã xoá,
+ * ĐÃ XÁC MINH" khác hẳn "đã ra lệnh xoá, CHƯA xác nhận". Bản ghi ghi `removed` ngay
+ * lúc bấm Đổi email, nên nhãn xám "Đổi sang email khác" có lúc là lời khai chứ không
+ * phải sự thật — `email_change_stuck_at` là chỗ duy nhất phân biệt được hai ca đó.
+ */
+export function removalBadge(m: AddedMember): {
+  className: string;
+  key: string;
+  email: string | null;
+} {
+  const code = m.removed_reason ?? "";
+  const chain = m.email_changed_to ?? [];
+  const movedTo = m.email_change_stuck_to ?? chain[chain.length - 1] ?? null;
+  if (m.email_change_stuck_at) {
+    return {
+      className: "badge badge-warning badge-plain",
+      key: movedTo
+        ? "removedReason.emailChangedUnconfirmedTo"
+        : "removedReason.emailChangedUnconfirmed",
+      email: movedTo,
+    };
+  }
+  return {
+    className: REASON_BADGE[code] ?? "badge badge-neutral badge-plain",
+    key: code ? `removedReason.${code}` : "removedReason.unknown",
+    email: chain.length > 0 ? chain[chain.length - 1] : null,
+  };
+}
+
 /**
  * Tab "Đã xoá" của trang Email đã thêm — CHỈ ĐỌC.
  *
@@ -57,24 +88,25 @@ export function RemovedEmailsList({
       ? formatDateTime(m.subscription_end_at, undefined, PRECISE_TIME)
       : t("addedEmails.expiryNone");
   const reasonBadge = (m: AddedMember) => {
-    const code = m.removed_reason ?? "";
-    const chain = m.email_changed_to ?? [];
+    const badge = removalBadge(m);
+    const unconfirmed = !!m.email_change_stuck_at;
     return (
       <span
-        className={REASON_BADGE[code] ?? "badge badge-neutral badge-plain"}
+        className={badge.className}
         // Ca đổi email: rê chuột là biết hạn/tiền đã sang email nào, khỏi mở modal.
-        // Chuỗi đầy đủ (A → B → C) hiện trong modal chi tiết.
+        // Chuỗi đầy đủ (A → B → C) hiện trong modal chi tiết. Ca CHƯA XÁC NHẬN thì
+        // tooltip nói luôn phải làm gì (đồng bộ) thay vì chỉ nêu email kế thừa.
         title={
-          chain.length > 0
-            ? t("memberDetail.badgeRemovedMovedTo", {
-                email: chain[chain.length - 1],
-              })
-            : undefined
+          unconfirmed
+            ? t("memberDetail.removalUnconfirmedNote")
+            : badge.email
+              ? t("memberDetail.badgeRemovedMovedTo", { email: badge.email })
+              : undefined
         }
       >
-        {code
-          ? t(`removedReason.${code}`)
-          : t("removedReason.unknown")}
+        {badge.email
+          ? t(badge.key, { email: badge.email })
+          : t(badge.key)}
       </span>
     );
   };

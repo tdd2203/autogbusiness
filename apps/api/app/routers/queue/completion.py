@@ -573,6 +573,46 @@ def _email_change_target_emails(db: Session, queue_item_id: str | UUID) -> set[s
     return out
 
 
+def _email_change_removal_legs(
+    db: Session, queue_item_id: str | UUID
+) -> list[tuple[str, str]]:
+    """(id member CŨ, email MỚI) của lần ĐỔI EMAIL mà lệnh GỠ của nó chính là task này.
+
+    Ngược chiều `_email_change_target_emails` (đi theo lượt MỜI). `change_email` ghi
+    `remove_queue_item_id` vào nhật ký nên từ task gỡ lần ngược ra được ĐÚNG bản ghi
+    email cũ — bản ghi đã bị đánh `removed` NGAY lúc bấm nút, trước khi extension
+    chạm vào ChatGPT.
+
+    CHỈ nhận `MEMBER_EMAIL_CHANGED`. Chuyển hạn (`MEMBER_SUBSCRIPTION_TRANSFERRED`)
+    cũng ghi `remove_queue_item_id` và cũng đánh removed lạc quan y hệt, NHƯNG dòng
+    cho của nó mang `removed_reason='subscription_transferred'`; mọi đường gỡ cờ
+    `email_change_stuck_*` bên dưới đều viết lại reason thành `email_changed`, nên
+    gộp vào đây là bịa lý do rời team cho ca chuyển hạn. Để riêng.
+    """
+    rows = (
+        db.execute(
+            select(AuditLog.data).where(
+                AuditLog.action == "MEMBER_EMAIL_CHANGED",
+                AuditLog.data["remove_queue_item_id"].astext == str(queue_item_id),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    out: list[tuple[str, str]] = []
+    for data in rows:
+        d = data or {}
+        old_id = d.get("old_member_id")
+        new_email = d.get("new_email")
+        if (
+            isinstance(old_id, str)
+            and isinstance(new_email, str)
+            and new_email.strip()
+        ):
+            out.append((old_id, new_email.strip().lower()))
+    return out
+
+
 def _keep_seat_credit_members(
     db: Session,
     *,
@@ -1535,6 +1575,25 @@ def update_task(
                 )
                 .values(status="revoked")
             )
+            # Dòng ĐANG mang cờ "đổi email chưa xong" nay thu hồi được THẬT. Nó có
+            # thể đã nằm ở `removed` (đổi email đánh dấu ngay lúc bấm, lệnh gỡ đầu
+            # hỏng) nên KHÔNG lọt vào `stale_members` ở trên — không gỡ cờ tại đây
+            # thì cảnh báo "chưa xác nhận" treo vĩnh viễn trên một email đã đi thật.
+            lingering_stuck = (
+                db.execute(
+                    select(Member).where(
+                        Member.workspace_id == workspace.id,
+                        Member.email.in_(to_remove),
+                        Member.email_change_stuck_at.isnot(None),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for stuck_member in lingering_stuck:
+                stuck_member.email_change_stuck_at = None
+                stuck_member.email_change_stuck_to = None
+                db.add(stuck_member)
         if failed_emails:
             # Extension báo COMPLETED nhưng các email này KHÔNG thực sự thu hồi được
             # → để lại pending + log để admin biết mà xử lý (không âm thầm nuốt).
@@ -1766,6 +1825,99 @@ def update_task(
                     data=remove_data,
                     commit=False,
                 )
+            elif member and member.email_change_stuck_at is not None and removal_verified:
+                # Dòng ĐÃ ở `removed` (đổi email đánh dấu ngay lúc bấm) mà vẫn mang cờ
+                # "gỡ chưa xong" vì lần gỡ trước hỏng — lần này gỡ được và CÓ bằng
+                # chứng. Chỉ gỡ cờ; status/removed_reason đã đúng từ đầu, đụng vào là
+                # ghi đè mốc `removed_at` thật bằng mốc của lần dọn muộn này.
+                member.email_change_stuck_at = None
+                member.email_change_stuck_to = None
+                db.add(member)
+                log_event(
+                    db,
+                    actor_type="EXTENSION",
+                    actor_label=f"workspace:{workspace.name}",
+                    action="MEMBER_REMOVED_SYNCED",
+                    result="COMPLETED",
+                    target_type="MEMBER",
+                    target_id=str(member.id),
+                    data={
+                        "email": target_email,
+                        "workspace_id": str(workspace.id),
+                        "queue_item_id": str(item.id),
+                        "removal_reason": "email_changed",
+                        "removal_evidence": (
+                            "absent_confirmed"
+                            if ((body.result or {}).get("data") or {}).get("absent")
+                            is True
+                            else "clicked_and_verified"
+                        ),
+                    },
+                    commit=False,
+                )
+
+    # ---- Lệnh GỠ của một lần ĐỔI EMAIL hỏng → gắn cờ NGAY, không chờ đồng bộ ----
+    # `change_email` đánh dấu email cũ `removed` ngay trong request rồi mới nhờ
+    # extension gỡ trên ChatGPT. Lệnh gỡ hỏng thì trước đây KHÔNG chỗ nào ghi lại:
+    # bản ghi vẫn nằm im ở `removed`, dashboard khoe "Đã xoá", còn ghế trên ChatGPT
+    # thì vẫn bị ăn. Cửa duy nhất phát hiện là một lần SYNC_DATA scope 'both' thành
+    # công thấy lại email (`_mark_email_change_stuck`) — mà sync có thể hỏng nhiều
+    # ngày liền (ca 1/9/2026: revoke hỏng 14:05, hai lần sync sau đó đều
+    # CONTENT_TIMEOUT, không ai biết cho tới khi user tự mở ChatGPT ra soi).
+    #
+    # Ở đây chỉ để lại DẤU VẾT ĐỌC ĐƯỢC, KHÔNG đoán hộ trạng thái: task hỏng không
+    # phải bằng chứng email còn trên ChatGPT (lỗi thật của ca trên là "không thấy ở
+    # cả hai tab"), nên KHÔNG hồi sinh `removed` → `active` và KHÔNG tự xếp lại lệnh
+    # gỡ. Quyền phán "email còn hay hết" vẫn thuộc về đồng bộ — `_retry_stuck_email_
+    # change_removals` chỉ nhắm dòng active/pending nên cờ này cũng không sinh vòng
+    # lặp xếp task. Đổi lại, modal chi tiết đọc cờ để nói thẳng "đã ra lệnh xoá,
+    # chưa xác nhận" thay vì "đã xoá".
+    if effective_status == "FAILED" and item.type in (
+        "REMOVE_MEMBER",
+        "REVOKE_INVITES",
+    ):
+        for old_id, new_email in _email_change_removal_legs(db, item.id):
+            try:
+                old_member = db.get(Member, UUID(old_id))
+            except ValueError:
+                continue
+            if old_member is None or old_member.workspace_id != workspace.id:
+                continue
+            # Bản ghi đã đi tiếp (được mời lại, rời team vì lý do khác, hoặc lần gỡ
+            # sau đã xong) → lần hỏng này không còn nói lên điều gì về hiện tại.
+            if old_member.removed_reason != REMOVED_REASON_EMAIL_CHANGED:
+                continue
+            if old_member.email_change_stuck_at is None:
+                old_member.email_change_stuck_at = item.completed_at or datetime.now(
+                    timezone.utc
+                )
+            old_member.email_change_stuck_to = new_email
+            db.add(old_member)
+            log_event(
+                db,
+                actor_type="EXTENSION",
+                actor_label=f"workspace:{workspace.name}",
+                action="MEMBER_EMAIL_CHANGE_REMOVE_FAILED",
+                result="ERROR",
+                target_type="MEMBER",
+                target_id=str(old_member.id),
+                data={
+                    "email": old_member.email,
+                    "new_email": new_email,
+                    "workspace_id": str(workspace.id),
+                    "queue_item_id": str(item.id),
+                    "task_type": item.type,
+                    "error_code": item.error_code,
+                    "error_message": item.error_message,
+                    "note": (
+                        "Hạn đã theo email mới đi nhưng lệnh gỡ email cũ hỏng — "
+                        "email cũ có thể VẪN ăn một ghế trên ChatGPT. Đồng bộ "
+                        "(cả hai tab) để chốt còn hay hết; còn thì lệnh gỡ được "
+                        "xếp lại tự động."
+                    ),
+                },
+                commit=False,
+            )
 
     # Đếm số member được nâng pending→active trong lần đồng bộ này (SYNC_MEMBER /
     # SYNC_MEMBERS_BATCH) — đính vào audit QUEUE_UPDATED cuối để tab "Chính" tóm tắt

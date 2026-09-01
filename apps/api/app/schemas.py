@@ -539,6 +539,12 @@ class MemberOut(BaseModel):
     # (email bị xoá trước khi có cột này).
     removed_at: datetime | None = None
     removed_reason: str | None = None
+    # ĐỔI EMAIL CHƯA XONG: dòng này đã ghi `removed` (đổi email đánh dấu NGAY lúc bấm)
+    # nhưng lệnh gỡ khỏi ChatGPT hỏng hoặc đồng bộ vẫn thấy email ở đó ⇒ nó CÓ THỂ vẫn
+    # đang ăn một ghế thật. UI phải phân biệt ca này với "đã xoá, đã xác minh" —
+    # `email_change_stuck_to` là email mới lẽ ra đã thay nó.
+    email_change_stuck_at: datetime | None = None
+    email_change_stuck_to: str | None = None
     created_at: datetime
     # Lần CUỐI invite/re-invite qua dashboard (NULL nếu member chỉ đến từ SYNC).
     # Dashboard hiển thị COALESCE(last_invited_at, created_at) cho cột "Ngày thêm"

@@ -146,6 +146,12 @@ export type Member = {
    *  "sync_missing" | "email_changed" | "subscription_transferred".
    *  null = email bị xoá trước khi có cột này → UI hiện "Không rõ". */
   removed_reason?: string | null;
+  /** ĐỔI EMAIL CHƯA XONG. Dòng đã ghi status="removed" (đổi email đánh dấu NGAY lúc
+   *  bấm nút) nhưng lệnh gỡ khỏi ChatGPT hỏng, hoặc đồng bộ vẫn thấy email ở đó ⇒
+   *  email này CÓ THỂ vẫn đang chiếm một suất thật. null = đã xoá có xác minh (hoặc
+   *  chưa có tín hiệu ngược lại). `email_change_stuck_to` = email mới đang giữ hạn. */
+  email_change_stuck_at?: string | null;
+  email_change_stuck_to?: string | null;
   /** Chuỗi email THAY THẾ cho email này, theo thứ tự đổi (A → B → C): phần tử cuối là
    *  email đang giữ hạn/tiền. Backend CHỈ đổ đầy ở danh sách tab "Đã xoá" cho dòng
    *  removed_reason="email_changed"; mọi nơi khác undefined/rỗng. */

@@ -113,6 +113,7 @@ const KNOWN_ACTIONS = new Set([
   "MEMBER_REMOVE_STUCK",
   "MEMBER_REMOVE_FAKE_DETECTED",
   "MEMBER_REMOVE_UNVERIFIED",
+  "MEMBER_EMAIL_CHANGE_REMOVE_FAILED",
   "MEMBER_REFUND_WHILE_IN_TEAM",
   "MEMBER_EXPORT_DATA_QUEUED",
   "MEMBER_DELETE_DATA_QUEUED",
@@ -2230,6 +2231,14 @@ function MemberDetailView({
   // chạy — với ca đổi email nó là bản sao của hạn đã theo email mới đi. Vòng tròn
   // vì thế không được khoe "còn hạn / 27 ngày còn lại" như member đang sống.
   const isRemoved = member.status === "removed";
+  // "Đã xoá" của dòng này là LỜI KHAI, không phải bằng chứng: đổi email đánh dấu
+  // `removed` ngay lúc bấm nút rồi mới nhờ extension gỡ trên ChatGPT. Lệnh gỡ hỏng
+  // (hoặc đồng bộ vẫn thấy email ở đó) thì backend gắn `email_change_stuck_at` —
+  // lúc đó email CÓ THỂ vẫn đang ăn một ghế thật, và nói "đã xoá" là nói dối đúng
+  // vào lúc nguy hiểm nhất (một suất đã trả tiền đang nuôi hai ghế).
+  const removalUnconfirmed = isRemoved && !!member.email_change_stuck_at;
+  const stuckMovedTo =
+    member.email_change_stuck_to ?? emailChain[emailChain.length - 1] ?? null;
 
   // ── Vòng tròn "ngày còn lại" (sidebar) — dẫn xuất từ subscription_end_at ────
   //   không có hạn → ∞ (vô hạn) · còn hạn → số ngày · hết hạn → số ngày quá hạn.
@@ -2274,7 +2283,9 @@ function MemberDetailView({
     : expired
       ? 1
       : Math.max(0, Math.min(1, (diffDays as number) / cycleDays));
-  const ringColor = isRemoved
+  const ringColor = removalUnconfirmed
+    ? "var(--warning-accent)"
+    : isRemoved
     ? "var(--ink-3)"
     : !hasSub
       ? "var(--success-strong)"
@@ -2291,7 +2302,9 @@ function MemberDetailView({
       : expired
         ? -(diffDays as number)
         : (diffDays as number);
-  const ringLabel = isRemoved
+  const ringLabel = removalUnconfirmed
+    ? t("memberDetail.removedUnconfirmedRingLabel")
+    : isRemoved
     ? t("memberDetail.removedRingLabel")
     : !hasSub
       ? t("memberDetail.unlimited")
@@ -2305,7 +2318,17 @@ function MemberDetailView({
   let pillColor = "var(--success)";
   let pillDot = "var(--success-strong)";
   let pillText = t("memberDetail.badgeUnlimited");
-  if (isRemoved) {
+  if (removalUnconfirmed) {
+    // CHƯA XÁC NHẬN: hạn đã theo email mới đi nhưng chưa ai chứng minh được email
+    // này đã rời ChatGPT. Màu cảnh báo, không phải xám "xong việc" — đây là ca cần
+    // người nhìn vào chứ không phải ca đã đóng.
+    pillBg = "var(--warning-bg)";
+    pillColor = "var(--warning)";
+    pillDot = "var(--warning-accent)";
+    pillText = stuckMovedTo
+      ? t("memberDetail.badgeRemovalUnconfirmedMovedTo", { email: stuckMovedTo })
+      : t("memberDetail.badgeRemovalUnconfirmed");
+  } else if (isRemoved) {
     // Đã rời team: nói thẳng "đã xoá" + hạn/tiền giờ nằm ở đâu (nếu là ca đổi email),
     // thay vì chip xanh "còn hạn đến 20/9" của một email không còn tồn tại.
     pillBg = "var(--surface-2)";
@@ -2740,6 +2763,24 @@ function MemberDetailView({
                 />
                 {pillText}
               </span>
+              {/* Ca "đã ra lệnh xoá, chưa xác nhận": chip thôi thì quá kín tiếng cho
+                  một thứ đang có thể ăn ghế trả tiền — nói luôn phải làm gì. */}
+              {removalUnconfirmed && (
+                <div
+                  style={{
+                    fontSize: 11.5,
+                    lineHeight: 1.45,
+                    color: "var(--warning)",
+                    background: "var(--warning-bg)",
+                    border: "1px solid var(--warning-border)",
+                    borderRadius: 8,
+                    padding: "7px 10px",
+                    textAlign: "left",
+                  }}
+                >
+                  {t("memberDetail.removalUnconfirmedNote")}
+                </div>
+              )}
               {hasSub && (
                 <div
                   style={{
