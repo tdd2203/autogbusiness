@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { RunningTaskBubble } from "./RunningTaskBubble";
 import DailyGuideModal from "./DailyGuideModal";
@@ -1037,14 +1038,22 @@ function PlatformSwitcher({
         </svg>
       </button>
 
-      {open && anchor && (
+      {/* Bảng chọn ĐƯA RA THẲNG <body>: nằm trong thanh bên thì nội dung trang bên
+          phải (thẻ, biểu đồ — đều là phần tử có position) vẽ ĐÈ lên nó, nhìn như
+          bảng bị mờ (user 2026-09-01). Ra body rồi thì nó che kín, và vẫn dưới lớp
+          modal (z-index 1000). */}
+      {open &&
+        anchor &&
+        createPortal(
         <div
           role="menu"
+          onMouseEnter={() => setOpen(true)}
+          onMouseLeave={() => setOpen(false)}
           style={{
             position: "fixed",
             left: anchor.left,
             top: anchor.top,
-            zIndex: 60,
+            zIndex: 120,
             // Dải trong suốt 8px nối liền nút với bảng: chuột đi qua khe không bị
             // coi là rời khỏi vùng, nếu không thì menu chớp tắt giữa chừng.
             paddingLeft: 8,
@@ -1054,10 +1063,14 @@ function PlatformSwitcher({
             style={{
               minWidth: 168,
               padding: 4,
+              // ĐỤC HẲN, che kín thứ nằm dưới: nền trắng đặc + viền rõ, bóng chỉ
+              // còn một vệt sát mép. Bóng toả rộng làm nền sau lem qua trông như
+              // bảng bị mờ (user 2026-09-01).
               background: "var(--surface)",
+              opacity: 1,
               border: "1px solid var(--border)",
               borderRadius: "var(--radius)",
-              boxShadow: "0 12px 40px rgba(0,0,0,0.18)",
+              boxShadow: "0 4px 10px -4px rgba(20, 30, 25, 0.22)",
             }}
           >
             {options.map((o) => {
@@ -1105,8 +1118,9 @@ function PlatformSwitcher({
               );
             })}
           </div>
-        </div>
-      )}
+        </div>,
+          document.body,
+        )}
     </div>
   );
 }
