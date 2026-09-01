@@ -22,10 +22,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { toast } from "./Toast";
 import { LICENSE_FEATURE_ENABLED } from "../lib/featureFlags";
+import { roleKeySuffix } from "../lib/memberRole";
 import { currentStintCycles, sortCycles, startsNewStint } from "../lib/cycles";
 import { useFormatDate, useFormatDateTime, useT, useTranslateEnum } from "../i18n";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useAuth } from "../hooks/useAuth";
+import { usePlatform } from "../hooks/usePlatform";
 import { useCorrectAddDate } from "../hooks/useSubscriptionApprovals";
 import { useSetMemberFee, useWalletAdminUsers, usePaymentSettings } from "../hooks/useWallet";
 import { formatVnd } from "../lib/wallet";
@@ -280,10 +282,8 @@ function fmtLogValue(
       return t("memberLog.val.months", { n: Number(raw) });
     case "credits":
       return t("memberLog.val.credits", { n: Number(raw) });
-    case "role": {
-      const s = String(raw);
-      return t(`member.role${s.charAt(0).toUpperCase()}${s.slice(1)}`);
-    }
+    case "role":
+      return t(`member.role${roleKeySuffix(String(raw))}`);
     default:
       return String(raw);
   }
@@ -2344,10 +2344,11 @@ function MemberDetailView({
   const statusText = t(
     `member.status${member.status.charAt(0).toUpperCase()}${member.status.slice(1)}`,
   );
+  // Nhánh Canva không có vai trò ChatGPT lẫn giới hạn tín dụng — hai hàng đó ẩn hẳn,
+  // thay bằng liên kết mời riêng của email (thứ chỉ Canva mới có).
+  const isCanva = usePlatform() === "canva";
   const roleText = member.chatgpt_role
-    ? t(
-        `member.role${member.chatgpt_role.charAt(0).toUpperCase()}${member.chatgpt_role.slice(1)}`,
-      )
+    ? t(`member.role${roleKeySuffix(member.chatgpt_role)}`)
     : "—";
   const infoRows: { label: string; value: ReactNode; full?: boolean }[] = [
     {
@@ -2374,7 +2375,25 @@ function MemberDetailView({
       label: t("member.colStatus"),
       value: badge(STATUS_BADGE[member.status], statusText),
     },
-    { label: t("member.colRole"), value: roleText },
+    ...(isCanva
+      ? [
+          {
+            label: t("canva.colInviteLink"),
+            value: member.invite_link ? (
+              <a
+                href={member.invite_link}
+                target="_blank"
+                rel="noreferrer"
+                style={{ wordBreak: "break-all" }}
+              >
+                {member.invite_link}
+              </a>
+            ) : (
+              t("canva.noInviteLink")
+            ),
+          },
+        ]
+      : [{ label: t("member.colRole"), value: roleText }]),
     ...(LICENSE_FEATURE_ENABLED
       ? [{ label: t("member.colLicenseType"), value: member.license_type ?? "—" }]
       : []),
@@ -2404,13 +2423,19 @@ function MemberDetailView({
       label: t("memberDetail.shortJoined"),
       value: member.joined_at ? fmtSec(member.joined_at) : "—",
     },
-    {
-      label: t("memberDetail.shortUsage"),
-      value:
-        member.usage_limit_credits == null
-          ? t("memberDetail.unlimited")
-          : t("memberDetail.usageLimitValue", { n: member.usage_limit_credits }),
-    },
+    ...(isCanva
+      ? []
+      : [
+          {
+            label: t("memberDetail.shortUsage"),
+            value:
+              member.usage_limit_credits == null
+                ? t("memberDetail.unlimited")
+                : t("memberDetail.usageLimitValue", {
+                    n: member.usage_limit_credits,
+                  }),
+          },
+        ]),
     {
       label: t("memberDetail.shortSynced"),
       value: member.last_synced_at ? fmtSec(member.last_synced_at) : "—",

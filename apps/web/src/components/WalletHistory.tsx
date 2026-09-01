@@ -13,6 +13,8 @@
 import { createContext, useContext, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useWalletDailySummary, useWalletTransactions } from "../hooks/useWallet";
+import { useSeatMap } from "../hooks/useWorkspaceSeats";
+import { workspaceBasePath } from "../hooks/usePlatform";
 import LoadError from "./LoadError";
 import { formatVnd, TXN_KIND_LABEL } from "../lib/wallet";
 import type { WalletDailySummary, WalletTxn, WalletTxnAdmin, WalletTxnKind } from "../lib/wallet";
@@ -1062,6 +1064,9 @@ const linkChip: React.CSSProperties = {
  * nút, và cuối cùng là `meta` thô cho trường hợp dữ liệu cũ không khớp khuôn nào.
  */
 function DetailSheet({ t }: { t: WalletTxnAdmin }) {
+  // Nguồn suất dùng chung mang theo `platform` từng workspace — link "Workspace"
+  // phải mở đúng nhánh (team Canva nằm ở /canva/teams, không phải /workspaces).
+  const { seatMap } = useSeatMap();
   const [rawOpen, setRawOpen] = useState(false);
   const meta = (t.meta ?? {}) as Record<string, unknown>;
   const providerTxn = asStr(meta.provider_txn_id);
@@ -1096,7 +1101,12 @@ function DetailSheet({ t }: { t: WalletTxnAdmin }) {
         {t.member_email && <SheetRow label="Thành viên">{t.member_email}</SheetRow>}
         {t.workspace_id && (
           <SheetRow label="Workspace">
-            <Link to={`/workspaces/${t.workspace_id}/members`} style={linkChip}>
+            <Link
+              to={`${workspaceBasePath(
+                seatMap.get(t.workspace_id)?.platform ?? "gpt",
+              )}/${t.workspace_id}/members`}
+              style={linkChip}
+            >
               {t.workspace_name ?? "Mở workspace"} ↗
             </Link>
           </SheetRow>

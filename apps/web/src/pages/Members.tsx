@@ -4,7 +4,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
 import { LICENSE_FEATURE_ENABLED } from "../lib/featureFlags";
+import { roleKeySuffix } from "../lib/memberRole";
 import { useAuth } from "../hooks/useAuth";
+import { usePlatform } from "../hooks/usePlatform";
 import { useFormatDate, useFormatDateTime, useT } from "../i18n";
 import type { Member, QueueItem, WorkspaceMemberStats } from "../types";
 import { useRemoveMembers } from "../hooks/useRemoveMembers";
@@ -135,7 +137,14 @@ export default function Members() {
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const { hasPermission, user } = useAuth();
   const isSuper = user?.is_super_admin === true;
+  // Nhánh của trang. Canva KHÔNG có: loại giấy phép, giới hạn tín dụng, xuất/xoá dữ
+  // liệu — extension nhánh Canva không nhận những lệnh đó, bày nút ra chỉ để người
+  // dùng bấm rồi nhận "Nhánh Canva chưa hỗ trợ lệnh ...". Vai trò thì CÓ (member /
+  // brand_designer). Riêng Canva thêm cột "Liên kết mời": mỗi email một link riêng.
+  const isCanva = usePlatform() === "canva";
   const qc = useQueryClient();
+  // Email vừa bấm sao chép liên kết mời (đổi nhãn nút trong chốc lát).
+  const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null);
 
   // Invite form đã được lift sang InviteMemberModal (WorkspaceLayout header).
   // Members.tsx chỉ còn hiển thị danh sách + filter + progress.
@@ -434,8 +443,8 @@ export default function Members() {
   const canRemove = hasPermission("MEMBER_REMOVE");
   // Xuất/Xoá dữ liệu (2 mục ChatGPT mới): quyền RIÊNG, mặc định TẮT với mọi tài
   // khoản phụ ⇒ chỉ super-admin có. Nút vẫn hiện trong menu "⋯" nhưng bị làm mờ.
-  const canExportData = hasPermission("MEMBER_EXPORT_DATA");
-  const canDeleteData = hasPermission("MEMBER_DELETE_DATA");
+  const canExportData = !isCanva && hasPermission("MEMBER_EXPORT_DATA");
+  const canDeleteData = !isCanva && hasPermission("MEMBER_DELETE_DATA");
   // Mời / mời lại cần quyền mời.
   const canInvite = hasPermission("MEMBER_INVITE");
   // Đổi email sinh ra cả thao tác xoá lẫn mời → cần cả 2 quyền (khớp backend).
@@ -449,7 +458,7 @@ export default function Members() {
   const canChangeLicense =
     LICENSE_FEATURE_ENABLED && user?.is_super_admin === true;
   // Đặt giới hạn tín dụng: quyền MEMBER_SET_USAGE_LIMIT (super-admin luôn có).
-  const canSetUsageLimit = hasPermission("MEMBER_SET_USAGE_LIMIT");
+  const canSetUsageLimit = !isCanva && hasPermission("MEMBER_SET_USAGE_LIMIT");
   // Có thể thao tác hàng loạt (checkbox + thanh "Cập nhật hàng loạt") khi có ít
   // nhất 1 trong các quyền: xoá / đổi giấy phép / đặt giới hạn tín dụng.
   const canBulk = canRemove || canChangeLicense || canSetUsageLimit;
@@ -685,20 +694,23 @@ export default function Members() {
   // .xlsx tách cột chuẩn, không cảnh báo. Trình sinh nằm ở lib/xlsx.ts (không thêm
   // dependency). Cột khớp đúng bảng: Email · Vai trò · Trạng thái · Ngày gia hạn ·
   // Ngày hết hạn.
+  /** Nhãn vai trò của một dòng ("" nếu chưa biết). Canva có thêm vai trò
+   *  "Thiết kế thương hiệu" (brand_designer) ngoài member/admin/owner. */
+  function roleLabel(m: Member): string {
+    return m.chatgpt_role
+      ? t(`member.role${roleKeySuffix(m.chatgpt_role)}`)
+      : "";
+  }
+
   function exportSelectedExcel() {
     const selected = members.filter((m) => selectedIds.has(m.id));
     if (selected.length === 0) return;
-    const roleLabel = (m: Member) =>
-      m.chatgpt_role
-        ? t(
-            `member.role${m.chatgpt_role.charAt(0).toUpperCase()}${m.chatgpt_role.slice(1)}`,
-          )
-        : "";
     const statusLabel = (m: Member) =>
       t(`member.status${m.status.charAt(0).toUpperCase()}${m.status.slice(1)}`);
     const header = [
       t("member.colEmail"),
       t("member.colRole"),
+      ...(isCanva ? [t("canva.colInviteLink")] : []),
       t("member.colStatus"),
       t("addedEmails.colRenewedAt"),
       t("addedEmails.colExpiry"),
@@ -706,6 +718,7 @@ export default function Members() {
     const rows = selected.map((m) => [
       m.email,
       roleLabel(m),
+      ...(isCanva ? [m.invite_link ?? ""] : []),
       statusLabel(m),
       fmtRenewExpiry(
         formatDateTime,
@@ -723,10 +736,14 @@ export default function Members() {
     );
   }
 
-  // Cột cố định (email, role, status, subscription, joinedAt, actions) = 6, cộng
-  // checkbox (nếu canBulk) + cột "Giấy phép" (nếu bật cờ license).
+  // Cột cố định (email, vai trò, trạng thái, ngày gia hạn, ngày hết hạn, hành động)
+  // = 6, cộng checkbox (nếu canBulk) + "Liên kết mời" (chỉ Canva) + "Giấy phép"
+  // (nếu bật cờ license).
   const colCount =
-    6 + (canBulk ? 1 : 0) + (LICENSE_FEATURE_ENABLED ? 1 : 0);
+    6 +
+    (canBulk ? 1 : 0) +
+    (isCanva ? 1 : 0) +
+    (LICENSE_FEATURE_ENABLED ? 1 : 0);
 
   return (
     <div>
@@ -994,10 +1011,13 @@ export default function Members() {
                         {t("bulkAction.licenseCodex")}
                       </option>
                     )}
-                    {/* LUÔN hiển thị — chưa có quyền thì bấm sẽ báo liên hệ admin. */}
-                    <option value="set-usage-limit">
-                      {t("bulkAction.setUsageLimit")}
-                    </option>
+                    {/* LUÔN hiển thị — chưa có quyền thì bấm sẽ báo liên hệ admin.
+                        Trừ Canva: nhánh đó không có giới hạn tín dụng. */}
+                    {!isCanva && (
+                      <option value="set-usage-limit">
+                        {t("bulkAction.setUsageLimit")}
+                      </option>
+                    )}
                     {canRemove && (
                       <option value="remove">{t("bulkAction.remove")}</option>
                     )}
@@ -1094,6 +1114,9 @@ export default function Members() {
                 )}
                 <th>{t("member.colEmail")}</th>
                 <th style={{ textAlign: "center" }}>{t("member.colRole")}</th>
+                {/* Liên kết mời: chỉ Canva — mỗi email một link riêng, extension
+                    bắt lại lúc mời và lưu vào members.invite_link. */}
+                {isCanva && <th>{t("canva.colInviteLink")}</th>}
                 {LICENSE_FEATURE_ENABLED && (
                   <th style={{ textAlign: "center" }}>
                     {t("member.colLicenseType")}
@@ -1116,9 +1139,11 @@ export default function Members() {
               {!isLoading && filteredMembers.length === 0 && (
                 <tr>
                   <td colSpan={colCount} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
-                    {user?.is_super_admin
-                      ? t("member.emptySuper")
-                      : t("member.emptySub")}
+                    {isCanva
+                      ? t("canva.emptyMembers")
+                      : user?.is_super_admin
+                        ? t("member.emptySuper")
+                        : t("member.emptySub")}
                   </td>
                 </tr>
               )}
@@ -1151,17 +1176,42 @@ export default function Members() {
                   </td>
                   <td style={{ textAlign: "center" }} data-label={t("member.colRole")}>
                     {m.chatgpt_role ? (
-                      <span className="role-tag">
-                        {t(
-                          `member.role${m.chatgpt_role
-                            .charAt(0)
-                            .toUpperCase()}${m.chatgpt_role.slice(1)}`,
-                        )}
-                      </span>
+                      <span className="role-tag">{roleLabel(m)}</span>
                     ) : (
                       <span className="cell-muted">—</span>
                     )}
                   </td>
+                  {isCanva && (
+                    <td data-label={t("canva.colInviteLink")}>
+                      {m.invite_link ? (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => {
+                            navigator.clipboard.writeText(
+                              m.invite_link as string,
+                            );
+                            setCopiedLinkId(m.id);
+                            setTimeout(
+                              () =>
+                                setCopiedLinkId((cur) =>
+                                  cur === m.id ? null : cur,
+                                ),
+                              2000,
+                            );
+                          }}
+                        >
+                          {copiedLinkId === m.id
+                            ? t("common.copied")
+                            : t("canva.copyInviteLink")}
+                        </button>
+                      ) : (
+                        <span className="cell-muted">
+                          {t("canva.noInviteLink")}
+                        </span>
+                      )}
+                    </td>
+                  )}
                   {LICENSE_FEATURE_ENABLED && (
                     <td style={{ textAlign: "center" }} data-label={t("member.colLicenseType")}>
                       {canChangeLicense && m.status === "active" ? (
@@ -1365,28 +1415,32 @@ export default function Members() {
                               // LUÔN hiện (để admin biết chức năng tồn tại) nhưng
                               // LÀM MỜ khi tài khoản chưa được cấp quyền — mặc định
                               // mọi tài khoản phụ đều chưa có (xem lib/permissions.ts).
-                              {
-                                key: "export-data",
-                                label: t("memberData.exportAction"),
-                                disabled:
-                                  !canExportData || exportData.isPending,
-                                title: canExportData
-                                  ? undefined
-                                  : t("memberData.needPermission"),
-                                onClick: async () => {
-                                  const ok = await confirm(
-                                    t("memberData.confirmExport", {
-                                      email: m.email,
-                                    }),
+                              ...(isCanva
+                                ? []
+                                : [
                                     {
-                                      title: t("memberData.exportAction"),
-                                      okText: t("memberData.exportAction"),
-                                      cancelText: t("common.cancel"),
+                                      key: "export-data",
+                                      label: t("memberData.exportAction"),
+                                      disabled:
+                                        !canExportData || exportData.isPending,
+                                      title: canExportData
+                                        ? undefined
+                                        : t("memberData.needPermission"),
+                                      onClick: async () => {
+                                        const ok = await confirm(
+                                          t("memberData.confirmExport", {
+                                            email: m.email,
+                                          }),
+                                          {
+                                            title: t("memberData.exportAction"),
+                                            okText: t("memberData.exportAction"),
+                                            cancelText: t("common.cancel"),
+                                          },
+                                        );
+                                        if (ok) exportData.mutate(m.id);
+                                      },
                                     },
-                                  );
-                                  if (ok) exportData.mutate(m.id);
-                                },
-                              },
+                                  ]),
                               ...(canRemove
                                 ? [
                                     {
@@ -1412,30 +1466,34 @@ export default function Members() {
                                 : []),
                               // Xoá dữ liệu: thao tác KHÔNG HOÀN TÁC, nặng hơn cả
                               // "Loại bỏ thành viên" → đặt CUỐI, đánh dấu danger.
-                              {
-                                key: "delete-data",
-                                label: t("memberData.deleteAction"),
-                                danger: true,
-                                disabled:
-                                  !canDeleteData || deleteData.isPending,
-                                title: canDeleteData
-                                  ? undefined
-                                  : t("memberData.needPermission"),
-                                onClick: async () => {
-                                  const ok = await confirm(
-                                    t("memberData.confirmDelete", {
-                                      email: m.email,
-                                    }),
+                              ...(isCanva
+                                ? []
+                                : [
                                     {
-                                      title: t("memberData.confirmDeleteTitle"),
-                                      okText: t("memberData.deleteAction"),
-                                      cancelText: t("common.cancel"),
+                                      key: "delete-data",
+                                      label: t("memberData.deleteAction"),
                                       danger: true,
+                                      disabled:
+                                        !canDeleteData || deleteData.isPending,
+                                      title: canDeleteData
+                                        ? undefined
+                                        : t("memberData.needPermission"),
+                                      onClick: async () => {
+                                        const ok = await confirm(
+                                          t("memberData.confirmDelete", {
+                                            email: m.email,
+                                          }),
+                                          {
+                                            title: t("memberData.confirmDeleteTitle"),
+                                            okText: t("memberData.deleteAction"),
+                                            cancelText: t("common.cancel"),
+                                            danger: true,
+                                          },
+                                        );
+                                        if (ok) deleteData.mutate(m.id);
+                                      },
                                     },
-                                  );
-                                  if (ok) deleteData.mutate(m.id);
-                                },
-                              },
+                                  ]),
                             ]}
                           />
                         )}

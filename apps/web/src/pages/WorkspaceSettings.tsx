@@ -3,11 +3,15 @@ import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useT } from "../i18n";
+import { usePlatform } from "../hooks/usePlatform";
 import type { Workspace, WorkspaceSettings as WSettings } from "../types";
 
 export default function WorkspaceSettings() {
   const t = useT();
   const { workspaceId } = useParams<{ workspaceId: string }>();
+  // Tên miền xác minh là cơ chế của ChatGPT (chặn mời ngoài tên miền). Canva không
+  // có nên khối đó ẩn hẳn, khỏi bày ô nhập chẳng ăn vào đâu.
+  const isCanva = usePlatform() === "canva";
   const qc = useQueryClient();
   const [invite, setInvite] = useState("5000");
   const [role, setRole] = useState("3000");
@@ -166,6 +170,7 @@ export default function WorkspaceSettings() {
         </button>
       </form>
 
+      {!isCanva && (
       <form
         onSubmit={(e) => {
           e.preventDefault();
@@ -208,6 +213,7 @@ export default function WorkspaceSettings() {
           {saveDomain.isPending ? t("common.saving") : t("common.save")}
         </button>
       </form>
+      )}
     </div>
   );
 }

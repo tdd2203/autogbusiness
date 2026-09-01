@@ -16,3 +16,14 @@ export function usePlatform(): Platform {
   const { pathname } = useLocation();
   return pathname.startsWith("/canva") ? "canva" : "gpt";
 }
+
+/**
+ * Gốc đường dẫn danh sách không gian của một nhánh.
+ *
+ * Hai nhánh dùng CHUNG trang (Workspaces / WorkspaceLayout / Members) nên mọi link
+ * nội bộ phải dựng từ đây, đừng viết cứng "/workspaces" — viết cứng thì bấm tên team
+ * trong nhánh Canva lại nhảy sang workspace ChatGPT.
+ */
+export function workspaceBasePath(platform: Platform): string {
+  return platform === "canva" ? "/canva/teams" : "/workspaces";
+}

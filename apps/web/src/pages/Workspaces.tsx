@@ -5,6 +5,7 @@ import { api, ApiError } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
 import { useAuth } from "../hooks/useAuth";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { usePlatform, workspaceBasePath } from "../hooks/usePlatform";
 import { invalidateWorkspaceSeats, useSeatMap } from "../hooks/useWorkspaceSeats";
 import { triggerExtensionRun } from "../hooks/useExtensionTrigger";
 import { useFormatDate, useT } from "../i18n";
@@ -18,6 +19,9 @@ import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
 import { toast } from "../components/Toast";
 import { AssignWorkspaceModal } from "../components/AssignWorkspaceModal";
 import { SearchInput } from "./Members";
+
+/** Suất mặc định của gói Canva trả phí — khớp models.CANVA_SEAT_TOTAL bên backend. */
+const CANVA_SEAT_TOTAL = 50;
 
 const mobileCardLabel: React.CSSProperties = {
   fontFamily: "var(--font-mono)",
@@ -33,14 +37,22 @@ export default function Workspaces() {
   const { user } = useAuth();
   const isSuper = user?.is_super_admin === true;
   const navigate = useNavigate();
-  // Số cột bảng (để colSpan dòng loading/rỗng). Tài khoản phụ ẩn cột Ghế + Ngày
-  // tạo (và cột Hành động vốn đã chỉ super-admin) → chỉ còn Tên, Gói, Đồng bộ.
-  const colCount = isSuper ? 6 : 3;
+  // Nhánh của trang (suy từ đường dẫn): /canva/teams là Team Canva, còn lại là
+  // Không gian làm việc ChatGPT. Canva KHÔNG có gói, hoá đơn Stripe hay tên miền
+  // xác minh nên các cột/nút đó tự ẩn.
+  const platform = usePlatform();
+  const isCanva = platform === "canva";
+  const base = workspaceBasePath(platform);
+  // Số cột bảng (để colSpan dòng loading/rỗng): Tên + Đồng bộ luôn có, cột Gói chỉ
+  // ChatGPT, còn Ghế + Ngày tạo + Hành động chỉ super-admin.
+  const colCount = 2 + (isCanva ? 0 : 1) + (isSuper ? 3 : 0);
   const qc = useQueryClient();
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
   const [plan, setPlan] = useState<"business" | "enterprise">("business");
-  const [seatTotal, setSeatTotal] = useState<string>("");
+  const [seatTotal, setSeatTotal] = useState<string>(
+    isCanva ? String(CANVA_SEAT_TOTAL) : "",
+  );
   const [verifiedDomain, setVerifiedDomain] = useState<string>("");
   const [createdKey, setCreatedKey] = useState<WorkspaceWithKey | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -53,11 +65,11 @@ export default function Workspaces() {
   // (hoá đơn/cấu hình nặng và ít đổi).
   const { seatMap } = useSeatMap();
   const { data: workspaces = [], isLoading } = useQuery({
-    // CHỈ nhánh ChatGPT: team Canva có trang riêng ở mục Canva, trộn vào đây là
-    // đúng thứ user không muốn ("tách riêng, không lẫn"). Khoá cache mang theo nhánh
-    // để không đè lên danh sách đầy đủ mà modal chi tiết đang dùng để tra tên.
-    queryKey: ["workspaces", "gpt"],
-    queryFn: () => api<Workspace[]>("/api/v1/workspaces?platform=gpt"),
+    // CHỈ nhánh đang mở: hai nhánh không bao giờ trộn danh sách ("tách riêng, không
+    // lẫn"). Khoá cache mang theo nhánh để không đè lên danh sách đầy đủ mà modal
+    // chi tiết đang dùng để tra tên.
+    queryKey: ["workspaces", platform],
+    queryFn: () => api<Workspace[]>(`/api/v1/workspaces?platform=${platform}`),
   });
 
   const create = useMutation({
@@ -66,22 +78,27 @@ export default function Workspaces() {
         method: "POST",
         body: JSON.stringify({
           name: name.trim(),
-          plan,
+          platform,
+          // Gói + tên miền xác minh là thứ chỉ ChatGPT mới có; nhánh Canva gửi lên
+          // chỉ tổ ghi rác vào bảng.
+          ...(isCanva ? {} : { plan, verified_domain: verifiedDomain.trim() || null }),
           seat_total: seatTotal ? Number(seatTotal) : null,
-          verified_domain: verifiedDomain.trim() || null,
         }),
       }),
     onSuccess: (ws) => {
       setCreatedKey(ws);
       setShowForm(false);
       setName("");
-      setSeatTotal("");
+      setSeatTotal(isCanva ? String(CANVA_SEAT_TOTAL) : "");
       setVerifiedDomain("");
       qc.invalidateQueries({ queryKey: ["workspaces"] });
+      invalidateWorkspaceSeats(qc);
     },
     onError: (e) => {
       setFormError(
-        e instanceof ApiError ? String(e.detail) : t("workspace.createError"),
+        e instanceof ApiError
+          ? String(e.detail)
+          : t(isCanva ? "canva.createError" : "workspace.createError"),
       );
     },
   });
@@ -164,7 +181,14 @@ export default function Workspaces() {
         style={{ gap: 24, marginBottom: 32, flexWrap: "wrap" }}
       >
         <div>
-          <h1 className="display-h1">{t("workspace.listTitle")}</h1>
+          <h1 className="display-h1">
+            {t(isCanva ? "canva.teamsTitle" : "workspace.listTitle")}
+          </h1>
+          {isCanva && (
+            <div className="form-hint" style={{ marginTop: 4 }}>
+              {t("canva.teamsSubtitle")}
+            </div>
+          )}
         </div>
         {user?.is_super_admin && !showForm && (
           <button
@@ -174,12 +198,12 @@ export default function Workspaces() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} width={14} height={14}>
               <path d="M12 5v14M5 12h14" />
             </svg>
-            {t("workspace.createButton")}
+            {t(isCanva ? "canva.createTeam" : "workspace.createButton")}
           </button>
         )}
       </div>
 
-      {showBillingCompletion && lastBillingTask && (
+      {!isCanva && showBillingCompletion && lastBillingTask && (
         <div style={{ marginBottom: 16 }}>
           <TaskCompletionBanner
             task={lastBillingTask}
@@ -194,10 +218,12 @@ export default function Workspaces() {
           <div className="notice-icon">!</div>
           <div style={{ flex: 1 }}>
             <div className="notice-title">
-              {t("workspace.createdBanner", { name: createdKey.name })}
+              {t(isCanva ? "canva.createdBanner" : "workspace.createdBanner", {
+                name: createdKey.name,
+              })}
             </div>
             <div className="notice-body" style={{ marginBottom: 8 }}>
-              {t("workspace.apiKeyOnce")}
+              {t(isCanva ? "canva.apiKeyOnce" : "workspace.apiKeyOnce")}
             </div>
             <div className="flex items-center gap-2">
               <code
@@ -240,26 +266,31 @@ export default function Workspaces() {
           style={{ padding: 20, marginBottom: 20 }}
         >
           <div className="display-h3" style={{ marginBottom: 12 }}>
-            {t("workspace.createTitle")}
+            {t(isCanva ? "canva.createTeam" : "workspace.createTitle")}
           </div>
           <input
             required
-            placeholder={t("workspace.namePlaceholder")}
+            placeholder={t(
+              isCanva ? "canva.namePlaceholder" : "workspace.namePlaceholder",
+            )}
             value={name}
             onChange={(e) => setName(e.target.value)}
             className="form-input"
             style={{ marginBottom: 12 }}
           />
           <div className="flex gap-3" style={{ marginBottom: 8, flexWrap: "wrap" }}>
-            <select
-              value={plan}
-              onChange={(e) => setPlan(e.target.value as "business" | "enterprise")}
-              className="form-input"
-              style={{ flex: 1, minWidth: 150 }}
-            >
-              <option value="business">{t("workspace.planBusiness")}</option>
-              <option value="enterprise">{t("workspace.planEnterprise")}</option>
-            </select>
+            {/* Gói business/enterprise là của ChatGPT — Canva chỉ có một loại gói. */}
+            {!isCanva && (
+              <select
+                value={plan}
+                onChange={(e) => setPlan(e.target.value as "business" | "enterprise")}
+                className="form-input"
+                style={{ flex: 1, minWidth: 150 }}
+              >
+                <option value="business">{t("workspace.planBusiness")}</option>
+                <option value="enterprise">{t("workspace.planEnterprise")}</option>
+              </select>
+            )}
             <input
               type="number"
               min={0}
@@ -272,19 +303,26 @@ export default function Workspaces() {
             />
           </div>
           <div className="form-hint" style={{ marginBottom: 12 }}>
-            {t("workspace.seatHint", { max: SEAT_TOTAL_MAX })}
+            {isCanva
+              ? t("canva.seatHint")
+              : t("workspace.seatHint", { max: SEAT_TOTAL_MAX })}
           </div>
-          <input
-            placeholder="Tên miền đã xác minh (vd: ndaigroup.org) — để trống nếu chưa có"
-            value={verifiedDomain}
-            onChange={(e) => setVerifiedDomain(e.target.value)}
-            className="form-input"
-            style={{ marginBottom: 6 }}
-          />
-          <div className="form-hint" style={{ marginBottom: 12 }}>
-            Khi mời thành viên: nếu mọi email đều thuộc tên miền này thì không cần
-            bật "cho phép mời ngoài tên miền". Có thể cập nhật sau.
-          </div>
+          {/* Tên miền đã xác minh: chỉ ChatGPT. Canva không chặn mời ngoài tên miền. */}
+          {!isCanva && (
+            <>
+              <input
+                placeholder="Tên miền đã xác minh (vd: ndaigroup.org) — để trống nếu chưa có"
+                value={verifiedDomain}
+                onChange={(e) => setVerifiedDomain(e.target.value)}
+                className="form-input"
+                style={{ marginBottom: 6 }}
+              />
+              <div className="form-hint" style={{ marginBottom: 12 }}>
+                Khi mời thành viên: nếu mọi email đều thuộc tên miền này thì không cần
+                bật "cho phép mời ngoài tên miền". Có thể cập nhật sau.
+              </div>
+            </>
+          )}
           {formError && (
             <div style={{ color: "var(--danger)", fontSize: 12.5, marginBottom: 10 }}>
               {formError}
@@ -311,7 +349,9 @@ export default function Workspaces() {
       <div className="table-card">
         <div className="table-head">
           <div>
-            <div className="table-title">{t("workspace.listTitle")}</div>
+            <div className="table-title">
+              {t(isCanva ? "canva.teamsTitle" : "workspace.listTitle")}
+            </div>
             <div className="table-meta" style={{ marginTop: 2 }}>
               {t("members.countLabel", { n: workspaces.length })}
             </div>
@@ -338,7 +378,7 @@ export default function Workspaces() {
                 className="cell-muted"
                 style={{ textAlign: "center", padding: 24, fontSize: 13 }}
               >
-                {t("workspace.emptyList")}
+                {t(isCanva ? "canva.emptyTeams" : "workspace.emptyList")}
               </div>
             )}
             {filtered.map((ws) => {
@@ -353,7 +393,7 @@ export default function Workspaces() {
               return (
                 <div
                   key={ws.id}
-                  onClick={() => navigate(`/workspaces/${ws.id}/members`)}
+                  onClick={() => navigate(`${base}/${ws.id}/members`)}
                   style={{
                     border: "1px solid var(--border)",
                     borderRadius: 14,
@@ -381,24 +421,27 @@ export default function Workspaces() {
                     >
                       {ws.name}
                     </div>
-                    {unpaid && (
+                    {/* Hoá đơn + gói: chỉ ChatGPT. Canva không có hoá đơn Stripe. */}
+                    {!isCanva && unpaid && (
                       <span className="badge badge-danger" title={t("workspace.billingUnpaid")}>
                         {t("workspace.billingUnpaid")}
                       </span>
                     )}
-                    <span
-                      className="mono"
-                      style={{
-                        flex: "none",
-                        border: "1px solid var(--border)",
-                        borderRadius: 7,
-                        padding: "3px 9px",
-                        fontSize: 11,
-                        color: "var(--ink-3)",
-                      }}
-                    >
-                      {ws.plan ?? "—"}
-                    </span>
+                    {!isCanva && (
+                      <span
+                        className="mono"
+                        style={{
+                          flex: "none",
+                          border: "1px solid var(--border)",
+                          borderRadius: 7,
+                          padding: "3px 9px",
+                          fontSize: 11,
+                          color: "var(--ink-3)",
+                        }}
+                      >
+                        {ws.plan ?? "—"}
+                      </span>
+                    )}
                   </div>
 
                   {/* ghế đã dùng (chỉ super-admin) */}
@@ -412,7 +455,9 @@ export default function Workspaces() {
                           marginBottom: 6,
                         }}
                       >
-                        <span style={mobileCardLabel}>{t("workspace.tableSeat")}</span>
+                        <span style={mobileCardLabel}>
+                          {t(isCanva ? "canva.colSeats" : "workspace.tableSeat")}
+                        </span>
                         <span
                           className="mono"
                           style={{
@@ -457,7 +502,7 @@ export default function Workspaces() {
                   >
                     <div>
                       <div style={{ letterSpacing: "0.05em", opacity: 0.85 }}>
-                        {t("workspace.tableLastSync")}
+                        {t(isCanva ? "canva.colSynced" : "workspace.tableLastSync")}
                       </div>
                       <div style={{ color: "var(--ink)", marginTop: 2, lineHeight: 1.4 }}>
                         {ws.last_synced_at
@@ -491,20 +536,22 @@ export default function Workspaces() {
                       >
                         {t("assign.action")}
                       </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          syncBilling.mutate(ws);
-                        }}
-                        disabled={isSyncing}
-                        title={t("workspace.syncBillingTooltip")}
-                        className="btn btn-ghost btn-sm"
-                        style={{ flex: 1 }}
-                      >
-                        {isSyncing
-                          ? t("workspace.syncBillingBusy")
-                          : t("workspace.syncBilling")}
-                      </button>
+                      {!isCanva && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            syncBilling.mutate(ws);
+                          }}
+                          disabled={isSyncing}
+                          title={t("workspace.syncBillingTooltip")}
+                          className="btn btn-ghost btn-sm"
+                          style={{ flex: 1 }}
+                        >
+                          {isSyncing
+                            ? t("workspace.syncBillingBusy")
+                            : t("workspace.syncBilling")}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -516,10 +563,12 @@ export default function Workspaces() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>{t("workspace.tableName")}</th>
-                <th>{t("workspace.tablePlan")}</th>
-                {isSuper && <th>{t("workspace.tableSeat")}</th>}
-                <th>{t("workspace.tableLastSync")}</th>
+                <th>{t(isCanva ? "canva.colTeam" : "workspace.tableName")}</th>
+                {!isCanva && <th>{t("workspace.tablePlan")}</th>}
+                {isSuper && (
+                  <th>{t(isCanva ? "canva.colSeats" : "workspace.tableSeat")}</th>
+                )}
+                <th>{t(isCanva ? "canva.colSynced" : "workspace.tableLastSync")}</th>
                 {isSuper && <th>{t("workspace.tableCreated")}</th>}
                 {user?.is_super_admin && (
                   <th style={{ textAlign: "right" }}>
@@ -539,7 +588,7 @@ export default function Workspaces() {
               {!isLoading && filtered.length === 0 && (
                 <tr>
                   <td colSpan={colCount} className="cell-muted" style={{ textAlign: "center", padding: 32 }}>
-                    {t("workspace.emptyList")}
+                    {t(isCanva ? "canva.emptyTeams" : "workspace.emptyList")}
                   </td>
                 </tr>
               )}
@@ -552,12 +601,12 @@ export default function Workspaces() {
                     key={ws.id}
                     // Cả dòng click được → vào workspace (yêu cầu user). Nút Gán/Đồng bộ
                     // + Link tên tự stopPropagation để không kích hoạt điều hướng dòng.
-                    onClick={() => navigate(`/workspaces/${ws.id}/members`)}
+                    onClick={() => navigate(`${base}/${ws.id}/members`)}
                     style={{ cursor: "pointer" }}
                   >
                     <td>
                       <Link
-                        to={`/workspaces/${ws.id}/members`}
+                        to={`${base}/${ws.id}/members`}
                         onClick={(e) => e.stopPropagation()}
                         style={{
                           color: "var(--ink)",
@@ -574,29 +623,34 @@ export default function Workspaces() {
                         {ws.name}
                       </Link>
                     </td>
-                    <td>
-                      <div className="flex items-center gap-2">
-                        <span className="role-tag">{ws.plan ?? "—"}</span>
-                        {unpaid && (
-                          <span
-                            className="badge badge-danger"
-                            title={t("workspace.billingUnpaid")}
-                          >
-                            {t("workspace.billingUnpaid")}
-                          </span>
-                        )}
-                      </div>
-                    </td>
+                    {/* Gói + trạng thái hoá đơn: chỉ ChatGPT mới có. */}
+                    {!isCanva && (
+                      <td>
+                        <div className="flex items-center gap-2">
+                          <span className="role-tag">{ws.plan ?? "—"}</span>
+                          {unpaid && (
+                            <span
+                              className="badge badge-danger"
+                              title={t("workspace.billingUnpaid")}
+                            >
+                              {t("workspace.billingUnpaid")}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    )}
                     {isSuper && (
                       <td
                         className="cell-muted mono"
                         style={{ fontSize: 12.5 }}
                         title={
-                          billingNeverSynced
-                            ? t("workspace.billingNeverSynced")
-                            : `${t("workspace.tableLastSync")}: ${new Date(
-                                ws.last_billing_synced_at!,
-                              ).toLocaleString()}`
+                          isCanva
+                            ? undefined
+                            : billingNeverSynced
+                              ? t("workspace.billingNeverSynced")
+                              : `${t("workspace.tableLastSync")}: ${new Date(
+                                  ws.last_billing_synced_at!,
+                                ).toLocaleString()}`
                         }
                       >
                         {`${seatMap.get(ws.id)?.seat_used ?? ws.seat_used ?? 0}/${seatMap.get(ws.id)?.seat_total ?? ws.seat_total ?? "—"}`}
@@ -628,19 +682,21 @@ export default function Workspaces() {
                           >
                             {t("assign.action")}
                           </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              syncBilling.mutate(ws);
-                            }}
-                            disabled={isSyncing}
-                            title={t("workspace.syncBillingTooltip")}
-                            className="btn btn-ghost btn-sm"
-                          >
-                            {isSyncing
-                              ? t("workspace.syncBillingBusy")
-                              : t("workspace.syncBilling")}
-                          </button>
+                          {!isCanva && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                syncBilling.mutate(ws);
+                              }}
+                              disabled={isSyncing}
+                              title={t("workspace.syncBillingTooltip")}
+                              className="btn btn-ghost btn-sm"
+                            >
+                              {isSyncing
+                                ? t("workspace.syncBillingBusy")
+                                : t("workspace.syncBilling")}
+                            </button>
+                          )}
                         </div>
                       </td>
                     )}

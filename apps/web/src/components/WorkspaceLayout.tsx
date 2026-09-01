@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
 import { useAuth } from "../hooks/useAuth";
+import { usePlatform, workspaceBasePath } from "../hooks/usePlatform";
 import { useExtensionStatus, triggerExtensionRun } from "../hooks/useExtensionTrigger";
 import { useBillingActions } from "../hooks/useBillingActions";
 import { useT } from "../i18n";
@@ -20,12 +21,20 @@ type Tab = {
   labelKey: string;
   superAdminOnly?: boolean;
   permission?: string;
+  /** Chỉ hiện ở nhánh ChatGPT (Canva không có thứ tương ứng). */
+  gptOnly?: boolean;
 };
 
 const TABS: Tab[] = [
   { to: "members", labelKey: "workspace.tabMembers" },
   // "Gia hạn" đã chuyển sang trang "Email đã add" (sub-tab) — gom xuyên workspace.
-  { to: "billing", labelKey: "workspace.tabBilling", permission: "BILLING_VIEW" },
+  // "Thanh toán" chỉ ChatGPT: Canva không có hoá đơn Stripe nào để đọc.
+  {
+    to: "billing",
+    labelKey: "workspace.tabBilling",
+    permission: "BILLING_VIEW",
+    gptOnly: true,
+  },
   { to: "queue", labelKey: "workspace.tabQueue" },
   { to: "extension", labelKey: "workspace.tabExtension", superAdminOnly: true },
   { to: "settings", labelKey: "workspace.tabSettings", superAdminOnly: true },
@@ -35,6 +44,11 @@ export default function WorkspaceLayout() {
   const t = useT();
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const { user, hasPermission } = useAuth();
+  // Nhánh của khung này. Canva KHÔNG có: hoá đơn Stripe (tab Thanh toán + nút dán
+  // hoá đơn) — mọi thứ còn lại (thành viên, hàng đợi, extension, cài đặt) dùng chung.
+  const platform = usePlatform();
+  const isCanva = platform === "canva";
+  const base = workspaceBasePath(platform);
   const qc = useQueryClient();
   const [showInviteModal, setShowInviteModal] = useState(false);
   // Modal "Thêm thủ công" — bản ghi quản lý cho email đã ở trên ChatGPT (auto-create),
@@ -106,7 +120,8 @@ export default function WorkspaceLayout() {
   const tabs = TABS.filter(
     (tab) =>
       (!tab.superAdminOnly || user?.is_super_admin) &&
-      (!tab.permission || hasPermission(tab.permission)),
+      (!tab.permission || hasPermission(tab.permission)) &&
+      (!tab.gptOnly || !isCanva),
   );
 
   // Số liệu tổng quan (tổng/active/chờ/hàng đợi) hiển thị bằng KHỐI 4 THẺ TO ở
@@ -126,7 +141,7 @@ export default function WorkspaceLayout() {
     mutationFn: async () => {
       // Không cần body: tiêu đề + nút "Đồng bộ ngay" đã nói đủ.
       const ok = await confirm("", {
-        title: t("member.syncButton"),
+        title: t(isCanva ? "canva.syncButton" : "member.syncButton"),
         okText: t("member.syncConfirmOk"),
         cancelText: t("common.cancel"),
       });
@@ -143,7 +158,7 @@ export default function WorkspaceLayout() {
       );
     },
     onSuccess: () => {
-      toast.success(t("member.syncQueued"));
+      toast.success(t(isCanva ? "canva.syncQueued" : "member.syncQueued"));
       qc.invalidateQueries({ queryKey: ["recent-tasks", workspaceId] });
       qc.invalidateQueries({ queryKey: ["members", workspaceId] });
     },
@@ -189,11 +204,16 @@ export default function WorkspaceLayout() {
       >
         <div>
           <div className="breadcrumb">
-            <Link to="/workspaces">{t("nav.workspaces")}</Link>
+            <Link to={base}>
+              {t(isCanva ? "nav.canvaTeams" : "nav.workspaces")}
+            </Link>
             <span className="breadcrumb-sep">/</span>
             {workspace?.name ?? "..."}
           </div>
-          <h1 className="display-h1">{workspace?.name ?? t("nav.workspaces")}</h1>
+          <h1 className="display-h1">
+            {workspace?.name ??
+              t(isCanva ? "nav.canvaTeams" : "nav.workspaces")}
+          </h1>
         </div>
         {workspace && <ConnectionInfo workspace={workspace} />}
       </div>
@@ -225,7 +245,7 @@ export default function WorkspaceLayout() {
             </div>
             {/* Hàng nút hành động — căn phải sát mép bảng, hiển thị thẳng hàng. */}
             <div className="flex items-center" style={{ gap: 8, flexWrap: "wrap" }}>
-              {user?.is_super_admin && (
+              {user?.is_super_admin && !isCanva && (
                 <button
                   onClick={() => setPasteBillingOpen(true)}
                   className={`btn btn-sm ${alreadySyncedBilling ? "btn-ghost" : "btn-primary"}`}
@@ -239,11 +259,11 @@ export default function WorkspaceLayout() {
                   onClick={() => syncMembers.mutate()}
                   disabled={syncMembers.isPending}
                   className="btn btn-sm btn-ghost"
-                  title={t("member.syncTooltip")}
+                  title={t(isCanva ? "canva.syncTooltip" : "member.syncTooltip")}
                 >
                   {syncMembers.isPending
                     ? t("member.syncBusy")
-                    : t("member.syncButton")}
+                    : t(isCanva ? "canva.syncButton" : "member.syncButton")}
                 </button>
               )}
               {/* "Thêm thủ công" — CHỈ super-admin: ghi nhận email đã ở trên ChatGPT
@@ -338,6 +358,7 @@ export default function WorkspaceLayout() {
 
 function ConnectionInfo({ workspace }: { workspace: Workspace }) {
   const t = useT();
+  const isCanva = usePlatform() === "canva";
   const { online: ssOnline } = useExtensionStatus(workspace.id);
   const lastSeen = workspace.last_extension_seen_at;
   const minutesAgo = lastSeen
@@ -389,7 +410,7 @@ function ConnectionInfo({ workspace }: { workspace: Workspace }) {
             color: "var(--ink-3)",
           }}
         >
-          {t("connection.user")}: {userLabel}
+          {t(isCanva ? "canva.connectionUser" : "connection.user")}: {userLabel}
         </span>
       )}
     </div>

@@ -19,8 +19,6 @@ import WorkspaceQueue from "./pages/WorkspaceQueue";
 import WorkspaceBilling from "./pages/WorkspaceBilling";
 import WorkspaceExtension from "./pages/WorkspaceExtension";
 import WorkspaceSettings from "./pages/WorkspaceSettings";
-import CanvaTeams from "./pages/canva/CanvaTeams";
-import CanvaMembers from "./pages/canva/CanvaMembers";
 import CanvaPricing from "./pages/canva/CanvaPricing";
 import Layout from "./components/Layout";
 import WorkspaceLayout from "./components/WorkspaceLayout";
@@ -221,22 +219,53 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        {/* "Team Canva" dùng CHÍNH trang của ChatGPT (danh sách + khung workspace +
+            bảng thành viên), chỉ khác dữ liệu — trang tự đọc nhánh qua `usePlatform()`.
+            Tham số phải tên `workspaceId` vì các trang con đọc đúng tên đó.
+            KHÔNG có tab "Thanh toán": Canva không có hoá đơn Stripe để đồng bộ. */}
         <Route
           path="canva/teams"
           element={
             <ProtectedRoute requireSuperAdmin>
-              <CanvaTeams />
+              <Workspaces />
             </ProtectedRoute>
           }
         />
         <Route
-          path="canva/teams/:teamId/members"
+          path="canva/teams/:workspaceId"
           element={
-            <ProtectedRoute requirePermission="MEMBER_VIEW">
-              <CanvaMembers />
+            <ProtectedRoute requireSuperAdmin>
+              <WorkspaceLayout />
             </ProtectedRoute>
           }
-        />
+        >
+          <Route index element={<Navigate to="members" replace />} />
+          <Route path="members" element={<Members />} />
+          <Route
+            path="queue"
+            element={
+              <ProtectedRoute requirePermission="QUEUE_VIEW">
+                <WorkspaceQueue />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="extension"
+            element={
+              <ProtectedRoute requireSuperAdmin>
+                <WorkspaceExtension />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="settings"
+            element={
+              <ProtectedRoute requireSuperAdmin>
+                <WorkspaceSettings />
+              </ProtectedRoute>
+            }
+          />
+        </Route>
         <Route
           path="canva/pricing"
           element={

@@ -7,6 +7,8 @@ import { useAuth } from "../hooks/useAuth";
 import { localeTag, useI18n, useT, useTranslateEnum } from "../i18n";
 import type { QueueItem } from "../types";
 import { SearchInput } from "./Members";
+import { useSeatMap } from "../hooks/useWorkspaceSeats";
+import { workspaceBasePath } from "../hooks/usePlatform";
 import { TaskTimingCell } from "../components/TaskTimingCell";
 import { PayloadCell } from "../components/PayloadCell";
 
@@ -24,6 +26,9 @@ export default function Queue() {
   const tStatus = useTranslateEnum("status");
   const tTaskType = useTranslateEnum("taskType");
   const { hasPermission, user } = useAuth();
+  // Nguồn suất dùng chung mang theo `platform` của từng workspace — dùng để dựng
+  // link đúng nhánh cho cột "Workspace" (trang này gom task của cả hai nhánh).
+  const { seatMap } = useSeatMap(hasPermission("QUEUE_VIEW"));
 
   const items = useQuery({
     queryKey: ["queue", "all"],
@@ -192,7 +197,11 @@ export default function Queue() {
                   <td>
                     {it.workspace_id ? (
                       <Link
-                        to={`/workspaces/${it.workspace_id}/members`}
+                        // Đi đúng nhánh của workspace: task Canva phải mở ở
+                        // /canva/teams, không nhảy sang khung ChatGPT.
+                        to={`${workspaceBasePath(
+                          seatMap.get(it.workspace_id)?.platform ?? "gpt",
+                        )}/${it.workspace_id}/members`}
                         style={{ textDecoration: "none" }}
                       >
                         <span className="role-tag">
