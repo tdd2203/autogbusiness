@@ -17,6 +17,28 @@ import { executeInviteInner } from "./execute-invite-inner";
 import { findInviteOpenButton } from "./finders/find-invite-open-button";
 import { scanPendingForEmails } from "./scan-pending-page";
 
+/**
+ * SỐ LỜI MỜI ĐANG CHỜ tại thời điểm chốt suất — quyết định bước soi lại sau khi
+ * mời sẽ QUÉT DOM hay TÌM KIẾM TỪNG EMAIL (xem `PENDING_SEARCH_THRESHOLD`).
+ *
+ * Ưu tiên số ĐỌC TẬN NƠI ở tab "Lời mời" (`seat_pending_scanned`); không đọc
+ * được thì lấy số dashboard gửi kèm (`seat_pending_hint` / `seatHint.pending`) —
+ * số này đếm THỪA chứ không thiếu, mà lệch về phía "tìm kiếm" là lệch an toàn.
+ */
+function pendingCountAtSeatCheck(
+  seatData: Record<string, unknown>,
+  seatHint?: SeatHint,
+): number | null {
+  for (const v of [
+    seatData.seat_pending_scanned,
+    seatData.seat_pending_hint,
+    seatHint?.pending,
+  ]) {
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+  }
+  return null;
+}
+
 const RE_LOG = "[autogpt-reinvite]";
 
 /**
@@ -309,7 +331,9 @@ export async function executeInvite(
     );
     // executeInviteInner yêu cầu đang ở /admin/members → điều hướng trước.
     await navigateTo(MEMBERS_PATH, membersPageReady, 10_000);
-    inviteResult = await executeInviteInner(taskId, emails, role);
+    inviteResult = await executeInviteInner(taskId, emails, role, {
+      pendingAtCheck: pendingCountAtSeatCheck(seatData, seatHint),
+    });
   } else if (!externalReady) {
     // ─── PHASE A (lần gọi INVITE_MEMBER thứ 1) ───────────────────────────────
     // Có email NGOÀI domain xác minh (hoặc domain chưa cấu hình) → BẮT BUỘC bật
@@ -381,7 +405,9 @@ export async function executeInvite(
     // response CÓ CỜ, kẻo toggle nằm ON mà không ai biết mà tắt.
     try {
       await navigateTo(MEMBERS_PATH, membersPageReady, 10_000);
-      inviteResult = await executeInviteInner(taskId, emails, role);
+      inviteResult = await executeInviteInner(taskId, emails, role, {
+        pendingAtCheck: pendingCountAtSeatCheck(seatData, seatHint),
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[autogpt-invite] Phase A' văng lỗi: ${msg}`);
@@ -446,7 +472,9 @@ export async function executeInvite(
       true,
     );
     await sleep(500); // chờ DOM ổn định sau navigate cuối của wrapper
-    const scan = await scanPendingForEmails(emails, 8_000);
+    const scan = await scanPendingForEmails(emails, 8_000, true, {
+      pendingAtCheck: pendingCountAtSeatCheck(seatData, seatHint),
+    });
     await reportProgress(
       taskId,
       {

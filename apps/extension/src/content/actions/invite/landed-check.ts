@@ -76,6 +76,7 @@ export type LandedCheck = {
 export async function checkInviteLanded(
   taskId: string,
   emails: string[],
+  pendingAtCheck: number | null = null,
 ): Promise<LandedCheck> {
   const wanted = emails.map((e) => e.trim().toLowerCase());
   await dismissInviteDialog();
@@ -91,7 +92,9 @@ export async function checkInviteLanded(
     true,
   );
 
-  const scan = await scanPendingForEmails(wanted, PENDING_SCAN_MS);
+  const scan = await scanPendingForEmails(wanted, PENDING_SCAN_MS, true, {
+    pendingAtCheck,
+  });
   const pending = scan.usable ? scan.matched : [];
   let missing = scan.usable ? scan.missing : [...wanted];
   console.log(

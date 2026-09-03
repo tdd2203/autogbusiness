@@ -19,6 +19,44 @@ import { searchPendingForEmails } from "./search-pending-by-email";
 const EXCLUDE_SELECTOR =
   '[role="dialog"], [role="status"], [role="alert"], [data-testid*="toast" i], .toast, .toast-success';
 
+/**
+ * DANH SÁCH LỜI MỜI ĐÔNG TỚI MỨC NÀY (đọc ở bước chốt suất, TRƯỚC khi mời) thì
+ * sau khi mời xong TÌM KIẾM TỪNG EMAIL, không quét DOM (user chốt 3/9/2026).
+ *
+ * Vì sao không chỉ dựa vào thanh phân trang: luật "≥2 trang thì tìm kiếm" phụ
+ * thuộc vào việc đọc được chỉ số trang dạng "1 / 2" trên DOM. Chỉ số đó vắng mặt
+ * (ChatGPT đổi cách vẽ, hoặc danh sách chưa nạp xong khi ta hỏi) là `pages=1` →
+ * quét trang đầu → email vừa mời nằm ở TRANG CUỐI nên không bao giờ thấy → cả 4
+ * lượt soi đều trắng → backend chốt hỏng + hoàn phí cho lời mời ĐÃ ĐI THẬT (ca
+ * thật 3/9/2026, task `e29569d3`, workspace CHATGPT PRO có 28 lời mời chờ).
+ *
+ * Số lời mời đang chờ thì bước chốt suất đã đọc sẵn (`seat_pending_scanned` đọc
+ * tận nơi, hoặc `seat_pending_hint` của dashboard) — không tốn thêm cú bấm nào.
+ * Ngưỡng 15 thấp hơn hẳn 25 dòng/trang: mẻ mời cộng vào là vượt trang ngay, mà
+ * tìm kiếm chỉ tốn ~1s/email nên đoán thừa rẻ hơn nhiều so với đoán thiếu.
+ */
+export const PENDING_SEARCH_THRESHOLD = 15;
+
+export type PendingScanOptions = {
+  /**
+   * Số lời mời đang chờ đọc được ở bước chốt suất. `> PENDING_SEARCH_THRESHOLD`
+   * ⇒ bỏ quét DOM, đi thẳng ô tìm kiếm. null/undefined = không biết → giữ luật
+   * cũ (quét, chỉ tìm kiếm khi thanh phân trang báo ≥ 2 trang).
+   */
+  pendingAtCheck?: number | null;
+};
+
+/** Danh sách lời mời đông tới mức phải tìm kiếm thay vì quét DOM? */
+export function pendingListTooBigToScan(
+  pendingAtCheck: number | null | undefined,
+): boolean {
+  return (
+    typeof pendingAtCheck === "number" &&
+    Number.isFinite(pendingAtCheck) &&
+    pendingAtCheck > PENDING_SEARCH_THRESHOLD
+  );
+}
+
 export type PendingScanResult = {
   /** false = KHÔNG vào được tab "Lời mời" → caller phải fallback scrape full. */
   usable: boolean;
@@ -123,8 +161,11 @@ export async function scanPendingForEmails(
   emails: string[],
   timeoutMs: number,
   ensureTab = true,
+  opts: PendingScanOptions = {},
 ): Promise<PendingScanResult> {
   const wantedLower = emails.map((e) => e.trim().toLowerCase());
+  // Biết trước danh sách đông (bước chốt suất đã đếm) → khỏi quét, tìm kiếm luôn.
+  const tooBig = pendingListTooBigToScan(opts.pendingAtCheck);
 
   if (ensureTab) {
     const onTab = await clickTabAndWait(
@@ -154,7 +195,14 @@ export async function scanPendingForEmails(
   let result = collectMatches(wantedLower);
   let pages = findPaginationState()?.total ?? 1;
 
-  while (result.missing.length > 0 && Date.now() - start < timeoutMs) {
+  if (tooBig && result.missing.length > 0) {
+    console.log(
+      `[autogpt-invite-scan] bước chốt suất đếm ${opts.pendingAtCheck} lời mời đang chờ ` +
+        `(> ${PENDING_SEARCH_THRESHOLD}) — bỏ quét DOM, dùng ô tìm kiếm ngay`,
+    );
+  }
+
+  while (!tooBig && result.missing.length > 0 && Date.now() - start < timeoutMs) {
     // ── NHIỀU TRANG THÌ TÌM KIẾM, KHÔNG QUÉT (user chốt 30/8/2026) ──────────
     // Danh sách lời mời xếp theo NGÀY MỜI tăng dần, nên email vừa mời nằm ở
     // TRANG CUỐI. Quét DOM trang đang mở là quét vào chỗ chắc chắn không có:
@@ -193,9 +241,10 @@ export async function scanPendingForEmails(
   // email còn thiếu có thể đang nằm ở trang sau, quét DOM trang hiện tại không
   // thấy được. Danh sách 1 trang: quét là đủ, gõ tìm kiếm chỉ tốn thời gian.
   let usedSearch = false;
-  if (result.missing.length > 0 && pages >= 2) {
+  if (result.missing.length > 0 && (pages >= 2 || tooBig)) {
     console.log(
-      `[autogpt-invite-scan] danh sách có ${pages} trang → dùng ô tìm kiếm cho ${result.missing.length} email còn thiếu`,
+      `[autogpt-invite-scan] ${tooBig ? `${opts.pendingAtCheck} lời mời đang chờ` : `danh sách có ${pages} trang`}` +
+        ` → dùng ô tìm kiếm cho ${result.missing.length} email còn thiếu`,
     );
     const viaSearch = await searchPendingForEmails(result.missing);
     if (viaSearch !== null) {

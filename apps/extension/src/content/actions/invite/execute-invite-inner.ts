@@ -91,6 +91,11 @@ export type InviteInnerOptions = {
   allEmails?: string[];
   /** Email lượt trước đã soi thấy ở tab Lời mời / tab Người dùng. */
   landed?: ScrapedMember[];
+  /**
+   * Số lời mời đang chờ đọc được ở bước chốt suất. Đông hơn ngưỡng thì bước soi
+   * hai tab TÌM KIẾM từng email thay vì quét DOM — xem `PENDING_SEARCH_THRESHOLD`.
+   */
+  pendingAtCheck?: number | null;
 };
 
 export async function executeInviteInner(
@@ -102,6 +107,7 @@ export async function executeInviteInner(
   const attempt = opts.attempt ?? 1;
   const allEmails = opts.allEmails ?? emails;
   const landedBefore = opts.landed ?? [];
+  const pendingAtCheck = opts.pendingAtCheck ?? null;
 
   await reportProgress(
     taskId,
@@ -588,6 +594,7 @@ export async function executeInviteInner(
         typedEmails,
         skippedEmails,
         landedBefore,
+        pendingAtCheck,
       });
     }
     return {
@@ -681,6 +688,8 @@ type SilentSubmitContext = {
   typedEmails: string[];
   skippedEmails: string[];
   landedBefore: ScrapedMember[];
+  /** Số lời mời đang chờ ở bước chốt suất (null = không đọc được). */
+  pendingAtCheck: number | null;
 };
 
 /**
@@ -702,13 +711,14 @@ async function afterSilentSubmit(
   ctx: SilentSubmitContext,
 ): Promise<ExecuteActionResponse> {
   const { taskId, emails, allEmails, role, attempt, submittedAt } = ctx;
+  const pendingAtCheck = ctx.pendingAtCheck;
   console.warn(
     `[autogpt-invite] ChatGPT KHÔNG xác nhận sau ${Math.round(ctx.waitedMs / 1000)}s ` +
       `(lượt ${attempt}/${MAX_INVITE_ATTEMPTS}) — soi tab Lời mời rồi tab Người dùng.`,
   );
 
   const landed: ScrapedMember[] = [...ctx.landedBefore];
-  let check = await checkInviteLanded(taskId, emails);
+  let check = await checkInviteLanded(taskId, emails, pendingAtCheck);
   landed.push(...check.pending, ...check.active);
 
   // Chưa đủ một phút kể từ cú bấm Gửi thì chờ nốt rồi soi lại — chỉ khi còn được
@@ -722,7 +732,7 @@ async function afterSilentSubmit(
         (left) =>
           `Chưa thấy ${check.missing.length} email ở cả 2 tab — chờ nốt ${left}s cho đủ 1 phút rồi soi lại...`,
       );
-      const again = await checkInviteLanded(taskId, check.missing);
+      const again = await checkInviteLanded(taskId, check.missing, pendingAtCheck);
       landed.push(...again.pending, ...again.active);
       check = again;
     }
@@ -811,6 +821,7 @@ async function afterSilentSubmit(
     attempt: attempt + 1,
     allEmails,
     landed,
+    pendingAtCheck,
   });
   if (!retry.ok) {
     const rdata = (retry.data ?? {}) as Record<string, unknown>;

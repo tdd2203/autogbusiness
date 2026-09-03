@@ -3423,6 +3423,20 @@ async function runOnceOnSlot(
     // mời (submit xong là F5 verify), nặng hơn hẳn nhánh mời-ngoài-tên-miền vốn
     // đã được vá bằng đúng cách này (xem `invite-seat-fields.ts`).
     const seatFieldsFromSubmit = pickSeatFields(submitData);
+    // SỐ LỜI MỜI ĐANG CHỜ đọc ở bước chốt suất (Phase 1). Lượt soi sau F5 chạy
+    // trong content script MỚI TINH nên không còn con số này — gửi kèm để nó
+    // biết danh sách có đông hay không mà chọn TÌM KIẾM thay vì quét DOM trang
+    // đầu (email vừa mời nằm ở trang cuối). Xem `PENDING_SEARCH_THRESHOLD`.
+    const pendingAtCheck = ((): number | null => {
+      for (const v of [
+        seatFieldsFromSubmit.seat_pending_scanned,
+        seatFieldsFromSubmit.seat_pending_hint,
+        request.kind === "INVITE_MEMBER" ? request.seatHint?.pending : undefined,
+      ]) {
+        if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+      }
+      return null;
+    })();
     // Fallback khi verify không chạy được: submit-OK → COMPLETED với
     // verify_scrape_failed (hành vi cũ); salvage → GIỮ NGUYÊN lỗi gốc (không có
     // bằng chứng invite đã đi thì không được báo thành công).
@@ -3491,6 +3505,7 @@ async function runOnceOnSlot(
             taskId: task.id,
             emails: request.emails,
             role: request.role,
+            pendingAtCheck,
           } satisfies ExecuteActionRequest),
           VERIFY_ROUNDTRIP_TIMEOUT_MS,
           "verify-pending-invite",

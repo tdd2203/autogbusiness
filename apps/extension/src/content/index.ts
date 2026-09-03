@@ -114,7 +114,12 @@ async function dispatch(
     case "SET_EXTERNAL_INVITES":
       return executeSetExternalInvites(msg.enabled);
     case "VERIFY_PENDING_INVITE":
-      return executeVerifyPendingInvite(msg.taskId, msg.emails, msg.role);
+      return executeVerifyPendingInvite(
+        msg.taskId,
+        msg.emails,
+        msg.role,
+        msg.pendingAtCheck ?? null,
+      );
     case "CHECK_ACTIVE_AFTER_INVITE":
       return executeCheckActiveAfterInvite(msg.taskId, msg.emails);
     case "REMOVE_MEMBER":

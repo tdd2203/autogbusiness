@@ -29,6 +29,7 @@ export async function executeVerifyPendingInvite(
   taskId: string,
   emails: string[],
   role: ChatGPTRole,
+  pendingAtCheck: number | null = null,
 ): Promise<ExecuteActionResponse> {
   console.log(
     `[autogpt-invite-verify] START: ${emails.length} email(s) role=${role} pathname=${location.pathname}${location.search}`,
@@ -79,7 +80,9 @@ export async function executeVerifyPendingInvite(
   try {
     // QUÉT danh sách lời mời (poll tối đa 5s). Chỉ gõ ô tìm kiếm khi danh sách
     // ≥ 2 trang — thực tế lời mời gần như luôn gọn trong 1 trang.
-    const scan = await scanPendingForEmails(emails, 5_000);
+    const scan = await scanPendingForEmails(emails, 5_000, true, {
+      pendingAtCheck,
+    });
     if (scan.usable) {
       scrapedPending = scan.matched;
     } else {

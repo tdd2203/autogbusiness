@@ -224,6 +224,12 @@ export type ExecuteActionRequest =
       taskId: string;
       emails: string[];
       role: ChatGPTRole;
+      /**
+       * Số lời mời đang chờ mà bước chốt suất đọc được TRƯỚC khi mời. Đông hơn
+       * `PENDING_SEARCH_THRESHOLD` thì lượt soi này TÌM KIẾM từng email thay vì
+       * quét DOM trang đầu (email vừa mời nằm ở trang cuối).
+       */
+      pendingAtCheck?: number | null;
     }
   | {
       /** Phase 2b của INVITE_MEMBER — kiểm tra các email KHÔNG thấy ở tab "Lời
