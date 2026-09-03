@@ -80,7 +80,17 @@ def test_refund_all_on_failed(client: TestClient, auth_header: dict) -> None:
     assert len([t for t in txns if t["kind"] == "invite_refund"]) == 3
 
 
-def test_refund_partial_on_completed_unverified(client: TestClient, auth_header: dict) -> None:
+def test_khong_hoan_le_khi_anh_em_cung_me_da_xac_minh(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Mẻ có email xác minh ⇒ KHÔNG hoàn phí lẻ cho email soi không ra.
+
+    Luật cũ ở đây là hoàn ngay phần "unverified". Đổi 3/9/2026 (user): mời một mẻ
+    là MỘT cú bấm Gửi, mẻ đi được thì đi cả mẻ — "không thấy" là chuyện của lượt
+    ĐỌC (danh sách sang trang, tab chưa nạp xong, người nhận bấm nhận ngay nên rời
+    tab "Lời mời"). Email đó chuyển sang chờ xác minh, đồng bộ đi xem rồi mới
+    quyết. Ca hỏng THẬT (cả mẻ không email nào xác minh) vẫn hoàn đủ — xem
+    `test_refund_all_on_failed` và `test_invite_completed_failure_audit.py`."""
     ws = create_ws(client, auth_header, "Partial WS")
     sub = make_beta_sub(client, auth_header, username="refpartial", balance=300_000)
     assign(client, auth_header, ws["id"], sub["id"])
@@ -88,21 +98,20 @@ def test_refund_partial_on_completed_unverified(client: TestClient, auth_header:
     res = _bulk(client, sub["token"], ws["id"], ["p1@example.com", "p2@example.com", "p3@example.com"])
     assert wallet_of(client, sub["token"])["balance"] == 0
 
-    # Vượt guard 10′ (unverified tươi được GIỮ + chưa hoàn phí, chờ sync phân xử).
+    # Vượt guard 10′ — trước đây quá mốc này là chốt hỏng + hoàn phí NGAY.
     _backdate_members(ws["id"], ["p1@example.com", "p2@example.com", "p3@example.com"])
 
-    # COMPLETED nhưng p2 không verify được → chỉ hoàn phí p2.
     r = _patch_queue(
         client, ws["extension_api_key"], res["queue_item_id"],
         {"status": "COMPLETED", "result": {"unverified_emails": ["p2@example.com"]}},
     )
     assert r.status_code == 200, r.text
 
-    assert wallet_of(client, sub["token"])["balance"] == FEE  # hoàn 1 email
+    assert wallet_of(client, sub["token"])["balance"] == 0, (
+        "p1/p3 xác minh được ⇒ cú Gửi trót lọt ⇒ không hoàn phí p2 theo một lượt đọc"
+    )
     txns = client.get("/api/v1/wallet/transactions", headers=bearer(sub["token"])).json()["items"]
-    refunds = [t for t in txns if t["kind"] == "invite_refund"]
-    assert len(refunds) == 1
-    assert refunds[0]["meta"]["email"] == "p2@example.com"
+    assert [t for t in txns if t["kind"] == "invite_refund"] == []
 
 
 def test_refund_idempotent_on_reterminal(client: TestClient, auth_header: dict) -> None:

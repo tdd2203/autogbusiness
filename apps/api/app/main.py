@@ -27,7 +27,11 @@ from app.routers.members._shared import (
     SUBSCRIPTION_GRACE_AFTER_EXPIRY,
     _has_open_remove_task,
 )
-from app.routers.queue.completion import enqueue_sync_probe, fail_deferred_invite
+from app.routers.queue.completion import (
+    batch_verified_siblings,
+    enqueue_sync_probe,
+    fail_deferred_invite,
+)
 from app.routers.members.remove import _build_removal_task
 from app.sse import publish_task_event
 from app.routers import (
@@ -480,32 +484,6 @@ def _enqueue_expired_removals_once() -> None:
         _expire_lock.release()
 
 
-def _batch_verified_siblings(db, queue_item_id: str, email: str) -> list[str]:
-    """Email CÙNG MỘT MẺ MỜI đã được xác minh (audit `MEMBER_INVITE_VERIFIED` mang
-    cùng `queue_item_id`), bỏ chính email đang xét.
-
-    Mời một mẻ là MỘT thao tác trên ChatGPT: dialog nhận cả danh sách rồi gửi một
-    lần, nên mẻ đi được thì đi cả mẻ. Danh sách trả về không rỗng = có bằng chứng
-    DƯƠNG rằng cú gửi ấy trót lọt."""
-    rows = (
-        db.execute(
-            select(AuditLog.data).where(
-                AuditLog.action == "MEMBER_INVITE_VERIFIED",
-                AuditLog.data["queue_item_id"].astext == queue_item_id,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    out = {
-        str((d or {}).get("email") or "").lower()
-        for d in rows
-    }
-    out.discard("")
-    out.discard(email.lower())
-    return sorted(out)
-
-
 def _resolve_stale_pending_invites_once() -> None:
     """Chốt các lời mời KẸT LIMBO: extension đã báo COMPLETED-unverified rồi được guard
     10 phút "defer to sync", nhưng quá `STALE_PENDING_INVITE_WINDOW` vẫn CHƯA có xác
@@ -741,7 +719,7 @@ def _resolve_stale_pending_invites_once() -> None:
                 # `close_invite_defer_with_missing_evidence` hoàn phí như cũ.
                 # Hết giờ không phải bằng chứng.
                 qid = (ev.data or {}).get("queue_item_id")
-                siblings = _batch_verified_siblings(db, str(qid), email) if qid else []
+                siblings = batch_verified_siblings(db, str(qid) if qid else None, email)
                 if siblings:
                     # Kêu MỘT lần cho mỗi mốc hoãn, không lặp mỗi tick.
                     already_held = db.execute(

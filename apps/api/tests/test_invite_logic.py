@@ -1093,10 +1093,14 @@ def test_phantom_cleanup_failed_preserves_joined_member(
     assert joined["joined_at"] is not None
 
 
-def test_phantom_cleanup_completed_unverified_only_deletes_listed(
+def test_phantom_cleanup_giu_email_cung_me_voi_email_da_xac_minh(
     client: TestClient, auth_header: dict
 ) -> None:
-    """COMPLETED + result.unverified_emails=[a] → xoá a, giữ b."""
+    """COMPLETED + unverified=[a] mà b xác minh được → GIỮ a, chờ đồng bộ phán.
+
+    Đổi 3/9/2026 (user): mời một mẻ là MỘT cú bấm Gửi nên mẻ đi được thì đi cả mẻ;
+    "soi không thấy a" là chuyện của lượt đọc, không phải bằng chứng a hỏng. Cả mẻ
+    không email nào xác minh thì vẫn xoá như cũ — test ngay bên dưới."""
     ws = _create_workspace(client, auth_header)
     _bulk_invite(
         client,
@@ -1131,9 +1135,42 @@ def test_phantom_cleanup_completed_unverified_only_deletes_listed(
     }
     assert "verified@example.com" in members_by_email
     assert members_by_email["verified@example.com"]["status"] == "pending"
-    assert "rejected@example.com" not in members_by_email, (
-        "unverified email phải bị phantom-cleanup xoá"
+    assert "rejected@example.com" in members_by_email, (
+        "cùng mẻ với email đã xác minh ⇒ giữ lại chờ đồng bộ, không xoá"
     )
+
+
+def test_phantom_cleanup_xoa_khi_ca_me_khong_ai_xac_minh(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Cả mẻ soi không ra email nào ⇒ không có bằng chứng cú Gửi trót lọt → xoá
+    phantom + hoàn phí như cũ. Luật "cả mẻ cùng số phận" không nới tay ca này."""
+    ws = _create_workspace(client, auth_header)
+    _bulk_invite(
+        client,
+        ws["id"],
+        payload={"emails": ["miss1@example.com", "miss2@example.com"], "role": "member"},
+        headers=auth_header,
+    )
+    queue = _list_queue(client, auth_header)
+    task = next(q for q in queue if q["type"] == "INVITE_MEMBER")
+    _backdate_members(ws["id"], ["miss1@example.com", "miss2@example.com"])
+
+    _patch_task_as_extension(
+        client,
+        task["id"],
+        ws["extension_api_key"],
+        status="COMPLETED",
+        result={
+            "verified_emails": [],
+            "unverified_emails": ["miss1@example.com", "miss2@example.com"],
+            "verify_scrape_failed": False,
+        },
+    )
+
+    emails = {m["email"] for m in _list_members(client, ws["id"], auth_header)}
+    assert "miss1@example.com" not in emails
+    assert "miss2@example.com" not in emails
 
 
 def test_phantom_cleanup_completed_verify_scrape_failed_keeps_all(

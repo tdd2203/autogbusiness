@@ -825,6 +825,37 @@ def fail_deferred_invite(
         db.delete(member)
 
 
+def batch_verified_siblings(
+    db: Session, queue_item_id: str | None, email: str
+) -> list[str]:
+    """Email CÙNG MỘT MẺ MỜI đã được xác minh (audit `MEMBER_INVITE_VERIFIED` mang
+    cùng `queue_item_id`), bỏ chính email đang xét.
+
+    Mời một mẻ là MỘT thao tác trên ChatGPT: dialog nhận cả danh sách rồi gửi một
+    lần, nên mẻ đi được thì đi cả mẻ. Danh sách trả về không rỗng = có bằng chứng
+    DƯƠNG rằng cú gửi ấy trót lọt.
+
+    Dùng chung với `_resolve_stale_pending_invites_once` (main.py) — hai nơi chốt
+    số phận lời mời treo thì phải đọc cùng một định nghĩa "anh em cùng mẻ".
+    """
+    if not queue_item_id:
+        return []
+    rows = (
+        db.execute(
+            select(AuditLog.data).where(
+                AuditLog.action == "MEMBER_INVITE_VERIFIED",
+                AuditLog.data["queue_item_id"].astext == str(queue_item_id),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    out = {str((d or {}).get("email") or "").lower() for d in rows}
+    out.discard("")
+    out.discard(email.lower())
+    return sorted(out)
+
+
 def close_invite_defer_with_missing_evidence(
     db: Session,
     member: Member,
@@ -899,10 +930,55 @@ def close_invite_defer_with_missing_evidence(
     if open_invite is not None:
         return False
 
+    # ── CẢ MẺ ĐI ĐƯỢC THÌ KHÔNG LỖI LẺ MỘT EMAIL (user 3/9/2026) ─────────────
+    # Anh em cùng mẻ đã xác minh = cú bấm "Gửi lời mời" ấy TRÓT LỌT, nên "không
+    # thấy email này" là chuyện của lượt ĐỌC chứ không phải của lời mời: danh
+    # sách sang trang, tab chưa nạp xong, người nhận vừa bấm nhận nên rời tab.
+    # Giữ nguyên + kêu MỘT lần cho admin nhìn thấy, không hoàn phí theo một lượt
+    # quét. Resolver nền (main.py) giữ y hệt luật này — xem `MEMBER_INVITE_BATCH_HOLD`.
+    qid = (defer_ev.data or {}).get("queue_item_id")
+    siblings = batch_verified_siblings(db, qid, email)
+    if siblings:
+        already_held = db.execute(
+            select(AuditLog.id)
+            .where(
+                AuditLog.action == "MEMBER_INVITE_BATCH_HOLD",
+                AuditLog.target_type == "MEMBER",
+                AuditLog.target_id == str(member.id),
+                AuditLog.timestamp > defer_ev.timestamp,
+            )
+            .limit(1)
+        ).first()
+        if already_held is None:
+            log_event(
+                db,
+                actor_type="EXTENSION",
+                actor_label=f"workspace:{workspace_name}",
+                action="MEMBER_INVITE_BATCH_HOLD",
+                result="PENDING",
+                target_type="MEMBER",
+                target_id=str(member.id),
+                data={
+                    "email": email,
+                    "workspace_id": str(member.workspace_id),
+                    "queue_item_id": qid,
+                    "verified_siblings": siblings[:20],
+                    "sibling_count": len(siblings),
+                    "found_in": found_in,
+                    "note": (
+                        "Cùng mẻ mời với email đã xác minh nên lời mời này coi như "
+                        "đã gửi đi được — KHÔNG hoàn phí dù lượt quét không thấy. "
+                        "Kiểm tra tay trên ChatGPT nếu email vẫn không xuất hiện."
+                    ),
+                },
+                commit=False,
+            )
+        return False
+
     fail_deferred_invite(
         db,
         member,
-        queue_item_id=(defer_ev.data or {}).get("queue_item_id"),
+        queue_item_id=qid,
         actor_type="EXTENSION",
         actor_label=f"workspace:{workspace_name}",
         error_code="INVITE_NOT_FOUND_BY_SYNC",
@@ -950,6 +1026,85 @@ def enqueue_sync_probe(
         )
     )
     return True
+
+
+def _defer_completed_invite_emails(
+    db: Session,
+    *,
+    workspace: Workspace,
+    item: QueueItem,
+    emails: list[str],
+    reason: str,
+) -> set[str]:
+    """HOÃN PHÁN XỬ cho các email của một lệnh mời đã COMPLETED: ghi
+    `MEMBER_INVITE_CLEANUP_DEFERRED` + `MEMBER_INVITE_PENDING_VERIFY` gắn từng
+    member, rồi CỬ NGƯỜI ĐI XEM (`enqueue_sync_probe`). Trả về các email THẬT SỰ
+    hoãn được (có bản ghi member để gắn sự kiện). KHÔNG commit.
+
+    Chỉ email có bản ghi member mới hoãn được: sự kiện `PENDING_VERIFY` là thứ duy
+    nhất `_resolve_stale_pending_invites_once` đọc để biết có lời mời đang treo.
+    Hoãn mà không ghi được sự kiện là giam tiền vĩnh viễn, không ai chốt.
+    """
+    if not emails:
+        return set()
+    wanted = sorted({e.lower() for e in emails})
+    members = (
+        db.execute(
+            select(Member).where(
+                Member.workspace_id == workspace.id,
+                Member.email.in_(wanted),
+                Member.status == "pending",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not members:
+        return set()
+    log_event(
+        db,
+        actor_type="SYSTEM",
+        actor_label="system:phantom-cleanup-guard",
+        action="MEMBER_INVITE_CLEANUP_DEFERRED",
+        result="OK",
+        target_type="QUEUE_ITEM",
+        target_id=str(item.id),
+        data={
+            "workspace_id": str(workspace.id),
+            "deferred_emails": [m.email.lower() for m in members],
+            "reason": reason,
+        },
+        commit=False,
+    )
+    # Báo cáo TRUNG THỰC theo từng member (fix 2026-07-16, bug thuylinhtctbg):
+    # email hoãn mà im lặng thì timeline dừng ở "Đã mời" → UI thể hiện như đã mời
+    # THÀNH CÔNG dù CHƯA xác minh. Ghi sự kiện PENDING gắn member để modal hiện
+    # "Chờ xác minh" — hỏng thật thì resolver nền (main.py) lật FAILED + hoàn phí.
+    for dm in members:
+        log_event(
+            db,
+            actor_type="EXTENSION",
+            actor_label=f"workspace:{workspace.name}",
+            action="MEMBER_INVITE_PENDING_VERIFY",
+            result="PENDING",
+            target_type="MEMBER",
+            target_id=str(dm.id),
+            data={
+                "email": dm.email.lower(),
+                "workspace_id": str(workspace.id),
+                "queue_item_id": str(item.id),
+                "reason": reason,
+            },
+            commit=False,
+        )
+    # …và ĐI XEM THẬT. Hoãn mà không cử ai đi đối chiếu thì 20′ sau resolver chốt
+    # hỏng trong mù: nó chỉ tha khi thấy dấu vết một lượt sync SAU mốc hoãn, mà
+    # auto-sync chỉ chạy 1 lần/ngày. Đây là đúng lỗ hổng đã hoàn oan 3.960.000đ
+    # ngày 28-29/8/2026.
+    enqueue_sync_probe(
+        db, workspace_id=workspace.id, emails=[m.email.lower() for m in members]
+    )
+    return {m.email.lower() for m in members}
 
 
 def defer_unverified_invite(
@@ -2211,65 +2366,59 @@ def update_task(
             fresh_set = {e.lower() for e in fresh} - skipped_set
             if fresh_set:
                 deferred = [e for e in emails_to_delete if e in fresh_set]
-                deferred_set = fresh_set
-                emails_to_delete = [e for e in emails_to_delete if e not in fresh_set]
-                log_event(
+                deferred_set = _defer_completed_invite_emails(
                     db,
-                    actor_type="SYSTEM",
-                    actor_label="system:phantom-cleanup-guard",
-                    action="MEMBER_INVITE_CLEANUP_DEFERRED",
-                    result="OK",
-                    target_type="QUEUE_ITEM",
-                    target_id=str(item.id),
-                    data={
-                        "workspace_id": str(workspace.id),
-                        "deferred_emails": deferred,
-                        "reason": "fresh_invite_within_10min_defer_to_sync",
-                    },
-                    commit=False,
+                    workspace=workspace,
+                    item=item,
+                    emails=deferred,
+                    reason="fresh_invite_within_10min_defer_to_sync",
                 )
-                # Báo cáo TRUNG THỰC theo từng member (fix 2026-07-16, bug
-                # thuylinhtctbg): trước đây email defer im lặng → timeline dừng ở
-                # "Đã mời" → UI thể hiện như đã mời THÀNH CÔNG dù CHƯA xác minh. Ghi
-                # sự kiện PENDING gắn member để modal hiện "Chờ xác minh" — nếu lời
-                # mời hỏng thật, resolver nền (main.py) sẽ lật FAILED + hoàn phí sau.
-                deferred_members = (
-                    db.execute(
-                        select(Member).where(
-                            Member.workspace_id == workspace.id,
-                            Member.email.in_([e.lower() for e in deferred]),
-                            Member.status == "pending",
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                for dm in deferred_members:
-                    log_event(
-                        db,
-                        actor_type="EXTENSION",
-                        actor_label=f"workspace:{workspace.name}",
-                        action="MEMBER_INVITE_PENDING_VERIFY",
-                        result="PENDING",
-                        target_type="MEMBER",
-                        target_id=str(dm.id),
-                        data={
-                            "email": dm.email,
-                            "workspace_id": str(workspace.id),
-                            "queue_item_id": str(item.id),
-                            "reason": "fresh_invite_within_10min_defer_to_sync",
-                        },
-                        commit=False,
-                    )
-                # …và ĐI XEM THẬT. Hoãn mà không cử ai đi đối chiếu thì 20′ sau
-                # resolver nền chốt hỏng trong mù: nó chỉ tha khi thấy dấu vết một
-                # lượt sync SAU mốc hoãn, mà auto-sync chỉ chạy 1 lần/ngày. Đây là
-                # đúng lỗ hổng đã hoàn oan 3.960.000đ ngày 28-29/8/2026.
-                enqueue_sync_probe(
+                emails_to_delete = [
+                    e for e in emails_to_delete if e not in deferred_set
+                ]
+
+        # ── CẢ MẺ ĐI ĐƯỢC THÌ KHÔNG LỖI LẺ MỘT EMAIL (user 3/9/2026) ─────────
+        # Một mẻ mời là MỘT cú bấm "Gửi lời mời": email này vào được mà email kia
+        # hỏng RIÊNG là chuyện không xảy ra. Cái thường xảy ra là ta ĐỌC KHÔNG RA
+        # email đó (danh sách lời mời sang trang, tab chưa nạp xong, người nhận đã
+        # bấm nhận nên rời tab "Lời mời"), rồi mọi lớp phía sau đọc "không thấy"
+        # thành "hỏng".
+        #
+        # CA THẬT 3/9/2026 (task e29569d3, mẻ 2 email): cả hai email đều đọc không
+        # ra; `thanhtung...` mới mời <10′ nên được hoãn, `uochenchieudong` quá mốc
+        # ĐÚNG 28 GIÂY nên bị chốt hỏng ngay — hoàn phí, xoá bản ghi, không một
+        # dòng nhật ký. 28 phút sau đồng bộ thấy email đó ĐANG Ở TRONG TEAM, khách
+        # phải gỡ tay rồi mời lại, trả phí lần hai.
+        #
+        # Nên: còn anh em cùng mẻ đã xác minh HOẶC đang được hoãn ⇒ email này cũng
+        # được hoãn theo, để bằng chứng THẬT quyết. Resolver nền (main.py) đã có
+        # sẵn luật "cùng mẻ với email đã xác minh thì giữ lại"
+        # (`MEMBER_INVITE_BATCH_HOLD`) — chỗ này chỉ đưa email vào đúng đường đó
+        # thay vì chốt hỏng trước khi ai kịp đi xem.
+        #
+        # NGOẠI LỆ `skipped_set`: email chưa hề nhập được vào ô mời không nằm
+        # trong cú bấm Gửi nào cả — bằng chứng DƯƠNG rằng nó chưa đi, không được
+        # ăn theo mẻ.
+        if emails_to_delete and not verify_failed:
+            solidarity = [e for e in emails_to_delete if e not in skipped_set]
+            survivors = (
+                _invite_task_emails(item)
+                - {e.lower() for e in emails_to_delete}
+                - deferred_set
+            )
+            if solidarity and (survivors or deferred_set):
+                held = _defer_completed_invite_emails(
                     db,
-                    workspace_id=workspace.id,
-                    emails=[dm.email for dm in deferred_members],
+                    workspace=workspace,
+                    item=item,
+                    emails=solidarity,
+                    reason="batch_sibling_ok_defer_to_sync",
                 )
+                if held:
+                    deferred_set = deferred_set | held
+                    emails_to_delete = [
+                        e for e in emails_to_delete if e not in held
+                    ]
 
         # ---- TRẠNG THÁI THÀNH CÔNG theo TỪNG member (gắn timeline) ----
         # Ghi MEMBER_INVITE_VERIFIED gắn member.id + set joined_at = LẦN VERIFIED
@@ -2341,6 +2490,56 @@ def update_task(
         # cột `reversed`. No-op nếu task không có giao dịch invite_fee (non-beta).
         refunded_emails: list[str] = []
         if emails_to_delete:
+            # ── TIMELINE: CHẤM HỎNG TỪNG EMAIL, TRƯỚC KHI XOÁ BẢN GHI ────────
+            # Lệnh kết thúc COMPLETED nhưng email này không soi thấy ở đâu ⇒ chốt
+            # hỏng, hoàn phí, xoá bản ghi. Trước 3/9/2026 cả ba việc đó chạy IM
+            # LẶNG: không một dòng nhật ký nào mang tên email, mà bản ghi member
+            # thì bị xoá nên lịch sử riêng của email cũng biến mất. Người đi tra
+            # chỉ còn dòng hoàn phí bên ví — không đủ để biết vì sao mời hỏng (ca
+            # thật 3/9/2026, task e29569d3, email `uochenchieudong`).
+            #
+            # Nhánh task FAILED (`reconcile_failed_invite`) và nhánh resolver
+            # (`fail_deferred_invite`) đều đã ghi `MEMBER_INVITE_FAILED`; chỉ
+            # nhánh này thiếu. PHẢI ghi TRƯỚC khi xoá, không thì không còn member
+            # để gắn sự kiện (xem completion.md §5).
+            failed_now = datetime.now(timezone.utc)
+            for email in sorted({e.lower() for e in emails_to_delete}):
+                member = db.execute(
+                    select(Member).where(
+                        Member.workspace_id == workspace.id,
+                        Member.email == email,
+                        Member.status.in_(("pending", "active")),
+                    )
+                ).scalar_one_or_none()
+                if member is None:
+                    continue
+                skipped_here = email in skipped_set
+                log_event(
+                    db,
+                    actor_type="EXTENSION",
+                    actor_label=f"workspace:{workspace.name}",
+                    action="MEMBER_INVITE_FAILED",
+                    result="FAILED",
+                    target_type="MEMBER",
+                    target_id=str(member.id),
+                    data={
+                        "email": email,
+                        "workspace_id": str(workspace.id),
+                        "queue_item_id": str(item.id),
+                        "verified_at": failed_now.isoformat(),
+                        "error_code": (
+                            "INVITE_NOT_TYPED"
+                            if skipped_here
+                            else "INVITE_NOT_FOUND_BY_SYNC"
+                        ),
+                        "reason": (
+                            "khong_nhap_duoc_vao_o_moi"
+                            if skipped_here
+                            else "khong_thay_o_ca_hai_tab_sau_khi_moi"
+                        ),
+                    },
+                    commit=False,
+                )
             refunded = wallet_service.refund_invite(
                 db, item.id, emails=emails_to_delete
             )
