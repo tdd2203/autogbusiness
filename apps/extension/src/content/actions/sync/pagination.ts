@@ -1,4 +1,5 @@
 import { humanClick, sleep, waitFor } from "../../human";
+import { isRenderedVisible } from "./scrape-all-rows";
 
 const PAGE_INDICATOR_RE = /^\s*(\d+)\s*\/\s*(\d+)\s*$/;
 
@@ -139,6 +140,18 @@ function buildState(
     return null;
   }
 
+  // Thanh phân trang của tab CŨ vẫn nằm trong DOM ở dạng ẩn sau khi đổi tab
+  // (React chưa gỡ bảng cũ). Bám vào nó là đi lật 13 trang của danh sách "Người
+  // dùng" trong khi đang đứng ở tab "Lời mời" — mỗi trang một vòng cuộn đầy đủ,
+  // và mọi dòng thu được bị gắn nhãn của tab kia. Xem `visibleRows` trong
+  // `scrape-current-tab.ts` cho ca thật 25/8 → 3/9/2026.
+  if (!isRenderedVisible(anchor)) {
+    console.log(
+      `[autogpt-sync] bỏ qua "${current}/${total}" — thanh phân trang này đang ẩn (bảng tab cũ)`,
+    );
+    return null;
+  }
+
   const { prev, next } = findButtonsNearIndicator(anchor);
   if (!prev && !next) return null;
 
@@ -203,9 +216,18 @@ export function hasMorePages(state: PaginationState): boolean {
   return !isDisabled(state.nextButton);
 }
 
-/** Về trang 1 trước khi scrape nhiều trang (kể cả đang ở trang N). */
-export async function goToFirstPage(): Promise<void> {
+/**
+ * Về trang 1 trước khi scrape nhiều trang (kể cả đang ở trang N).
+ *
+ * `isOverTime` (tuỳ chọn) để mẻ sync hết ngân sách thì dừng ngay: mỗi vòng ở
+ * đây chờ tới 6,4s và chạy tối đa 200 vòng — quá đủ để ăn hết trần của
+ * background trước khi kịp quét dòng nào.
+ */
+export async function goToFirstPage(
+  isOverTime: () => boolean = () => false,
+): Promise<void> {
   for (let guard = 0; guard < MAX_PAGINATION_PAGES; guard++) {
+    if (isOverTime()) return;
     const state = findPaginationState();
     if (!state || state.current <= 1) return;
     if (!state.prevButton || isDisabled(state.prevButton)) return;

@@ -25,7 +25,7 @@
  * chỉ hiện 8 mục đầu, phần còn lại nằm sau nút "Xem thêm".
  */
 
-export const VERSION = "0.15.7";
+export const VERSION = "0.15.8";
 
 export type ChangelogEntry = {
   version: string;
@@ -44,6 +44,13 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.15.8",
+    date: "2026-09-03",
+    kind: "fix",
+    title: "Đồng bộ",
+    note: "Đồng bộ hết đọc nhầm danh sách của tab vừa rời, không còn treo rồi báo hỏng.",
+  },
   {
     version: "0.15.7",
     date: "2026-09-01",

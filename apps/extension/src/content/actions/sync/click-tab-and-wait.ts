@@ -29,6 +29,50 @@ export function onWrongSubTab(): boolean {
   return WRONG_SUB_TAB_RE.test(location.search);
 }
 
+/**
+ * Chốt "DANH SÁCH đã đổi", đi kèm chốt "URL đã đổi".
+ *
+ * VÌ SAO CẦN (auto-sync 25/8 → 3/9/2026): URL đổi sang `?tab=invites` NGAY khi
+ * bấm, nhưng bảng bên dưới đổi sau — và bảng cũ còn nằm lại trong DOM. Chỉ soi
+ * URL thì mẻ quét lao vào ngay và đọc trúng danh sách của tab trước, rồi gắn
+ * nhãn theo tab mới. Cửa này bắt danh sách ĐANG HIỆN phải khác trước lúc bấm;
+ * không khác trong hạn thì thà bỏ tab đó còn hơn quét nhầm.
+ */
+export type ListSwapCheck = {
+  /** Chữ ký danh sách đang hiện (vd vài email đầu). "" = chưa có dòng nào. */
+  signature: () => string;
+  /** Hạn chờ danh sách đổi, mặc định 6s. */
+  timeoutMs?: number;
+};
+
+/**
+ * Danh sách đã đổi hay chưa. Tách riêng để test được mà không cần DOM.
+ *
+ * Chữ ký RỖNG cũng là một thay đổi hợp lệ: tab "Lời mời" không còn lời mời nào
+ * thì bảng trống — đó là kết quả thật, không phải lỗi.
+ */
+export function listSwapped(before: string, after: string): boolean {
+  return after !== before;
+}
+
+/** Poll tới khi `listSwapped` hoặc hết hạn. */
+async function waitForListSwap(
+  check: ListSwapCheck,
+  sigBeforeClick: string,
+  tabLabel: string,
+): Promise<boolean> {
+  const deadline = Date.now() + (check.timeoutMs ?? 6000);
+  while (Date.now() < deadline) {
+    if (listSwapped(sigBeforeClick, check.signature())) return true;
+    await sleep(250);
+  }
+  console.warn(
+    `[autogpt-sync] tab '${tabLabel}': URL đã đổi nhưng DANH SÁCH y nguyên sau ` +
+      `${(check.timeoutMs ?? 6000) / 1000}s — bỏ tab này, KHÔNG gắn nhãn cho danh sách tab cũ`,
+  );
+  return false;
+}
+
 /** Tên đọc được của mốc kiểm chứng, để ghi nhật ký. */
 function verifyLabel(verifyTabParam: string): string {
   return verifyTabParam === DEFAULT_TAB_VERIFY
@@ -73,6 +117,7 @@ export async function clickTabAndWait(
   postClickWaitMs = 1500,
   verifyTabParam?: string,
   waitForButtonMs = 0,
+  listSwap?: ListSwapCheck,
 ): Promise<boolean> {
   let btn = findTabButton(controlKey, tabTexts);
   if (!btn && waitForButtonMs > 0) {
@@ -102,6 +147,7 @@ export async function clickTabAndWait(
     console.log(
       `[autogpt-sync] clicking tab: ${tabTexts[0]} (attempt ${attempt + 1}/${MAX_ATTEMPTS})`,
     );
+    const sigBeforeClick = listSwap ? listSwap.signature() : "";
     await humanClick(btn);
 
     // Không cần verify URL → giữ hành vi cũ: sleep cố định rồi coi như xong.
@@ -119,7 +165,11 @@ export async function clickTabAndWait(
           `[autogpt-sync] tab '${tabTexts[0]}' đã active (URL ${location.search})`,
         );
         await sleep(500); // chờ list render xong trước khi scrape
-        return true;
+        if (!listSwap) return true;
+        if (await waitForListSwap(listSwap, sigBeforeClick, tabTexts[0])) {
+          return true;
+        }
+        break; // URL đúng nhưng danh sách chưa đổi → không retry click nữa
       }
     }
     console.warn(

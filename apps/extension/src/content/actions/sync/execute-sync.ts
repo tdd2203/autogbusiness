@@ -19,13 +19,38 @@ import {
   findTabButton,
   onWrongSubTab,
 } from "./click-tab-and-wait";
-import { MAX_SYNC_MS, scrapeCurrentTab } from "./scrape-current-tab";
+import {
+  MAX_SYNC_MS,
+  pageSignature,
+  scrapeCurrentTab,
+} from "./scrape-current-tab";
+
+/**
+ * Trần cho nhịp đọc số suất ở CUỐI mẻ sync. Phần này là phần THÊM (hỏng cũng
+ * không sao) nhưng lại nằm sau khi đồng hồ sync đã chốt, nên trước 3/9/2026 nó
+ * là phần đẩy tổng thời gian vượt trần 330s của background. Xem `MAX_SYNC_MS`.
+ */
+const SEAT_READ_MAX_MS = 30_000;
+
+/** Chạy `p`, quá `ms` thì bỏ cuộc và trả `null` (không ném). */
+async function withCap<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([
+    p,
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+}
 
 export async function executeSync(
   taskId: string,
   scope: SyncScope = "both",
   expectedLocale: ChatGPTLocale | null = null,
 ): Promise<ExecuteActionResponse> {
+  // Đồng hồ chạy từ ĐÂY — trước cả nhịp chờ thanh tab render (tới 10s) — để
+  // ngân sách của content bao trọn mọi thứ nó làm, không chỉ phần quét. Xem
+  // `MAX_SYNC_MS` về ba trần lồng nhau.
+  const startedAt = Date.now();
+  const isOverTime = () => Date.now() - startedAt > MAX_SYNC_MS;
+
   // scope: 'members' = chỉ tab Người dùng (active); 'invites' = chỉ tab Lời mời
   // đang chờ xử lý (pending); 'both' = cả hai. Tab "Yêu cầu đang chờ xử lý"
   // KHÔNG còn quét (user 2026-06-14).
@@ -112,9 +137,6 @@ export async function executeSync(
     };
   }
 
-  const startedAt = Date.now();
-  const isOverTime = () => Date.now() - startedAt > MAX_SYNC_MS;
-
   // Merged result — key theo email. Status từ tab cuối cùng scrape được sẽ
   // override. Thứ tự ưu tiên: active > pending. → Scrape active CUỐI CÙNG
   // để nếu cùng email xuất hiện ở "Lời mời" cũ và "Người dùng" mới thì
@@ -136,6 +158,10 @@ export async function executeSync(
         TEXT_FALLBACKS.tabPendingInvites,
         1500,
         "tab=invites",
+        0,
+        // URL đổi trước, bảng đổi sau: đòi thêm chốt "danh sách đã khác trước
+        // lúc bấm" mới cho quét, kẻo gắn nhãn 'pending' cho bảng Người dùng.
+        { signature: pageSignature },
       )
     ) {
       invitesTabFound = true;
@@ -169,6 +195,8 @@ export async function executeSync(
       TEXT_FALLBACKS.tabActiveMembers,
       1500,
       DEFAULT_TAB_VERIFY,
+      0,
+      { signature: pageSignature },
     )
   ) {
     tab1Found = true;
@@ -183,16 +211,17 @@ export async function executeSync(
       `[autogpt-sync] tab Người dùng: ${members.length} entries (header ${expectedTotal ?? "?"})`,
     );
     for (const m of members) merged.set(m.email, m);
-  } else if (onWrongSubTab()) {
-    // Vừa quét xong tab "Lời mời" mà KHÔNG quay về được tab "Người dùng": URL
-    // còn ?tab=invites. Đường fallback bên dưới (scrape DOM hiện tại như tab
-    // active) ở đây là TAI HOẠ — nó gắn nhãn `active` cho cả danh sách lời mời
-    // đang chờ, backend nâng hết pending → active. Thà báo lỗi.
+  } else if (onWrongSubTab() || invitesTabFound) {
+    // Vừa quét xong tab "Lời mời" mà KHÔNG chốt được tab "Người dùng" — hoặc URL
+    // còn ?tab=invites, hoặc danh sách chưa đổi khỏi bảng lời mời. Đường fallback
+    // bên dưới (scrape DOM hiện tại như tab active) ở đây là TAI HOẠ — nó gắn
+    // nhãn `active` cho cả danh sách lời mời đang chờ, backend nâng hết pending →
+    // active. Thà báo lỗi.
     return {
       ok: false,
       error_code: "UI_ELEMENT_NOT_FOUND",
       error_message:
-        `Không quay lại được tab "Người dùng" (URL còn '${location.search}') — ` +
+        `Không quay lại được tab "Người dùng" (URL '${location.search}') — ` +
         `dừng để không gắn nhãn "đã tham gia" cho danh sách lời mời đang chờ.`,
     };
   } else {
@@ -258,7 +287,12 @@ export async function executeSync(
     return {
       ok: false,
       error_code: "TIMEOUT",
-      error_message: `Sync vượt quá ${MAX_SYNC_MS}ms (đã thu được ${members.length} members, không chắc đủ).`,
+      error_message:
+        `Sync vượt quá ${MAX_SYNC_MS / 1000}s nên dừng giữa chừng ` +
+        `(mới thu ${members.length} dòng: ${members.filter((m) => m.status === "active").length} đang dùng + ` +
+        `${members.filter((m) => m.status === "pending").length} chờ tham gia; tab Người dùng=${tab1Found}, ` +
+        `tab Lời mời=${invitesTabFound}) — chưa chắc đủ nên KHÔNG đối chiếu để tránh xoá oan. ` +
+        `Danh sách trên ChatGPT đang tải ì chứ không phải mất phiên đăng nhập; chạy lại lúc máy rảnh.`,
     };
   }
 
@@ -277,6 +311,12 @@ export async function executeSync(
   // nhánh này làm task sync FAILED — nên nó nằm SAU mọi chốt lỗi (0 row, quá giờ)
   // và sau khi `elapsedMs` đã chốt: đọc suất mất tới ~28s, tính vào đồng hồ sync
   // thì một mẻ sync đang thành công có thể bị đẩy quá `MAX_SYNC_MS`.
+  //
+  // NHƯNG nằm ngoài đồng hồ sync không có nghĩa là được chạy vô hạn: chính nó là
+  // phần đẩy tổng thời gian của content vượt trần 330s của background (3 mẻ hỏng
+  // 1/9 + 3/9/2026 đều bị chém đúng lúc đang ở nhịp này, ngay sau khi đã quét
+  // xong). `SEAT_READ_MAX_MS` khoá lại: quá hạn thì bỏ số suất, mẻ sync vẫn về
+  // đích với danh sách member — đúng tinh thần "hỏng cũng không sao".
   let seatTotal: number | null = null;
   let seatAssigned: number | null = null;
   // Hai chỗ trong hộp nói hai tổng khác nhau. Backend dựa vào cờ này để KHÔNG tự
@@ -289,21 +329,29 @@ export async function executeSync(
   let seatModalText: string | null = null;
   if (scrapeActive) {
     try {
-      const seat = await checkSeatAvailability();
-      // `ratioTotal` = tổng của dòng "147/151 đã gán" = số suất workspace ĐANG
-      // giữ. Xem `check-seat-availability.ts` vì sao không lấy `availability.total`.
-      seatTotal = seat.ratioTotal;
-      seatAssigned = seat.availability?.assigned ?? null;
-      seatUncertain = seat.uncertain;
-      seatStepperTotal = seat.stepperTotal;
-      seatModalText = seat.modalText;
-      console.log(
-        `[autogpt-sync] suất đọc từ ` +
-          `${seat.source === "page_cards" ? "hàng thẻ trên trang Thành viên" : "hộp 'Quản lý suất'"}` +
-          `: ${seatAssigned ?? "?"}/${seatTotal ?? "?"}` +
-          (seat.uncertain ? ` (số chưa chắc — ${seat.uncertainReason ?? "?"})` : "") +
-          (seat.error ? ` (lỗi: ${seat.error})` : ""),
-      );
+      const seat = await withCap(checkSeatAvailability(), SEAT_READ_MAX_MS);
+      if (!seat) {
+        seatUncertain = true;
+        console.warn(
+          `[autogpt-sync] bỏ đọc số suất: quá ${SEAT_READ_MAX_MS / 1000}s — ` +
+            `trả kết quả sync trước khi background hết kiên nhẫn`,
+        );
+      } else {
+        // `ratioTotal` = tổng của dòng "147/151 đã gán" = số suất workspace ĐANG
+        // giữ. Xem `check-seat-availability.ts` vì sao không lấy `availability.total`.
+        seatTotal = seat.ratioTotal;
+        seatAssigned = seat.availability?.assigned ?? null;
+        seatUncertain = seat.uncertain;
+        seatStepperTotal = seat.stepperTotal;
+        seatModalText = seat.modalText;
+        console.log(
+          `[autogpt-sync] suất đọc từ ` +
+            `${seat.source === "page_cards" ? "hàng thẻ trên trang Thành viên" : "hộp 'Quản lý suất'"}` +
+            `: ${seatAssigned ?? "?"}/${seatTotal ?? "?"}` +
+            (seat.uncertain ? ` (số chưa chắc — ${seat.uncertainReason ?? "?"})` : "") +
+            (seat.error ? ` (lỗi: ${seat.error})` : ""),
+        );
+      }
     } catch (e) {
       seatUncertain = true;
       console.warn(

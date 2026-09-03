@@ -18,6 +18,7 @@ import { getConfig } from "../shared/storage";
 import type { ExtensionConfig, QueueItem } from "../shared/types";
 import { runPaymentChain, scrapeInvoiceDetailInTab } from "./payment-chain";
 import { pickSeatFields, withExtraData } from "./invite-seat-fields";
+import { readProgressBeat } from "./progress-beat";
 import {
   planSeatReloadAfterPurchase,
   seatReloadFailureResponse,
@@ -249,6 +250,44 @@ function sequentialUnits(task: QueueItem): number {
  * sendMessage) vốn KHÔNG có timeout sẵn — tránh treo SW khi content không phản
  * hồi.
  */
+/**
+ * Còn nhận nhịp tiến độ trong ngần này thì coi là content VẪN ĐANG CHẠY.
+ * Content báo nhịp dày (mỗi pass cuộn, tối thiểu 300ms/lần) nên 60s im lặng đã
+ * là dài; nhưng vẫn nới rộng để không kết luận vội khi tab nền bị Chrome bóp.
+ */
+const ALIVE_BEAT_WINDOW_MS = 60_000;
+
+/**
+ * Câu giải thích đi kèm `CONTENT_TIMEOUT`, chọn theo dấu nhịp tiến độ.
+ *
+ * Trước 3/9/2026 chỗ này luôn dán `SESSION_RECOVERY_HINT` ("xoá cookie, đăng
+ * nhập lại ChatGPT") cho MỌI ca. Bảy mẻ auto-sync hỏng trong 14 ngày đều KHÔNG
+ * phải ca đó: content còn gửi nhịp thêm 5-13 phút sau khi task bị đánh hỏng —
+ * nó chạy chậm chứ không chết. Lời khuyên sai làm người dùng đi chữa nhầm bệnh.
+ */
+function contentTimeoutCause(taskId: string): string {
+  const beat = readProgressBeat(taskId);
+  const silentMs = beat ? Date.now() - beat.at : null;
+  if (silentMs !== null && silentMs <= ALIVE_BEAT_WINDOW_MS) {
+    const at = beat?.message ?? beat?.phase ?? "không rõ chặng";
+    return (
+      `Content script VẪN ĐANG CHẠY (nhịp gần nhất ${Math.round(silentMs / 1000)}s trước: ` +
+      `"${at}") — đây là ca CHẠY QUÁ CHẬM chứ không phải mất phiên đăng nhập, ` +
+      `KHÔNG cần đăng nhập lại ChatGPT. Thường gặp khi workspace nhiều trang và ` +
+      `danh sách trên ChatGPT tải ì; chạy lại lúc máy rảnh, lặp lại nhiều lần thì báo để xem lại bộ quét.`
+    );
+  }
+  const silence =
+    silentMs === null
+      ? "Không nhận được nhịp tiến độ nào"
+      : `Nhịp tiến độ cuối cùng cách đây ${Math.round(silentMs / 1000)}s`;
+  return (
+    `${silence} — có thể tab ChatGPT bị reload/redirect giữa chừng (mất context ` +
+    `content script) hoặc thao tác treo. ` +
+    SESSION_RECOVERY_HINT
+  );
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     p,
@@ -2736,10 +2775,9 @@ async function runOnceOnSlot(
         error_code: "CONTENT_TIMEOUT",
         error_message:
           `Content script không trả kết quả cho ${request.kind} trong ` +
-          `${Math.round(phase1Timeout / 1000)}s. Có thể tab ChatGPT bị reload/redirect ` +
-          `giữa chừng (mất context content script) hoặc thao tác treo. Task được fail ` +
-          `sớm để giải phóng hàng đợi thay vì kẹt tới auto-cleanup. ` +
-          SESSION_RECOVERY_HINT +
+          `${Math.round(phase1Timeout / 1000)}s. Task được fail sớm để giải phóng ` +
+          `hàng đợi thay vì kẹt tới auto-cleanup. ` +
+          contentTimeoutCause(task.id) +
           ` Lỗi gốc: ${msg}`,
       };
     }

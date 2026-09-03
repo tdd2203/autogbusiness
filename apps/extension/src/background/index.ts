@@ -16,6 +16,7 @@ import {
   setupIdleCloseAlarm,
 } from "./idle-close";
 import { enforceTabCap, setupOpenedTabsListener } from "./opened-tabs";
+import { recordProgressBeat } from "./progress-beat";
 import { updateProgress } from "../shared/api";
 import { getConfig } from "../shared/storage";
 
@@ -234,6 +235,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg?.type === "task-progress" && typeof msg.taskId === "string") {
+    // Đóng dấu nhịp NGAY, trước cả khi đẩy lên backend: runner đọc dấu này để
+    // biết content còn sống hay không lúc đồng hồ timeout nổ (xem
+    // `progress-beat.ts`). Đẩy backend có thể fail (mạng, SW ngủ) — dấu nhịp thì
+    // không được phép mất theo.
+    recordProgressBeat(msg.taskId, msg.progress);
     (async () => {
       const config = await getConfig();
       if (!config) return;

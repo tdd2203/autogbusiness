@@ -9,6 +9,25 @@ import {
 } from "./pagination";
 import { scrapeAllRows } from "./scrape-all-rows";
 
+/**
+ * MỌI lần đọc dòng trong file này đều phải đi qua đây.
+ *
+ * CA THẬT (auto-sync 25/8 → 3/9/2026, GPT1 + CHATGPT PRO): bấm sang tab "Lời
+ * mời đang chờ" xong, React vẫn giữ nguyên bảng tab "Người dùng" trong DOM ở
+ * dạng ẩn. `scrapeAllRows()` trần quét thẳng `document` nên đọc trúng cả bảng
+ * ẩn đó, rồi `collectRowsByScrolling` gắn nhãn theo tab mà nó TƯỞNG đang đứng ⇒
+ * 100 thành viên đang hoạt động của GPT1 bị ghi nhãn `pending` (workspace này
+ * chỉ có 3 lời mời chờ thật), và bộ lật trang bám vào thanh phân trang 13 trang
+ * của bảng ẩn nên mẻ quét cày hết trang này tới trang khác cho tới lúc hết giờ.
+ * Bảy mẻ auto-sync hỏng `CONTENT_TIMEOUT`/`TIMEOUT` trong 14 ngày đều từ đây.
+ *
+ * Luồng mời đã bịt lỗ này từ 30/8 (`visibleOnly`), riêng bộ quét của SYNC thì
+ * chưa — nên đưa hẳn vào một cửa duy nhất, khỏi lần sau lại quên một chỗ.
+ */
+function visibleRows(): ScrapedMember[] {
+  return scrapeAllRows({ visibleOnly: true });
+}
+
 // Tổng số member hiển thị ở header, vd "Business · 49 thành viên".
 const MEMBER_COUNT_RE =
   /([\d.,]+)\s*(thành viên|members?|miembros|membres|成员|會員|회원)/i;
@@ -27,8 +46,8 @@ function readHeaderMemberCount(): number | null {
 }
 
 /** Chữ ký trang hiện tại = email vài row đầu — để phát hiện trang đã đổi. */
-function pageSignature(): string {
-  return scrapeAllRows()
+export function pageSignature(): string {
+  return visibleRows()
     .map((m) => m.email)
     .slice(0, 5)
     .join("|");
@@ -80,8 +99,15 @@ function findScrollContainers(): Array<HTMLElement | Window> {
  * `expectedTotal` = tổng member header ChatGPT báo (nếu biết): còn thiếu so với
  * mốc này thì KIÊN NHẪN hơn (list chạy tab nền bị Chrome throttle, tải chậm) —
  * chỉ bỏ cuộc khi đã kẹt nhiều tick liên tiếp; đạt mốc thì dừng ngay.
+ *
+ * `isOverTime` là BẮT BUỘC: vòng này ngủ 300-500ms mỗi nhịp × 200 nhịp ~ 80s và
+ * chạy lại cho TỪNG TRANG. Trước đây nó không hề soi đồng hồ nên ngân sách
+ * `MAX_SYNC_MS` chỉ được kiểm ở ngoài, giữa các pass — một workspace 13 trang
+ * mà list không render nổi thì tiêu 9 phút ở đây trong khi trần của background
+ * là 330s (ca 25/8/2026: quét tab "Người dùng" 567s rồi trả về 0 dòng).
  */
 async function scrollUntilAllLoaded(
+  isOverTime: () => boolean,
   maxIterations = 200,
   expectedTotal: number | null = null,
 ): Promise<number> {
@@ -89,6 +115,7 @@ async function scrollUntilAllLoaded(
   let stableTicks = 0;
 
   for (let i = 0; i < maxIterations; i++) {
+    if (isOverTime()) break;
     for (const c of findScrollContainers()) {
       if (c === window) {
         window.scrollTo({ top: document.body.scrollHeight, behavior: "auto" });
@@ -98,7 +125,7 @@ async function scrollUntilAllLoaded(
     }
     await sleep(300 + Math.floor(Math.random() * 200));
 
-    const currentCount = scrapeAllRows().length;
+    const currentCount = visibleRows().length;
     if (expectedTotal && currentCount >= expectedTotal) return currentCount;
 
     if (currentCount > lastCount) {
@@ -115,7 +142,24 @@ async function scrollUntilAllLoaded(
   return lastCount;
 }
 
-export const MAX_SYNC_MS = 5 * 60 * 1000; // 5 phút hard cap cho TOÀN BỘ sync (3 tabs)
+/**
+ * Trần cho phần QUÉT của một mẻ sync (mọi tab cộng lại), đo từ lúc `executeSync`
+ * bắt đầu chứ không phải từ lúc quét tab đầu.
+ *
+ * BA TRẦN PHẢI LỒNG NHAU, trong nhỏ hơn ngoài — trước 3/9/2026 thì không:
+ *   quét 240s + đọc suất ≤30s (`SEAT_READ_MAX_MS`) ≈ 270s
+ *     < 330s (`CONTENT_TIMEOUTS.SYNC_DATA` của background)
+ *       < 360s (ngưỡng treo của backend)
+ *
+ * Bản cũ để 300s và ĐO SAU cả nhịp chờ thanh tab render (tới 10s), rồi còn đọc
+ * số suất (~28s) SAU khi đồng hồ đã chốt ⇒ tổng thực tế tới ~338s > 330s. Nên
+ * ngay cả mẻ chậm hợp lệ cũng bị background chém trước, trả `CONTENT_TIMEOUT`
+ * mơ hồ thay vì để content tự trả `TIMEOUT` kèm số dòng đã thu được.
+ *
+ * 240s vẫn rộng: 41 mẻ SYNC_DATA thành công trong 14 ngày có trung bình 50s,
+ * p90 96s, dài nhất 148s (workspace 343 thành viên, 13 trang).
+ */
+export const MAX_SYNC_MS = 240_000;
 
 /**
  * Scrape danh sách member của TAB hiện tại (đã click trước đó).
@@ -133,11 +177,17 @@ async function collectRowsByScrolling(
   expectedTotal: number | null = null,
 ): Promise<boolean> {
   const tag = pageLabel ? `${label} ${pageLabel}` : label;
+  if (isOverTime()) return true;
 
   window.scrollTo({ top: 0, behavior: "auto" });
   await sleep(400);
 
-  const totalAfterScroll = await scrollUntilAllLoaded(200, expectedTotal);
+  const totalAfterScroll = await scrollUntilAllLoaded(
+    isOverTime,
+    200,
+    expectedTotal,
+  );
+  if (isOverTime()) return true;
   console.log(
     `[autogpt-sync] [${tag}] scroll xong: ~${totalAfterScroll} rows` +
       (expectedTotal ? ` (mốc header ${expectedTotal})` : ""),
@@ -152,13 +202,13 @@ async function collectRowsByScrolling(
 
     const before = collected.size;
 
-    const visible = scrapeAllRows();
+    const visible = visibleRows();
     for (const m of visible) collected.set(m.email, { ...m, status });
 
     window.scrollBy({ top: window.innerHeight * 0.8, behavior: "auto" });
     await sleep(250 + Math.floor(Math.random() * 200));
 
-    const after = scrapeAllRows();
+    const after = visibleRows();
     for (const m of after) collected.set(m.email, { ...m, status });
 
     await reportProgress(taskId, {
@@ -215,7 +265,7 @@ export async function scrapeCurrentTab(
   // số row ngừng tăng; tối đa 6s fallback. List rỗng → chờ hết 6s rồi đi tiếp.
   // Downstream (scroll/pagination) vẫn re-scrape nên đây chỉ là cổng "đừng scrape
   // lúc DOM chưa paint".
-  const stableCount = await waitForCountStable(() => scrapeAllRows().length, {
+  const stableCount = await waitForCountStable(() => visibleRows().length, {
     timeoutMs: 6000,
     stablePolls: 2,
     pollMs: 300,
@@ -238,7 +288,7 @@ export async function scrapeCurrentTab(
     console.log(
       `[autogpt-sync] [${label}] pagination ${pagination.current}/${pagination.total} — lật hết mọi trang (mốc ${expectedTotal ?? "?"})`,
     );
-    await goToFirstPage();
+    await goToFirstPage(isOverTime);
 
     for (let guard = 0; guard < MAX_PAGINATION_PAGES; guard++) {
       if (isOverTime()) {
