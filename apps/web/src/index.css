@@ -2598,6 +2598,63 @@ body {
     color: var(--warning);
   }
 
+  /* Khối TRẦN THÀNH VIÊN (theo workspace) ở đầu modal cấu hình đích mời. */
+  .iwc-caps {
+    padding: 10px 12px 12px;
+    margin-top: 8px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-2);
+  }
+  .iwc-sect-title {
+    font-size: 12.5px;
+    font-weight: 700;
+  }
+  .iwc-sect-hint {
+    margin-top: 3px;
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--ink-3);
+  }
+  .iwc-cap-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0 6px;
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
+  }
+  .iwc-cap-row.dirty .iwc-cap-name {
+    font-weight: 700;
+  }
+  .iwc-cap-name {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .iwc-cap-used {
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+  .iwc-cap-used.over {
+    color: var(--danger);
+    font-weight: 700;
+  }
+  .iwc-cap-input {
+    flex: none;
+    width: 92px;
+    text-align: right;
+    background: var(--surface);
+  }
+
   .iwc-foot {
     display: flex;
     align-items: center;

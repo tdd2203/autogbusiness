@@ -48,6 +48,9 @@ export type Workspace = {
   /** Phí ngân hàng theo % số tiền chuyển (vd 1.1 = 1,1%) — nhập MỘT LẦN, áp cho mọi
    *  hoá đơn của workspace. null = chưa đặt → dùng phí nhập tay từng hoá đơn. */
   bank_fee_percent: number | null;
+  /** TRẦN THÀNH VIÊN do super-admin đặt (nút ⚙️ trang Mời). Chạm trần thì mọi lệnh
+   *  mời vào không gian này dừng lại. null = không chặn, 0 = ngưng hẳn. */
+  invite_member_cap: number | null;
   created_at: string;
   updated_at: string;
 };

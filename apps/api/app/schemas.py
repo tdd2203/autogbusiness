@@ -195,6 +195,10 @@ class WorkspaceUpdate(BaseModel):
     # Phí ngân hàng theo % số tiền chuyển (vd 1.1 = 1,1%) — nhập một lần, áp cho
     # mọi hoá đơn của workspace. Gửi null/0 để xoá (quay lại phí nhập tay/hoá đơn).
     bank_fee_percent: float | None = Field(default=None, ge=0, le=100)
+    # TRẦN THÀNH VIÊN: chạm là ngưng mọi lệnh mời vào workspace này. Gửi null để BỎ
+    # trần (mời lại như thường) — đọc theo `model_fields_set` chứ không theo "khác
+    # None", nếu không sẽ không có đường xoá. 0 = ngưng hẳn, hợp lệ.
+    invite_member_cap: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)
 
 
 class WorkspaceOut(BaseModel):
@@ -218,6 +222,9 @@ class WorkspaceOut(BaseModel):
     verified_domain: str | None = None
     chatgpt_locale: str = "vi"
     bank_fee_percent: float | None = None
+    # TRẦN THÀNH VIÊN do super-admin đặt. None = không chặn. Modal ⚙️ trang Mời đọc
+    # cột này để điền sẵn ô nhập.
+    invite_member_cap: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -241,6 +248,10 @@ class WorkspaceSeatsOut(BaseModel):
     seat_total: int | None
     seat_used: int
     seat_left: int | None
+    # TRẦN THÀNH VIÊN + đã chạm trần chưa (`seat_used >= invite_member_cap`). Đi kèm
+    # ở đây để trang Mời biết ngay không gian nào đang ngưng mà không thêm lượt gọi.
+    invite_member_cap: int | None = None
+    invite_cap_reached: bool = False
 
 
 class BillingInvoice(BaseModel):

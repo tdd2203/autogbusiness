@@ -148,6 +148,29 @@ export default function InviteMembers() {
   // Workspace "chính" (cho ExtensionPill + invalidate) = phần tử đầu danh sách đích.
   const workspaceId = eligibleWs[0]?.workspace_id;
   const eligibleIds = useMemo(() => eligibleWs.map((w) => w.workspace_id), [eligibleWs]);
+  /**
+   * Suất còn trống của từng không gian — nguồn DÙNG CHUNG `useWorkspaceSeats`
+   * (poll 15s + invalidate sau mỗi hành động), KHÔNG lấy `seat_used` kèm trong
+   * `/auto-invite/targets` vì danh sách đích cache 5′ nên số suất ở đó thiu.
+   *
+   * Đọc SỚM (ngay dưới danh sách đích) vì việc bốc đích ngẫu nhiên bên dưới phải
+   * biết không gian nào đã chạm TRẦN THÀNH VIÊN để né ra.
+   */
+  const { seatMap } = useSeatMap();
+  /** Không gian đã CHẠM TRẦN THÀNH VIÊN — backend chặn mọi lệnh mời vào đây. */
+  const cappedIds = useMemo(() => {
+    const out = new Set<string>();
+    for (const row of seatMap.values()) {
+      if (row.invite_cap_reached) out.add(row.workspace_id);
+    }
+    return out;
+  }, [seatMap]);
+  /** Đích còn nhận được email mới. Chạm trần HẾT thì trả nguyên danh sách: thà để
+   *  backend trả đúng câu "tạm ngưng add" còn hơn bốc ra undefined rồi vỡ trang. */
+  const invitableIds = useMemo(() => {
+    const open = eligibleIds.filter((id) => !cappedIds.has(id));
+    return open.length > 0 ? open : eligibleIds;
+  }, [eligibleIds, cappedIds]);
   // Đích NGẪU NHIÊN đã gán cho từng email MỚI (ổn định giữa các lần render nhờ ref).
   const randomWsRef = useRef<Record<string, string>>({});
   const [configOpen, setConfigOpen] = useState(false);
@@ -218,9 +241,11 @@ export default function InviteMembers() {
     // Email mới nhưng user đã tự chọn không gian ở cột "Không gian" → tôn trọng.
     if (picked && eligibleIds.includes(picked)) return picked;
     const prev = randomWsRef.current[key];
-    if (!prev || !eligibleIds.includes(prev)) {
+    // Đích đã bốc mà nay chạm trần thì bốc lại: giữ nguyên là đẩy cả mẻ email vào
+    // chỗ chắc chắn bị backend từ chối.
+    if (!prev || !invitableIds.includes(prev)) {
       randomWsRef.current[key] =
-        eligibleIds[Math.floor(Math.random() * eligibleIds.length)];
+        invitableIds[Math.floor(Math.random() * invitableIds.length)];
     }
     return randomWsRef.current[key];
   };
@@ -488,11 +513,19 @@ export default function InviteMembers() {
       : t("inviteMembers.wsUsedDays", { n: days });
   };
   /**
-   * Suất còn trống của từng không gian — nguồn DÙNG CHUNG `useWorkspaceSeats`
-   * (poll 15s + invalidate sau mỗi hành động), KHÔNG lấy `seat_used` kèm trong
-   * `/auto-invite/targets` vì danh sách đích cache 5′ nên số suất ở đó thiu.
+   * Không gian CHẠM TRẦN THÀNH VIÊN (super-admin đặt ở nút ⚙️). Đại lý chỉ được
+   * thấy tên không gian; số đã dùng/trần chỉ hiện cho super-admin.
    */
-  const { seatMap } = useSeatMap();
+  const cappedWs = (ids: string[]) =>
+    ids
+      .map((id) => ({ id, row: seatMap.get(id) }))
+      .filter((x) => !!x.row?.invite_cap_reached)
+      .map((x) => ({
+        id: x.id,
+        name: x.row?.name ?? "—",
+        used: x.row?.seat_used ?? 0,
+        cap: x.row?.invite_member_cap ?? 0,
+      }));
   /**
    * Danh sách đang dán CẦN bao nhiêu suất MỚI ở mỗi không gian, và còn bao nhiêu.
    *
@@ -711,6 +744,68 @@ export default function InviteMembers() {
               </div>
 
             </div>
+
+            {/* DẢI CHẠM TRẦN THÀNH VIÊN — super-admin đặt trần ở nút ⚙️, chạm là
+                backend từ chối mọi lệnh mời vào không gian đó (`services/seats.py`).
+                Đặt TRÊN dải suất vì nó chặn hẳn việc mời: đọc số suất còn trống rồi
+                mới thấy dòng này là đọc ngược. KHÔNG tự hết giờ — chỉ mất đi khi
+                admin nới trần hoặc gỡ bớt người. */}
+            {(() => {
+              const rows = cappedWs(seatBarWs.map((w) => w.id));
+              if (rows.length === 0) return null;
+              return (
+                <div
+                  style={{
+                    padding: "12px 20px 13px",
+                    borderBottom: "1px solid var(--border)",
+                    background: "var(--danger-bg)",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 12.5,
+                      fontWeight: 700,
+                      color: "var(--danger)",
+                    }}
+                  >
+                    <span>⛔</span>
+                    <span>{t("inviteMembers.capReachedTitle")}</span>
+                  </div>
+                  {rows.map((r) => (
+                    <div
+                      key={r.id}
+                      style={{
+                        marginTop: 7,
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 11.5,
+                        color: "var(--ink)",
+                      }}
+                    >
+                      {user?.is_super_admin
+                        ? t("inviteMembers.capReachedRowAdmin", {
+                            name: r.name,
+                            used: r.used,
+                            cap: r.cap,
+                          })
+                        : r.name}
+                    </div>
+                  ))}
+                  <div
+                    style={{
+                      marginTop: 7,
+                      fontSize: 12,
+                      lineHeight: 1.45,
+                      color: "var(--ink-3)",
+                    }}
+                  >
+                    {t("inviteMembers.capReachedHint")}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* DẢI SUẤT — mỗi không gian một khối số kiểu thẻ tổng quan: nhãn mono +
                 số suất CÒN LẠI SAU KHI mời hết danh sách đang dán (dán thêm email là

@@ -31,6 +31,12 @@ export type WorkspaceSeats = {
   seat_used: number;
   /** Còn trống. null = CHƯA BIẾT (chưa sync tổng) — khác hẳn 0 = hết suất. */
   seat_left: number | null;
+  /** TRẦN THÀNH VIÊN do super-admin đặt. null = không chặn. */
+  invite_member_cap?: number | null;
+  /** Đã chạm trần (`seat_used >= invite_member_cap`) ⇒ backend chặn mọi lệnh mời
+   *  vào không gian này. Chỉ admin nới trần hoặc gỡ bớt thành viên mới mời tiếp
+   *  được — không có chuyện tự hết giờ. */
+  invite_cap_reached?: boolean;
 };
 
 export const WORKSPACE_SEATS_KEY = ["workspace-seats"] as const;

@@ -324,6 +324,16 @@ class Workspace(Base):
     chatgpt_locale: Mapped[str] = mapped_column(
         String(8), nullable=False, default="vi", server_default="vi"
     )
+    # TRẦN THÀNH VIÊN do super-admin đặt (chốt user 3/9/2026). NULL = không chặn.
+    #
+    # Khác `seat_total`: `seat_total` là số SCRAPE từ ChatGPT (có thể cũ), còn cột
+    # này là số admin TỰ GÕ = số suất đã mua thật, nên nó mới là mốc chặn được.
+    # Chạm trần thì mọi lệnh mời vào workspace này dừng lại với đúng một câu "tạm
+    # ngưng add, liên hệ admin" — cố tình KHÔNG hiện số cho đại lý.
+    #
+    # Đếm theo `seats.seat_used` (đã vào + đang chờ) để khớp con số đang hiện trên
+    # dashboard: lời mời treo cũng chiếm chỗ, không thì mời tràn rồi mới biết.
+    invite_member_cap: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_by_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

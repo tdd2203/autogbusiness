@@ -896,6 +896,8 @@ def invite_member(
     # Seat chỉ tính theo member ACTIVE. Invite mới tạo record `pending` (chưa tính
     # vào tổng); guard chặn theo active hiện tại + số yêu cầu mời so với cap +50%.
     _assert_seat_available(db, ws, 1, user)
+    # TRẦN THÀNH VIÊN do super-admin đặt — chặn CẢ super-admin (xem `seats.py`).
+    seats.assert_under_cap(db, ws, seats.new_seat_count(db, ws.id, [email]))
 
     entries: list[tuple[str, int | None]] = [(email, body.subscription_months)]
     settings_row = get_payment_settings(db)
@@ -984,6 +986,9 @@ def reinvite_member(
     _unblock_active_if_sync_missing(member)
 
     email = member.email.lower()
+    # Trần thành viên: mời lại người ĐANG giữ chỗ (`pending`/`active`) không đẩy con
+    # số lên nên vẫn chạy được kể cả khi đã chạm trần; chỉ ca `removed` mới bị chặn.
+    seats.assert_under_cap(db, ws, seats.new_seat_count(db, ws.id, [email]))
     role = member.chatgpt_role or "member"
     # Hết hạn → chu kỳ mới dùng lại số tháng lần mua gần nhất của member.
     entries: list[tuple[str, int | None]] = [(email, member.subscription_months)]
@@ -1104,6 +1109,9 @@ def reinvite_members_batch(
     # Thu hồi (đánh dấu superseded) MỌI lời mời pending cũ của các email này — extension
     # thu hồi bản thật trên ChatGPT ở tiền tố. Làm TRƯỚC khi core tạo Invite mới.
     emails = [m.email.lower() for m in targets]
+    # Trần thành viên: mẻ này toàn email CÒN HẠN, phần lớn đang giữ chỗ sẵn nên
+    # `new_seat_count` thường bằng 0 — chỉ chặn khi thật sự có email `removed` quay lại.
+    seats.assert_under_cap(db, ws, seats.new_seat_count(db, ws.id, emails))
     db.execute(
         update(Invite)
         .where(
@@ -1180,6 +1188,11 @@ def bulk_invite_members(
     # seat rồi → không cộng). Tránh chặn oan khi paste toàn email gia hạn.
     _assert_seat_available(
         db, ws, _count_new_invite_seats(db, ws.id, [e for e, _ in entries]), user
+    )
+    # Trần thành viên: đếm riêng (trừ cả `pending`, không chỉ `active`) vì trần đo
+    # theo `seat_used` — dán cả mẻ email đang chờ nhận không được coi là mời thêm.
+    seats.assert_under_cap(
+        db, ws, seats.new_seat_count(db, ws.id, [e for e, _ in entries])
     )
     # Cơ chế chủ sở hữu: chặn nếu BẤT KỲ email nào đã thuộc tài khoản khác (bulk
     # trước đây thiếu guard này → tài khoản khác có thể ghi đè invited_by_user_id).

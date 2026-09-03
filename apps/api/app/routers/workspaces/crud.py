@@ -269,6 +269,18 @@ def update_workspace(
             }
             ws.bank_fee_percent = new_pct
 
+    # invite_member_cap: cho phép cả set lẫn XOÁ (gửi null = bỏ trần, mời lại như
+    # thường). 0 là giá trị HỢP LỆ (ngưng hẳn) nên không được gộp vào vòng lặp
+    # "khác None" ở trên, cũng không được `or None` như bank_fee_percent.
+    if "invite_member_cap" in body.model_fields_set:
+        new_cap = body.invite_member_cap
+        if new_cap != ws.invite_member_cap:
+            changes["invite_member_cap"] = {
+                "before": ws.invite_member_cap,
+                "after": new_cap,
+            }
+            ws.invite_member_cap = new_cap
+
     # verified_domain: cho phép cả set lẫn xoá (gửi "" để xoá). Chuẩn hoá trước
     # khi so sánh. Chỉ áp dụng khi client thực sự gửi field này.
     if "verified_domain" in body.model_fields_set:

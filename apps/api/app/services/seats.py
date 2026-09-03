@@ -19,6 +19,11 @@ Hai con số, hai nguồn KHÁC nhau:
 một suất vì người ta bấm nhận lúc nào cũng được. Riêng guard chặn mời
 (`active_used`) chỉ đếm `active` — xem docstring hàm đó.
 
+TRẦN THÀNH VIÊN (`Workspace.invite_member_cap`) là con số THỨ BA, đừng lẫn với hai
+con số trên: super-admin tự gõ = số suất đã mua thật, chạm là mọi lệnh mời vào
+workspace đó dừng với đúng câu `CAP_BLOCK_MESSAGE`. Đo bằng `seat_used` (đã vào +
+đang chờ) chứ không phải `active_used`, vì lời mời treo rồi cũng thành người thật.
+
 Nhánh Canva có thêm SUẤT GIỮ CHỖ CHO CHỦ ĐỘI: 50 suất của gói đã kể cả chủ đội, mà
 chủ đội chỉ vào bảng `members` sau khi CANVA_SYNC quét trang People. Xem
 `owner_reserve_map`.
@@ -26,6 +31,7 @@ chủ đội chỉ vào bảng `members` sau khi CANVA_SYNC quét trang People. 
 
 from uuid import UUID
 
+from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -35,6 +41,11 @@ from app.models import PLATFORM_CANVA, Member, Workspace
 # `seat_total` là số scrape có thể cũ — chặn đúng bằng nó sẽ khoá oan lúc admin vừa
 # mua thêm suất mà chưa sync.
 SEAT_OVERCOMMIT_RATIO = 1.5
+
+#: Câu DUY NHẤT hiện ra khi chạm TRẦN THÀNH VIÊN (`Workspace.invite_member_cap`).
+#: Nguyên văn user chốt 3/9/2026 — CỐ TÌNH không kèm con số: đại lý chỉ cần biết
+#: dừng lại và hỏi admin, còn trần bao nhiêu / đã dùng bao nhiêu là chuyện nội bộ.
+CAP_BLOCK_MESSAGE = "Tạm ngưng add, liên hệ admin để biết thêm chi tiết."
 
 
 def seat_used_map(db: Session, workspace_ids: list[UUID]) -> dict[UUID, int]:
@@ -101,6 +112,68 @@ def active_used(db: Session, workspace_id: UUID) -> int:
     )
 
 
+def new_seat_count(db: Session, workspace_id: UUID, emails: list[str]) -> int:
+    """Trong `emails`, bao nhiêu email SẼ làm `seat_used` tăng thêm.
+
+    Email đã có dòng member chưa bị gỡ ở CHÍNH workspace này (`active` hoặc
+    `pending`) thì đang giữ chỗ rồi — gia hạn hay mời lại họ không đẩy con số lên,
+    cộng vào là chặn oan cả mẻ toàn email cũ.
+
+    Khác `invite._count_new_invite_seats` (chỉ trừ `active`) đúng ở chỗ trừ luôn
+    `pending`: hàm kia phục vụ guard suất ChatGPT (đếm theo người ĐÃ tham gia), hàm
+    này phục vụ TRẦN THÀNH VIÊN (đếm theo `seat_used` = đã vào + đang chờ).
+    """
+    lowered = [e.strip().lower() for e in emails if e]
+    if not lowered:
+        return 0
+    holding = set(
+        db.execute(
+            select(Member.email).where(
+                Member.workspace_id == workspace_id,
+                Member.email.in_(lowered),
+                Member.status != "removed",
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return sum(1 for e in lowered if e not in holding)
+
+
+def cap_used(db: Session, workspace: Workspace) -> int:
+    """Con số đem so với TRẦN THÀNH VIÊN — đúng bằng `seat_used` dashboard đang hiện.
+
+    Gồm cả suất giữ chỗ cho chủ đội Canva để trần không bị lệch một suất so với
+    ô "đã dùng" người đặt trần đang nhìn khi họ gõ số.
+    """
+    return seat_used(db, workspace.id) + owner_reserve(db, workspace)
+
+
+def cap_reached(db: Session, workspace: Workspace, *, additional: int = 0) -> bool:
+    """Workspace đã chạm/vượt trần chưa (kèm `additional` email sắp mời thêm)?
+
+    Không đặt trần (`invite_member_cap` NULL) ⇒ luôn False. Trần 0 nghĩa là NGƯNG
+    HẲN — hợp lệ, khác hẳn để trống.
+    """
+    cap = workspace.invite_member_cap
+    if cap is None:
+        return False
+    return cap_used(db, workspace) + max(additional, 0) > int(cap)
+
+
+def assert_under_cap(db: Session, workspace: Workspace, additional: int = 0) -> None:
+    """Chặn lệnh mời khi vượt TRẦN THÀNH VIÊN. 409 với đúng câu `CAP_BLOCK_MESSAGE`.
+
+    KHÔNG chừa cửa cho super-admin (khác `invite._assert_seat_available`): trần là
+    số suất đã mua thật, vượt là mất tiền thật, mà chính super-admin sửa được con số
+    trong một cú bấm ở nút ⚙️ trang Mời — không cần đường vòng.
+    """
+    if cap_reached(db, workspace, additional=additional):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=CAP_BLOCK_MESSAGE
+        )
+
+
 def owner_reserve_map(db: Session, workspaces: list[Workspace]) -> dict[UUID, int]:
     """workspace_id -> suất phải GIỮ CHỖ cho chủ đội Canva (1 hoặc 0).
 
@@ -157,6 +230,7 @@ def seat_snapshot(db: Session, workspaces: list[Workspace]) -> list[dict]:
     out: list[dict] = []
     for ws in workspaces:
         u = used.get(ws.id, 0) + reserve.get(ws.id, 0)
+        cap = ws.invite_member_cap
         out.append(
             {
                 "workspace_id": str(ws.id),
@@ -165,6 +239,10 @@ def seat_snapshot(db: Session, workspaces: list[Workspace]) -> list[dict]:
                 "seat_total": ws.seat_total,
                 "seat_used": u,
                 "seat_left": seat_left(ws.seat_total, u),
+                # `u` ở trên ĐÃ là `cap_used` (đã cộng suất giữ chỗ chủ đội) nên so
+                # thẳng, khỏi thêm truy vấn cho một endpoint bị poll 15 giây/lần.
+                "invite_member_cap": cap,
+                "invite_cap_reached": cap is not None and u >= int(cap),
             }
         )
     return out
