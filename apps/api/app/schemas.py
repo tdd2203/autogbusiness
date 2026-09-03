@@ -965,9 +965,10 @@ class MemberReinviteBatchIn(BaseModel):
     """Body cho MỜI LẠI HÀNG LOẠT (POST /{workspace_id}/members/re-invite-batch).
 
     Chỉ nhận `member_ids` (các dòng đã tick ở tab "Chờ tham gia"). Backend tự lọc:
-    email CÒN HẠN → mời lại MIỄN PHÍ; HẾT HẠN / vô thời hạn → BỎ QUA và báo số bị bỏ
-    (user 2026-08-22: lệnh hàng loạt không bao giờ bật modal QR giữa chừng; email hết
-    hạn vẫn mời lại được từng dòng qua menu ⋯).
+    email CÒN HẠN và kỳ ĐÃ CÓ TIỀN → mời lại MIỄN PHÍ; HẾT HẠN / vô thời hạn / kỳ
+    chưa ai trả (hạn do đồng bộ dựng, hoặc vừa hoàn phí — 3/9/2026) → BỎ QUA và báo
+    số bị bỏ (user 2026-08-22: lệnh hàng loạt không bao giờ bật modal QR giữa chừng;
+    những email đó vẫn mời lại được từng dòng qua menu ⋯, ở đó có luồng thu tiền).
     """
 
     member_ids: list[UUID] = Field(min_length=1, max_length=200)

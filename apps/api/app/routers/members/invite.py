@@ -250,6 +250,12 @@ def perform_invite_core(
                     # GIỮ NGUYÊN cửa sổ hạn + chu kỳ đã thanh toán → KHÔNG chargeable
                     # và BỎ QUA `months` yêu cầu.
                     #
+                    # "CÒN HẠN" TỪ 3/9/2026 ĐÒI CẢ TIỀN. Hạn suông không đủ: đồng bộ
+                    # cấp gói 30 ngày cho mọi dòng nó dựng ra, nên một email vừa bị
+                    # hoàn phí xong được sync dựng lại là có ngay "hạn" để xin miễn
+                    # phí (ca `uochenchieudong`, xem `_is_paid_period_active`). Kỳ
+                    # chưa có tiền rơi xuống nhánh dưới: tính phí + chu kỳ mới.
+                    #
                     # MIỄN PHÍ THEO GÓI, KHÔNG THEO CỬA VÀO (user 2026-08-26). Trước đây
                     # email `pending` còn hạn chỉ miễn phí khi đi qua action "Mời lại";
                     # gõ lại chính email đó vào form mời thường thì bị trừ phí LẦN HAI
@@ -583,8 +589,11 @@ def plan_invite_fees(
                     out.append((email, fee))
             continue
         if m is not None and _is_paid_period_active(m, now):
-            # còn hạn → mời lại miễn phí (mirror perform_invite_core), KHÔNG phân biệt
-            # mời thường hay action "Mời lại" — xem chú thích ở đó (user 2026-08-26).
+            # còn hạn VÀ kỳ đã có tiền → mời lại miễn phí (mirror perform_invite_core),
+            # KHÔNG phân biệt mời thường hay action "Mời lại" — xem chú thích ở đó
+            # (user 2026-08-26). Kỳ chưa có tiền (hạn do đồng bộ dựng, hoặc vừa bị
+            # hoàn phí) rơi xuống dưới và được dự tính phí như email mới — phải mirror,
+            # không thì core trừ ví mà preview báo 0đ.
             continue
         if email in movable_map and (m is None or m.status == "removed"):
             # CHUYỂN/HỢP NHẤT WORKSPACE miễn phí (add nhầm ws → add lại): gói removed
@@ -1035,11 +1044,19 @@ def reinvite_members_batch(
 ) -> dict:
     """MỜI LẠI HÀNG LOẠT các dòng đã tick ở tab "Chờ tham gia" (user 2026-08-22).
 
-    Chỉ nhận email CÒN HẠN → mời lại MIỄN PHÍ (mirror `reinvite=True` của
-    perform_invite_core). Email HẾT HẠN / VÔ THỜI HẠN bị BỎ QUA và trả về
-    `skipped_expired` để web báo "bỏ qua N email hết hạn" — lệnh hàng loạt KHÔNG bao
-    giờ trừ ví hay bật modal QR giữa chừng (muốn mời lại email hết hạn thì dùng menu
-    ⋯ từng dòng, ở đó có luồng "ví trước, QR sau").
+    Chỉ nhận email CÒN HẠN và kỳ ĐÃ CÓ TIỀN → mời lại MIỄN PHÍ (mirror
+    `reinvite=True` của perform_invite_core). Email HẾT HẠN / VÔ THỜI HẠN / kỳ chưa
+    có tiền bị BỎ QUA và trả về `skipped_expired` để web báo "bỏ qua N email hết hạn
+    — mời lại từng dòng để thanh toán" — lệnh hàng loạt KHÔNG bao giờ trừ ví hay bật
+    modal QR giữa chừng (muốn mời lại email hết hạn thì dùng menu ⋯ từng dòng, ở đó
+    có luồng "ví trước, QR sau").
+
+    ⚠️ Kỳ chưa có tiền PHẢI bị bỏ qua ở đây (3/9/2026), không được thả cho core: lối
+    này bỏ luôn `chargeable` trả về nên không trừ đồng nào, mà core lại
+    `_apply_invite_paid_cycle` → dán nhãn "Đã thanh toán" lên đúng cái kỳ chưa ai
+    trả. Bịt lỗ mời-lại-miễn-phí ở nhánh kia mà quên nhánh này thì chỉ đổi lỗ thủng
+    từ mất tiền sang mất luôn dấu vết nợ. Câu toast sẵn có ("mời lại từng dòng để
+    thanh toán") nói đúng việc cần làm cho cả hai nhóm.
 
     Member `active` bị bỏ qua (`skipped_active`), TRỪ khi lần đồng bộ gần nhất không
     thấy email trong workspace (`sync_missing_at`) → hạ về `pending` rồi mời lại (xem

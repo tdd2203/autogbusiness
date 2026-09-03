@@ -64,17 +64,76 @@ def _end_from_purchase(
     return purchased_at + timedelta(days=months * SUBSCRIPTION_DAYS_PER_MONTH)
 
 
+def _period_is_funded(member: Member, now: datetime) -> bool:
+    """Kỳ ĐANG CHẠY của member có TIỀN phía sau không.
+
+    "Đã thanh toán" ở đây đọc từ nhãn nghiệp vụ, KHÔNG đọc sổ ví: mời/gia hạn luôn
+    dựng chu kỳ `paid` (`_apply_invite_paid_cycle`) cho MỌI tài khoản, kể cả tài
+    khoản được miễn phí (super-admin, đại lý chưa bật Ví) vốn không có một bút toán
+    nào. Bắt phải có bút toán là cắt nhầm cả nhóm đó — 49 member ngày 3/9/2026.
+
+    Đủ MỘT trong hai là có tiền:
+      • `member.payment_status == 'paid'` — nhãn tổng hợp cấp member; hoặc
+      • còn một chu kỳ `paid` PHỦ hiện tại (`end_at` None = chưa biết phủ tới đâu,
+        tính là còn phủ — cùng cách đọc với `_drop_open_cycles`).
+
+    Chu kỳ `paid` của các ĐỢT ĐÃ KẾT THÚC không tính: tiền đợt trước không trả cho
+    cửa sổ đang chạy.
+
+    Hai đường ghi nợ đều hạ nhãn về `unpaid` nên tự động rơi vào đây: hoàn phí +
+    void kỳ (`void_refunded_invite_periods`) và hoàn phí khi member đang `active`
+    (`flag_refunded_invite_debt`)."""
+    if member.payment_status == "paid":
+        return True
+    return any(
+        c.payment_status == "paid" and (c.end_at is None or c.end_at > now)
+        for c in member.subscription_cycles
+    )
+
+
+def _funded_period_clause(now: datetime):
+    """Bản SQL của `_period_is_funded` (dùng cho truy vấn quét nhiều member cùng
+    lúc). Giữ HAI vế y hệt bản Python — lệch một vế là hai đường ra hai giá phí."""
+    return or_(
+        Member.payment_status == "paid",
+        select(MemberSubscriptionCycle.id)
+        .where(
+            MemberSubscriptionCycle.member_id == Member.id,
+            MemberSubscriptionCycle.payment_status == "paid",
+            or_(
+                MemberSubscriptionCycle.end_at.is_(None),
+                MemberSubscriptionCycle.end_at > now,
+            ),
+        )
+        .exists(),
+    )
+
+
 def _is_paid_period_active(member: Member, now: datetime) -> bool:
-    """CÒN HẠN: member có mốc hết hạn CỤ THỂ còn ở tương lai (`subscription_end_at`
-    không None và > now). Ân hạn = 0 (mirror rule cleanup-expired/scheduler).
+    """CÒN HẠN **VÀ ĐÃ CÓ TIỀN**: mốc hết hạn cụ thể còn ở tương lai
+    (`subscription_end_at` không None và > now) VÀ kỳ đang chạy có tiền phía sau
+    (`_period_is_funded`). Ân hạn = 0 (mirror rule cleanup-expired/scheduler).
 
     Dùng để quyết định MỜI LẠI MIỄN PHÍ: email còn hạn bị xoá → mời lại KHÔNG tính
     phí và GIỮ NGUYÊN cửa sổ hạn + chu kỳ đã thanh toán (đã trả tiền cho kỳ này rồi,
     xoá không hoàn tiền → mời lại chỉ là tiếp tục kỳ cũ, không phải chu kỳ mới).
 
+    ⚠️ VẾ "ĐÃ CÓ TIỀN" THÊM 3/9/2026 — CA THẬT `uochenchieudong` (task e29569d3).
+    Trước đó hàm này CHỈ đọc `subscription_end_at`, tức tin rằng hễ có hạn thì đã có
+    người trả. Không đúng: `reconcile.py` cấp gói mặc định 30 ngày cho MỌI dòng nó
+    dựng ra khi đồng bộ thấy email lạ trong workspace (xem `EXPIRY_RULES.md` §3.5).
+    Chuỗi ngày hôm đó: mời 14:44 (thu 330.000đ) → 14:55 verify đọc không ra, chốt
+    hỏng, HOÀN phí + xoá bản ghi → 15:23 đồng bộ thấy lời mời vẫn nằm trong tab Lời
+    mời nên DỰNG LẠI member kèm hạn tới 3/10 → 15:48 gỡ tay → 15:54 mời lại: "còn
+    hạn" ⇒ miễn phí. Email dùng trọn 30 ngày, thực thu 0đ.
+    `void_refunded_invite_periods` đã làm đúng phần của nó (hoàn phí thì void kỳ);
+    cái phá luật là hạn do ĐỒNG BỘ dựng lại từ bên ngoài, không có đồng nào phía sau.
+
     VÔ THỜI HẠN (`subscription_end_at` None) KHÔNG tính là "còn hạn" — 'vô hạn' là
     khái niệm khác 'còn hạn', giữ hành vi mời-lại cũ (reset cửa sổ + tính phí 1 kỳ)."""
-    return member.subscription_end_at is not None and member.subscription_end_at > now
+    if member.subscription_end_at is None or member.subscription_end_at <= now:
+        return False
+    return _period_is_funded(member, now)
 
 
 def find_movable_paid_members(
@@ -87,8 +146,8 @@ def find_movable_paid_members(
     platform: str = PLATFORM_GPT,
 ) -> dict[str, "Member"]:
     """Tìm member CÓ THỂ CHUYỂN WORKSPACE miễn phí: cùng email, CÙNG CHỦ SỞ HỮU
-    (`invited_by_user_id == owner_id`), đã `removed` khỏi workspace KHÁC, và CÒN HẠN
-    (`subscription_end_at` > now).
+    (`invited_by_user_id == owner_id`), đã `removed` khỏi workspace KHÁC, CÒN HẠN
+    (`subscription_end_at` > now) và kỳ đó ĐÃ CÓ TIỀN (`_funded_period_clause`).
 
     Ca dùng — "add nhầm workspace" (user 2026-07-16): email đã THANH TOÁN, bị gỡ khỏi
     ws SAI, giờ mời sang ws ĐÚNG. Vì MỌI truy vấn member đều lọc theo `workspace_id`
@@ -120,6 +179,12 @@ def find_movable_paid_members(
                 Member.status == "removed",
                 Member.subscription_end_at.isnot(None),
                 Member.subscription_end_at > now,
+                # Cùng vế "đã có tiền" của `_is_paid_period_active` (thêm 3/9/2026):
+                # hạn do ĐỒNG BỘ dựng ra không có đồng nào phía sau, dời nó sang ws
+                # khác miễn phí là nhân bản đúng lỗ vừa bịt ở nhánh mời lại. Ca thật
+                # nằm sẵn trong DB hôm đó: `haiquynh.hcfarm` (GPT1, `removed`, hạn
+                # tới 30/9, chưa từng có bút toán lẫn chu kỳ nào).
+                _funded_period_clause(now),
             )
             .order_by(Member.subscription_end_at.desc())
         )
