@@ -5,6 +5,11 @@
  * mới sau này) hoặc "Chỉ định" (tick từng workspace). Khi user đó add email MỚI, trang
  * Mời chọn NGẪU NHIÊN 1 workspace trong tập đã bật (email cũ/gia hạn giữ ws lịch sử).
  *
+ * "Chỉ định" mà bỏ trống hết là trạng thái HỢP LỆ, lưu được: user đó bị TẠM NGƯNG add
+ * email mới (trang Mời hiện thông báo tạm ngưng, backend cũng chặn vì hết assignment).
+ * Thanh trên cho áp dụng hàng loạt cho mọi dòng đang hiện, mỗi dòng có thêm "Áp dụng
+ * cho tất cả" để nhân cấu hình vừa chỉnh sang những người còn lại.
+ *
  * Sửa bao nhiêu dòng cũng được, thanh dưới đếm số thay đổi rồi lưu 1 lần qua
  * PUT /api/v1/invite-config/users/{id} (mỗi user 1 request, chạy song song).
  * Dùng chung bảng workspace_assignments với màn "Assign" ở trang Workspaces
@@ -31,8 +36,8 @@ type Draft = { all: boolean; ids: Set<string> };
 
 /** Ô tìm kiếm chỉ có ích khi danh sách đủ dài. */
 const SEARCH_MIN_USERS = 6;
-/** Ít workspace thì chọn tay nhanh hơn, khỏi bày nút Chọn hết / Bỏ hết. */
-const BULK_CHIP_MIN = 3;
+/** 1 workspace thì bấm thẳng vào chip nhanh hơn, khỏi bày nút Chọn hết / Bỏ hết. */
+const BULK_CHIP_MIN = 2;
 
 export default function InviteWorkspaceConfigModal({
   onClose,
@@ -60,6 +65,21 @@ export default function InviteWorkspaceConfigModal({
   const subAdmins = useMemo(() => configQ.data ?? [], [configQ.data]);
 
   const [query, setQuery] = useState("");
+
+  // Áp dụng hàng loạt chỉ chạm những dòng ĐANG HIỆN (đã lọc theo ô tìm kiếm), để
+  // gõ vài ký tự là khoanh được đúng nhóm cần đổi thay vì cả danh sách.
+  const q = query.trim().toLowerCase();
+  const shownUsers = useMemo(
+    () =>
+      q
+        ? subAdmins.filter(
+            (u) =>
+              u.email.toLowerCase().includes(q) ||
+              (u.username ?? "").toLowerCase().includes(q),
+          )
+        : subAdmins,
+    [subAdmins, q],
+  );
 
   // Nháp theo user_id (khởi tạo từ server, chỉ điền dòng chưa sửa).
   const [draft, setDraft] = useState<Record<string, Draft>>({});
@@ -92,8 +112,8 @@ export default function InviteWorkspaceConfigModal({
     for (const id of d.ids) if (!server.has(id)) return true;
     return false;
   }
-  /** Chỉ định mà không tick ws nào → user đó không add được email mới. */
-  function isEmptyPick(u: InviteConfigUser): boolean {
+  /** Chỉ định mà không tick ws nào → TẠM NGƯNG add email mới (lưu được, không phải lỗi). */
+  function isPaused(u: InviteConfigUser): boolean {
     const d = draftOf(u);
     return !d.all && d.ids.size === 0;
   }
@@ -103,8 +123,7 @@ export default function InviteWorkspaceConfigModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [subAdmins, draft],
   );
-  const blockedCount = dirtyUsers.filter(isEmptyPick).length;
-  const savableUsers = dirtyUsers.filter((u) => !isEmptyPick(u));
+  const pausedCount = dirtyUsers.filter(isPaused).length;
 
   const save = useMutation({
     mutationFn: async (users: InviteConfigUser[]) => {
@@ -164,6 +183,27 @@ export default function InviteWorkspaceConfigModal({
     setDraft({});
   }
 
+  /** Đặt cùng một cấu hình cho mọi dòng đang hiện (mới là nháp, bấm Lưu mới ăn).
+   * `make` nhận nháp hiện tại của dòng để giữ lại phần không đụng tới (ví dụ chuyển
+   * sang "Toàn bộ" vẫn nhớ danh sách đã tick, bấm nhầm còn quay lại được). */
+  function applyToShown(make: (cur: Draft) => Draft) {
+    if (shownUsers.length === 0) return;
+    setDraft((d) => {
+      const next = { ...d };
+      for (const u of shownUsers) {
+        const v = make(d[u.user_id] ?? draftOf(u));
+        next[u.user_id] = { all: v.all, ids: new Set(v.ids) };
+      }
+      return next;
+    });
+    toast.success(t("inviteConfig.bulkApplied", { n: shownUsers.length }));
+  }
+  /** Nhân cấu hình của 1 dòng sang mọi dòng đang hiện. */
+  function applyRowToAll(u: InviteConfigUser) {
+    const src = draftOf(u);
+    applyToShown(() => src);
+  }
+
   async function requestClose() {
     if (dirtyUsers.length > 0) {
       const ok = await confirm(t("inviteConfig.discardConfirm", { n: dirtyUsers.length }), {
@@ -188,13 +228,6 @@ export default function InviteWorkspaceConfigModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dirtyUsers.length]);
 
-  const q = query.trim().toLowerCase();
-  const shownUsers = q
-    ? subAdmins.filter(
-        (u) =>
-          u.email.toLowerCase().includes(q) || (u.username ?? "").toLowerCase().includes(q),
-      )
-    : subAdmins;
   const loading = configQ.isLoading || workspacesQ.isLoading;
 
   return (
@@ -232,6 +265,41 @@ export default function InviteWorkspaceConfigModal({
           </div>
         )}
 
+        {!loading && shownUsers.length > 1 && (
+          <div className="iwc-bulkbar">
+            <span className="iwc-bulkbar-label">
+              {t("inviteConfig.bulkLabel", { n: shownUsers.length })}
+            </span>
+            <button
+              type="button"
+              className="iwc-link"
+              onClick={() => applyToShown((cur) => ({ all: true, ids: cur.ids }))}
+            >
+              {t("inviteConfig.bulkAll")}
+            </button>
+            <button
+              type="button"
+              className="iwc-link"
+              onClick={() =>
+                applyToShown(() => ({
+                  all: false,
+                  ids: new Set(workspaces.map((w) => w.id)),
+                }))
+              }
+              disabled={workspaces.length === 0}
+            >
+              {t("inviteConfig.bulkPickAll")}
+            </button>
+            <button
+              type="button"
+              className="iwc-link"
+              onClick={() => applyToShown(() => ({ all: false, ids: new Set() }))}
+            >
+              {t("inviteConfig.bulkPause")}
+            </button>
+          </div>
+        )}
+
         <div className="iwc-body">
           {loading ? (
             <div className="cell-muted" style={{ padding: 16 }}>
@@ -249,7 +317,7 @@ export default function InviteWorkspaceConfigModal({
             shownUsers.map((u) => {
               const d = draftOf(u);
               const dirty = isDirty(u);
-              const empty = isEmptyPick(u);
+              const paused = isPaused(u);
               return (
                 <div
                   key={u.user_id}
@@ -309,29 +377,44 @@ export default function InviteWorkspaceConfigModal({
                             </button>
                           );
                         })}
-                        {workspaces.length >= BULK_CHIP_MIN && (
+                        {(workspaces.length >= BULK_CHIP_MIN ||
+                          shownUsers.length > 1) && (
                           <span className="iwc-bulk">
-                            <button
-                              type="button"
-                              className="iwc-link"
-                              onClick={() => setAllWs(u, true)}
-                              disabled={d.ids.size === workspaces.length}
-                            >
-                              {t("inviteConfig.selectAll")}
-                            </button>
-                            <button
-                              type="button"
-                              className="iwc-link"
-                              onClick={() => setAllWs(u, false)}
-                              disabled={d.ids.size === 0}
-                            >
-                              {t("inviteConfig.clearAll")}
-                            </button>
+                            {workspaces.length >= BULK_CHIP_MIN && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="iwc-link"
+                                  onClick={() => setAllWs(u, true)}
+                                  disabled={d.ids.size === workspaces.length}
+                                >
+                                  {t("inviteConfig.selectAll")}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="iwc-link"
+                                  onClick={() => setAllWs(u, false)}
+                                  disabled={d.ids.size === 0}
+                                >
+                                  {t("inviteConfig.clearAll")}
+                                </button>
+                              </>
+                            )}
+                            {shownUsers.length > 1 && (
+                              <button
+                                type="button"
+                                className="iwc-link"
+                                onClick={() => applyRowToAll(u)}
+                                title={t("inviteConfig.applyAllTitle")}
+                              >
+                                {t("inviteConfig.applyAll")}
+                              </button>
+                            )}
                           </span>
                         )}
                       </div>
-                      <div className={`iwc-hint${empty ? " warn" : ""}`}>
-                        {empty
+                      <div className={`iwc-hint${paused ? " warn" : ""}`}>
+                        {paused
                           ? t("inviteConfig.emptyPick")
                           : t("inviteConfig.pickedCount", {
                               n: d.ids.size,
@@ -350,10 +433,10 @@ export default function InviteWorkspaceConfigModal({
           <div className="iwc-foot">
             <span className="iwc-foot-text">
               {t("inviteConfig.dirtyCount", { n: dirtyUsers.length })}
-              {blockedCount > 0 && (
+              {pausedCount > 0 && (
                 <span className="iwc-foot-warn">
                   {" · "}
-                  {t("inviteConfig.blockedCount", { n: blockedCount })}
+                  {t("inviteConfig.pausedCount", { n: pausedCount })}
                 </span>
               )}
             </span>
@@ -368,12 +451,12 @@ export default function InviteWorkspaceConfigModal({
             <button
               type="button"
               className="btn btn-primary btn-sm"
-              onClick={() => save.mutate(savableUsers)}
-              disabled={save.isPending || savableUsers.length === 0}
+              onClick={() => save.mutate(dirtyUsers)}
+              disabled={save.isPending}
             >
               {save.isPending
                 ? t("common.saving")
-                : t("inviteConfig.saveAll", { n: savableUsers.length })}
+                : t("inviteConfig.saveAll", { n: dirtyUsers.length })}
             </button>
           </div>
         )}

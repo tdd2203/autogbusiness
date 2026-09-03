@@ -4,6 +4,8 @@ Super-admin đặt, cho MỖI sub-admin, được add email MỚI vào workspace
   - "Toàn bộ"  → cờ `users.invite_all_workspaces = True` (mọi workspace, kể cả tạo
                  mới sau này); các record `workspace_assignments` KHÔNG bị đụng tới.
   - "Chỉ định" → cờ = False + reconcile `workspace_assignments` khớp danh sách chọn.
+    Danh sách RỖNG là hợp lệ: gỡ hết assignment → user đó TẠM NGƯNG (trang Mời không
+    còn đích nào nên hiện thông báo tạm ngưng; mọi endpoint theo workspace cũng 404).
 
 Đích email MỚI (trang Mời) chọn NGẪU NHIÊN 1 workspace trong tập đã bật. Email cũ/gia
 hạn giữ workspace lịch sử — không qua đây. Dùng chung bảng `workspace_assignments` với

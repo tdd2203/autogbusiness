@@ -104,7 +104,7 @@ def get_target_workspaces(
 ) -> dict:
     """Danh sách workspace ĐÍCH của người dùng cho email MỚI (id + tên + ghế) + cờ
     `all_workspaces`. Trang Mời thành viên chọn ngẫu nhiên 1 phần tử cho mỗi email mới.
-    Danh sách rỗng → chưa được cấp không gian nào (FE hiện thông báo)."""
+    Danh sách rỗng → chưa được cấp / bị tạm ngưng (FE hiện thông báo tạm ngưng)."""
     workspaces = _resolve_eligible_workspaces(db, user, platform)
     return {
         "all_workspaces": bool(user.invite_all_workspaces) and not user.is_super_admin,

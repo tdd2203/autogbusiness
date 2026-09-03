@@ -1,8 +1,9 @@
 """Cấu hình đích mời theo user (nút ⚙️ trang Mời thành viên).
 
 Phủ: GET liệt kê sub-admin + mặc định, PUT "Chỉ định" reconcile assignment (dùng chung
-bảng với màn Assign), PUT "Toàn bộ" set cờ, chuyển chế độ, gate super-admin, chặn cấu
-hình super-admin, và cờ invite_all_workspaces cho phép truy cập mọi workspace.
+bảng với màn Assign), PUT "Toàn bộ" set cờ, chuyển chế độ, bỏ chọn hết để TẠM NGƯNG,
+gate super-admin, chặn cấu hình super-admin, và cờ invite_all_workspaces cho phép truy
+cập mọi workspace.
 """
 
 from uuid import UUID
@@ -89,6 +90,43 @@ def test_specific_reconcile_add_and_remove(client: TestClient, auth_header: dict
     )
     row = _config_of(client, auth_header, sub["id"])
     assert set(row["workspace_ids"]) == {ws1["id"]}
+
+
+def test_clear_all_pauses_invite(client: TestClient, auth_header: dict) -> None:
+    """Bỏ chọn hết workspace = tạm ngưng: hết assignment, `/targets` rỗng nên trang
+    Mời hiện thông báo tạm ngưng thay vì cho add email mới."""
+    ws1 = _create_ws(client, auth_header, "WS Pause")
+    sub = _sub_admin(client, auth_header)
+    client.put(
+        f"/api/v1/invite-config/users/{sub['id']}",
+        json={"all_workspaces": False, "workspace_ids": [ws1["id"]]},
+        headers=auth_header,
+    )
+
+    resp = client.put(
+        f"/api/v1/invite-config/users/{sub['id']}",
+        json={"all_workspaces": False, "workspace_ids": []},
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["workspace_ids"] == []
+
+    row = _config_of(client, auth_header, sub["id"])
+    assert row["all_workspaces"] is False
+    assert row["workspace_ids"] == []
+
+    targets = client.get(
+        "/api/v1/auto-invite/targets", headers=_bearer(sub["token"])
+    ).json()
+    assert targets["all_workspaces"] is False
+    assert targets["workspaces"] == []
+
+    db = SessionLocal()
+    try:
+        u = db.get(User, UUID(sub["id"]))
+        assert not user_can_access_workspace(db, u, UUID(ws1["id"]))
+    finally:
+        db.close()
 
 
 # ---------- PUT "Toàn bộ" ----------
