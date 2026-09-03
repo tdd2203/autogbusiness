@@ -46,11 +46,13 @@ function readHeaderMemberCount(): number | null {
 }
 
 /** Chữ ký trang hiện tại = email vài row đầu — để phát hiện trang đã đổi. */
-export function pageSignature(): string {
-  return visibleRows()
-    .map((m) => m.email)
-    .slice(0, 5)
-    .join("|");
+function pageSignature(): string {
+  return visibleEmails().slice(0, 5).join("|");
+}
+
+/** Toàn bộ email đang hiện — chốt "danh sách đã đổi" khi chuyển tab. */
+export function visibleEmails(): string[] {
+  return visibleRows().map((m) => m.email);
 }
 
 /** Đợi NỘI DUNG trang đổi so với chữ ký trước (sau khi bấm next). */

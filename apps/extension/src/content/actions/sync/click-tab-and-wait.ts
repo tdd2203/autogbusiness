@@ -39,26 +39,43 @@ export function onWrongSubTab(): boolean {
  * không khác trong hạn thì thà bỏ tab đó còn hơn quét nhầm.
  */
 export type ListSwapCheck = {
-  /** Chữ ký danh sách đang hiện (vd vài email đầu). "" = chưa có dòng nào. */
-  signature: () => string;
+  /** Toàn bộ email ĐANG HIỆN. Mảng rỗng = chưa có dòng nào. */
+  signature: () => string[];
   /** Hạn chờ danh sách đổi, mặc định 6s. */
   timeoutMs?: number;
 };
 
 /**
+ * Bao nhiêu phần của danh sách nhỏ hơn còn trùng thì vẫn coi là MỘT danh sách.
+ * Hai tab khác nhau gần như không chung email nào, nên nửa là ngưỡng rất rộng.
+ */
+const SAME_LIST_OVERLAP = 0.5;
+
+/**
  * Danh sách đã đổi hay chưa. Tách riêng để test được mà không cần DOM.
  *
- * Chữ ký RỖNG cũng là một thay đổi hợp lệ: tab "Lời mời" không còn lời mời nào
- * thì bảng trống — đó là kết quả thật, không phải lỗi.
+ * SO CẢ TẬP, KHÔNG SO VÀI DÒNG ĐẦU: bản đầu (3/9/2026) lấy 5 email đầu làm chữ
+ * ký, nhưng danh sách của ChatGPT là danh sách ảo hoá — cuộn hay render lại là
+ * đổi thứ tự dòng đang gắn trong DOM, nên nó báo "đã đổi" trong khi vẫn là bảng
+ * cũ. Chốt lọt, và mẻ quét lại đi lật 3-4 trang của bảng Người dùng dưới nhãn
+ * "Lời mời" y như trước khi vá.
+ *
+ * Tập RỖNG cũng là một thay đổi hợp lệ: tab "Lời mời" không còn lời mời nào thì
+ * bảng trống — đó là kết quả thật, không phải lỗi. Rỗng ở CẢ HAI đầu thì không:
+ * đó là bảng chưa render, đừng vội quét.
  */
-export function listSwapped(before: string, after: string): boolean {
-  return after !== before;
+export function listSwapped(before: string[], after: string[]): boolean {
+  if (before.length === 0 && after.length === 0) return false;
+  if (before.length === 0 || after.length === 0) return true;
+  const beforeSet = new Set(before);
+  const shared = after.filter((e) => beforeSet.has(e)).length;
+  return shared / Math.min(before.length, after.length) < SAME_LIST_OVERLAP;
 }
 
 /** Poll tới khi `listSwapped` hoặc hết hạn. */
 async function waitForListSwap(
   check: ListSwapCheck,
-  sigBeforeClick: string,
+  sigBeforeClick: string[],
   tabLabel: string,
 ): Promise<boolean> {
   const deadline = Date.now() + (check.timeoutMs ?? 6000);
@@ -147,7 +164,7 @@ export async function clickTabAndWait(
     console.log(
       `[autogpt-sync] clicking tab: ${tabTexts[0]} (attempt ${attempt + 1}/${MAX_ATTEMPTS})`,
     );
-    const sigBeforeClick = listSwap ? listSwap.signature() : "";
+    const sigBeforeClick = listSwap ? listSwap.signature() : [];
     await humanClick(btn);
 
     // Không cần verify URL → giữ hành vi cũ: sleep cố định rồi coi như xong.

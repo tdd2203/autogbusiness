@@ -114,7 +114,6 @@ export function scrapeAllRows(opts: ScrapeRowsOptions = {}): ScrapedMember[] {
     textNodesScanned += 1;
     const text = (node.nodeValue ?? "").trim();
     if (!text) continue;
-    if (visibleOnly && !isRenderedVisible(node.parentElement)) continue;
     if (text.length <= 100 && EMAIL_FULL_RE.test(text)) {
       fullMatchHits += 1;
       allCandidates.push({ email: text.toLowerCase(), node });
@@ -129,7 +128,6 @@ export function scrapeAllRows(opts: ScrapeRowsOptions = {}): ScrapedMember[] {
 
   for (const { email, node: textNode } of allCandidates) {
     if (seen.has(email)) continue;
-    seen.add(email);
 
     // Walk up tìm row chứa email; stop khi parent chứa >1 email
     let row: HTMLElement | null = textNode.parentElement;
@@ -140,6 +138,19 @@ export function scrapeAllRows(opts: ScrapeRowsOptions = {}): ScrapedMember[] {
       row = parent;
     }
     if (!row) continue;
+    // Lọc "đang hiện" ở mức DÒNG, không phải mức text node.
+    //
+    // `isRenderedVisible` đọc `offsetParent`/`getClientRects` — mỗi lần gọi là ép
+    // trình duyệt tính lại bố cục. Hỏi ở vòng quét text node nghĩa là hàng nghìn
+    // lần tính bố cục cho MỘT lượt đọc, mà một lượt cuộn gọi tới ba lượt đọc:
+    // trên workspace 300+ dòng thì chính cái lọc này làm trang ì. Hỏi ở đây chỉ
+    // tốn đúng một lần cho mỗi dòng, và dòng mới là thứ caller quan tâm.
+    //
+    // Cũng vì vậy mà chốt `seen` dời xuống SAU: đánh dấu trước rồi mới loại dòng
+    // ẩn thì một email vừa nằm ở bảng ẩn vừa nằm ở bảng đang hiện sẽ bị bảng ẩn
+    // "chiếm chỗ" rồi mất hẳn khỏi kết quả.
+    if (visibleOnly && !isRenderedVisible(row)) continue;
+    seen.add(email);
 
     members.push({
       email,

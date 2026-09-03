@@ -21,8 +21,8 @@ import {
 } from "./click-tab-and-wait";
 import {
   MAX_SYNC_MS,
-  pageSignature,
   scrapeCurrentTab,
+  visibleEmails,
 } from "./scrape-current-tab";
 
 /**
@@ -161,7 +161,7 @@ export async function executeSync(
         0,
         // URL đổi trước, bảng đổi sau: đòi thêm chốt "danh sách đã khác trước
         // lúc bấm" mới cho quét, kẻo gắn nhãn 'pending' cho bảng Người dùng.
-        { signature: pageSignature },
+        { signature: visibleEmails },
       )
     ) {
       invitesTabFound = true;
@@ -196,7 +196,7 @@ export async function executeSync(
       1500,
       DEFAULT_TAB_VERIFY,
       0,
-      { signature: pageSignature },
+      { signature: visibleEmails },
     )
   ) {
     tab1Found = true;
