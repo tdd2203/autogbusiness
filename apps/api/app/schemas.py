@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -199,6 +199,9 @@ class WorkspaceUpdate(BaseModel):
     # trần (mời lại như thường) — đọc theo `model_fields_set` chứ không theo "khác
     # None", nếu không sẽ không có đường xoá. 0 = ngưng hẳn, hợp lệ.
     invite_member_cap: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)
+    # Ngày sẽ mở lại, chỉ để ghép vào chỗ `{ngay}` của câu thông báo. Gửi null để
+    # xoá — cũng đọc theo `model_fields_set`.
+    invite_cap_reopen_at: date | None = None
 
 
 class WorkspaceOut(BaseModel):
@@ -225,6 +228,7 @@ class WorkspaceOut(BaseModel):
     # TRẦN THÀNH VIÊN do super-admin đặt. None = không chặn. Modal ⚙️ trang Mời đọc
     # cột này để điền sẵn ô nhập.
     invite_member_cap: int | None = None
+    invite_cap_reopen_at: date | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -252,6 +256,10 @@ class WorkspaceSeatsOut(BaseModel):
     # ở đây để trang Mời biết ngay không gian nào đang ngưng mà không thêm lượt gọi.
     invite_member_cap: int | None = None
     invite_cap_reached: bool = False
+    # Còn bao nhiêu suất nữa tới trần (None khi không đặt trần) + câu thông báo ĐÃ
+    # thay động sẵn cho workspace này. Trang Mời in thẳng, không tự ghép chữ.
+    invite_cap_left: int | None = None
+    invite_cap_message: str | None = None
 
 
 class BillingInvoice(BaseModel):

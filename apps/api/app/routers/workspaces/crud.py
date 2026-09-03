@@ -281,6 +281,18 @@ def update_workspace(
             }
             ws.invite_member_cap = new_cap
 
+    # invite_cap_reopen_at: ngày mở lại ghép vào câu thông báo. Cũng cho xoá (null).
+    if "invite_cap_reopen_at" in body.model_fields_set:
+        new_day = body.invite_cap_reopen_at
+        if new_day != ws.invite_cap_reopen_at:
+            changes["invite_cap_reopen_at"] = {
+                "before": ws.invite_cap_reopen_at.isoformat()
+                if ws.invite_cap_reopen_at
+                else None,
+                "after": new_day.isoformat() if new_day else None,
+            }
+            ws.invite_cap_reopen_at = new_day
+
     # verified_domain: cho phép cả set lẫn xoá (gửi "" để xoá). Chuẩn hoá trước
     # khi so sánh. Chỉ áp dụng khi client thực sự gửi field này.
     if "verified_domain" in body.model_fields_set:

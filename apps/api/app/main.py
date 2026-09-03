@@ -43,6 +43,7 @@ from app.routers import (
     canva,
     dashboard,
     invite_config,
+    invite_settings,
     members,
     queue,
     sepay_webhook,
@@ -1214,6 +1215,7 @@ def create_app() -> FastAPI:
     app.include_router(members.router)
     app.include_router(auto_invite.router)
     app.include_router(invite_config.router)
+    app.include_router(invite_settings.router)
     app.include_router(added_members.router)
     app.include_router(subscription_requests.router)
     app.include_router(queue.router)

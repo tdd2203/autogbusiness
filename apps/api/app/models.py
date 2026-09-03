@@ -1,10 +1,11 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -334,6 +335,10 @@ class Workspace(Base):
     # Đếm theo `seats.seat_used` (đã vào + đang chờ) để khớp con số đang hiện trên
     # dashboard: lời mời treo cũng chiếm chỗ, không thì mời tràn rồi mới biết.
     invite_member_cap: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Ngày sẽ mở lại, chỉ để GHÉP VÀO CÂU THÔNG BÁO ({ngay}) — KHÔNG có job nào tự
+    # gỡ trần khi tới ngày. Cố ý: mở lại là quyết định mua thêm suất bằng tiền
+    # thật, không để lịch tự bấm hộ. NULL ⇒ câu thông báo ghi "chưa thông báo".
+    invite_cap_reopen_at: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_by_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -1448,6 +1453,33 @@ class TelegramNotification(Base):
 # =============================================================================
 # Hạn mức thao tác cho người dùng dashboard (xem app/action_limit.py)
 # =============================================================================
+
+
+class InviteSettings(Base):
+    """Cấu hình lời mời dùng chung toàn hệ thống (singleton id=1).
+
+    Hiện chỉ giữ CÂU THÔNG BÁO khi workspace chạm TRẦN THÀNH VIÊN. Là bảng chứ
+    không phải hằng số trong code vì admin muốn đổi lời lẽ theo từng đợt (đang chờ
+    duyệt mua thêm suất, đang khoá dài ngày...) mà sửa code + deploy thì không kịp.
+
+    Chỗ thay động cho phép trong `cap_message`: `{ten}` tên không gian, `{conlai}`
+    số suất còn lại tới trần, `{ngay}` ngày mở lại của chính không gian đó. Xem
+    `services/seats.render_cap_message`.
+    """
+
+    __tablename__ = "invite_settings"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_invite_settings_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    # NULL = chưa ai sửa → dùng `seats.DEFAULT_CAP_MESSAGE`. Không server_default để
+    # phân biệt "chưa đặt" với "admin cố tình để trống".
+    cap_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=_utcnow
+    )
 
 
 class RateLimitSettings(Base):

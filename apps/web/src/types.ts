@@ -51,6 +51,9 @@ export type Workspace = {
   /** TRẦN THÀNH VIÊN do super-admin đặt (nút ⚙️ trang Mời). Chạm trần thì mọi lệnh
    *  mời vào không gian này dừng lại. null = không chặn, 0 = ngưng hẳn. */
   invite_member_cap: number | null;
+  /** Ngày sẽ mở lại (YYYY-MM-DD), chỉ để ghép vào chỗ {ngay} của câu thông báo —
+   *  không có gì tự gỡ trần khi tới ngày. null = chưa đặt. */
+  invite_cap_reopen_at: string | null;
   created_at: string;
   updated_at: string;
 };

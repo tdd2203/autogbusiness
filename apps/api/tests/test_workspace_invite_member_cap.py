@@ -17,6 +17,8 @@ Bất biến phải khoá:
      trần — họ không làm con số tăng thêm.
   5. Để trống = không chặn; 0 = ngưng hẳn; và super-admin KHÔNG có cửa đi vòng
      (vượt trần là mất tiền thật, mà chính họ sửa được con số trong một cú bấm).
+  6. Câu từ chối là câu ADMIN SOẠN, đã thay {conlai}/{ngay}/{ten} — cùng một câu
+     với chỗ hiện trên trang Mời, để đại lý không đọc hai kiểu chữ khác nhau.
 """
 
 import uuid
@@ -34,7 +36,6 @@ from tests.wallet_helpers import (
 )
 
 FEE = 100_000
-CAP_MSG = "Tạm ngưng add, liên hệ admin để biết thêm chi tiết."
 
 
 @pytest.fixture(autouse=True)
@@ -42,14 +43,38 @@ def _pin_fee(client: TestClient, auth_header: dict) -> None:
     set_settings(client, auth_header, invite_fee_vnd=FEE)
 
 
-def _set_cap(client: TestClient, auth_header: dict, ws_id: str, cap: int | None):
+def _set_cap(
+    client: TestClient,
+    auth_header: dict,
+    ws_id: str,
+    cap: int | None,
+    *,
+    reopen_at: str | None = None,
+):
+    body: dict = {"invite_member_cap": cap}
+    if reopen_at is not None:
+        body["invite_cap_reopen_at"] = reopen_at
     r = client.patch(
-        f"/api/v1/workspaces/{ws_id}",
-        json={"invite_member_cap": cap},
+        f"/api/v1/workspaces/{ws_id}", json=body, headers=auth_header
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def _set_message(client: TestClient, auth_header: dict, text: str | None):
+    r = client.put(
+        "/api/v1/admin/invite-settings",
+        json={"cap_message": text},
         headers=auth_header,
     )
     assert r.status_code == 200, r.text
     return r.json()
+
+
+def _default_message(client: TestClient, auth_header: dict) -> str:
+    r = client.get("/api/v1/admin/invite-settings", headers=auth_header)
+    assert r.status_code == 200, r.text
+    return r.json()["default_message"]
 
 
 def _invite(client: TestClient, token: str, ws_id: str, *emails: str):
@@ -94,7 +119,7 @@ def test_cap_reached_refuses_invite_without_charging(
     # (2) Người đầu mới chỉ `pending` mà đã chiếm chỗ ⇒ người thứ hai bị chặn.
     blocked = _invite(client, sub["token"], ws["id"], "cap2@example.com")
     assert blocked.status_code == 409, blocked.text
-    assert blocked.json()["detail"] == CAP_MSG
+    assert "0 suất" in blocked.json()["detail"]
     # (1) Bị từ chối thì không trừ đồng nào, cũng không để lại member nào.
     assert wallet_of(client, sub["token"])["balance"] == FEE * 2
     assert _member_count(ws["id"]) == 1
@@ -116,7 +141,10 @@ def test_batch_over_cap_is_refused_whole(client: TestClient, auth_header: dict) 
         "b3@example.com",
     )
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == CAP_MSG
+    assert "1 suất" in r.json()["detail"], (
+        "câu từ chối phải nói còn ĐÚNG 1 chỗ, không phải 0 — dán 3 email vào 1 chỗ "
+        "trống thì cả mẻ bị chặn nhưng chỗ trống vẫn còn nguyên"
+    )
     assert _member_count(ws["id"]) == 0
     assert wallet_of(client, sub["token"])["balance"] == FEE * 5
 
@@ -148,7 +176,6 @@ def test_no_cap_and_zero_cap(client: TestClient, auth_header: dict) -> None:
     _set_cap(client, auth_header, ws["id"], 0)
     stopped = _invite(client, sub["token"], ws["id"], "n3@example.com")
     assert stopped.status_code == 409, stopped.text
-    assert stopped.json()["detail"] == CAP_MSG
 
     # Bỏ trần (gửi null) ⇒ mời lại được ngay, không cần đụng gì khác.
     _set_cap(client, auth_header, ws["id"], None)
@@ -167,7 +194,6 @@ def test_super_admin_has_no_way_around_the_cap(
         headers=auth_header,
     )
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == CAP_MSG
 
 
 def test_seats_endpoint_reports_cap_state(client: TestClient, auth_header: dict) -> None:
@@ -187,3 +213,66 @@ def test_seats_endpoint_reports_cap_state(client: TestClient, auth_header: dict)
     assert row["invite_member_cap"] == 1
     assert row["seat_used"] == 1
     assert row["invite_cap_reached"] is True
+
+
+def test_admin_message_is_used_and_placeholders_filled(
+    client: TestClient, auth_header: dict
+) -> None:
+    """(6) Câu admin soạn thay hẳn câu mặc định, và {conlai}/{ngay}/{ten} được thay."""
+    ws = create_ws(client, auth_header, "Cap WS msg")
+    _set_cap(client, auth_header, ws["id"], 1, reopen_at="2026-09-07")
+    _set_message(
+        client,
+        auth_header,
+        "{ten} còn {conlai} suất, mở lại ngày {ngay}.",
+    )
+    sub = make_beta_sub(client, auth_header, username="capmsg", balance=FEE * 3)
+    assign(client, auth_header, ws["id"], sub["id"])
+
+    assert _invite(client, sub["token"], ws["id"], "m1@example.com").status_code == 202
+    blocked = _invite(client, sub["token"], ws["id"], "m2@example.com")
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"] == "Cap WS msg còn 0 suất, mở lại ngày 7/9/2026."
+
+    # Cùng một câu đó phải có sẵn trong ảnh chụp suất — trang Mời in thẳng, không ghép.
+    assert _seats_row(client, auth_header, ws["id"])["invite_cap_message"] == (
+        "Cap WS msg còn 0 suất, mở lại ngày 7/9/2026."
+    )
+
+
+def test_blank_message_falls_back_to_default(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Xoá trắng ô soạn ⇒ quay về câu mặc định, KHÔNG phải từ chối không lời."""
+    ws = create_ws(client, auth_header, "Cap WS blank")
+    _set_cap(client, auth_header, ws["id"], 0)
+    _set_message(client, auth_header, "   ")
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-invite",
+        json={"emails": ["blank@example.com"], "role": "member"},
+        headers=auth_header,
+    )
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail.strip(), "không được từ chối bằng câu rỗng"
+    assert "chưa thông báo" in detail, "chưa đặt ngày ⇒ {ngay} phải thành 'chưa thông báo'"
+    assert "{" not in _default_message(client, auth_header).replace("{conlai}", "").replace(
+        "{ngay}", ""
+    ), "câu mặc định chỉ được dùng chỗ thay động đã khai báo"
+
+
+def test_broken_placeholder_does_not_crash_invite(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Admin gõ lạc một dấu ngoặc nhọn thì lệnh mời vẫn phải chạy tới nơi (dùng
+    `str.replace`, không `str.format`) — chỗ lạ để nguyên văn cho admin thấy mà sửa."""
+    ws = create_ws(client, auth_header, "Cap WS braces")
+    _set_cap(client, auth_header, ws["id"], 0)
+    _set_message(client, auth_header, "Hết chỗ {conlai} {khong_ton_tai} {")
+    r = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/bulk-invite",
+        json={"emails": ["brace@example.com"], "role": "member"},
+        headers=auth_header,
+    )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == "Hết chỗ 0 {khong_ton_tai} {"

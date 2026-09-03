@@ -513,20 +513,6 @@ export default function InviteMembers() {
       : t("inviteMembers.wsUsedDays", { n: days });
   };
   /**
-   * Không gian CHẠM TRẦN THÀNH VIÊN (super-admin đặt ở nút ⚙️). Đại lý chỉ được
-   * thấy tên không gian; số đã dùng/trần chỉ hiện cho super-admin.
-   */
-  const cappedWs = (ids: string[]) =>
-    ids
-      .map((id) => ({ id, row: seatMap.get(id) }))
-      .filter((x) => !!x.row?.invite_cap_reached)
-      .map((x) => ({
-        id: x.id,
-        name: x.row?.name ?? "—",
-        used: x.row?.seat_used ?? 0,
-        cap: x.row?.invite_member_cap ?? 0,
-      }));
-  /**
    * Danh sách đang dán CẦN bao nhiêu suất MỚI ở mỗi không gian, và còn bao nhiêu.
    *
    * "Suất mới" = email chưa giữ suất nào ở ĐÚNG không gian đích đó. Email đang là
@@ -553,6 +539,29 @@ export default function InviteMembers() {
     }
     return need;
   })();
+  /**
+   * Không gian ĐANG TẠM NGƯNG vì TRẦN THÀNH VIÊN (super-admin đặt ở nút ⚙️).
+   *
+   * Hiện khi hết sạch chỗ tới trần, HOẶC khi danh sách đang dán cần nhiều hơn số
+   * chỗ còn lại — đúng lúc người dùng cần biết, chứ không đợi bấm Mời rồi mới ăn
+   * 409. Khác dải ngưng mời: trần KHÔNG tự hết giờ.
+   *
+   * Câu chữ lấy nguyên từ backend (`invite_cap_message`, admin soạn ở nút ⚙️) —
+   * đừng ghép chữ ở đây, luật thay {ten}/{conlai}/{ngay} chỉ sống ở `seats.py`.
+   */
+  const cappedWs = (ids: string[]) =>
+    ids
+      .map((id) => ({ id, row: seatMap.get(id) }))
+      .filter((x) => {
+        const left = x.row?.invite_cap_left;
+        if (left === null || left === undefined) return false;
+        return left === 0 || (seatPlan.get(x.id) ?? 0) > left;
+      })
+      .map((x) => ({
+        id: x.id,
+        name: x.row?.name ?? "—",
+        message: x.row?.invite_cap_message ?? "",
+      }));
   /** Suất của 1 không gian + phần thiếu so với danh sách đang dán.
    * `left = null` ⇒ chưa từng đồng bộ tổng suất → KHÔNG kết luận thiếu/đủ. */
   const seatInfo = (wsId: string | undefined) => {
@@ -775,34 +784,28 @@ export default function InviteMembers() {
                     <span>{t("inviteMembers.capReachedTitle")}</span>
                   </div>
                   {rows.map((r) => (
-                    <div
-                      key={r.id}
-                      style={{
-                        marginTop: 7,
-                        fontFamily: "var(--font-mono)",
-                        fontSize: 11.5,
-                        color: "var(--ink)",
-                      }}
-                    >
-                      {user?.is_super_admin
-                        ? t("inviteMembers.capReachedRowAdmin", {
-                            name: r.name,
-                            used: r.used,
-                            cap: r.cap,
-                          })
-                        : r.name}
+                    <div key={r.id} style={{ marginTop: 7 }}>
+                      <div
+                        style={{
+                          fontFamily: "var(--font-mono)",
+                          fontSize: 11.5,
+                          color: "var(--ink)",
+                        }}
+                      >
+                        {r.name}
+                      </div>
+                      <div
+                        style={{
+                          marginTop: 2,
+                          fontSize: 12,
+                          lineHeight: 1.45,
+                          color: "var(--ink-2)",
+                        }}
+                      >
+                        {r.message}
+                      </div>
                     </div>
                   ))}
-                  <div
-                    style={{
-                      marginTop: 7,
-                      fontSize: 12,
-                      lineHeight: 1.45,
-                      color: "var(--ink-3)",
-                    }}
-                  >
-                    {t("inviteMembers.capReachedHint")}
-                  </div>
                 </div>
               );
             })()}

@@ -2654,6 +2654,42 @@ body {
     text-align: right;
     background: var(--surface);
   }
+  .iwc-cap-day {
+    flex: none;
+    width: 148px;
+    background: var(--surface);
+  }
+  .iwc-cap-msg {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .iwc-cap-msg-input {
+    width: 100%;
+    margin-top: 6px;
+    background: var(--surface);
+    font-size: 12.5px;
+    line-height: 1.5;
+    resize: vertical;
+  }
+  .iwc-cap-msg-foot {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 5px;
+  }
+  .iwc-token {
+    display: inline-block;
+    margin-right: 5px;
+    padding: 1px 5px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-2);
+  }
 
   .iwc-foot {
     display: flex;
@@ -2674,6 +2710,16 @@ body {
   }
 
   @media (max-width: 560px) {
+    .iwc-cap-row {
+      flex-wrap: wrap;
+    }
+    .iwc-cap-name {
+      flex-basis: 100%;
+    }
+    .iwc-cap-day {
+      flex: 1;
+      min-width: 0;
+    }
     .iwc-row-top {
       flex-wrap: wrap;
     }

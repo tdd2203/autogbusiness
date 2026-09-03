@@ -37,6 +37,11 @@ export type WorkspaceSeats = {
    *  vào không gian này. Chỉ admin nới trần hoặc gỡ bớt thành viên mới mời tiếp
    *  được — không có chuyện tự hết giờ. */
   invite_cap_reached?: boolean;
+  /** Còn bao nhiêu suất nữa mới chạm trần. null/undefined = không đặt trần. */
+  invite_cap_left?: number | null;
+  /** Câu thông báo admin soạn, backend đã thay sẵn {ten}/{conlai}/{ngay}. In thẳng,
+   *  đừng tự ghép chữ ở FE — luật thay chỗ chỉ sống ở `services/seats.py`. */
+  invite_cap_message?: string | null;
 };
 
 export const WORKSPACE_SEATS_KEY = ["workspace-seats"] as const;

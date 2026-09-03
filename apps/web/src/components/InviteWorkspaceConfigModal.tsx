@@ -16,9 +16,13 @@
  * (giữ credit_budget của record sẵn có).
  *
  * Khối TRẦN THÀNH VIÊN ở đầu modal là chuyện KHÁC (theo WORKSPACE, không theo user):
- * super-admin gõ số suất đã mua thật cho từng không gian, chạm trần thì mọi lệnh mời
- * vào đó dừng với đúng một câu "tạm ngưng add, liên hệ admin". Để trống = không chặn,
- * 0 = ngưng hẳn. Lưu qua PATCH /api/v1/workspaces/{id} chung nút Lưu ở thanh dưới.
+ * super-admin gõ số suất đã mua thật cho từng không gian + ngày sẽ mở lại. Chạm trần
+ * thì mọi lệnh mời vào đó dừng lại. Để trống = không chặn, 0 = ngưng hẳn.
+ *
+ * Câu thông báo là MỘT câu dùng chung mọi không gian, soạn ngay trong khối đó, có chỗ
+ * thay động {conlai}/{ngay}/{ten}. Ba thứ lưu chung một nút Lưu ở thanh dưới nhưng đi
+ * hai đường: PATCH /api/v1/workspaces/{id} (trần + ngày) và
+ * PUT /api/v1/admin/invite-settings (câu chữ).
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -40,6 +44,12 @@ type InviteConfigUser = {
 
 type Draft = { all: boolean; ids: Set<string> };
 
+type InviteSettings = {
+  cap_message: string | null;
+  default_message: string;
+  placeholders: { token: string; hint: string }[];
+};
+
 /** Ô tìm kiếm chỉ có ích khi danh sách đủ dài. */
 const SEARCH_MIN_USERS = 6;
 /** 1 workspace thì bấm thẳng vào chip nhanh hơn, khỏi bày nút Chọn hết / Bỏ hết. */
@@ -58,6 +68,11 @@ export default function InviteWorkspaceConfigModal({
   const configQ = useQuery({
     queryKey: ["invite-config"],
     queryFn: () => api<InviteConfigUser[]>("/api/v1/invite-config/users"),
+    staleTime: 2 * 60_000,
+  });
+  const settingsQ = useQuery({
+    queryKey: ["invite-settings"],
+    queryFn: () => api<InviteSettings>("/api/v1/admin/invite-settings"),
     staleTime: 2 * 60_000,
   });
   const workspacesQ = useQuery({
@@ -95,15 +110,47 @@ export default function InviteWorkspaceConfigModal({
     if (!Number.isFinite(n)) return null;
     return Math.max(0, Math.min(SEAT_TOTAL_MAX, Math.floor(n)));
   };
+  // ── NGÀY MỞ LẠI theo workspace (chuỗi YYYY-MM-DD của <input type="date">) ──
+  const [dayDraft, setDayDraft] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!workspacesQ.data) return;
+    setDayDraft((prev) => {
+      const next = { ...prev };
+      for (const w of workspacesQ.data!) {
+        if (next[w.id] === undefined) next[w.id] = w.invite_cap_reopen_at ?? "";
+      }
+      return next;
+    });
+  }, [workspacesQ.data]);
+  const dayValue = (raw: string | undefined): string | null =>
+    (raw ?? "").trim() || null;
+
+  // ── CÂU THÔNG BÁO dùng chung ──
+  const [msgDraft, setMsgDraft] = useState<string | null>(null);
+  useEffect(() => {
+    if (!settingsQ.data) return;
+    setMsgDraft((prev) =>
+      prev === null ? (settingsQ.data!.cap_message ?? settingsQ.data!.default_message) : prev,
+    );
+  }, [settingsQ.data]);
+  /** Gõ đúng bằng câu mặc định cũng coi như "không sửa" — khỏi lưu thừa một dòng. */
+  const msgSaved =
+    settingsQ.data?.cap_message ?? settingsQ.data?.default_message ?? "";
+  const msgDirty = msgDraft !== null && msgDraft.trim() !== msgSaved.trim();
+
   const dirtyCaps = useMemo(
     () =>
-      workspaces.filter(
-        (w) =>
+      workspaces.filter((w) => {
+        const capChanged =
           capDraft[w.id] !== undefined &&
-          capValue(capDraft[w.id]) !== (w.invite_member_cap ?? null),
-      ),
+          capValue(capDraft[w.id]) !== (w.invite_member_cap ?? null);
+        const dayChanged =
+          dayDraft[w.id] !== undefined &&
+          dayValue(dayDraft[w.id]) !== (w.invite_cap_reopen_at ?? null);
+        return capChanged || dayChanged;
+      }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [workspaces, capDraft],
+    [workspaces, capDraft, dayDraft],
   );
   /** Số thành viên đang chiếm chỗ — cùng nguồn với dải suất trang Mời, để người đặt
    *  trần nhìn thấy đúng con số mà trần sẽ đem ra so. */
@@ -172,9 +219,11 @@ export default function InviteWorkspaceConfigModal({
     mutationFn: async ({
       users,
       caps,
+      message,
     }: {
       users: InviteConfigUser[];
       caps: Workspace[];
+      message: string | null;
     }) => {
       const results = await Promise.allSettled(
         users.map((u) => {
@@ -200,19 +249,37 @@ export default function InviteWorkspaceConfigModal({
         caps.map((w) =>
           api(`/api/v1/workspaces/${w.id}`, {
             method: "PATCH",
-            body: JSON.stringify({ invite_member_cap: capValue(capDraft[w.id]) }),
+            body: JSON.stringify({
+              invite_member_cap: capValue(capDraft[w.id]),
+              invite_cap_reopen_at: dayValue(dayDraft[w.id]),
+            }),
           }),
         ),
       );
       const capsOk = capResults.filter((r) => r.status === "fulfilled").length;
+      // Câu chữ đi đường riêng (settings toàn hệ thống), vẫn chung nút Lưu.
+      let msgOk = false;
+      let msgFailed = 0;
+      if (message !== null) {
+        try {
+          await api("/api/v1/admin/invite-settings", {
+            method: "PUT",
+            body: JSON.stringify({ cap_message: message }),
+          });
+          msgOk = true;
+        } catch {
+          msgFailed = 1;
+        }
+      }
       return {
         saved,
         capsOk,
+        msgOk,
         failed:
-          results.length - saved.length + (capResults.length - capsOk),
+          results.length - saved.length + (capResults.length - capsOk) + msgFailed,
       };
     },
-    onSuccess: ({ saved, capsOk, failed }) => {
+    onSuccess: ({ saved, capsOk, msgOk, failed }) => {
       // Ghi ngay giá trị vừa lưu vào cache để dấu "chưa lưu" tắt liền, không
       // phải chờ refetch (giữ nguyên nháp nên dòng không nháy về giá trị cũ).
       qc.setQueryData<InviteConfigUser[]>(["invite-config"], (old) =>
@@ -220,9 +287,11 @@ export default function InviteWorkspaceConfigModal({
       );
       if (saved.length) toast.success(t("inviteConfig.savedCount", { n: saved.length }));
       if (capsOk) toast.success(t("inviteConfig.capSavedCount", { n: capsOk }));
+      if (msgOk) toast.success(t("inviteConfig.capMsgSaved"));
       if (failed) toast.error(t("inviteConfig.saveErrorCount", { n: failed }));
       qc.invalidateQueries({ queryKey: ["invite-config"] });
       qc.invalidateQueries({ queryKey: ["workspaces"] });
+      qc.invalidateQueries({ queryKey: ["invite-settings"] });
       // Trang Mời đọc trạng thái chạm trần từ nguồn suất → bắt nó tươi ngay.
       invalidateWorkspaceSeats(qc);
     },
@@ -250,7 +319,11 @@ export default function InviteWorkspaceConfigModal({
   function revert() {
     setDraft({});
     setCapDraft({});
+    setDayDraft({});
+    setMsgDraft(msgSaved);
   }
+  /** Tổng số thay đổi chưa lưu — thanh dưới và cửa hỏi khi đóng đều đếm theo đây. */
+  const dirtyTotal = dirtyUsers.length + dirtyCaps.length + (msgDirty ? 1 : 0);
 
   /** Đặt cùng một cấu hình cho mọi dòng đang hiện (mới là nháp, bấm Lưu mới ăn).
    * `make` nhận nháp hiện tại của dòng để giữ lại phần không đụng tới (ví dụ chuyển
@@ -274,9 +347,9 @@ export default function InviteWorkspaceConfigModal({
   }
 
   async function requestClose() {
-    if (dirtyUsers.length + dirtyCaps.length > 0) {
+    if (dirtyTotal > 0) {
       const ok = await confirm(
-        t("inviteConfig.discardConfirm", { n: dirtyUsers.length + dirtyCaps.length }),
+        t("inviteConfig.discardConfirm", { n: dirtyTotal }),
         {
           okText: t("inviteConfig.discardOk"),
           danger: true,
@@ -298,9 +371,9 @@ export default function InviteWorkspaceConfigModal({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dirtyUsers.length, dirtyCaps.length]);
+  }, [dirtyTotal]);
 
-  const loading = configQ.isLoading || workspacesQ.isLoading;
+  const loading = configQ.isLoading || workspacesQ.isLoading || settingsQ.isLoading;
 
   return (
     <div className="iwc-backdrop" onClick={() => void requestClose()}>
@@ -409,9 +482,56 @@ export default function InviteWorkspaceConfigModal({
                         setCapDraft((d) => ({ ...d, [w.id]: e.target.value }))
                       }
                     />
+                    {/* Ngày mở lại chỉ để ghép vào chỗ {ngay} của câu thông báo —
+                        KHÔNG có gì tự gỡ trần khi tới ngày (xem models.py). */}
+                    <input
+                      className="form-input iwc-cap-day"
+                      type="date"
+                      value={dayDraft[w.id] ?? ""}
+                      title={t("inviteConfig.capDayTitle")}
+                      onChange={(e) =>
+                        setDayDraft((d) => ({ ...d, [w.id]: e.target.value }))
+                      }
+                    />
                   </div>
                 );
               })}
+
+              {/* CÂU THÔNG BÁO dùng chung mọi không gian. Đặt DƯỚI danh sách vì đây
+                  là thứ sửa một lần rồi thôi, còn số trần thì đụng thường xuyên. */}
+              <div className="iwc-cap-msg">
+                <div className="iwc-sect-title">{t("inviteConfig.capMsgTitle")}</div>
+                <textarea
+                  className="form-input iwc-cap-msg-input"
+                  rows={3}
+                  value={msgDraft ?? ""}
+                  onChange={(e) => setMsgDraft(e.target.value)}
+                />
+                <div className="iwc-cap-msg-foot">
+                  <span className="iwc-sect-hint">
+                    {(settingsQ.data?.placeholders ?? []).map((ph) => (
+                      <span key={ph.token} className="iwc-token" title={ph.hint}>
+                        {ph.token}
+                      </span>
+                    ))}
+                    {t("inviteConfig.capMsgHint")}
+                  </span>
+                  <button
+                    type="button"
+                    className="iwc-link"
+                    disabled={
+                      !settingsQ.data ||
+                      (msgDraft ?? "").trim() ===
+                        settingsQ.data.default_message.trim()
+                    }
+                    onClick={() =>
+                      setMsgDraft(settingsQ.data?.default_message ?? "")
+                    }
+                  >
+                    {t("inviteConfig.capMsgReset")}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
           {loading ? (
@@ -542,12 +662,10 @@ export default function InviteWorkspaceConfigModal({
           )}
         </div>
 
-        {dirtyUsers.length + dirtyCaps.length > 0 && (
+        {dirtyTotal > 0 && (
           <div className="iwc-foot">
             <span className="iwc-foot-text">
-              {t("inviteConfig.dirtyCount", {
-                n: dirtyUsers.length + dirtyCaps.length,
-              })}
+              {t("inviteConfig.dirtyCount", { n: dirtyTotal })}
               {pausedCount > 0 && (
                 <span className="iwc-foot-warn">
                   {" · "}
@@ -566,14 +684,18 @@ export default function InviteWorkspaceConfigModal({
             <button
               type="button"
               className="btn btn-primary btn-sm"
-              onClick={() => save.mutate({ users: dirtyUsers, caps: dirtyCaps })}
+              onClick={() =>
+                save.mutate({
+                  users: dirtyUsers,
+                  caps: dirtyCaps,
+                  message: msgDirty ? (msgDraft ?? "") : null,
+                })
+              }
               disabled={save.isPending}
             >
               {save.isPending
                 ? t("common.saving")
-                : t("inviteConfig.saveAll", {
-                    n: dirtyUsers.length + dirtyCaps.length,
-                  })}
+                : t("inviteConfig.saveAll", { n: dirtyTotal })}
             </button>
           </div>
         )}

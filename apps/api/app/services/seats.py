@@ -21,31 +21,42 @@ một suất vì người ta bấm nhận lúc nào cũng được. Riêng guard
 
 TRẦN THÀNH VIÊN (`Workspace.invite_member_cap`) là con số THỨ BA, đừng lẫn với hai
 con số trên: super-admin tự gõ = số suất đã mua thật, chạm là mọi lệnh mời vào
-workspace đó dừng với đúng câu `CAP_BLOCK_MESSAGE`. Đo bằng `seat_used` (đã vào +
-đang chờ) chứ không phải `active_used`, vì lời mời treo rồi cũng thành người thật.
+workspace đó dừng lại. Đo bằng `seat_used` (đã vào + đang chờ) chứ không phải
+`active_used`, vì lời mời treo rồi cũng thành người thật.
+
+Câu báo cho đại lý do admin SOẠN (bảng `invite_settings`, một câu dùng chung), thay
+động `{ten}` / `{conlai}` / `{ngay}` ở `render_cap_message` — chỗ DUY NHẤT biết luật
+thay chỗ, dùng chung cho cả câu 409 lẫn câu hiện trên trang Mời.
 
 Nhánh Canva có thêm SUẤT GIỮ CHỖ CHO CHỦ ĐỘI: 50 suất của gói đã kể cả chủ đội, mà
 chủ đội chỉ vào bảng `members` sau khi CANVA_SYNC quét trang People. Xem
 `owner_reserve_map`.
 """
 
+from datetime import date
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import PLATFORM_CANVA, Member, Workspace
+from app.models import PLATFORM_CANVA, InviteSettings, Member, Workspace
 
 # Trần overcommit khi mời: cho phép vượt `seat_total` tới +50% rồi mới chặn, vì
 # `seat_total` là số scrape có thể cũ — chặn đúng bằng nó sẽ khoá oan lúc admin vừa
 # mua thêm suất mà chưa sync.
 SEAT_OVERCOMMIT_RATIO = 1.5
 
-#: Câu DUY NHẤT hiện ra khi chạm TRẦN THÀNH VIÊN (`Workspace.invite_member_cap`).
-#: Nguyên văn user chốt 3/9/2026 — CỐ TÌNH không kèm con số: đại lý chỉ cần biết
-#: dừng lại và hỏi admin, còn trần bao nhiêu / đã dùng bao nhiêu là chuyện nội bộ.
-CAP_BLOCK_MESSAGE = "Tạm ngưng add, liên hệ admin để biết thêm chi tiết."
+#: Câu MẶC ĐỊNH khi workspace hết chỗ tới TRẦN THÀNH VIÊN. Admin soạn lại được ở
+#: nút ⚙️ trang Mời (bảng `invite_settings`, dùng chung mọi workspace); câu này chỉ
+#: là bản dự phòng khi chưa ai sửa. Ba chỗ thay động, xem `render_cap_message`.
+DEFAULT_CAP_MESSAGE = (
+    "Workspace này chỉ còn lại {conlai} suất. Đang tạm ngưng mở thêm suất do admin "
+    "đã khoá. Sẽ mở lại vào ngày {ngay}."
+)
+
+#: Thay cho `{ngay}` khi workspace chưa được đặt ngày mở lại.
+NO_REOPEN_DATE = "chưa thông báo"
 
 
 def seat_used_map(db: Session, workspace_ids: list[UUID]) -> dict[UUID, int]:
@@ -161,8 +172,65 @@ def cap_reached(db: Session, workspace: Workspace, *, additional: int = 0) -> bo
     return cap_used(db, workspace) + max(additional, 0) > int(cap)
 
 
+def cap_left(db: Session, workspace: Workspace) -> int | None:
+    """Còn bao nhiêu suất nữa mới chạm TRẦN THÀNH VIÊN. `None` khi không đặt trần.
+
+    Kẹp về 0: đang vượt trần (admin hạ trần xuống dưới số người đang có) thì "còn 0",
+    không phải số âm.
+    """
+    cap = workspace.invite_member_cap
+    if cap is None:
+        return None
+    return max(int(cap) - cap_used(db, workspace), 0)
+
+
+def cap_message_template(db: Session) -> str:
+    """Câu thông báo admin đang dùng, hoặc `DEFAULT_CAP_MESSAGE` khi chưa ai sửa.
+
+    Để trống hẳn cũng quay về câu mặc định: một lệnh mời bị từ chối mà không nói lý
+    do thì đại lý sẽ bấm lại tới lúc hết kiên nhẫn rồi mới nhắn hỏi.
+    """
+    row = db.get(InviteSettings, 1)
+    saved = (row.cap_message if row is not None else None) or ""
+    return saved.strip() or DEFAULT_CAP_MESSAGE
+
+
+def render_cap_message(
+    template: str, *, name: str, left: int, reopen_at: date | None
+) -> str:
+    """Thay `{ten}` / `{conlai}` / `{ngay}` vào câu admin soạn.
+
+    Thay bằng `str.replace` chứ KHÔNG dùng `str.format`: câu do người gõ, lỡ có một
+    dấu ngoặc nhọn lạc (hay chính chữ `{}`) là `format` ném lỗi ngay giữa đường chốt
+    lệnh mời. Chỗ thay động lạ thì cứ để nguyên văn cho admin nhìn thấy mà sửa.
+    """
+    return (
+        template.replace("{ten}", name)
+        .replace("{conlai}", str(left))
+        .replace(
+            "{ngay}",
+            f"{reopen_at.day}/{reopen_at.month}/{reopen_at.year}"
+            if reopen_at is not None
+            else NO_REOPEN_DATE,
+        )
+    )
+
+
+def cap_message(db: Session, workspace: Workspace) -> str | None:
+    """Câu thông báo ĐÃ THAY ĐỘNG cho 1 workspace. `None` khi không đặt trần."""
+    left = cap_left(db, workspace)
+    if left is None:
+        return None
+    return render_cap_message(
+        cap_message_template(db),
+        name=workspace.name,
+        left=left,
+        reopen_at=workspace.invite_cap_reopen_at,
+    )
+
+
 def assert_under_cap(db: Session, workspace: Workspace, additional: int = 0) -> None:
-    """Chặn lệnh mời khi vượt TRẦN THÀNH VIÊN. 409 với đúng câu `CAP_BLOCK_MESSAGE`.
+    """Chặn lệnh mời khi vượt TRẦN THÀNH VIÊN. 409 kèm câu thông báo admin soạn.
 
     KHÔNG chừa cửa cho super-admin (khác `invite._assert_seat_available`): trần là
     số suất đã mua thật, vượt là mất tiền thật, mà chính super-admin sửa được con số
@@ -170,7 +238,8 @@ def assert_under_cap(db: Session, workspace: Workspace, additional: int = 0) -> 
     """
     if cap_reached(db, workspace, additional=additional):
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail=CAP_BLOCK_MESSAGE
+            status_code=status.HTTP_409_CONFLICT,
+            detail=cap_message(db, workspace) or DEFAULT_CAP_MESSAGE,
         )
 
 
@@ -227,10 +296,18 @@ def seat_snapshot(db: Session, workspaces: list[Workspace]) -> list[dict]:
     """
     used = seat_used_map(db, [ws.id for ws in workspaces])
     reserve = owner_reserve_map(db, workspaces)
+    # Đọc câu thông báo MỘT LẦN cho cả danh sách — endpoint này bị poll 15 giây/lần,
+    # và chỉ đọc khi thật sự có workspace đặt trần.
+    template = (
+        cap_message_template(db)
+        if any(ws.invite_member_cap is not None for ws in workspaces)
+        else DEFAULT_CAP_MESSAGE
+    )
     out: list[dict] = []
     for ws in workspaces:
         u = used.get(ws.id, 0) + reserve.get(ws.id, 0)
         cap = ws.invite_member_cap
+        left = None if cap is None else max(int(cap) - u, 0)
         out.append(
             {
                 "workspace_id": str(ws.id),
@@ -243,6 +320,17 @@ def seat_snapshot(db: Session, workspaces: list[Workspace]) -> list[dict]:
                 # thẳng, khỏi thêm truy vấn cho một endpoint bị poll 15 giây/lần.
                 "invite_member_cap": cap,
                 "invite_cap_reached": cap is not None and u >= int(cap),
+                "invite_cap_left": left,
+                # Câu ĐÃ thay động sẵn: trang Mời chỉ việc in ra, không phải biết
+                # luật thay chỗ — sửa lời lẽ ở backend là mọi nơi đổi theo.
+                "invite_cap_message": None
+                if left is None
+                else render_cap_message(
+                    template,
+                    name=ws.name,
+                    left=left,
+                    reopen_at=ws.invite_cap_reopen_at,
+                ),
             }
         )
     return out
