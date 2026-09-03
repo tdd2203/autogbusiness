@@ -120,6 +120,9 @@ export default function InviteMembers() {
   // Màn hình hẹp (desktop ≤1200, khớp lúc sidebar tự thu): ẩn nhãn trạng thái + ẩn
   // cột Không gian → chỉ còn Email · Số tháng · Hết hạn cho gọn.
   const compact = useIsMobile(1200);
+  // Điện thoại (≤480): thanh trên phải nằm gọn MỘT dòng cùng công tắc nhánh và ô
+  // trạng thái extension, nên nút cấu hình đích chỉ còn cái bánh răng.
+  const isNarrow = useIsMobile(480);
   const qc = useQueryClient();
 
   const { user } = useAuth();
@@ -599,12 +602,13 @@ export default function InviteMembers() {
 
       {/* Vùng nội dung — thu nhỏ ~10% cho gọn chữ toàn trang (modal không bị ảnh hưởng). */}
       <div style={{ zoom: 0.9 }}>
-      {/* Thanh trên: CÔNG TẮC NHÁNH + nút cấu hình đích (⚙️) + trạng thái extension. */}
+      {/* Thanh trên MỘT DÒNG: công tắc nhánh bên trái, nút cấu hình đích (⚙️) +
+          trạng thái extension dồn về phải. Bỏ nhãn "Nhánh" — hai nút ChatGPT/Canva
+          đã tự nói rõ, thêm chữ chỉ đẩy hàng dài thêm. */}
       <div
         className="flex items-center"
-        style={{ marginBottom: 12, gap: 8, flexWrap: "wrap" }}
+        style={{ marginBottom: 16, gap: 8, flexWrap: "wrap" }}
       >
-        <span className="form-hint">{t("invite.platformLabel")}</span>
         <div className="flex" style={{ gap: 4 }}>
           {(["gpt", "canva"] as const).map((p) => (
             <button
@@ -636,25 +640,21 @@ export default function InviteMembers() {
             <span className="form-hint">{t("invite.platformCanvaNote")}</span>
           </>
         )}
+        {/* Đẩy nhóm phải sang lề: khi hàng xuống dòng thì nhóm này tự về đầu dòng mới. */}
+        <div style={{ marginLeft: "auto" }} />
+        {user?.is_super_admin && platform === "gpt" && (
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => setConfigOpen(true)}
+            title={t("inviteConfig.openTitle")}
+            aria-label={t("inviteConfig.openLabel")}
+          >
+            ⚙️{isNarrow ? "" : ` ${t("inviteConfig.openLabel")}`}
+          </button>
+        )}
+        {workspaceId && <ExtensionPill workspaceId={workspaceId} />}
       </div>
-      {(user?.is_super_admin || workspaceId) && (
-        <div
-          className="flex items-center justify-end"
-          style={{ marginBottom: 16, gap: 8 }}
-        >
-          {user?.is_super_admin && platform === "gpt" && (
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              onClick={() => setConfigOpen(true)}
-              title={t("inviteConfig.openTitle")}
-            >
-              ⚙️ {t("inviteConfig.openLabel")}
-            </button>
-          )}
-          {workspaceId && <ExtensionPill workspaceId={workspaceId} />}
-        </div>
-      )}
 
       {!targets.isLoading && eligibleWs.length === 0 ? (
         <div
