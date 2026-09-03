@@ -130,6 +130,7 @@
   "addedEmails.requestedAtTooltip": "申请于 {time}",
   "addedEmails.filterAll": "全部",
   "addedEmails.filterToday": "今天添加",
+  "addedEmails.filterTodayShort": "今天",
   "addedEmails.filterRequested": "待确认",
   "addedEmails.filterUnpaid": "未付款",
   "addedEmails.searchPlaceholder": "搜索邮箱、姓名、工作区...",

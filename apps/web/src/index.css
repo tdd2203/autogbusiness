@@ -520,6 +520,23 @@ body {
     flex-wrap: wrap;
     gap: 8px;
   }
+  /* 4 chip lọc (Tất cả / Add hôm nay / Chờ tham gia / Chưa thanh toán) giữ MỘT
+     hàng trên mobile: không xuống dòng, chữ không ngắt. Ở màn hẹp bất thường
+     (cỡ chữ 110-125%) thì hàng trượt ngang chứ không vỡ thành 2 dòng. */
+  .ae-chip-row {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .ae-chip-row::-webkit-scrollbar {
+    display: none;
+  }
+  .ae-chip-row > .btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
   /* Thanh chuyển trang dưới bảng (Email đã thêm: 25 dòng/trang). */
   .table-pager {
     display: flex;
@@ -2809,13 +2826,17 @@ body {
       font-size: 13px;
     }
 
-    /* Metrics: giữ lưới 2×2 trên mobile (khớp mockup Email đã thêm) */
+    /* Metrics: giữ lưới 2×2 trên mobile (khớp mockup Email đã thêm), nhưng thẻ
+       thấp lại — 4 ô cỡ desktop chiếm gần nửa màn hình, đẩy bảng xuống quá sâu. */
     .metrics {
       grid-template-columns: repeat(2, 1fr);
-      gap: 12px;
+      gap: 10px;
     }
     .metric {
-      padding: 16px 18px;
+      padding: 10px 12px;
+    }
+    .metric-label {
+      font-size: 10px;
     }
 
     /* Header bảng "Email đã thêm" / "Gia hạn": xếp dọc, ô tìm chiếm trọn bề ngang. */
@@ -2829,7 +2850,12 @@ body {
       width: 100%;
     }
     .metric-value {
-      font-size: 24px;
+      margin-top: 6px;
+      font-size: 21px;
+    }
+    .metric-delta {
+      margin-top: 6px;
+      font-size: 11.5px;
     }
 
     /* Settings info-row xếp dọc */
@@ -2863,6 +2889,19 @@ body {
     }
     .table-head {
       padding: 14px 14px;
+    }
+    /* Máy hẹp: 4 chip cỡ thường rộng hơn lòng thẻ → thu chữ, thu đệm và cho hàng
+       chip tràn gần sát mép thẻ mới đủ chỗ trên MỘT dòng (nhãn "Add hôm nay" rút
+       còn "Hôm nay", xem AddedEmails.tsx). Máy ≤ 380px vẫn thiếu vài chục px nên
+       hàng trượt ngang — vẫn hơn là vỡ xuống hai dòng. */
+    .ae-chip-row {
+      gap: 4px;
+      margin: 0 -14px;
+      padding: 0 8px;
+    }
+    .ae-chip-row > .btn-sm {
+      padding: 5px 5px;
+      font-size: 11.5px;
     }
     .settings-section {
       padding: 20px 16px;

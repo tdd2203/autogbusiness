@@ -130,6 +130,7 @@
   "addedEmails.requestedAtTooltip": "Gửi yêu cầu lúc {time}",
   "addedEmails.filterAll": "Tất cả",
   "addedEmails.filterToday": "Add hôm nay",
+  "addedEmails.filterTodayShort": "Hôm nay",
   "addedEmails.filterRequested": "Chờ tham gia",
   "addedEmails.filterUnpaid": "Chưa thanh toán",
   "addedEmails.searchPlaceholder": "Tìm email, tên, workspace...",

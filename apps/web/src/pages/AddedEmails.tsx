@@ -94,6 +94,9 @@ export default function AddedEmails() {
   const { user, hasPermission } = useAuth();
   const isSuper = user?.is_super_admin === true;
   const isMobile = useIsMobile();
+  // Máy hẹp (khớp mốc 480px trong index.css): hàng chip lọc phải nằm gọn MỘT
+  // dòng nên nhãn "Add hôm nay" rút còn "Hôm nay".
+  const isNarrow = useIsMobile(480);
 
   // Quyền cho menu thao tác ⋯ theo dòng (khớp Members.tsx). Gán workspace CHỈ
   // giới hạn việc mời (add) → các email owner đã thêm luôn được đổi hạn/đổi
@@ -1031,9 +1034,11 @@ export default function AddedEmails() {
             </div>
           </div>
           {(() => {
-            // Nhóm select (tài khoản/không gian) + chip lọc — dùng lại cho cả 2
-            // bố cục. Trên mobile: ô tìm chiếm 1 dòng riêng, nhóm lọc cuộn ngang.
-            const filtersEl = (
+            // Nhóm select (tài khoản/không gian) tách riêng khỏi nhóm chip lọc:
+            // trên mobile select nằm dòng trên (cho xuống dòng thoải mái), còn 4
+            // chip lọc giữ nguyên MỘT hàng bên dưới. Desktop gộp lại như cũ.
+            const hasSelects = isSuper || workspaces.length > 1;
+            const selectsEl = (
               <>
                 {isSuper && (
                   <select
@@ -1077,46 +1082,48 @@ export default function AddedEmails() {
                     ))}
                   </select>
                 )}
-                {/* Lọc theo thanh toán chỉ có nghĩa với email còn sống → ẩn ở tab
-                    "Đã xoá" (bảng ở đó không có cột thanh toán). */}
-                {statusTab !== "removed" && (
-                  <>
-                    <FilterChip
-                      active={filter === "all"}
-                      onClick={() => setFilter("all")}
-                    >
-                      {t("addedEmails.filterAll")}
-                    </FilterChip>
-                    <FilterChip
-                      active={filter === "today"}
-                      onClick={() => setFilter("today")}
-                    >
-                      {t("addedEmails.filterToday")}
-                    </FilterChip>
-                    <FilterChip
-                      active={filter === "requested"}
-                      onClick={() => setFilter("requested")}
-                    >
-                      {t("addedEmails.filterRequested")}
-                    </FilterChip>
-                    <FilterChip
-                      active={filter === "unpaid"}
-                      onClick={() => setFilter("unpaid")}
-                    >
-                      {t("addedEmails.filterUnpaid")}
-                      <span
-                        style={{
-                          marginLeft: 6,
-                          fontFamily: "var(--font-mono)",
-                          fontSize: 11,
-                          opacity: 0.7,
-                        }}
-                      >
-                        {chipUnpaidCount}
-                      </span>
-                    </FilterChip>
-                  </>
-                )}
+              </>
+            );
+            /* Lọc theo thanh toán chỉ có nghĩa với email còn sống → ẩn ở tab
+               "Đã xoá" (bảng ở đó không có cột thanh toán). */
+            const chipsEl = statusTab !== "removed" && (
+              <>
+                <FilterChip
+                  active={filter === "all"}
+                  onClick={() => setFilter("all")}
+                >
+                  {t("addedEmails.filterAll")}
+                </FilterChip>
+                <FilterChip
+                  active={filter === "today"}
+                  onClick={() => setFilter("today")}
+                >
+                  {isNarrow
+                    ? t("addedEmails.filterTodayShort")
+                    : t("addedEmails.filterToday")}
+                </FilterChip>
+                <FilterChip
+                  active={filter === "requested"}
+                  onClick={() => setFilter("requested")}
+                >
+                  {t("addedEmails.filterRequested")}
+                </FilterChip>
+                <FilterChip
+                  active={filter === "unpaid"}
+                  onClick={() => setFilter("unpaid")}
+                >
+                  {t("addedEmails.filterUnpaid")}
+                  <span
+                    style={{
+                      marginLeft: 6,
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 11,
+                      opacity: 0.7,
+                    }}
+                  >
+                    {chipUnpaidCount}
+                  </span>
+                </FilterChip>
               </>
             );
             const searchEl = (
@@ -1132,14 +1139,18 @@ export default function AddedEmails() {
                 style={{ flexDirection: "column", gap: 10, width: "100%" }}
               >
                 {searchEl}
-                <div className="ae-filter-scroll">{filtersEl}</div>
+                {hasSelects && (
+                  <div className="ae-filter-scroll">{selectsEl}</div>
+                )}
+                {chipsEl && <div className="ae-chip-row">{chipsEl}</div>}
               </div>
             ) : (
               <div
                 className="flex items-center gap-2"
                 style={{ flexWrap: "wrap" }}
               >
-                {filtersEl}
+                {selectsEl}
+                {chipsEl}
                 {searchEl}
               </div>
             );
