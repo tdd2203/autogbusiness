@@ -11,11 +11,14 @@ y nguyên `subscription_end_at` (và subscription_months) của email cũ. Đổ
 task-gỡ rồi INVITE_MEMBER (queue FIFO: gỡ trước, mời sau → trả seat trước khi
 mời). Vì là thay thế 1-đổi-1 (net seat = 0) nên KHÔNG chạy seat guard.
 
-Task GỠ chọn theo trạng thái email cũ:
-  - active (đã tham gia) → REMOVE_MEMBER: extension tìm/xoá ở tab "Người dùng".
-  - pending (chờ tham gia) → REVOKE_INVITES: extension thu hồi ở tab "Lời mời
-    đang chờ xử lý"; nếu KHÔNG thấy ở đó (đã kịp chấp nhận lời mời) thì tự fallback
-    sang tab "Người dùng" và XOÁ. Đây là case fallback DUY NHẤT.
+Task GỠ LUÔN là REMOVE_MEMBER (kể cả khi DB ghi `pending`): extension tìm ở tab
+"Người dùng", không thấy thì tự sang tab "Lời mời đang chờ xử lý" thu hồi. Xem
+chú thích ở chỗ enqueue để biết vì sao bỏ nhánh REVOKE_INVITES.
+
+⚠️ 4/9/2026: giao diện KHÔNG còn nút "Đổi email" — mọi thao tác đi qua "Chuyển hạn
+sử dụng đến" (`transfer_subscription.py`), vốn làm đúng việc này và còn nhận được
+cả email đang là thành viên (cộng dồn hạn). Endpoint này giữ lại cho client cũ và
+cho dữ liệu lịch sử; sửa nghiệp vụ thì sửa CẢ HAI, hoặc tốt hơn là sửa ở transfer.
 """
 
 from datetime import datetime, timezone
@@ -37,6 +40,7 @@ from app.models import (
 )
 from app.permissions import Permission
 from app.schemas import MemberChangeEmailIn, MemberOut
+from app.services import transfer_link
 from app.sse import publish_task_event
 
 from ._shared import router, _get_workspace_or_404, _member_or_404_visible
@@ -114,31 +118,28 @@ def change_member_email(
     role = old.chatgpt_role or "member"
     old_email = old.email
     old_status = old.status
-    old_is_pending = old.status == "pending"
 
     # (1) GỠ email cũ khỏi ChatGPT — enqueue TRƯỚC (queue FIFO: trả seat trước khi mời).
-    #   - pending (chờ tham gia)  → REVOKE_INVITES: thu hồi ở tab "Lời mời đang chờ
-    #     xử lý"; email không có ở đó (đã kịp chấp nhận) → extension tự fallback xoá
-    #     ở tab "Người dùng".
-    #   - active/khác (đã tham gia) → REMOVE_MEMBER: tìm/xoá thẳng ở tab "Người dùng".
-    if old_is_pending:
-        remove_qi = QueueItem(
-            type="REVOKE_INVITES",
-            status="PENDING",
-            workspace_id=workspace_id,
-            payload={"emails": [old_email]},
-            created_by_id=user.id,
-        )
-        remove_task_type = "REVOKE_INVITES"
-    else:
-        remove_qi = QueueItem(
-            type="REMOVE_MEMBER",
-            status="PENDING",
-            workspace_id=workspace_id,
-            payload={"member_id": str(old.id), "email": old_email},
-            created_by_id=user.id,
-        )
-        remove_task_type = "REMOVE_MEMBER"
+    # LUÔN là REMOVE_MEMBER, kể cả khi DB ghi `pending` (giống transfer_subscription):
+    # extension tìm ở tab "Người dùng" trước, KHÔNG thấy thì tự sang tab "Lời mời đang
+    # chờ xử lý" thu hồi.
+    #
+    # Vì sao bỏ nhánh REVOKE_INVITES cho `pending` (4/9/2026): trạng thái trong DB là
+    # thứ CÓ THỂ CŨ — người ta bấm nhận lời mời xong mà chưa tới lượt đồng bộ thì DB
+    # vẫn ghi `pending`. Lúc đó lệnh thu hồi mở đúng menu của một thành viên đã tham
+    # gia, menu không có mục "Thu hồi lời mời", và đường lui sang tab "Người dùng"
+    # KHÔNG chạy (nó chỉ chạy khi không thấy dòng nào) → task hỏng, email cũ ở lại
+    # ChatGPT ăn thêm một ghế cho tới lần đồng bộ sau. Trên production 6/29 lệnh thu
+    # hồi hỏng đúng kiểu này, còn REMOVE_MEMBER hỏng 1/22 — đường gỡ bắt đầu từ tab
+    # "Người dùng" không cần đoán trạng thái nên đúng cho cả hai ca.
+    remove_qi = QueueItem(
+        type="REMOVE_MEMBER",
+        status="PENDING",
+        workspace_id=workspace_id,
+        payload={"member_id": str(old.id), "email": old_email},
+        created_by_id=user.id,
+    )
+    remove_task_type = "REMOVE_MEMBER"
     db.add(remove_qi)
     # (2) MỜI email mới.
     invite_qi = QueueItem(
@@ -223,6 +224,10 @@ def change_member_email(
     member.paid_at = old.paid_at
     member.paid_marked_by_id = old.paid_marked_by_id
     member.fee_vnd = old.fee_vnd
+    # Gói danh tính người dùng vào CỘT: email gốc + chuyển từ/đến. Cùng một nguồn với
+    # "Chuyển hạn sử dụng đến" nên chuỗi A→B→C và ô gộp tiền không phụ thuộc vào việc
+    # thao tác đi qua endpoint nào (xem `services/transfer_link.py`).
+    transfer_link.record_transfer(old, member, takeover=True, now=now)
     # Số kỳ chuyển (đọc trước khi reassign để ghi audit).
     carried_cycles = (
         db.execute(
@@ -274,6 +279,7 @@ def change_member_email(
             "carried_cycles": len(carried_cycles),
             # Task gỡ email cũ: REMOVE_MEMBER (active) hoặc REVOKE_INVITES (pending).
             "old_removal_task_type": remove_task_type,
+            "origin_email": member.origin_email,
             "remove_queue_item_id": str(remove_qi.id),
             "invite_queue_item_id": str(invite_qi.id),
         },

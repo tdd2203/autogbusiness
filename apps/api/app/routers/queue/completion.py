@@ -30,6 +30,7 @@ from app.models import (
     REMOVED_REASON_BY_ADMIN,
     REMOVED_REASON_EMAIL_CHANGED,
     REMOVED_REASON_EXPIRED,
+    REMOVED_REASON_TRANSFERRED,
     REMOVED_REASON_INVITE_FAILED,
     REMOVED_REASON_SEAT_CREDIT,
     REMOVED_REASON_INVITE_REVOKED,
@@ -583,16 +584,19 @@ def _email_change_removal_legs(
     email cũ — bản ghi đã bị đánh `removed` NGAY lúc bấm nút, trước khi extension
     chạm vào ChatGPT.
 
-    CHỈ nhận `MEMBER_EMAIL_CHANGED`. Chuyển hạn (`MEMBER_SUBSCRIPTION_TRANSFERRED`)
-    cũng ghi `remove_queue_item_id` và cũng đánh removed lạc quan y hệt, NHƯNG dòng
-    cho của nó mang `removed_reason='subscription_transferred'`; mọi đường gỡ cờ
-    `email_change_stuck_*` bên dưới đều viết lại reason thành `email_changed`, nên
-    gộp vào đây là bịa lý do rời team cho ca chuyển hạn. Để riêng.
+    Nhận CẢ `MEMBER_EMAIL_CHANGED` lẫn `MEMBER_SUBSCRIPTION_TRANSFERRED`: từ 4/9/2026
+    giao diện chỉ còn "Chuyển hạn sử dụng đến", nên bỏ nhánh sau ra là bỏ luôn cảnh
+    báo "gỡ chưa xong" cho gần như mọi thao tác thật. Lý do rời team của dòng cho vẫn
+    được GIỮ NGUYÊN (`subscription_transferred` hay `email_changed`) — xem
+    `_transfer_removal_reason`; trước đây mọi đường gỡ cờ đều viết đè thành
+    `email_changed`, đó mới là chỗ phải sửa chứ không phải bỏ sót ca chuyển hạn.
     """
     rows = (
         db.execute(
             select(AuditLog.data).where(
-                AuditLog.action == "MEMBER_EMAIL_CHANGED",
+                AuditLog.action.in_(
+                    ("MEMBER_EMAIL_CHANGED", "MEMBER_SUBSCRIPTION_TRANSFERRED")
+                ),
                 AuditLog.data["remove_queue_item_id"].astext == str(queue_item_id),
             )
         )
@@ -602,8 +606,8 @@ def _email_change_removal_legs(
     out: list[tuple[str, str]] = []
     for data in rows:
         d = data or {}
-        old_id = d.get("old_member_id")
-        new_email = d.get("new_email")
+        old_id = d.get("old_member_id") or d.get("source_member_id")
+        new_email = d.get("new_email") or d.get("target_email")
         if (
             isinstance(old_id, str)
             and isinstance(new_email, str)
@@ -611,6 +615,18 @@ def _email_change_removal_legs(
         ):
             out.append((old_id, new_email.strip().lower()))
     return out
+
+
+def _transfer_removal_reason(member: Member) -> str:
+    """Lý do rời team cho một dòng vừa được gỡ MUỘN sau khi chuyển hạn/đổi email.
+
+    Giữ nguyên lý do vốn có (`subscription_transferred` cho ca chuyển hạn) thay vì
+    viết đè thành `email_changed` — nhãn ở tab "Đã xoá" và chuỗi cũ→mới đều đọc cột
+    này, bịa lý do là nói sai chuyện đã xảy ra.
+    """
+    if member.removed_reason == REMOVED_REASON_TRANSFERRED:
+        return REMOVED_REASON_TRANSFERRED
+    return REMOVED_REASON_EMAIL_CHANGED
 
 
 def _keep_seat_credit_members(
@@ -1694,10 +1710,10 @@ def update_task(
                 member.status = "removed"
                 member.removed_at = revoked_at
                 # Cùng lý lẽ với nhánh REMOVE_MEMBER: lời mời của email đang mắc kẹt
-                # vì ĐỔI EMAIL nay thu hồi được thật → lý do là 'đổi email', không
-                # phải 'thu hồi lời mời'.
+                # vì CHUYỂN HẠN/ĐỔI EMAIL nay thu hồi được thật → lý do là lần chuyển
+                # đó, không phải 'thu hồi lời mời'.
                 if member.email_change_stuck_at is not None:
-                    member.removed_reason = REMOVED_REASON_EMAIL_CHANGED
+                    member.removed_reason = _transfer_removal_reason(member)
                     member.email_change_stuck_at = None
                     member.email_change_stuck_to = None
                 else:
@@ -1958,8 +1974,8 @@ def update_task(
                     # muộn của lần đổi email, không phải "admin xoá tay": ghi
                     # by_admin ở đây là làm đứt chuỗi cũ→mới ở tab "Đã xoá", đúng
                     # cái sai đã xảy ra ngày 22/8/2026. Cờ mắc kẹt gỡ luôn.
-                    remove_data["removal_reason"] = "email_changed"
-                    member.removed_reason = REMOVED_REASON_EMAIL_CHANGED
+                    member.removed_reason = _transfer_removal_reason(member)
+                    remove_data["removal_reason"] = member.removed_reason
                     member.email_change_stuck_at = None
                     member.email_change_stuck_to = None
                 elif expired_init:
@@ -2000,7 +2016,42 @@ def update_task(
                         "email": target_email,
                         "workspace_id": str(workspace.id),
                         "queue_item_id": str(item.id),
-                        "removal_reason": "email_changed",
+                        "removal_reason": _transfer_removal_reason(member),
+                        "removal_evidence": (
+                            "absent_confirmed"
+                            if ((body.result or {}).get("data") or {}).get("absent")
+                            is True
+                            else "clicked_and_verified"
+                        ),
+                    },
+                    commit=False,
+                )
+            elif (
+                member
+                and removal_verified
+                and member.removed_reason
+                in (REMOVED_REASON_EMAIL_CHANGED, REMOVED_REASON_TRANSFERRED)
+            ):
+                # Lệnh gỡ của một lần CHUYỂN HẠN chạy trót lọt ngay lần đầu. Bản ghi
+                # đã ở `removed` từ lúc bấm nút nên mọi nhánh trên đều trượt và trước
+                # 4/9/2026 chỗ này KHÔNG ghi gì — dòng "Chuyển hạn/Đổi email" trong
+                # timeline vì thế đứng nguyên ở "Đang chờ" VĨNH VIỄN dù cả hai lệnh
+                # đã xong (52/52 lần trên production), làm admin tưởng thao tác treo.
+                # Không đụng status/removed_at (đã đúng từ đầu), chỉ để lại dấu chốt
+                # để giao diện lật badge sang "Thành công".
+                log_event(
+                    db,
+                    actor_type="EXTENSION",
+                    actor_label=f"workspace:{workspace.name}",
+                    action="MEMBER_REMOVED_SYNCED",
+                    result="COMPLETED",
+                    target_type="MEMBER",
+                    target_id=str(member.id),
+                    data={
+                        "email": target_email,
+                        "workspace_id": str(workspace.id),
+                        "queue_item_id": str(item.id),
+                        "removal_reason": member.removed_reason,
                         "removal_evidence": (
                             "absent_confirmed"
                             if ((body.result or {}).get("data") or {}).get("absent")
@@ -2040,7 +2091,10 @@ def update_task(
                 continue
             # Bản ghi đã đi tiếp (được mời lại, rời team vì lý do khác, hoặc lần gỡ
             # sau đã xong) → lần hỏng này không còn nói lên điều gì về hiện tại.
-            if old_member.removed_reason != REMOVED_REASON_EMAIL_CHANGED:
+            if old_member.removed_reason not in (
+                REMOVED_REASON_EMAIL_CHANGED,
+                REMOVED_REASON_TRANSFERRED,
+            ):
                 continue
             if old_member.email_change_stuck_at is None:
                 old_member.email_change_stuck_at = item.completed_at or datetime.now(

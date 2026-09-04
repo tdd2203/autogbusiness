@@ -127,6 +127,10 @@ export type TransferPreview = {
   removal_task_type: string;
   /** != null → KHÔNG chuyển được; modal khoá nút xác nhận và hiện lý do này. */
   blocked_reason: string | null;
+  /** != null → người dùng này ĐÃ chuyển hạn 1 lần rồi (lần này là lần 2+). Hiện luật
+   *  là "mỗi email chỉ chuyển 1 lần" nên `blocked_reason` mang đúng câu này; tách
+   *  riêng để lúc mở đường B → C kèm thu phí chỉ phải đổi cách hiện. */
+  repeat_notice?: string | null;
 };
 
 export type Member = {
@@ -158,6 +162,14 @@ export type Member = {
    *  chưa có tín hiệu ngược lại). `email_change_stuck_to` = email mới đang giữ hạn. */
   email_change_stuck_at?: string | null;
   email_change_stuck_to?: string | null;
+  /** DANH TÍNH NGƯỜI DÙNG đi xuyên các email (migration 0066): email GỐC của người
+   *  dùng này (null = chính nó là gốc), email đã trao hạn cho nó, email đã nhận hạn
+   *  từ nó. Một email chỉ được chuyển hạn 1 lần nên chuỗi luôn đọc được ngược xuôi. */
+  origin_email?: string | null;
+  transferred_from_email?: string | null;
+  transferred_in_at?: string | null;
+  transferred_to_email?: string | null;
+  transferred_out_at?: string | null;
   /** Chuỗi email THAY THẾ cho email này, theo thứ tự đổi (A → B → C): phần tử cuối là
    *  email đang giữ hạn/tiền. Backend CHỈ đổ đầy ở danh sách tab "Đã xoá" cho dòng
    *  removed_reason="email_changed"; mọi nơi khác undefined/rỗng. */

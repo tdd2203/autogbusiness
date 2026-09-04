@@ -1,10 +1,15 @@
 /**
- * Modal "Chuyển hạn sử dụng đến" cho 1 member.
+ * Modal "Chuyển hạn sử dụng đến" cho 1 member — đường DUY NHẤT để một khách đổi
+ * sang email khác (nút "Đổi email" cũ đã gỡ ngày 4/9/2026: hai chức năng làm đúng
+ * một việc — gỡ email cũ, chuyển hạn, mời email mới nếu chưa tham gia).
  *
  * Nghiệp vụ (user 2026-08-21): khách muốn dùng tiếp bằng email khác → nhập email
  * nhận → modal hiện PHÉP TÍNH đầy đủ (hạn email cho · phần còn lại · hạn email
  * nhận sau khi cộng) → xác nhận thì backend gỡ email cho khỏi workspace và dồn
  * hạn sang email nhận.
+ *
+ * LUẬT: mỗi email chỉ được chuyển hạn 1 LẦN — nói thẳng trong modal TRƯỚC khi bấm
+ * gửi, và backend trả `blocked_reason` cho lần thứ 2 nên nút bị khoá kèm lý do.
  *
  * Phép tính do BACKEND trả (`useTransferPreview`) chứ KHÔNG tự tính ở web: con số
  * admin nhìn thấy chính là con số sẽ được ghi. Xem hooks/useTransferSubscription.md.
@@ -17,8 +22,7 @@ import {
   useTransferSubscription,
 } from "../hooks/useTransferSubscription";
 
-// Cùng regex cơ bản với ChangeEmailModal — chỉ chặn nhập rõ ràng sai; backend
-// (EmailStr) là nguồn validate cuối cùng.
+// Chỉ chặn nhập rõ ràng sai; backend (EmailStr) là nguồn validate cuối cùng.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Chờ admin gõ xong rồi mới gọi preview (tránh 1 request mỗi ký tự). */
@@ -139,6 +143,7 @@ function CalcPanel({ preview }: { preview: TransferPreview }) {
         style={{ fontSize: 11.5, marginTop: 8, lineHeight: 1.5 }}
       >
         {t("transfer.noteRemoval", { email: source.email })}
+        <div style={{ marginTop: 4 }}>{t("transfer.noteInviteIfNeeded")}</div>
       </div>
     </div>
   );
@@ -245,6 +250,10 @@ export function TransferSubscriptionModal({
                 {t("transfer.sameEmailError")}
               </div>
             )}
+            {/* Luật phải đọc được TRƯỚC khi bấm gửi, không đợi backend từ chối. */}
+            <div className="cell-muted" style={{ fontSize: 11.5, marginTop: 4 }}>
+              {t("transfer.onceOnlyRule")}
+            </div>
           </div>
 
           {/* Phép tính — chỉ hiện khi đã nhập xong email nhận. */}

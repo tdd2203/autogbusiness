@@ -12,7 +12,6 @@ import { useFormatDate, useFormatDateTime, useT } from "../i18n";
 import type { AddedMember, QueueItem, SubscriptionCycle } from "../types";
 import { SearchInput } from "./Members";
 import { MemberDetailModal } from "../components/MemberDetailModal";
-import { ChangeEmailModal } from "../components/ChangeEmailModal";
 import { TransferSubscriptionModal } from "../components/TransferSubscriptionModal";
 import { ChangeSubscriptionModal } from "../components/ChangeSubscriptionModal";
 import { NotifyLinkModal } from "../components/NotifyLinkModal";
@@ -99,11 +98,13 @@ export default function AddedEmails() {
   const isNarrow = useIsMobile(480);
 
   // Quyền cho menu thao tác ⋯ theo dòng (khớp Members.tsx). Gán workspace CHỈ
-  // giới hạn việc mời (add) → các email owner đã thêm luôn được đổi hạn/đổi
-  // email/xoá; ở đây vẫn gate theo permission gốc như backend yêu cầu.
+  // giới hạn việc mời (add) → các email owner đã thêm luôn được đổi hạn/chuyển
+  // hạn/xoá; ở đây vẫn gate theo permission gốc như backend yêu cầu.
   const canRemove = hasPermission("MEMBER_REMOVE");
   const canInvite = hasPermission("MEMBER_INVITE");
-  const canChangeEmail = canRemove && hasPermission("MEMBER_INVITE");
+  // "Chuyển hạn sử dụng đến" sinh ra CẢ lệnh gỡ lẫn lệnh mời → đòi cả hai quyền
+  // (khớp guard của backend).
+  const canTransferExpiry = canRemove && hasPermission("MEMBER_INVITE");
   const canChangeSubscription = hasPermission("MEMBER_INVITE");
 
   // Khởi tạo filter từ ?filter= (chuông thông báo mở thẳng "Chờ xác nhận", Tổng
@@ -144,10 +145,7 @@ export default function AddedEmails() {
   const [page, setPage] = useState(1);
   // Click email → mở modal chi tiết + lịch sử hoạt động của email đó.
   const [detailMember, setDetailMember] = useState<AddedMember | null>(null);
-  // Email đang mở modal "Đổi email" / "Đổi hạn dùng" từ menu ⋯ theo dòng (null = đóng).
-  const [changeEmailMember, setChangeEmailMember] = useState<AddedMember | null>(
-    null,
-  );
+  // Email đang mở modal "Đổi hạn dùng" từ menu ⋯ theo dòng (null = đóng).
   const [changeSubMember, setChangeSubMember] = useState<AddedMember | null>(
     null,
   );
@@ -699,13 +697,8 @@ export default function AddedEmails() {
                   },
                 ]
               : []),
-            ...(canChangeEmail
+            ...(canTransferExpiry
               ? [
-                  {
-                    key: "change-email",
-                    label: t("member.changeEmailAction"),
-                    onClick: () => setChangeEmailMember(m),
-                  },
                   {
                     key: "transfer-expiry",
                     label: t("member.transferExpiryAction"),
@@ -782,13 +775,8 @@ export default function AddedEmails() {
                   },
                 ]
               : []),
-            ...(canChangeEmail
+            ...(canTransferExpiry
               ? [
-                  {
-                    key: "change-email",
-                    label: t("member.changeEmailAction"),
-                    onClick: () => setChangeEmailMember(m),
-                  },
                   {
                     key: "transfer-expiry",
                     label: t("member.transferExpiryAction"),
@@ -942,15 +930,8 @@ export default function AddedEmails() {
         />
       )}
 
-      {/* Đổi email / Đổi hạn dùng từ menu ⋯ theo dòng. Mỗi email có workspace_id
+      {/* Chuyển hạn / Đổi hạn dùng từ menu ⋯ theo dòng. Mỗi email có workspace_id
           riêng → truyền thẳng workspace của dòng (AddedMember ⊇ Member). */}
-      {changeEmailMember && (
-        <ChangeEmailModal
-          workspaceId={changeEmailMember.workspace_id}
-          member={changeEmailMember}
-          onClose={() => setChangeEmailMember(null)}
-        />
-      )}
       {transferMember && (
         <TransferSubscriptionModal
           workspaceId={transferMember.workspace_id}

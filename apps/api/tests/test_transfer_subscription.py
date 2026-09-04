@@ -16,9 +16,14 @@ Xác minh:
   - target_email trùng email cho → 400.
 """
 
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
+
+from app.db import SessionLocal
+from app.models import Member
+from app.services import transfer_link
 
 
 def _create_workspace(client: TestClient, auth_header: dict) -> dict:
@@ -217,3 +222,102 @@ def test_transfer_rejects_expired_and_self(client: TestClient, auth_header: dict
     # Không được đụng gì vào DB khi bị chặn.
     assert _members(client, ws["id"], auth_header)["exp@example.com"]["status"] == "active"
     assert _tasks(client, ws["id"], auth_header, "REMOVE_MEMBER") == []
+
+
+def test_transfer_records_identity_chain_and_blocks_second_hop(
+    client: TestClient, auth_header: dict
+):
+    """A → B ghi được danh tính người dùng; B → C bị từ chối (mỗi email 1 lần).
+
+    Chuỗi cũ→mới nằm trên CỘT (`transferred_to_*` / `transferred_from_*` /
+    `origin_email`, migration 0066) chứ không phải dò nhật ký, nên tab "Đã xoá",
+    ô gộp tiền và luật "1 lần" đều đọc chung một nguồn.
+    """
+    ws = _create_workspace(client, auth_header)
+    _upsert_active(client, ws, ["a@example.com"])
+    a = _members(client, ws["id"], auth_header)["a@example.com"]
+    _set_subscription(client, ws["id"], a["id"], 3, auth_header)
+
+    assert _transfer(client, ws["id"], a["id"], "b@example.com", auth_header).status_code == 201
+
+    members = _members(client, ws["id"], auth_header)
+    row_a, row_b = members["a@example.com"], members["b@example.com"]
+    # Đầu CHO: trỏ tới email nhận; đầu NHẬN: biết mình từ đâu tới và email gốc là ai.
+    assert row_a["transferred_to_email"] == "b@example.com"
+    assert row_a["transferred_out_at"] is not None
+    assert row_a["removed_reason"] == "subscription_transferred"
+    assert row_b["transferred_from_email"] == "a@example.com"
+    assert row_b["origin_email"] == "a@example.com"
+
+    # B → C: cùng MỘT người dùng chuyển lần thứ hai → chặn ở CẢ preview lẫn lệnh thật,
+    # cùng một câu chữ (công tắc mở đường này: transfer_link.ALLOW_REPEAT_TRANSFER).
+    prev = _preview(client, ws["id"], row_b["id"], "c@example.com", auth_header)
+    assert prev.status_code == 200, prev.text
+    body = prev.json()
+    assert body["repeat_notice"] is not None
+    assert body["blocked_reason"] == body["repeat_notice"]
+
+    resp = _transfer(client, ws["id"], row_b["id"], "c@example.com", auth_header)
+    assert resp.status_code == 409, resp.text
+    # Bị chặn thì KHÔNG được đụng gì vào DB.
+    after = _members(client, ws["id"], auth_header)
+    assert "c@example.com" not in after
+    assert after["b@example.com"]["status"] == row_b["status"]
+
+
+def test_transfer_accumulate_keeps_target_identity(client: TestClient, auth_header: dict):
+    """Cộng dồn: email nhận GIỮ danh tính của họ (không có origin_email) nhưng vẫn
+    tra ngược được "hạn này được cộng thêm từ email nào" qua đầu CHO."""
+    ws = _create_workspace(client, auth_header)
+    _upsert_active(client, ws, ["src2@example.com", "dst2@example.com"])
+    members = _members(client, ws["id"], auth_header)
+    src, dst = members["src2@example.com"], members["dst2@example.com"]
+    _set_subscription(client, ws["id"], src["id"], 2, auth_header)
+    _set_subscription(client, ws["id"], dst["id"], 1, auth_header)
+
+    assert (
+        _transfer(client, ws["id"], src["id"], "dst2@example.com", auth_header).status_code == 201
+    )
+
+    after = _members(client, ws["id"], auth_header)
+    assert after["src2@example.com"]["transferred_to_email"] == "dst2@example.com"
+    # Email nhận cộng dồn KHÔNG bị ghi danh tính → vẫn còn quyền chuyển của chính họ.
+    assert after["dst2@example.com"]["origin_email"] is None
+    assert after["dst2@example.com"]["transferred_from_email"] is None
+    prev = _preview(client, ws["id"], dst["id"], "onward@example.com", auth_header)
+    assert prev.status_code == 200, prev.text
+    assert prev.json()["blocked_reason"] is None
+
+
+def test_transfer_before_rule_start_is_not_counted(client: TestClient, auth_header: dict):
+    """Lần chuyển CŨ (trước `REPEAT_RULE_FROM`) không tiêu lượt của người dùng.
+
+    User chốt 4/9/2026: "các email cũ đã đổi thì cứ kệ nó, giờ bắt đầu áp dụng" —
+    32 email đang hoạt động đã đổi email 1 lần trước khi có luật, khoá họ lại là phạt
+    người chưa từng biết luật. Dữ liệu chuỗi vẫn giữ nguyên để tra lịch sử.
+    """
+    ws = _create_workspace(client, auth_header)
+    _upsert_active(client, ws, ["old-a@example.com"])
+    a = _members(client, ws["id"], auth_header)["old-a@example.com"]
+    _set_subscription(client, ws["id"], a["id"], 3, auth_header)
+    assert (
+        _transfer(client, ws["id"], a["id"], "old-b@example.com", auth_header).status_code == 201
+    )
+
+    b = _members(client, ws["id"], auth_header)["old-b@example.com"]
+    # Lần chuyển đó xảy ra TRƯỚC ngày luật có hiệu lực.
+    with SessionLocal() as db:
+        row = db.get(Member, uuid.UUID(b["id"]))
+        row.transferred_in_at = transfer_link.REPEAT_RULE_FROM - timedelta(days=1)
+        db.commit()
+
+    prev = _preview(client, ws["id"], b["id"], "old-c@example.com", auth_header)
+    assert prev.status_code == 200, prev.text
+    body = prev.json()
+    assert body["repeat_notice"] is None
+    assert body["blocked_reason"] is None
+    # Chuỗi cũ→mới KHÔNG bị đụng tới: vẫn tra ngược được email gốc.
+    assert b["origin_email"] == "old-a@example.com"
+
+    resp = _transfer(client, ws["id"], b["id"], "old-c@example.com", auth_header)
+    assert resp.status_code == 201, resp.text

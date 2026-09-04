@@ -20,8 +20,6 @@ from app.deps import get_current_user, get_session
 from app.models import (
     PLATFORM_GPT,
     PLATFORMS,
-    REMOVED_REASON_EMAIL_CHANGED,
-    AuditLog,
     Member,
     MemberSubscriptionCycle,
     User,
@@ -63,25 +61,25 @@ _EMAIL_CHAIN_MAX_HOPS = 10
 
 
 def _email_change_next_map(db: Session) -> dict[str, tuple[str, str]]:
-    """`id member cũ` → (email mới, `id member mới`) của MỖI lần đổi email.
+    """`id member cũ` → (email nhận, `id member nhận`) của MỖI lần chuyển hạn/đổi email.
 
-    Nguồn: nhật ký `MEMBER_EMAIL_CHANGED` — chỉ nó biết email nào thay cho email nào
-    (bảng members KHÔNG có liên kết cũ→mới). Sắp theo thời gian rồi ghi đè, nên một
-    email từng bị đổi NHIỀU LẦN (đổi đi, được mời lại, lại đổi) sẽ lấy lần GẦN NHẤT —
-    đúng với lần bị gỡ đang hiển thị.
+    Nguồn: CỘT `members.transferred_to_*` (migration 0066). Trước 4/9/2026 chỗ này dò
+    nhật ký `MEMBER_EMAIL_CHANGED` — cách đó bỏ sót toàn bộ lần "chuyển hạn sử dụng
+    đến" (nhật ký khác tên) và phải quét cả bảng nhật ký chỉ để vẽ một mũi tên.
+    Một truy vấn cho cả danh sách: bảng liên kết này nhỏ (mỗi lần chuyển 1 dòng).
     """
     rows = db.execute(
-        select(AuditLog.target_id, AuditLog.data)
-        .where(AuditLog.action == "MEMBER_EMAIL_CHANGED")
-        .order_by(AuditLog.timestamp)
+        select(
+            Member.id,
+            Member.transferred_to_email,
+            Member.transferred_to_member_id,
+        ).where(Member.transferred_to_member_id.isnot(None))
     ).all()
-    out: dict[str, tuple[str, str]] = {}
-    for target_id, data in rows:
-        old_id = (data or {}).get("old_member_id")
-        new_email = (data or {}).get("new_email")
-        if old_id and new_email and target_id:
-            out[str(old_id)] = (str(new_email), str(target_id))
-    return out
+    return {
+        str(mid): (str(to_email), str(to_id))
+        for mid, to_email, to_id in rows
+        if to_email and to_id
+    }
 
 
 def _email_change_chain(
@@ -89,24 +87,17 @@ def _email_change_chain(
 ) -> tuple[list[str], list[UUID]]:
     """Chuỗi email THAY THẾ cho `member` (A → B → C) + id member từng chặng.
 
-    Chỉ có nghĩa với email bị gỡ VÌ ĐỔI EMAIL. Trả (emails, ids) LUÔN cùng độ dài để
-    UI ghép 1-1: bấm chặng thứ i thì mở đúng member ids[i].
+    Trả (emails, ids) LUÔN cùng độ dài để UI ghép 1-1: bấm chặng thứ i thì mở đúng
+    member ids[i].
 
-    Hai cửa vào, vì ca ĐỔI EMAIL CHƯA XONG (lệnh gỡ email cũ hỏng → đồng bộ thấy email
-    vẫn ở ChatGPT nên hồi sinh nó, xoá luôn `removed_reason`) làm dòng cũ KHÔNG còn
-    nhãn `email_changed` dù nhật ký vẫn nguyên bằng chứng:
-      - `removed_reason == 'email_changed'` — ca thường (gỡ trót lọt);
-      - `email_change_stuck_at` — ca đang mắc kẹt, dòng cũ đang sống lại.
-    Thiếu cửa thứ hai thì đúng lúc cần cảnh báo nhất (một suất ăn hai ghế) lại là lúc
-    chuỗi cũ→mới biến mất — ca thật 22/8/2026.
+    KHÔNG gác theo `removed_reason` nữa: bản ghi có liên kết `transferred_to_*` là đã
+    chuyển hạn đi thật, kể cả ca ĐỔI EMAIL CHƯA XONG (lệnh gỡ hỏng → đồng bộ thấy
+    email vẫn ở ChatGPT nên hồi sinh nó, xoá luôn `removed_reason`). Chính lúc đó là
+    lúc cần chuỗi nhất — một suất ăn hai ghế — mà cách gác cũ lại làm nó biến mất
+    (ca thật 22/8/2026).
     """
     emails: list[str] = []
     ids: list[UUID] = []
-    if (
-        member.removed_reason != REMOVED_REASON_EMAIL_CHANGED
-        and member.email_change_stuck_at is None
-    ):
-        return emails, ids
     seen = {str(member.id)}
     cursor = str(member.id)
     for _ in range(_EMAIL_CHAIN_MAX_HOPS):
@@ -117,7 +108,7 @@ def _email_change_chain(
         emails.append(next_email)
         ids.append(UUID(next_id))
         if next_id in seen:
-            break  # vòng (email cũ được mời lại rồi lại đổi) → dừng
+            break  # vòng (email cũ được mời lại rồi lại chuyển) → dừng
         seen.add(next_id)
         cursor = next_id
     return emails, ids
@@ -388,12 +379,9 @@ def get_added_member(
     out.cycles = [
         SubscriptionCycleOut.model_validate(c) for c in member.subscription_cycles
     ]
-    # Email nhận có thể ĐÃ ĐỔI TIẾP (A → B → C): giữ chuỗi để bấm đi tiếp được.
-    # Bản đồ đổi email quét cả bảng nhật ký → chỉ dựng khi email này ĐÚNG là ca đổi.
-    if (
-        member.removed_reason == REMOVED_REASON_EMAIL_CHANGED
-        or member.email_change_stuck_at is not None
-    ):
+    # Email nhận có thể ĐÃ CHUYỂN TIẾP (A → B → C): giữ chuỗi để bấm đi tiếp được.
+    # Chỉ dựng bản đồ khi bản ghi này thật sự có liên kết chuyển đi.
+    if member.transferred_to_member_id is not None:
         chain, chain_ids = _email_change_chain(member, _email_change_next_map(db))
         out.email_changed_to = chain
         out.email_changed_to_ids = chain_ids

@@ -169,10 +169,10 @@ def test_remove_member_failed_flags_old_email_immediately(
     assert row.json()["email_change_stuck_to"] == "new1@example.com"
 
 
-def test_revoke_invites_failed_then_success_clears_flag(
+def test_pending_remove_failed_then_revoke_success_clears_flag(
     client: TestClient, auth_header: dict
 ) -> None:
-    """Email cũ đang CHỜ THAM GIA: REVOKE hỏng ⇒ cờ; thu hồi được thật ⇒ gỡ cờ.
+    """Email cũ đang CHỜ THAM GIA: lệnh gỡ hỏng ⇒ cờ; thu hồi được thật ⇒ gỡ cờ.
 
     Lượt thu hồi sau chốt trên một bản ghi ĐÃ ở `removed` (đổi email đánh dấu ngay lúc
     bấm) nên nó KHÔNG lọt vào nhánh mark-removed thông thường — không gỡ cờ ở đúng chỗ
@@ -187,11 +187,13 @@ def test_revoke_invites_failed_then_success_clears_flag(
         _change_email(client, ws["id"], old["id"], "new2@example.com", auth_header).status_code
         == 201
     )
-    revoke_task = _task_of_type(client, ws["id"], "REVOKE_INVITES", auth_header)
+    # Từ 4/9/2026 đổi email/chuyển hạn LUÔN gỡ bằng REMOVE_MEMBER, kể cả email cũ
+    # đang `pending` (xem change_email.py).
+    remove_task = _task_of_type(client, ws["id"], "REMOVE_MEMBER", auth_header)
     assert _patch_task(
         client,
         ws,
-        revoke_task["id"],
+        remove_task["id"],
         {
             "status": "FAILED",
             "error_code": "FAILED_UI_CHANGED",
@@ -279,3 +281,54 @@ def test_plain_remove_failure_does_not_flag_anything(
             .count()
             == 0
         )
+
+
+def test_remove_success_writes_terminal_log_for_timeline(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Lệnh gỡ CHẠY ĐƯỢC ngay lần đầu vẫn phải để lại dấu chốt cho timeline.
+
+    Bản ghi email cũ đã ở `removed` từ lúc bấm nút nên mọi nhánh mark-removed đều
+    trượt; trước 4/9/2026 chỗ này không ghi gì, và dòng "Đổi email/Chuyển hạn" trong
+    modal chi tiết đứng nguyên ở "Đang chờ" VĨNH VIỄN (52/52 lần trên production).
+    """
+    ws = _ws(client, auth_header)
+    _sync(client, ws, [("old3@example.com", "active")])
+    old = _member(client, ws["id"], "old3@example.com", auth_header)
+
+    assert (
+        _change_email(client, ws["id"], old["id"], "new3@example.com", auth_header).status_code
+        == 201
+    )
+    remove_task = _task_of_type(client, ws["id"], "REMOVE_MEMBER", auth_header)
+    assert _patch_task(
+        client,
+        ws,
+        remove_task["id"],
+        {
+            "status": "COMPLETED",
+            "result": {"data": {"email": "old3@example.com", "verified": True}},
+        },
+    ).status_code == 200
+
+    with SessionLocal() as db:
+        log = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.action == "MEMBER_REMOVED_SYNCED",
+                AuditLog.target_id == old["id"],
+            )
+            .one_or_none()
+        )
+    assert log is not None, "thiếu dấu chốt → timeline kẹt ở Đang chờ"
+    # Gắn ĐÚNG lệnh gỡ của lần đổi email để giao diện gộp vào dòng đó.
+    assert log.data["queue_item_id"] == remove_task["id"]
+    # Lý do rời team giữ nguyên, không bị viết đè thành "admin xoá".
+    assert log.data["removal_reason"] == "email_changed"
+
+    # Không đụng vào mốc/lý do đã đúng từ lúc bấm nút.
+    with SessionLocal() as db:
+        m = db.get(Member, uuid.UUID(old["id"]))
+        assert m.status == "removed"
+        assert m.removed_reason == "email_changed"
+        assert m.email_change_stuck_at is None

@@ -11,9 +11,13 @@ Nghiệp vụ (user 2026-08-21): khách đang có hạn nhưng muốn dùng bằ
 Admin bấm "Chuyển hạn sử dụng đến" → nhập email nhận → modal hiện PHÉP TÍNH đầy
 đủ (hạn email cho, phần còn lại, hạn email nhận sau khi cộng) → xác nhận.
 
-KHÁC "đổi email" (`change_email.py`) ở đúng một điểm cốt lõi: đổi email đòi email
-mới CHƯA phải thành viên (409 nếu đang dùng), còn chuyển hạn CHẤP NHẬN email nhận
-đang dùng và **CỘNG DỒN** hạn còn lại vào hạn sẵn có của họ.
+ĐÂY LÀ ĐƯỜNG DUY NHẤT để khách đổi sang email khác (4/9/2026): nút "Đổi email" đã gỡ
+khỏi giao diện vì hai chức năng làm đúng một việc — gỡ email cũ, chuyển hạn, và mời
+email nhận NẾU họ chưa ở trong team (đang là thành viên thì chỉ CỘNG DỒN hạn, không
+mời lại). `change_email.py` giữ lại cho client cũ; sửa nghiệp vụ thì sửa ở đây.
+
+LUẬT: mỗi người dùng (tính theo EMAIL GỐC) chỉ được chuyển hạn 1 lần — chốt chặn nằm
+ở `services/transfer_link.py`, sẽ mở lại kèm thu phí.
 
 Email CHO hạn bị gỡ khỏi workspace bằng 1 task `REMOVE_MEMBER`: extension tìm ở
 tab "Người dùng", KHÔNG thấy thì tự chuyển sang tab "Lời mời đang chờ xử lý" và
@@ -47,6 +51,7 @@ from app.schemas import (
     TransferSourceOut,
     TransferTargetOut,
 )
+from app.services import transfer_link
 from app.sse import publish_task_event
 
 from ._shared import router, _get_workspace_or_404, _member_or_404_visible
@@ -75,6 +80,10 @@ class TransferPlan:
     remaining: timedelta
     will_invite: bool
     blocked_reason: str | None
+    # Người dùng này đã chuyển hạn một lần rồi ⇒ lần này bị TỪ CHỐI (`blocked_reason`
+    # mang đúng câu này). Tách riêng để lúc mở đường B → C kèm thu phí chỉ phải đổi
+    # cách hiện — công tắc ở `transfer_link.ALLOW_REPEAT_TRANSFER`.
+    repeat_notice: str | None = None
 
 
 def _plan_transfer(
@@ -201,6 +210,19 @@ def _plan_transfer(
     )
 
 
+def _apply_repeat_rule(plan: TransferPlan) -> None:
+    """Luật "mỗi người dùng chỉ chuyển hạn 1 lần" lên một `TransferPlan` đã tính.
+
+    Dùng CHUNG cho preview và lệnh thật nên modal khoá nút với ĐÚNG câu mà endpoint
+    sẽ trả 409. Công tắc mở đường B → C (kèm thu phí) nằm ở
+    `transfer_link.ALLOW_REPEAT_TRANSFER` — chỉ một chỗ.
+    """
+    plan.repeat_notice = transfer_link.repeat_transfer_notice(plan.source)
+    block = transfer_link.repeat_transfer_block(plan.source)
+    if block and not plan.blocked_reason:
+        plan.blocked_reason = block
+
+
 def _plan_to_preview(plan: TransferPlan, now: datetime) -> MemberTransferPreviewOut:
     src_end = _as_utc(plan.source.subscription_end_at)
     src_unlimited = src_end is None and plan.source.subscription_months is None
@@ -234,6 +256,7 @@ def _plan_to_preview(plan: TransferPlan, now: datetime) -> MemberTransferPreview
         will_invite=plan.will_invite,
         removal_task_type="REMOVE_MEMBER",
         blocked_reason=plan.blocked_reason,
+        repeat_notice=plan.repeat_notice,
     )
 
 
@@ -291,6 +314,7 @@ def preview_transfer_subscription(
         db, workspace_id, member_id, body.target_email, user
     )
     plan = _plan_transfer(db, workspace_id, source, target_email, now)
+    _apply_repeat_rule(plan)
     return _plan_to_preview(plan, now)
 
 
@@ -315,6 +339,7 @@ def transfer_subscription(
         db, workspace_id, member_id, body.target_email, user
     )
     plan = _plan_transfer(db, workspace_id, source, target_email, now)
+    _apply_repeat_rule(plan)
     if plan.blocked_reason:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=plan.blocked_reason)
 
@@ -414,6 +439,12 @@ def transfer_subscription(
         target.subscription_end_at = plan.new_end_at
     db.flush()
 
+    # ---- (3b) Gói danh tính: email gốc + chuyển từ/đến ----------------------
+    # Ghi lên CỘT (không chỉ nhật ký) để chuỗi A→B→C, ô gộp tiền của email cũ và
+    # luật "1 người dùng chuyển 1 lần" đều đọc chung một nguồn — xem
+    # `services/transfer_link.py` và migration 0066.
+    transfer_link.record_transfer(source, target, takeover=takeover, now=now)
+
     # ---- (4) Chu kỳ thanh toán ---------------------------------------------
     # takeover (email nhận là bản ghi mới/tái dùng): MOVE chu kỳ của email cho sang
     # email nhận — email cho sẽ bị hard-delete sau 30 ngày, cascade xoá mất lịch sử
@@ -483,6 +514,14 @@ def transfer_subscription(
             "new_months": plan.new_months,
             "will_invite": plan.will_invite,
             "carried_cycles": len(carried_cycles),
+            # Danh tính người dùng sau lần chuyển này (cột `members.origin_email`).
+            # Ca cộng dồn: email nhận GIỮ danh tính của họ nên không có email gốc.
+            "origin_email": target.origin_email if takeover else None,
+            "transfer_kind": source.transfer_kind,
+            # Lần chuyển thứ 2+ của cùng một người dùng. Hiện luật chặn nên chỉ có
+            # giá trị `false`; giữ sẵn để lúc mở đường B → C (kèm thu phí) còn đối
+            # chiếu được lần nào là lần chuyển tiếp.
+            "repeat_transfer": bool(plan.repeat_notice),
             "remove_queue_item_id": str(remove_qi.id),
             "invite_queue_item_id": str(invite_qi.id) if invite_qi else None,
         },

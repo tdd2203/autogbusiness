@@ -496,6 +496,43 @@ class Member(Base):
         DateTime(timezone=True), nullable=True, index=True
     )
     email_change_stuck_to: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # ---- CHUYỂN HẠN SỬ DỤNG: danh tính người dùng đi xuyên các email -----------
+    # Một người dùng = một EMAIL GỐC. Đổi email/chuyển hạn chỉ là người đó dùng địa
+    # chỉ khác, nên `origin_email` giữ đầu chuỗi A→B→C (NULL = chính nó là gốc) và
+    # cũng là chốt chặn "mỗi người dùng chỉ được chuyển hạn 1 lần": có origin_email
+    # nghĩa là bản ghi này vốn sinh ra từ một lần chuyển ⇒ không chuyển tiếp nữa.
+    #
+    # Trước 4/9/2026 chuỗi cũ→mới CHỈ nằm trong nhật ký `MEMBER_EMAIL_CHANGED`, mỗi
+    # nơi cần nó lại tự dò một kiểu (mũi tên tab "Đã xoá", gộp tiền email cũ, kế
+    # thừa thanh toán, timeline hai chiều) và nhật ký chuyển hạn thì không nơi nào
+    # đọc — xem migration 0066.
+    origin_email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    # Bản ghi đã TRAO hạn cho bản ghi này (chỉ ghi khi email nhận TIẾP QUẢN danh
+    # tính, tức lần chuyển có mời email nhận vào).
+    transferred_from_member_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("members.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    transferred_from_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    transferred_in_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Bản ghi đã NHẬN hạn từ bản ghi này. Ghi cho CẢ hai kiểu chuyển → ca cộng dồn
+    # (email nhận giữ nguyên danh tính, không có origin_email) vẫn tra ngược được.
+    transferred_to_member_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("members.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    transferred_to_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    transferred_out_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # 'takeover' (email nhận tiếp quản, có mời) | 'accumulate' (cộng dồn vào email
+    # đang dùng). Ghi trên bản ghi CHO.
+    transfer_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # Lần CUỐI member được invite/re-invite qua dashboard. Khác created_at (bất
     # biến từ lần đầu) — reconcile bulk-upsert dùng COALESCE(last_invited_at,
     # created_at) để KHÔNG mark removed oan member vừa re-invite (xem reconcile.py).

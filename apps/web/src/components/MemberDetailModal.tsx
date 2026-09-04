@@ -114,6 +114,7 @@ const KNOWN_ACTIONS = new Set([
   "MEMBER_REMOVE_FAKE_DETECTED",
   "MEMBER_REMOVE_UNVERIFIED",
   "MEMBER_EMAIL_CHANGE_REMOVE_FAILED",
+  "MEMBER_EMAIL_CHANGE_REMOVE_RETRY",
   "MEMBER_REFUND_WHILE_IN_TEAM",
   "MEMBER_EXPORT_DATA_QUEUED",
   "MEMBER_DELETE_DATA_QUEUED",
@@ -167,6 +168,7 @@ const MODAL_TIMELINE_ACTIONS = new Set([
   "MEMBER_REMOVE_STUCK",
   "MEMBER_REMOVE_FAKE_DETECTED",
   "MEMBER_INVITE_REVOKED",
+  "MEMBER_EMAIL_CHANGE_REMOVE_RETRY",
   // tiền: đã hoàn phí nhưng email vẫn ở trong team (nợ cần truy thu)
   "MEMBER_REFUND_WHILE_IN_TEAM",
   // gia hạn
@@ -195,6 +197,7 @@ const WORKSPACE_CHIP_ACTIONS = new Set([
   "MEMBER_INVITE_REVOKED",
   "MEMBER_REMOVE_STUCK",
   "MEMBER_REMOVE_FAKE_DETECTED",
+  "MEMBER_EMAIL_CHANGE_REMOVE_RETRY",
 ]);
 
 const PAYMENT_BADGE: Record<string, string> = {
@@ -2099,17 +2102,40 @@ function MemberDetailView({
   // / MEMBER_INVITE_FAILED (FAILED) gắn member khi task xong. Gộp vào ĐÚNG dòng
   // "Lời mời" (khớp theo queue_item_id) để hiện xanh/đỏ thay vì PENDING đóng băng,
   // rồi ẩn dòng terminal độc lập (tránh trùng). Không có terminal → giữ PENDING.
+  // Dòng chuyển hạn/đổi email NHÌN TỪ PHÍA EMAIL CHO (backend trả log này cho cả hai
+  // đầu — xem activity.py). Phải khai báo TRƯỚC `queueIdOf`: hàm đó gọi vào đây ngay
+  // trong vòng lặp dựng `terminalByQueue` bên dưới.
+  const isChangeAwayFromHere = (log: MemberLog) => {
+    const d = log.data as Record<string, unknown> | null;
+    if (
+      log.action !== "MEMBER_EMAIL_CHANGED" &&
+      log.action !== "MEMBER_SUBSCRIPTION_TRANSFERRED"
+    ) {
+      return false;
+    }
+    const from = String(d?.old_member_id ?? d?.source_member_id ?? "");
+    return from === member.id;
+  };
+
   const queueIdOf = (log: MemberLog): string | undefined => {
     const d = log.data as Record<string, unknown> | null;
     if (d && typeof d.queue_item_id === "string") return d.queue_item_id;
     // Đổi email / chuyển hạn: task mời email mới (gộp MEMBER_INVITE_VERIFIED vào
     // dòng này). Chuyển hạn kiểu "cộng dồn" KHÔNG sinh task mời → invite_queue_item_id
     // là null, rơi xuống nhánh dưới như thường.
+    //
+    // NHÌN TỪ PHÍA EMAIL CHO thì việc của dòng này là LỆNH GỠ chính nó, không phải
+    // lời mời của email nhận → soi `remove_queue_item_id`. Thiếu nhánh này thì dòng
+    // "Chuyển hạn/Đổi email" ở thẻ email cũ đứng nguyên "Đang chờ" vĩnh viễn dù cả
+    // hai lệnh đã xong (52/52 lần trên production — user chỉ ra 4/9/2026).
     if (
       (log.action === "MEMBER_EMAIL_CHANGED" ||
         log.action === "MEMBER_SUBSCRIPTION_TRANSFERRED") &&
       d
     ) {
+      if (isChangeAwayFromHere(log)) {
+        if (typeof d.remove_queue_item_id === "string") return d.remove_queue_item_id;
+      }
       if (typeof d.invite_queue_item_id === "string") return d.invite_queue_item_id;
     }
     // Mời hàng loạt log target_type=QUEUE_ITEM, target_id CHÍNH LÀ queue id.
@@ -2129,6 +2155,9 @@ function MemberDetailView({
   const REMOVE_TERMINAL = new Set([
     "MEMBER_REMOVED_SYNCED",
     "MEMBER_INVITE_REVOKED",
+    // Lệnh gỡ email cũ của một lần chuyển hạn HỎNG → dòng chuyển hạn phải đỏ lên
+    // ngay tại chỗ, đừng để nó nằm im ở "Đang chờ" (ca 4/9/2026).
+    "MEMBER_EMAIL_CHANGE_REMOVE_FAILED",
   ]);
   const isTerminal = (action: string) =>
     INVITE_TERMINAL.has(action) || REMOVE_TERMINAL.has(action);
@@ -2141,27 +2170,32 @@ function MemberDetailView({
     const qid = queueIdOf(lg);
     if (!qid) continue;
     const kind = REMOVE_TERMINAL.has(lg.action) ? "remove" : "invite";
-    // "OK" (revoke) → COMPLETED để hiện chấm xanh "Thành công".
-    const result = lg.result === "OK" ? "COMPLETED" : lg.result;
+    // "OK" (revoke) → COMPLETED để hiện chấm xanh "Thành công"; "ERROR" (gỡ email cũ
+    // của lần chuyển hạn hỏng) → FAILED để dòng đỏ lên và ghi "✗ …" chứ không phải
+    // dấu ✓ của nhánh mặc định.
+    const result =
+      lg.result === "OK"
+        ? "COMPLETED"
+        : lg.result === "ERROR"
+          ? "FAILED"
+          : lg.result;
     terminalByQueue.set(qid, { result, timestamp: lg.timestamp, kind });
   }
-  // Dòng đổi email nhìn TỪ PHÍA EMAIL CŨ (backend trả log này cho cả hai đầu — xem
-  // activity.py): lời mời trong lệnh đổi là của email MỚI, KHÔNG phải của email đang
-  // xem. Nên dòng này không được mượn stepper "Đã mời → Chờ tham gia" (nó sẽ kể
-  // vòng đời của email khác), cũng không được coi là lời mời "đang hiệu lực".
-  const isChangeAwayFromHere = (log: MemberLog) =>
-    log.action === "MEMBER_EMAIL_CHANGED" &&
-    String((log.data as Record<string, unknown> | null)?.old_member_id ?? "") ===
-      member.id;
+  // Lời mời trong lệnh chuyển hạn là của email NHẬN, KHÔNG phải của email đang xem →
+  // dòng "chuyển đi" không được mượn stepper "Đã mời → Chờ tham gia" (nó sẽ kể vòng
+  // đời của email khác), cũng không được coi là lời mời "đang hiệu lực".
   const isInviteQueued = (log: MemberLog) =>
     log.action === "MEMBER_INVITE_QUEUED" ||
     log.action === "MEMBER_BULK_INVITE_QUEUED" ||
     (log.action === "MEMBER_EMAIL_CHANGED" && !isChangeAwayFromHere(log)) ||
-    log.action === "MEMBER_SUBSCRIPTION_TRANSFERRED";
+    (log.action === "MEMBER_SUBSCRIPTION_TRANSFERRED" && !isChangeAwayFromHere(log));
   const isRemoveQueued = (log: MemberLog) =>
     log.action === "MEMBER_REMOVE_QUEUED" ||
     log.action === "MEMBER_BULK_REMOVE_QUEUED" ||
-    log.action === "MEMBER_EXPIRED_REMOVE_QUEUED";
+    log.action === "MEMBER_EXPIRED_REMOVE_QUEUED" ||
+    log.action === "MEMBER_EMAIL_CHANGE_REMOVE_RETRY" ||
+    // Dòng chuyển hạn NHÌN TỪ EMAIL CHO chính là lệnh gỡ email này (xem queueIdOf).
+    isChangeAwayFromHere(log);
   const terminalFor = (log: MemberLog) =>
     isInviteQueued(log) || isRemoveQueued(log)
       ? terminalByQueue.get(queueIdOf(log) ?? "")

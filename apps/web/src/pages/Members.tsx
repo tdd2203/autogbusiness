@@ -22,7 +22,6 @@ import type { OrderQr } from "../lib/wallet";
 import { TaskCompletionBanner } from "../components/TaskCompletionBanner";
 import { WorkspaceTaskRail } from "../components/WorkspaceTaskRail";
 import { RowActionsMenu } from "../components/RowActionsMenu";
-import { ChangeEmailModal } from "../components/ChangeEmailModal";
 import { TransferSubscriptionModal } from "../components/TransferSubscriptionModal";
 import { ChangeSubscriptionModal } from "../components/ChangeSubscriptionModal";
 import { MemberDetailModal } from "../components/MemberDetailModal";
@@ -157,12 +156,10 @@ export default function Members() {
   // Xoá hàng loạt qua checkbox chọn nhiều dòng. Modal dán email nằm ở
   // WorkspaceLayout header (cạnh nút Mời) — đồng bộ với flow mời thành viên.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  // Member đang mở modal "Đổi email" (null = đóng). Đổi email = xoá cũ + mời mới,
-  // giữ nguyên hạn dùng — xem components/ChangeEmailModal + hooks/useChangeEmail.md.
-  const [changeEmailMember, setChangeEmailMember] = useState<Member | null>(null);
-  // Member đang mở modal "Chuyển hạn sử dụng đến" (null = đóng). KHÁC "Đổi email":
-  // email nhận ĐƯỢC PHÉP đang là thành viên → hạn còn lại cộng dồn vào hạn của họ.
-  // Xem components/TransferSubscriptionModal + hooks/useTransferSubscription.md.
+  // Member đang mở modal "Chuyển hạn sử dụng đến" (null = đóng). Đây là đường DUY
+  // NHẤT để chuyển hạn sang email khác kể từ 4/9/2026 — nút "Đổi email" cũ đã gỡ vì
+  // hai chức năng làm đúng một việc (xoá email cũ + chuyển hạn + mời email mới nếu
+  // chưa tham gia). Xem components/TransferSubscriptionModal + useTransferSubscription.md.
   const [transferMember, setTransferMember] = useState<Member | null>(null);
   // Member đang mở modal "Đổi hạn dùng" (null = đóng). Đổi hạn CÓ DUYỆT: super-admin
   // áp ngay, sub-admin tạo yêu cầu — xem hooks/useSubscriptionApprovals.md.
@@ -448,8 +445,8 @@ export default function Members() {
   const canDeleteData = !isCanva && hasPermission("MEMBER_DELETE_DATA");
   // Mời / mời lại cần quyền mời.
   const canInvite = hasPermission("MEMBER_INVITE");
-  // Đổi email sinh ra cả thao tác xoá lẫn mời → cần cả 2 quyền (khớp backend).
-  const canChangeEmail = canRemove && hasPermission("MEMBER_INVITE");
+  // Chuyển hạn sinh ra cả thao tác xoá lẫn mời → cần cả 2 quyền (khớp backend).
+  const canTransferExpiry = canRemove && hasPermission("MEMBER_INVITE");
   // Đổi hạn dùng cần quyền mời (sub-admin gửi yêu cầu chờ duyệt, super-admin áp ngay).
   const canChangeSubscription = hasPermission("MEMBER_INVITE");
   // Đổi license type chỉ super-admin (tái dùng quyền như đổi role). Đã ẩn toàn bộ
@@ -1318,13 +1315,8 @@ export default function Members() {
                                   },
                                 ]
                               : []),
-                            ...(canChangeEmail
+                            ...(canTransferExpiry
                               ? [
-                                  {
-                                    key: "change-email",
-                                    label: t("member.changeEmailAction"),
-                                    onClick: () => setChangeEmailMember(m),
-                                  },
                                   {
                                     key: "transfer-expiry",
                                     label: t("member.transferExpiryAction"),
@@ -1398,13 +1390,8 @@ export default function Members() {
                                     },
                                   ]
                                 : []),
-                              ...(canChangeEmail
+                              ...(canTransferExpiry
                                 ? [
-                                    {
-                                      key: "change-email",
-                                      label: t("member.changeEmailAction"),
-                                      onClick: () => setChangeEmailMember(m),
-                                    },
                                     {
                                       key: "transfer-expiry",
                                       label: t("member.transferExpiryAction"),
@@ -1507,14 +1494,6 @@ export default function Members() {
           </table>
         </div>
       </div>
-
-      {changeEmailMember && workspaceId && (
-        <ChangeEmailModal
-          workspaceId={workspaceId}
-          member={changeEmailMember}
-          onClose={() => setChangeEmailMember(null)}
-        />
-      )}
 
       {transferMember && workspaceId && (
         <TransferSubscriptionModal

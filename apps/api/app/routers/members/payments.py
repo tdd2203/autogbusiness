@@ -42,7 +42,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.deps import get_session, require_permission
-from app.models import AuditLog, Member, PaymentOrder, User, WalletTransaction
+from app.models import Member, PaymentOrder, User, WalletTransaction
 from app.permissions import Permission
 from app.schemas import (
     MemberPaymentAllocationOut,
@@ -167,36 +167,28 @@ def _predecessor_emails(db: Session, member: Member) -> list[tuple[str, str]]:
     Giữ nguyên chữ hoa/thường vì `payload.entries[].email` của hoá đơn so khớp CHÍNH
     XÁC chuỗi (JSONB containment); chỗ nào cần so theo email thì tự `.lower()`.
 
-    Nguồn duy nhất biết cũ→mới là nhật ký `MEMBER_EMAIL_CHANGED` (`target_id` =
-    member MỚI, `data.old_member_id` / `data.old_email` = member CŨ) — bảng members
-    không có liên kết. Lần ngược từng chặng nên chuỗi A → B → C xem ở C vẫn gom
-    được tiền của cả B lẫn A.
+    Nguồn: CỘT `members.transferred_from_*` (migration 0066) — bản ghi nào tiếp quản
+    danh tính của một email cũ đều mang sẵn con trỏ ngược. Trước 4/9/2026 chỗ này dò
+    nhật ký `MEMBER_EMAIL_CHANGED`, nên mọi lần "chuyển hạn sử dụng đến" (nay là
+    đường DUY NHẤT của giao diện) đều không gom được tiền của email trước. Lần ngược
+    từng chặng nên chuỗi A → B → C xem ở C vẫn gom được tiền của cả B lẫn A.
 
     Trả theo thứ tự GẦN → XA (B rồi mới tới A). Gặp id đã đi qua thì dừng: email cũ
-    có thể được mời lại rồi đổi lần nữa, thành vòng.
+    có thể được mời lại rồi chuyển lần nữa, thành vòng.
     """
     out: list[tuple[str, str]] = []
     seen = {str(member.id)}
-    cursor = str(member.id)
+    cursor: Member | None = member
     for _ in range(_EMAIL_CHAIN_MAX_HOPS):
-        data = db.execute(
-            select(AuditLog.data)
-            .where(
-                AuditLog.action == "MEMBER_EMAIL_CHANGED",
-                AuditLog.target_id == cursor,
-            )
-            .order_by(AuditLog.timestamp.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        if not isinstance(data, dict):
+        if cursor is None:
             break
-        old_id = str(data.get("old_member_id") or "").strip()
-        old_email = str(data.get("old_email") or "").strip()
-        if not old_id or not old_email or old_id in seen:
+        old_id = cursor.transferred_from_member_id
+        old_email = (cursor.transferred_from_email or "").strip()
+        if old_id is None or not old_email or str(old_id) in seen:
             break
-        seen.add(old_id)
-        out.append((old_id, old_email))
-        cursor = old_id
+        seen.add(str(old_id))
+        out.append((str(old_id), old_email))
+        cursor = db.get(Member, old_id)
     return out
 
 

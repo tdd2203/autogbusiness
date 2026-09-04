@@ -564,6 +564,14 @@ class MemberOut(BaseModel):
     # `email_change_stuck_to` là email mới lẽ ra đã thay nó.
     email_change_stuck_at: datetime | None = None
     email_change_stuck_to: str | None = None
+    # DANH TÍNH NGƯỜI DÙNG đi xuyên các email (migration 0066, xem
+    # `services/transfer_link.py`): email GỐC của người dùng này (NULL = chính nó là
+    # gốc), email đã trao hạn cho nó, và email đã nhận hạn từ nó.
+    origin_email: str | None = None
+    transferred_from_email: str | None = None
+    transferred_in_at: datetime | None = None
+    transferred_to_email: str | None = None
+    transferred_out_at: datetime | None = None
     created_at: datetime
     # Lần CUỐI invite/re-invite qua dashboard (NULL nếu member chỉ đến từ SYNC).
     # Dashboard hiển thị COALESCE(last_invited_at, created_at) cho cột "Ngày thêm"
@@ -945,6 +953,10 @@ class MemberTransferPreviewOut(BaseModel):
     removal_task_type: str = "REMOVE_MEMBER"
     #: != NULL → KHÔNG chuyển được; modal khoá nút xác nhận và hiện lý do này.
     blocked_reason: str | None = None
+    #: != NULL → người dùng này ĐÃ chuyển hạn một lần rồi (đây là lần 2+). Hiện luật
+    #: là "mỗi email chỉ chuyển 1 lần" nên `blocked_reason` cũng mang đúng câu này;
+    #: tách riêng để lúc mở đường B → C kèm thu phí, modal chỉ việc đổi cách hiện.
+    repeat_notice: str | None = None
 
 
 class SyncMemberIn(BaseModel):

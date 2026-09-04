@@ -4,8 +4,8 @@ Nghiệp vụ: khách đổi email → xoá email cũ + mời email mới, GIỮ
 
 Xác minh:
   - Member ĐANG HOẠT ĐỘNG: enqueue REMOVE_MEMBER(email cũ) + INVITE_MEMBER(email mới).
-  - Member CHỜ THAM GIA: enqueue REVOKE_INVITES(email cũ) + INVITE_MEMBER — KHÔNG
-    REMOVE_MEMBER (extension thu hồi ở tab Lời mời, fallback xoá nếu đã tham gia).
+  - Member CHỜ THAM GIA: cũng REMOVE_MEMBER(email cũ) + INVITE_MEMBER — extension
+    tìm ở tab Người dùng rồi tự lùi sang tab Lời mời (4/9/2026, xem change_email.py).
   - Member mới (email mới) status=pending, subscription_end_at == hạn cũ (copy y nguyên);
     last_invited_at kế thừa từ email gốc (thời gian mời/tham gia giữ nguyên).
   - Member cũ → status=removed ngay trong DB, và HẠN ĐÓNG NGAY (hạn đã theo email mới
@@ -155,7 +155,7 @@ def test_change_email_carries_expiry_and_enqueues_two_tasks(
     assert members["new@example.com"]["subscription_end_at"] == old_end
 
 
-def test_change_email_pending_uses_revoke_and_carries_invite_time(
+def test_change_email_pending_uses_remove_and_carries_invite_time(
     client: TestClient, auth_header: dict
 ):
     ws = _create_workspace(client, auth_header)
@@ -183,10 +183,13 @@ def test_change_email_pending_uses_revoke_and_carries_invite_time(
     assert new_member["subscription_end_at"] == old_end
     assert new_member["last_invited_at"] == old_invited_at
 
-    # Member CHỜ THAM GIA → gỡ bằng REVOKE_INVITES, TUYỆT ĐỐI không REMOVE_MEMBER.
-    revokes = _tasks(client, ws["id"], auth_header, "REVOKE_INVITES")
-    assert [t["payload"]["emails"] for t in revokes] == [["pending-old@example.com"]]
-    assert _tasks(client, ws["id"], auth_header, "REMOVE_MEMBER") == []
+    # Member CHỜ THAM GIA cũng gỡ bằng REMOVE_MEMBER (4/9/2026): trạng thái trong DB
+    # có thể đã cũ (người ta vừa bấm nhận lời mời), mà lệnh thu hồi gặp thành viên đã
+    # tham gia là hỏng hẳn — extension đi từ tab "Người dùng" rồi tự lùi sang tab
+    # "Lời mời đang chờ xử lý" nên đúng cho cả hai ca.
+    removes = _tasks(client, ws["id"], auth_header, "REMOVE_MEMBER")
+    assert [t["payload"]["email"] for t in removes] == ["pending-old@example.com"]
+    assert _tasks(client, ws["id"], auth_header, "REVOKE_INVITES") == []
     # Vẫn mời email mới.
     invite_emails = {
         t["payload"].get("email")

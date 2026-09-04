@@ -75,7 +75,10 @@ _NEW_OK = "MEMBER_INVITE_VERIFIED"
 _NEW_FAILED = "MEMBER_INVITE_FAILED"
 _RENEW_OK = "MEMBER_SUBSCRIPTION_RENEWED"
 _QUEUED = ("MEMBER_INVITE_QUEUED", "MEMBER_BULK_INVITE_QUEUED")
-_EMAIL_CHANGED = "MEMBER_EMAIL_CHANGED"
+# Nhật ký của một lần CHUYỂN HẠN. Hai tên vì lịch sử: "đổi email" (cũ) và "chuyển
+# hạn sử dụng đến" (nay là đường DUY NHẤT của giao diện) — bỏ tên sau ra là bảng này
+# lại đếm email nhận thành một ghế bán mới, đúng cái nó sinh ra để tránh.
+_EMAIL_CHANGED = ("MEMBER_EMAIL_CHANGED", "MEMBER_SUBSCRIPTION_TRANSFERRED")
 
 # Trần bước khi lần chuỗi A→B→C: chặn dữ liệu vòng (email cũ được mời lại rồi lại
 # đổi) treo vòng lặp. Cùng lý do với `_EMAIL_CHAIN_MAX_HOPS` bên added_members.
@@ -223,13 +226,18 @@ def email_stats(
     changed_invite_from: dict[str, datetime] = {}
     for ev in db.execute(
         select(AuditLog)
-        .where(AuditLog.action == _EMAIL_CHANGED)
+        .where(AuditLog.action.in_(_EMAIL_CHANGED))
         .order_by(AuditLog.timestamp)
     ).scalars():
         data = ev.data or {}
-        old_id = data.get("old_member_id")
-        old_em = data.get("old_email")
-        new_em = data.get("new_email")
+        # CHỈ ca TIẾP QUẢN (email nhận được mời vào thay chỗ email cho). Ca CỘNG DỒN
+        # (`will_invite=false`) là tặng thêm ngày cho một email ĐANG dùng: nó không
+        # đổi tên ô nào cả, gom vào đây là bịa một lần "đổi email" không có thật.
+        if data.get("will_invite") is False:
+            continue
+        old_id = data.get("old_member_id") or data.get("source_member_id")
+        old_em = data.get("old_email") or data.get("source_email")
+        new_em = data.get("new_email") or data.get("target_email")
         if not (old_id and ev.target_id and isinstance(old_em, str) and isinstance(new_em, str)):
             continue
         ch = _Change(

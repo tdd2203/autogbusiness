@@ -25,6 +25,7 @@ from app.models import (
     REMOVED_REASON_EMAIL_CHANGED,
     REMOVED_REASON_INVITE_FAILED,
     REMOVED_REASON_SYNC_MISSING,
+    REMOVED_REASON_TRANSFERRED,
     AuditLog,
     Invite,
     Member,
@@ -175,8 +176,10 @@ def _mark_email_change_stuck(
 
     Sống lại = ChatGPT VẪN trả email này ⇒ lệnh gỡ nó đã hỏng: hạn đã theo email mới
     đi nhưng ghế cũ vẫn bị ăn, một suất thành hai. `email_change_stuck_at` do vòng lặp
-    đặt; ở đây chỉ tra thêm email KẾ THỪA — nhật ký `MEMBER_EMAIL_CHANGED` là nơi DUY
-    NHẤT biết cũ→mới (bảng members không có liên kết đó). 1 truy vấn cho cả lô.
+    đặt; ở đây chỉ chép sang email KẾ THỪA từ cột `transferred_to_email` (migration
+    0066). Trước 4/9/2026 chỗ này dò nhật ký `MEMBER_EMAIL_CHANGED` nên ca "chuyển
+    hạn sử dụng đến" — nay là đường DUY NHẤT của giao diện — không bao giờ có email
+    kế thừa để mà cảnh báo.
 
     KHÔNG tự sửa dữ liệu (không gỡ hộ, không đóng hạn): việc của hàm này là để lại
     dấu vết đọc được. Cờ được gỡ khi email đó THỰC SỰ rời ChatGPT — xem khối `stale`
@@ -184,26 +187,9 @@ def _mark_email_change_stuck(
     """
     if not members:
         return []
-    by_id = {str(m.id): m for m in members}
-    rows = (
-        db.execute(
-            select(AuditLog.data)
-            .where(
-                AuditLog.action == "MEMBER_EMAIL_CHANGED",
-                AuditLog.data["old_member_id"].astext.in_(list(by_id)),
-            )
-            .order_by(AuditLog.timestamp)
-        )
-        .scalars()
-        .all()
-    )
-    # Sắp TĂNG dần rồi ghi đè → email cũ từng bị đổi nhiều lần lấy lần GẦN NHẤT.
-    for data in rows:
-        d = data or {}
-        target = by_id.get(str(d.get("old_member_id")))
-        new_email = d.get("new_email")
-        if target is not None and isinstance(new_email, str) and new_email.strip():
-            target.email_change_stuck_to = new_email.strip().lower()
+    for m in members:
+        if m.transferred_to_email:
+            m.email_change_stuck_to = m.transferred_to_email.strip().lower()
     logger.warning(
         "[email-change-stuck] workspace=%s %d email đổi-email VẪN CÒN trên ChatGPT "
         "(lệnh gỡ hỏng, đang ăn ghế): %s",
@@ -246,7 +232,11 @@ def _retry_stuck_email_change_removals(
     )
     queued: list[tuple[str, str]] = []
     for m in stuck:
-        task_type = "REVOKE_INVITES" if m.status == "pending" else "REMOVE_MEMBER"
+        # LUÔN REMOVE_MEMBER, không đoán theo status trong DB: extension bắt đầu ở tab
+        # "Người dùng", không thấy thì tự sang tab "Lời mời đang chờ xử lý" thu hồi.
+        # Đoán `pending` → REVOKE_INVITES chính là cách lệnh gỡ hỏng ngay từ đầu (xem
+        # `change_email.py`), xếp lại y như cũ thì hỏng lại y như cũ.
+        task_type = "REMOVE_MEMBER"
         # Task gỡ đang mở cho CHÍNH email này? (REMOVE_MEMBER gắn member_id,
         # REVOKE_INVITES gắn danh sách email — soi cả hai khuôn payload.)
         open_task = db.execute(
@@ -596,7 +586,10 @@ def bulk_upsert_members(
                 # `removed_reason`) đứt hẳn — ca thật 22/8/2026 `lampesdafret22`.
                 # Chuyển dấu vết sang cột riêng thay vì giữ `removed_reason` trên
                 # một dòng đang active (dòng active mà mang lý do xoá là dữ liệu bẩn).
-                if existing.removed_reason == REMOVED_REASON_EMAIL_CHANGED:
+                if existing.removed_reason in (
+                    REMOVED_REASON_EMAIL_CHANGED,
+                    REMOVED_REASON_TRANSFERRED,
+                ):
                     existing.email_change_stuck_at = now
                     # TIỀN: đã đổi email thì hạn ĐÃ THEO EMAIL MỚI ĐI — dòng cũ không
                     # được còn hạn, kẻo mời lại chính nó lại MIỄN PHÍ
@@ -867,7 +860,10 @@ def bulk_upsert_members(
             # đây là kết cục MUỘN của lần đổi email, không phải "tự nhiên biến mất".
             # Ghi `sync_missing` ở đây chính là chỗ làm đứt chuỗi cũ→mới (22/8/2026).
             if m.email_change_stuck_at is not None:
-                m.removed_reason = REMOVED_REASON_EMAIL_CHANGED
+                # Giữ NGUYÊN lý do vốn có (`subscription_transferred` cho ca chuyển
+                # hạn) — viết đè thành 'email_changed' là nói sai chuyện đã xảy ra.
+                if m.removed_reason != REMOVED_REASON_TRANSFERRED:
+                    m.removed_reason = REMOVED_REASON_EMAIL_CHANGED
                 m.email_change_stuck_at = None
                 m.email_change_stuck_to = None
             else:

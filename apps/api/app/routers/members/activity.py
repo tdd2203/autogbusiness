@@ -69,11 +69,16 @@ def list_member_logs(
     mid = str(member.id)
     ws_s = str(workspace_id)
 
-    # Ngữ cảnh đổi email: email/member cũ + queue mời mới (để gắn lịch sử trước khi đổi tên).
+    # Ngữ cảnh CHUYỂN HẠN/ĐỔI EMAIL: email + member cũ + queue mời mới (để gắn lịch sử
+    # có trước khi email này tiếp quản). Nhận CẢ hai tên nhật ký — từ 4/9/2026 giao
+    # diện chỉ còn "Chuyển hạn sử dụng đến" nên bỏ nhánh sau ra là timeline của email
+    # nhận mất sạch phần đời trước đó.
     change_data = db.execute(
         select(AuditLog.data)
         .where(
-            AuditLog.action == "MEMBER_EMAIL_CHANGED",
+            AuditLog.action.in_(
+                ("MEMBER_EMAIL_CHANGED", "MEMBER_SUBSCRIPTION_TRANSFERRED")
+            ),
             AuditLog.target_id == mid,
         )
         .order_by(AuditLog.timestamp.desc())
@@ -83,10 +88,10 @@ def list_member_logs(
     old_mid_from_change: str | None = None
     invite_qid_from_change: str | None = None
     if isinstance(change_data, dict):
-        oe = change_data.get("old_email")
+        oe = change_data.get("old_email") or change_data.get("source_email")
         if isinstance(oe, str) and oe.strip():
             old_email_from_change = oe.strip().lower()
-        om = change_data.get("old_member_id")
+        om = change_data.get("old_member_id") or change_data.get("source_member_id")
         if isinstance(om, str) and om.strip():
             old_mid_from_change = om.strip()
         iq = change_data.get("invite_queue_item_id")
@@ -137,6 +142,12 @@ def list_member_logs(
         and_(
             AuditLog.action == "MEMBER_EMAIL_CHANGED",
             AuditLog.data.contains({"old_member_id": mid}),
+        )
+    )
+    ors.append(
+        and_(
+            AuditLog.action == "MEMBER_SUBSCRIPTION_TRANSFERRED",
+            AuditLog.data.contains({"source_member_id": mid}),
         )
     )
 

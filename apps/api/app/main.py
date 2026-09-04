@@ -403,7 +403,15 @@ def _enqueue_expired_removals_once() -> None:
                     select(func.count())
                     .select_from(AuditLog)
                     .where(
-                        AuditLog.action == "MEMBER_EXPIRED_REMOVE_QUEUED",
+                        # Đếm CẢ hai tên: dòng mắc kẹt vì chuyển hạn ghi
+                        # MEMBER_EMAIL_CHANGE_REMOVE_RETRY (xem chỗ log bên dưới),
+                        # bỏ sót là loop-guard đếm hụt → xếp lại vô hạn.
+                        AuditLog.action.in_(
+                            (
+                                "MEMBER_EXPIRED_REMOVE_QUEUED",
+                                "MEMBER_EMAIL_CHANGE_REMOVE_RETRY",
+                            )
+                        ),
                         AuditLog.target_id == str(member.id),
                         AuditLog.timestamp >= now - AUTO_REMOVE_STUCK_WINDOW,
                     )
@@ -444,10 +452,20 @@ def _enqueue_expired_removals_once() -> None:
                 )
                 db.add(queue_item)
                 db.flush()
+                # Dòng đang mang cờ "chuyển hạn/đổi email chưa gỡ xong" thì lần gỡ
+                # này là KẾT CỤC MUỘN của lần chuyển đó, không phải "hết hạn": hạn
+                # của nó bị đóng về `now` ngay lúc chuyển nên tick hết hạn mới nhặt
+                # được. Ghi đúng tên việc, kẻo timeline của email nói "Xoá do hết
+                # hạn" cho một email vừa chuyển hạn xong (user chỉ ra 4/9/2026).
+                queued_action = (
+                    "MEMBER_EMAIL_CHANGE_REMOVE_RETRY"
+                    if member.email_change_stuck_at is not None
+                    else "MEMBER_EXPIRED_REMOVE_QUEUED"
+                )
                 log_event(
                     db,
                     actor_type="SYSTEM",
-                    action="MEMBER_EXPIRED_REMOVE_QUEUED",
+                    action=queued_action,
                     result="PENDING",
                     target_type="MEMBER",
                     target_id=str(member.id),
@@ -455,6 +473,7 @@ def _enqueue_expired_removals_once() -> None:
                         "workspace_id": str(member.workspace_id),
                         "email": member.email,
                         "task_type": task_type,
+                        "changed_to": member.email_change_stuck_to,
                         "subscription_end_at": member.subscription_end_at.isoformat()
                         if member.subscription_end_at
                         else None,
