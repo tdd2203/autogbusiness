@@ -15,7 +15,10 @@ import {
   extractProrationSubtotal,
   parseVndAmount,
 } from "./money";
-import { extractAdditionalSeatCountFromModal } from "./extract-seat-count";
+import {
+  detectMixedSeatTypes,
+  extractAdditionalSeatCountFromModal,
+} from "./extract-seat-count";
 
 /** textContent của modal — các node dính liền nhau, KHÔNG có space chen giữa. */
 const MODAL_VI =
@@ -366,5 +369,67 @@ describe("Giao diện chữ Trung (ảnh user 2026-09-01)", () => {
 
   it("thuế bán hàng = ₫8,667, tỷ lệ 10%", () => {
     expect(extractSalesTax(MODAL_ZH)).toEqual({ text: "₫8,667", percent: "10" });
+  });
+});
+
+/**
+ * Ảnh user 4/9/2026: hộp ra CHỮ ANH ("Review purchase") và dòng hoá đơn viết
+ * "360 Standard · 0 Premium" — KHÔNG có chữ "seat" nào. Bản trước đọc số ghế
+ * bằng danh sách chỉ có ghe/suat/seat/席位/标准/高级 nên hai vế ra null và chốt
+ * "số ghế sau − trước = số suất đang mua" mất hiệu lực im lặng.
+ */
+const MODAL_EN =
+  "Review purchase" +
+  "New seats are prorated until next billing cycle." +
+  "Add 1 Standard seat" +
+  "Takes effect immediately" +
+  "+ ₫260,500/mo" +
+  "Current monthly bill" +
+  "₫93,780,000 + tax" +
+  "360 Standard · 0 Premium" +
+  "New monthly bill" +
+  "₫94,040,500 + tax" +
+  "361 Standard · 0 Premium" +
+  "Prorated subtotal" +
+  "₫61,986" +
+  "Sales tax (9.999%)" +
+  "₫6,198" +
+  "Total due today" +
+  "₫68,184" +
+  "Visa •••• 8795" +
+  "Change" +
+  "Back" +
+  "Confirm purchase";
+
+describe("Giao diện chữ Anh (ảnh user 2026-09-04)", () => {
+  it("số suất thêm = 1", () => {
+    expect(extractAdditionalSeatCountFromModal(MODAL_EN)).toBe(1);
+  });
+
+  it("số ghế 360 → 361 dù dòng hoá đơn chỉ ghi tên loại suất", () => {
+    const m = extractMonthlyBills(MODAL_EN);
+    expect(m.currentSeats).toBe(360);
+    expect(m.newSeats).toBe(361);
+    expect(m.seatDelta).toBe(1);
+  });
+
+  it("mức tăng hằng tháng = 260.500 đ (94.040.500 − 93.780.000)", () => {
+    expect(extractMonthlyBills(MODAL_EN).deltaVnd).toBe(260_500);
+  });
+
+  it("tổng phải trả hôm nay = ₫68,184, KHÔNG phải đơn giá ₫260,500", () => {
+    expect(extractChargeAmountFromModal(MODAL_EN)).toBe("₫68,184");
+  });
+
+  it("tạm tính theo tỷ lệ = ₫61,986 (không lẫn thuế ₫6,198)", () => {
+    expect(extractProrationSubtotal(MODAL_EN)).toBe("₫61,986");
+  });
+
+  it("thuế bán hàng = ₫6,198, tỷ lệ 9.999", () => {
+    expect(extractSalesTax(MODAL_EN)).toEqual({ text: "₫6,198", percent: "9.999" });
+  });
+
+  it("hộp KHÔNG bị coi là mua kèm loại suất khác (dòng '0 Premium' chỉ là số ghế)", () => {
+    expect(detectMixedSeatTypes(MODAL_EN)).toBeNull();
   });
 });

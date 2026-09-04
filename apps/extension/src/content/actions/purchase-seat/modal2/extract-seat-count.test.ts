@@ -71,3 +71,42 @@ describe("detectMixedSeatTypes — chặn mua kèm loại suất khác", () => {
     expect(detectMixedSeatTypes("Thêm 1 suất Tiêu chuẩn, 0 suất Cao cấp")).toBeNull();
   });
 });
+
+/**
+ * Hộp "Quản lý suất" UI 4/9/2026 (ảnh user): dòng tỉ lệ nay viết "360 seats ·
+ * 340/360 assigned" — LẦN ĐẦU có cụm "<số> suất" nằm ngoài thẻ tóm tắt. Chốt
+ * mua kèm quét mọi mệnh đề "Thêm/Add …" nên chỗ này rất dễ báo nhầm, mà báo
+ * nhầm là khoá cả luồng mua (3 lượt làm lại rồi VERIFY_FAILED) dù hộp bình thường.
+ */
+const MODAL1_EN =
+  "Manage seats " +
+  "Add or remove seats to your workspace. " +
+  "Standard ₫260,500 + tax/mo 360 seats · 340/360 assigned − 361 + " +
+  "Premium ₫3,245,000 + tax/mo 0 seats · 0/0 assigned − 0 + " +
+  "Add 1 Standard seat + ₫260,500/mo Back Continue";
+
+const MODAL1_VI =
+  "Quản lý suất Thêm hoặc xóa các suất trong không gian làm việc của bạn. " +
+  "Tiêu chuẩn 260.500 đ + thuế/tháng 360 suất · 340/360 đã gán − 361 + " +
+  "Cao cấp 3.245.000 đ + thuế/tháng 0 suất · 0/0 đã gán − 0 + " +
+  "Thêm 1 suất Tiêu chuẩn + 260.500 đ/tháng Quay lại Tiếp tục";
+
+describe("hộp 'Quản lý suất' UI 4/9/2026 — dòng tỉ lệ có chữ 'suất'", () => {
+  it("EN: không bị coi là mua kèm loại suất khác", () => {
+    expect(detectMixedSeatTypes(MODAL1_EN)).toBeNull();
+    expect(extractAdditionalSeatCountFromModal(MODAL1_EN)).toBe(1);
+  });
+
+  it("VI: không bị coi là mua kèm loại suất khác", () => {
+    expect(detectMixedSeatTypes(MODAL1_VI)).toBeNull();
+    expect(extractAdditionalSeatCountFromModal(MODAL1_VI)).toBe(1);
+  });
+
+  it("mua kèm THẬT thì vẫn chặn", () => {
+    expect(
+      detectMixedSeatTypes(
+        MODAL1_EN.replace("Add 1 Standard seat", "Add 1 Standard seat and 1 Premium seat"),
+      ),
+    ).not.toBeNull();
+  });
+});

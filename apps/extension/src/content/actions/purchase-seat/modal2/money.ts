@@ -145,11 +145,12 @@ function seatsAfter(
 ): number | null {
   const seg = tailAfter(collapsed, norm, label, window);
   if (!seg) return null;
-  // "316 标准 · 0 高级" (zh): dòng hoá đơn KHÔNG lặp lại chữ "席位", số ghế đứng
-  // ngay trước TÊN LOẠI SUẤT. Nhận thêm 2 chữ đó, nếu không dòng hoá đơn tiếng
-  // Trung không ra số ghế nào.
+  // "316 标准 · 0 高级" (zh) và "360 Standard · 0 Premium" (en, ảnh user
+  // 4/9/2026): dòng hoá đơn KHÔNG lặp lại chữ "ghế"/"seat", số ghế đứng ngay
+  // trước TÊN LOẠI SUẤT. Nhận thêm tên loại, nếu không hai bản ngôn ngữ đó
+  // không ra số ghế nào và chốt "số ghế sau − trước = số suất mua" mất hiệu lực.
   const m = seg.tailNorm.match(
-    /(\d{1,4})\s*(?:ghe|cho\s*ngoi|suat|seat|席位|标准|高级)/i,
+    /(\d{1,4})\s*(?:ghe|cho\s*ngoi|suat|seat|tieu\s*chuan|cao\s*cap|standard|premium|席位|标准|高级)/i,
   );
   if (!m) return null;
   const n = parseInt(m[1], 10);

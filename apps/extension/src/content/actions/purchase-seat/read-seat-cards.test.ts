@@ -104,6 +104,105 @@ describe("parseSeatCards — hàng thẻ suất trên trang Thành viên", () =>
  * Chốt "đã mua xong" mới (user 2026-08-26): số suất Tiêu chuẩn IN SẴN trên trang
  * nhích lên = mua thành công, khỏi mở lại hộp "Quản lý suất".
  */
+/**
+ * UI ChatGPT 4/9/2026 (ảnh user, workspace CHAT GPT PRO): thẻ suất bỏ hẳn cụm
+ * tỉ lệ "340/360", thay bằng con số lớn + hai ô "Đã gán" / "Khả dụng".
+ */
+const MEMBERS_PAGE_TILES_EN =
+  "Members Business · 340 members " +
+  "Users Pending invites Pending requests " +
+  "360 Manage Standard seats 340 Assigned 20 Available " +
+  "0 Manage Premium seats 0 Assigned 0 Available " +
+  "Filter by name All roles + Invite member " +
+  "Name Role Seat type Date added " +
+  "A HK phamtheanh060712@gmail.com Member Standard Sep 1, 2026";
+
+describe("parseSeatCards — thẻ suất DẠNG 2 (Đã gán / Khả dụng)", () => {
+  it("tổng suất lấy CON SỐ LỚN trên thẻ (360), không cộng 340 + 20", () => {
+    const r = parseSeatCards(MEMBERS_PAGE_TILES_EN)!;
+    expect(r.cards).toHaveLength(2);
+    expect(r.cards[0]).toMatchObject({ kind: "standard", assigned: 340, total: 360 });
+    expect(r.cards[1]).toMatchObject({ kind: "premium", assigned: 0, total: 0 });
+    expect(r.total).toBe(360);
+    expect(r.assigned).toBe(340);
+    expect(r.free).toBe(20);
+    // Chỉ suất Tiêu chuẩn khác 0 ⇒ vẫn được tự mua bù.
+    expect(r.mixed).toBe(false);
+  });
+
+  it("bản tiếng Việt / tiếng Trung của cùng thẻ", () => {
+    expect(
+      parseSeatCards(
+        "360 Quản lý Suất Tiêu chuẩn 340 Đã gán 20 Khả dụng " +
+          "0 Quản lý Suất Cao cấp 0 Đã gán 0 Khả dụng",
+      ),
+    ).toMatchObject({ total: 360, assigned: 340, free: 20, mixed: false });
+    expect(
+      parseSeatCards("360 管理 标准席位 340 已分配 20 可用 0 管理 高级席位 0 已分配 0 可用"),
+    ).toMatchObject({ total: 360, assigned: 340, free: 20 });
+  });
+
+  it("hai loại suất cùng khác 0 ⇒ CẤM tự mua theo tổng gộp", () => {
+    const r = parseSeatCards(
+      "360 Manage Standard seats 340 Assigned 20 Available " +
+        "10 Manage Premium seats 4 Assigned 6 Available",
+    )!;
+    expect(r.total).toBe(370);
+    expect(r.mixed).toBe(true);
+    expect(seatTotalsOf(r).standard).toBe(360);
+  });
+
+  it("DẠNG 1 vẫn được ưu tiên khi trang còn in cụm tỉ lệ", () => {
+    const r = parseSeatCards(MEMBERS_PAGE)!;
+    expect(r.total).toBe(62);
+  });
+
+  it("trang không có ô suất nào ⇒ null, KHÔNG suy ra 'workspace hết suất'", () => {
+    expect(
+      parseSeatCards("Members Business · 340 members Users Pending invites"),
+    ).toBeNull();
+  });
+
+  it("con số lớn KHÁC 'đã gán + khả dụng' ⇒ tin con số lớn", () => {
+    // Chưa gặp trên production, nhưng đây là chỗ hai cách đọc tách nhau: nếu có
+    // ngày ChatGPT cho "Khả dụng" trừ luôn lời mời đang chờ thì phép cộng ra
+    // tổng THIẾU ⇒ tưởng workspace ít suất hơn thật rồi mua thừa bằng tiền thật.
+    const r = parseSeatCards(
+      "360 Manage Standard seats 340 Assigned 12 Available",
+    )!;
+    expect(r.total).toBe(360);
+    expect(r.assigned).toBe(340);
+    expect(r.free).toBe(20);
+  });
+
+  it("nhãn loại suất đọc thẳng trong cụm, không đoán theo chữ đứng trước", () => {
+    const r = parseSeatCards(
+      "0 Manage Premium seats 0 Assigned 0 Available " +
+        "360 Manage Standard seats 340 Assigned 20 Available",
+    )!;
+    expect(r.cards[0].kind).toBe("premium");
+    expect(r.cards[1].kind).toBe("standard");
+    expect(seatTotalsOf(r).standard).toBe(360);
+  });
+
+  it("ChatGPT xếp lại thẻ (mất con số lớn) ⇒ lưới đỡ cộng đã gán + khả dụng", () => {
+    expect(
+      parseSeatCards("Standard seats Manage 340 Assigned 20 Available"),
+    ).toMatchObject({ total: 360, assigned: 340, free: 20 });
+  });
+
+  it("mua thêm 1 suất: thẻ đổi 360 → 361, khả dụng 20 → 21", () => {
+    const before = seatTotalsOf(parseSeatCards(MEMBERS_PAGE_TILES_EN)!);
+    const after = seatTotalsOf(
+      parseSeatCards(
+        "361 Manage Standard seats 340 Assigned 21 Available " +
+          "0 Manage Premium seats 0 Assigned 0 Available",
+      )!,
+    );
+    expect(seatIncrease(before, after)).toEqual({ delta: 1, basis: "standard" });
+  });
+});
+
 describe("seatTotalsOf / seatIncrease — so số suất trước và sau khi mua", () => {
   it("tách riêng suất Tiêu chuẩn, không gộp với Cao cấp", () => {
     const t = seatTotalsOf(

@@ -29,9 +29,7 @@
 
 import type { ExecuteActionResponse } from "../../../shared/messages";
 import { humanClick, sleep, waitFor } from "../../human";
-import { findControlByKey } from "../../i18n-ui";
 import { reportProgress } from "../../progress";
-import { TEXT_FALLBACKS } from "../../selectors";
 import {
   CHARGE_MODAL_TIMEOUT_MS,
   CONFIRM_ENABLE_TIMEOUT_MS,
@@ -60,6 +58,7 @@ import {
   seatAdjustMaxSteps,
 } from "./constants";
 import { executePaymentChainOnly } from "./execute-payment-chain-only";
+import { findManageSeatsButton } from "./find-manage-seats-button";
 import { closeSeatModal } from "./modal1/close-seat-modal";
 import { findContinueButton } from "./modal1/find-continue-button";
 import {
@@ -379,12 +378,7 @@ export async function executePurchaseSeat(
     let manageBtn: HTMLElement;
     try {
       manageBtn = await waitFor(
-        () =>
-          findControlByKey(
-            "billing_manage_licenses",
-            TEXT_FALLBACKS.billingManageLicenses,
-            { page: "/admin/members" },
-          ),
+        () => findManageSeatsButton(true),
         MANAGE_SEATS_BUTTON_WAIT_MS,
         MANAGE_SEATS_BUTTON_POLL_MS,
       );

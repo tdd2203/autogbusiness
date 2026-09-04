@@ -58,6 +58,30 @@ describe("headroomFromPage — LUỒNG CHỐT: thành viên + thẻ suất + tab
     expect(r.enough).toBe(true);
   });
 
+  /**
+   * ══ LUỒNG ĐÃ CHỐT — ví dụ user tự nêu 4/9/2026 trên UI thẻ suất mới ════════
+   *
+   *   360 suất · 340 Đã gán · 20 Khả dụng  +  10 lời mời đang chờ  ⇒  còn 10 chỗ
+   *
+   * "Khả dụng" của ChatGPT KHÔNG trừ lời mời chờ — phải tự trừ. Bỏ vế đó là
+   * mời tràn 10 người vào 20 chỗ đã có 10 người đang giữ.
+   */
+  it("ẢNH USER 4/9/2026: 360 suất, 340 đã gán, 20 khả dụng, 10 lời mời chờ ⇒ còn 10", () => {
+    const cards = parseSeatCards(
+      "360 Manage Standard seats 340 Assigned 20 Available " +
+        "0 Manage Premium seats 0 Assigned 0 Available",
+    );
+    const r = headroomFromPage(1, cards, 340, 10);
+    expect(r.total).toBe(360);
+    expect(r.assigned).toBe(340);
+    expect(r.pending).toBe(10);
+    expect(r.free).toBe(10);
+    expect(r.enough).toBe(true);
+    // Mời được đúng 10, người thứ 11 phải mua bù.
+    expect(headroomFromPage(10, cards, 340, 10).enough).toBe(true);
+    expect(headroomFromPage(11, cards, 340, 10).enough).toBe(false);
+  });
+
   it("mời được ĐÚNG 10 người, người thứ 11 phải mua bù", () => {
     const at = (need: number) =>
       headroomFromPage(need, GPT1_28_8, GPT1_28_8_MEMBERS, GPT1_28_8_PENDING)

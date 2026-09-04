@@ -11,10 +11,7 @@
  * thay vì fail.
  */
 
-import { dbLabelsFor } from "../../../shared/ui-labels";
 import { humanClick, waitFor } from "../../human";
-import { findControlByKey, findUiControlByTexts } from "../../i18n-ui";
-import { TEXT_FALLBACKS } from "../../selectors";
 import {
   MANAGE_SEATS_BUTTON_POLL_MS,
   MANAGE_SEATS_BUTTON_WAIT_MS,
@@ -24,6 +21,7 @@ import {
   SEAT_CROSSCHECK_POLL_MS,
   SEAT_CROSSCHECK_SETTLE_MS,
 } from "./constants";
+import { findManageSeatsButton } from "./find-manage-seats-button";
 import { closeSeatModal } from "./modal1/close-seat-modal";
 import { findSeatStepper } from "./modal1/find-seat-stepper";
 import {
@@ -242,26 +240,16 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
   // (`findUiControlByTexts`) chứ không phải `findControlByKey`: hàm kia bắn
   // `reportLabelMismatch` mỗi lần trượt → poll sẽ spam dashboard. Hết giờ mới hỏi
   // lại đúng một lần qua `findControlByKey` để báo lệch nhãn như cũ.
-  const probeManageBtn = (): HTMLElement | null =>
-    findUiControlByTexts([
-      ...dbLabelsFor("billing_manage_licenses", "/admin/members"),
-      ...TEXT_FALLBACKS.billingManageLicenses,
-    ]);
-
-  let manageBtn = probeManageBtn();
+  let manageBtn = findManageSeatsButton(true);
   if (!manageBtn) {
     try {
       manageBtn = await waitFor(
-        probeManageBtn,
+        () => findManageSeatsButton(true),
         MANAGE_SEATS_BUTTON_WAIT_MS,
         MANAGE_SEATS_BUTTON_POLL_MS,
       );
     } catch {
-      manageBtn = findControlByKey(
-        "billing_manage_licenses",
-        TEXT_FALLBACKS.billingManageLicenses,
-        { page: "/admin/members" },
-      );
+      manageBtn = findManageSeatsButton();
     }
   }
   if (!manageBtn) {
@@ -290,14 +278,7 @@ export async function checkSeatAvailability(): Promise<SeatCheckResult> {
     if (attempt > 1) {
       console.log(`${LOG} hộp 'Quản lý suất' chưa mở → bấm lại lần ${attempt}`);
     }
-    const btn =
-      attempt === 1
-        ? manageBtn
-        : findControlByKey(
-            "billing_manage_licenses",
-            TEXT_FALLBACKS.billingManageLicenses,
-            { page: "/admin/members" },
-          );
+    const btn = attempt === 1 ? manageBtn : findManageSeatsButton();
     if (!btn) break;
     await humanClick(btn);
     try {
