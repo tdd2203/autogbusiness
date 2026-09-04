@@ -75,6 +75,18 @@ export type RevokeResult = {
    * tab "Người dùng" và xoá khỏi workspace.
    */
   notInPending?: boolean;
+  /**
+   * Có row mang email này trên tab "Lời mời" nhưng menu "..." của nó KHÔNG có mục
+   * "Thu hồi lời mời" — dấu hiệu row đó KHÔNG PHẢI một lời mời đang chờ (người ta đã
+   * bấm nhận, hoặc ô tìm kiếm trả về dòng của tab "Người dùng").
+   *
+   * Trước 4/9/2026 ca này chỉ trả `ok:false` trơ trọi: không có `notInPending` nên
+   * `executeRevokeInvites` KHÔNG lùi sang tab "Người dùng", lệnh gỡ hỏng hẳn và email
+   * cũ ở lại ăn ghế tới lần đồng bộ sau (4/7 lệnh thu hồi hỏng trên production đúng
+   * kiểu này). Caller dùng cờ này để lùi sang xoá, nhưng KHÔNG được coi "không thấy ở
+   * tab Người dùng" là đã xoá xong — xem `execute-revoke-batch.ts`.
+   */
+  menuWithoutRevoke?: boolean;
   /** Email được xử lý qua fallback REMOVE (xoá khỏi tab Người dùng) thay vì revoke. */
   viaRemove?: boolean;
 };
@@ -170,6 +182,7 @@ export async function revokeInvite(
     return {
       email,
       ok: false,
+      menuWithoutRevoke: true,
       reason: `Menu mở nhưng không có item "Thu hồi lời mời"`,
     };
   }

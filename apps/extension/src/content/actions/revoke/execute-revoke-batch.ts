@@ -35,35 +35,64 @@ export async function executeRevokeInvites(
 
   const results = await revokeInvites(emails);
 
-  // Fallback: email KHÔNG có trên tab "Lời mời" (notInPending) thường vì người đó
-  // đã CHẤP NHẬN lời mời → trở thành active member, không còn pending invite để
-  // thu hồi. Chuyển sang tab "Người dùng" và xoá họ khỏi workspace (executeRemove
-  // tự click tab Người dùng + lọc/lật trang + confirm + verify).
-  const toRemove = results.filter((r) => r.notInPending).map((r) => r.email);
+  // Fallback sang tab "Người dùng" cho HAI ca, đều có cùng một nguyên nhân: người đó
+  // đã CHẤP NHẬN lời mời nên không còn gì để thu hồi.
+  //   · `notInPending` — không thấy row nào trên tab "Lời mời";
+  //   · `menuWithoutRevoke` — có row nhưng menu "..." KHÔNG có mục "Thu hồi lời mời"
+  //     (row của tab "Người dùng" lọt vào, hoặc lời mời vừa được chấp nhận). Ca này
+  //     trước 4/9/2026 rơi thẳng xuống "task FAILED" mà không lùi bước nào — 4/7 lệnh
+  //     thu hồi hỏng trên production là nó.
+  const toRemove = results
+    .filter((r) => r.notInPending || r.menuWithoutRevoke)
+    .map((r) => r.email);
   let removedViaFallback = 0;
   if (toRemove.length > 0) {
     console.log(
-      `[autogpt-revoke] fallback REMOVE cho ${toRemove.length} email không có trên tab Lời mời:`,
+      `[autogpt-revoke] fallback REMOVE cho ${toRemove.length} email không thu hồi được ở tab Lời mời:`,
       toRemove,
     );
     for (const email of toRemove) {
-      // `allowPendingFallback:false`: chính ta VỪA khẳng định email không có ở tab
-      // Lời mời, nên đừng để executeRemove quay lại đó tra thêm lần nữa.
+      const sawPendingRow = results.some(
+        (r) => r.email === email && r.menuWithoutRevoke,
+      );
+      // `allowPendingFallback:false`: chính ta VỪA đứng ở tab Lời mời, đừng để
+      // executeRemove quay lại đó tra thêm lần nữa (ping-pong 2 tab vô ích).
       const rm = await executeRemove(taskId, email, { allowPendingFallback: false });
       const idx = results.findIndex((r) => r.email === email);
-      const merged: RevokeResult = rm.ok
-        ? { email, ok: true, viaRemove: true }
-        : {
-            email,
-            ok: false,
-            viaRemove: true,
-            reason: `Không có trên tab Lời mời; xoá khỏi tab Người dùng cũng thất bại: ${
-              rm.error_message ?? rm.error_code ?? "unknown"
-            }`,
-          };
+      let merged: RevokeResult;
+      if (rm.ok) {
+        // "Không có trong tab Người dùng" = đã rời workspace — NHƯNG chỉ tin điều đó
+        // khi ta cũng không thấy row nào bên tab Lời mời. Ca `menuWithoutRevoke` thì
+        // ta VỪA thấy một row mang email này: hai tab cùng nói "không có" là mâu
+        // thuẫn, báo thành công lúc đó chính là xoá-giả (backend mark removed trong
+        // khi lời mời vẫn sống). Thà báo chưa xong để lượt sau thử lại.
+        const absentOnly =
+          sawPendingRow &&
+          (rm.data as { absent?: boolean } | undefined)?.absent === true;
+        merged = absentOnly
+          ? {
+              email,
+              ok: false,
+              viaRemove: true,
+              reason:
+                "Menu row trên tab Lời mời không có mục 'Thu hồi lời mời', mà tab " +
+                "Người dùng cũng không thấy email này → chưa dám kết luận đã rời, " +
+                "giữ nguyên để thử lại.",
+            }
+          : { email, ok: true, viaRemove: true };
+      } else {
+        merged = {
+          email,
+          ok: false,
+          viaRemove: true,
+          reason: `Không thu hồi được ở tab Lời mời; xoá khỏi tab Người dùng cũng thất bại: ${
+            rm.error_message ?? rm.error_code ?? "unknown"
+          }`,
+        };
+      }
       if (idx >= 0) results[idx] = merged;
       else results.push(merged);
-      if (rm.ok) removedViaFallback += 1;
+      if (merged.ok) removedViaFallback += 1;
       // Delay anti-bot giữa các thao tác destructive.
       await sleep(1000 + Math.floor(Math.random() * 2000));
     }
