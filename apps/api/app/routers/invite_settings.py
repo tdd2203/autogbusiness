@@ -52,10 +52,16 @@ class InviteSettingsIn(BaseModel):
     cap_message: str | None = Field(default=None, max_length=2000)
 
 
+#: `hint` là câu giao diện in RA MÀN HÌNH cạnh mỗi chỗ thay động (không phải
+#: tooltip): admin phải đọc được ngay "cái này lấy số ở đâu" mà không hỏi lại.
 _PLACEHOLDERS = [
-    CapPlaceholder(token="{conlai}", hint="Số suất còn lại tới trần"),
-    CapPlaceholder(token="{ngay}", hint="Ngày mở lại của không gian đó"),
-    CapPlaceholder(token="{ten}", hint="Tên không gian"),
+    CapPlaceholder(
+        token="{conlai}", hint="số suất còn trống tới trần, hệ thống tự tính"
+    ),
+    CapPlaceholder(
+        token="{ngay}", hint="ngày gõ ở ô Ngày mở lại của chính không gian đó"
+    ),
+    CapPlaceholder(token="{ten}", hint="tên không gian, ví dụ CHATGPT PRO"),
 ]
 
 

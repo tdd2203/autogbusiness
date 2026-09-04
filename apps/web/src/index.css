@@ -2679,9 +2679,22 @@ body {
     gap: 10px;
     margin-top: 5px;
   }
+  .iwc-cap-msg-foot > .iwc-sect-hint {
+    flex: 1;
+    min-width: 0;
+  }
+  .iwc-cap-msg-foot > .iwc-link {
+    flex: none;
+    white-space: nowrap;
+  }
+  .iwc-token-line {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-top: 3px;
+  }
   .iwc-token {
-    display: inline-block;
-    margin-right: 5px;
+    flex: none;
     padding: 1px 5px;
     border-radius: 5px;
     border: 1px solid var(--border);
@@ -2689,6 +2702,24 @@ body {
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--ink-2);
+  }
+  /* Dòng tiêu đề cho hai ô nhập của mỗi không gian. Cùng bề ngang + cùng gap với
+     dòng dữ liệu nên nhãn nằm đúng trên đầu ô của nó. */
+  .iwc-cap-head {
+    border-top: none;
+    padding-bottom: 0;
+  }
+  .iwc-cap-col {
+    flex: none;
+    font-size: 11px;
+    color: var(--ink-3);
+    text-align: center;
+  }
+  .iwc-cap-col.cap {
+    width: 92px;
+  }
+  .iwc-cap-col.day {
+    width: 148px;
   }
 
   .iwc-foot {

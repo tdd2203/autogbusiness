@@ -44,6 +44,15 @@ type InviteConfigUser = {
 
 type Draft = { all: boolean; ids: Set<string> };
 
+/** Nghĩa của từng chỗ thay động, dịch ở FE — backend vẫn là nguồn DANH SÁCH token
+ *  (thêm token mới ở backend là giao diện tự hiện, chỉ thiếu bản dịch thì rơi về
+ *  câu tiếng Việt kèm theo API). */
+const TOKEN_HINT_KEY: Record<string, string | undefined> = {
+  "{conlai}": "inviteConfig.capTokenLeft",
+  "{ngay}": "inviteConfig.capTokenDate",
+  "{ten}": "inviteConfig.capTokenName",
+};
+
 type InviteSettings = {
   cap_message: string | null;
   default_message: string;
@@ -124,6 +133,14 @@ export default function InviteWorkspaceConfigModal({
   }, [workspacesQ.data]);
   const dayValue = (raw: string | undefined): string | null =>
     (raw ?? "").trim() || null;
+  /** Nghĩa in cạnh mỗi chỗ thay động: ưu tiên bản dịch, thiếu thì lấy câu backend
+   *  gửi kèm (`t` trả về chính khoá khi không có bản dịch). */
+  const tokenHint = (ph: { token: string; hint: string }): string => {
+    const key = TOKEN_HINT_KEY[ph.token];
+    if (!key) return ph.hint;
+    const text = t(key);
+    return text === key ? ph.hint : text;
+  };
 
   // ── CÂU THÔNG BÁO dùng chung ──
   const [msgDraft, setMsgDraft] = useState<string | null>(null);
@@ -453,6 +470,11 @@ export default function InviteWorkspaceConfigModal({
             <div className="iwc-caps">
               <div className="iwc-sect-title">{t("inviteConfig.capTitle")}</div>
               <div className="iwc-sect-hint">{t("inviteConfig.capHint")}</div>
+              <div className="iwc-cap-row iwc-cap-head">
+                <span className="iwc-cap-name" />
+                <span className="iwc-cap-col cap">{t("inviteConfig.capColCap")}</span>
+                <span className="iwc-cap-col day">{t("inviteConfig.capColDay")}</span>
+              </div>
               {workspaces.map((w) => {
                 const raw = capDraft[w.id] ?? "";
                 const used = seatMap.get(w.id)?.seat_used;
@@ -508,14 +530,15 @@ export default function InviteWorkspaceConfigModal({
                   onChange={(e) => setMsgDraft(e.target.value)}
                 />
                 <div className="iwc-cap-msg-foot">
-                  <span className="iwc-sect-hint">
-                    {(settingsQ.data?.placeholders ?? []).map((ph) => (
-                      <span key={ph.token} className="iwc-token" title={ph.hint}>
-                        {ph.token}
-                      </span>
-                    ))}
+                  <div className="iwc-sect-hint">
                     {t("inviteConfig.capMsgHint")}
-                  </span>
+                    {(settingsQ.data?.placeholders ?? []).map((ph) => (
+                      <div key={ph.token} className="iwc-token-line">
+                        <span className="iwc-token">{ph.token}</span>
+                        {tokenHint(ph)}
+                      </div>
+                    ))}
+                  </div>
                   <button
                     type="button"
                     className="iwc-link"
