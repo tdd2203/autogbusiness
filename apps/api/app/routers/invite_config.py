@@ -7,6 +7,12 @@ Super-admin đặt, cho MỖI sub-admin, được add email MỚI vào workspace
     Danh sách RỖNG là hợp lệ: gỡ hết assignment → user đó TẠM NGƯNG (trang Mời không
     còn đích nào nên hiện thông báo tạm ngưng; mọi endpoint theo workspace cũng 404).
 
+Cả hai endpoint LÀM VIỆC TRONG ĐÚNG MỘT NHÁNH (`platform`, mặc định 'gpt'): đọc chỉ
+trả đích của nhánh đó, ghi chỉ thêm/gỡ đích của nhánh đó. Không có ranh giới này thì
+lưu cấu hình nhánh ChatGPT sẽ gỡ sạch đích Canva của mọi đại lý, vì màn hình ChatGPT
+không hề bày ra team Canva để mà tick lại (đúng vết 3/9/2026: 5 đại lý mất Canva ngay
+trong lượt lưu cấu hình ChatGPT, và trang Mời Canva báo tạm ngưng cho tới khi cấp lại).
+
 Đích email MỚI (trang Mời) chọn NGẪU NHIÊN 1 workspace trong tập đã bật. Email cũ/gia
 hạn giữ workspace lịch sử — không qua đây. Dùng chung bảng `workspace_assignments` với
 màn "Assign" ở trang Workspaces (giữ credit_budget của record sẵn có khi reconcile).
@@ -18,7 +24,7 @@ Endpoints (super-admin only):
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,6 +32,7 @@ from sqlalchemy.orm import Session
 from app.audit import log_event
 from app.deps import get_session, require_super_admin
 from app.models import User, Workspace, WorkspaceAssignment
+from app.schemas import Platform
 
 router = APIRouter(prefix="/api/v1/invite-config", tags=["invite-config"])
 
@@ -42,14 +49,21 @@ class InviteConfigUserOut(BaseModel):
 class InviteConfigUpdate(BaseModel):
     all_workspaces: bool = False
     workspace_ids: list[UUID] = []
+    # Nhánh đang cấu hình. Chỉ những đích thuộc nhánh này bị đụng tới — đích của
+    # nhánh kia giữ nguyên. Client cũ không gửi ⇒ 'gpt', đúng hành vi cũ.
+    platform: Platform = "gpt"
 
 
 @router.get("/users", response_model=list[InviteConfigUserOut])
 def list_invite_config(
+    platform: Platform = Query(default="gpt", description="Nhánh: 'gpt' | 'canva'"),
     db: Session = Depends(get_session),
     _: User = Depends(require_super_admin),
 ) -> list[InviteConfigUserOut]:
-    """Mỗi sub-admin (không phải super-admin): cờ Toàn bộ + các workspace đã gán."""
+    """Mỗi sub-admin (không phải super-admin): cờ Toàn bộ + các workspace đã gán.
+
+    `workspace_ids` chỉ gồm đích CỦA NHÁNH đang hỏi — khớp với danh sách workspace
+    mà màn hình bày ra, để lưu lại đúng những gì đang nhìn thấy."""
     users = (
         db.execute(
             select(User)
@@ -61,6 +75,8 @@ def list_invite_config(
     )
     assignments = db.execute(
         select(WorkspaceAssignment.user_id, WorkspaceAssignment.workspace_id)
+        .join(Workspace, Workspace.id == WorkspaceAssignment.workspace_id)
+        .where(Workspace.platform == platform)
     ).all()
     ws_by_user: dict[UUID, list[UUID]] = {}
     for uid, wid in assignments:
@@ -91,6 +107,9 @@ def update_invite_config(
       giữ nguyên credit_budget/visibility đã cấu hình ở màn Assign).
     - Chỉ định: set cờ = False + reconcile assignment khớp `workspace_ids` (thêm mới với
       budget 0, gỡ những cái bỏ chọn). Record sẵn có giữ nguyên credit_budget.
+
+    Reconcile CHỈ TRONG `body.platform`: đích của nhánh kia không bị đếm là "bỏ chọn"
+    nên không bị gỡ, và id lạc nhánh gửi lên cũng bị bỏ qua.
     """
     target = db.get(User, user_id)
     if not target:
@@ -110,7 +129,12 @@ def update_invite_config(
     existing = {
         a.workspace_id: a
         for a in db.execute(
-            select(WorkspaceAssignment).where(WorkspaceAssignment.user_id == user_id)
+            select(WorkspaceAssignment)
+            .join(Workspace, Workspace.id == WorkspaceAssignment.workspace_id)
+            .where(
+                WorkspaceAssignment.user_id == user_id,
+                Workspace.platform == body.platform,
+            )
         )
         .scalars()
         .all()
@@ -120,11 +144,13 @@ def update_invite_config(
     removed: list[UUID] = []
     if not body.all_workspaces:
         wanted = set(body.workspace_ids)
-        # Bỏ workspace không tồn tại (tránh tạo record rác + FK lỗi).
+        # Bỏ workspace không tồn tại hoặc lạc nhánh (tránh record rác + FK lỗi).
         valid = {
             wid
             for (wid,) in db.execute(
-                select(Workspace.id).where(Workspace.id.in_(wanted))
+                select(Workspace.id).where(
+                    Workspace.id.in_(wanted), Workspace.platform == body.platform
+                )
             ).all()
         }
         wanted &= valid
@@ -150,7 +176,12 @@ def update_invite_config(
             result="SUCCESS",
             target_type="WORKSPACE",
             target_id=str(wid),
-            data={"user_id": str(user_id), "user_email": target.email, "via": "invite_config"},
+            data={
+                "user_id": str(user_id),
+                "user_email": target.email,
+                "via": "invite_config",
+                "platform": body.platform,
+            },
             commit=False,
         )
     for wid in removed:
@@ -163,7 +194,11 @@ def update_invite_config(
             result="SUCCESS",
             target_type="WORKSPACE",
             target_id=str(wid),
-            data={"user_id": str(user_id), "via": "invite_config"},
+            data={
+                "user_id": str(user_id),
+                "via": "invite_config",
+                "platform": body.platform,
+            },
             commit=False,
         )
     if flag_changed:
@@ -185,8 +220,11 @@ def update_invite_config(
     current_ws = [
         wid
         for (wid,) in db.execute(
-            select(WorkspaceAssignment.workspace_id).where(
-                WorkspaceAssignment.user_id == user_id
+            select(WorkspaceAssignment.workspace_id)
+            .join(Workspace, Workspace.id == WorkspaceAssignment.workspace_id)
+            .where(
+                WorkspaceAssignment.user_id == user_id,
+                Workspace.platform == body.platform,
             )
         ).all()
     ]

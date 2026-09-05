@@ -1,6 +1,11 @@
 /**
  * Modal cấu hình ĐÍCH MỜI theo từng user (nút ⚙️ trang "Mời thành viên", super-admin).
  *
+ * Mở theo NHÁNH đang xem (ChatGPT hay Canva): danh sách workspace, cấu hình đọc lên và
+ * cả lượt lưu đều bó trong nhánh đó. Nhánh kia không bị đụng tới — trước đây modal chỉ
+ * đọc workspace ChatGPT mà lại lưu đè lên toàn bộ đích, nên mỗi lần lưu cấu hình
+ * ChatGPT là mọi đại lý mất sạch team Canva.
+ *
  * Mỗi sub-admin 1 dòng: chọn "Toàn bộ" (được add email mới vào MỌI workspace, kể cả tạo
  * mới sau này) hoặc "Chỉ định" (tick từng workspace). Khi user đó add email MỚI, trang
  * Mời chọn NGẪU NHIÊN 1 workspace trong tập đã bật (email cũ/gia hạn giữ ws lịch sử).
@@ -31,7 +36,7 @@ import { api } from "../lib/api";
 import { useT } from "../i18n";
 import { invalidateWorkspaceSeats, useSeatMap } from "../hooks/useWorkspaceSeats";
 import { confirm, toast } from "./Toast";
-import { SEAT_TOTAL_MAX, type Workspace } from "../types";
+import { SEAT_TOTAL_MAX, type Platform, type Workspace } from "../types";
 
 type InviteConfigUser = {
   user_id: string;
@@ -65,8 +70,12 @@ const SEARCH_MIN_USERS = 6;
 const BULK_CHIP_MIN = 2;
 
 export default function InviteWorkspaceConfigModal({
+  platform,
   onClose,
 }: {
+  /** Nhánh đang cấu hình. Modal chỉ bày và chỉ lưu đích của ĐÚNG nhánh này —
+   *  lưu cấu hình ChatGPT không được đụng tới đích Canva và ngược lại. */
+  platform: Platform;
   onClose: () => void;
 }) {
   const t = useT();
@@ -75,8 +84,9 @@ export default function InviteWorkspaceConfigModal({
   // Chỉ gọi DB khi mở modal (mount) + sau khi Lưu (invalidate). Cache 2′ để mở lại
   // ngay không gọi thừa. Không polling, không refetch on focus (mặc định global).
   const configQ = useQuery({
-    queryKey: ["invite-config"],
-    queryFn: () => api<InviteConfigUser[]>("/api/v1/invite-config/users"),
+    queryKey: ["invite-config", platform],
+    queryFn: () =>
+      api<InviteConfigUser[]>(`/api/v1/invite-config/users?platform=${platform}`),
     staleTime: 2 * 60_000,
   });
   const settingsQ = useQuery({
@@ -85,9 +95,8 @@ export default function InviteWorkspaceConfigModal({
     staleTime: 2 * 60_000,
   });
   const workspacesQ = useQuery({
-    // Cấu hình đích của trang Mời nhánh ChatGPT (nút ⚙️ chỉ hiện ở nhánh đó).
-    queryKey: ["workspaces", "gpt"],
-    queryFn: () => api<Workspace[]>("/api/v1/workspaces?platform=gpt"),
+    queryKey: ["workspaces", platform],
+    queryFn: () => api<Workspace[]>(`/api/v1/workspaces?platform=${platform}`),
     staleTime: 2 * 60_000,
   });
 
@@ -250,6 +259,7 @@ export default function InviteWorkspaceConfigModal({
             body: JSON.stringify({
               all_workspaces: d.all,
               workspace_ids: [...d.ids],
+              platform,
             }),
           });
         }),
@@ -299,7 +309,7 @@ export default function InviteWorkspaceConfigModal({
     onSuccess: ({ saved, capsOk, msgOk, failed }) => {
       // Ghi ngay giá trị vừa lưu vào cache để dấu "chưa lưu" tắt liền, không
       // phải chờ refetch (giữ nguyên nháp nên dòng không nháy về giá trị cũ).
-      qc.setQueryData<InviteConfigUser[]>(["invite-config"], (old) =>
+      qc.setQueryData<InviteConfigUser[]>(["invite-config", platform], (old) =>
         old?.map((u) => saved.find((s) => s.user_id === u.user_id) ?? u),
       );
       if (saved.length) toast.success(t("inviteConfig.savedCount", { n: saved.length }));

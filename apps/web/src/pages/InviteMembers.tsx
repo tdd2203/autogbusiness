@@ -634,6 +634,7 @@ export default function InviteMembers() {
 
       {configOpen && (
         <InviteWorkspaceConfigModal
+          platform={platform}
           onClose={() => {
             setConfigOpen(false);
             // Cấu hình đích có thể đổi → làm mới danh sách workspace đích của mình.
@@ -684,7 +685,9 @@ export default function InviteMembers() {
         )}
         {/* Đẩy nhóm phải sang lề: khi hàng xuống dòng thì nhóm này tự về đầu dòng mới. */}
         <div style={{ marginLeft: "auto" }} />
-        {user?.is_super_admin && platform === "gpt" && (
+        {/* Nút ⚙️ có ở CẢ HAI nhánh: mỗi nhánh cấu hình đích riêng của mình. Chỉ
+            bày ở ChatGPT thì team Canva không có đường nào cấp cho đại lý. */}
+        {user?.is_super_admin && (
           <button
             type="button"
             className="btn btn-ghost btn-sm"

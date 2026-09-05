@@ -197,3 +197,81 @@ def test_cannot_configure_super_admin(client: TestClient, auth_header: dict) -> 
         headers=auth_header,
     )
     assert resp.status_code == 400, resp.text
+
+
+# ---------- Ranh giới nhánh ChatGPT / Canva ----------
+
+
+def _canva_ws(client: TestClient, auth_header: dict, name: str) -> dict:
+    resp = client.post(
+        "/api/v1/workspaces", json={"name": name, "platform": "canva"}, headers=auth_header
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def test_saving_gpt_config_keeps_canva_targets(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Lưu cấu hình nhánh ChatGPT KHÔNG được gỡ đích Canva của đại lý.
+
+    Màn hình ChatGPT không bày team Canva ra để tick, nên nếu lượt lưu tính cả nhánh
+    kia là "bỏ chọn" thì mỗi lần chỉnh ChatGPT là đại lý mất sạch Canva và trang Mời
+    Canva báo tạm ngưng (sự cố 3/9/2026).
+    """
+    gpt1 = _create_ws(client, auth_header, "GPT 1")
+    gpt2 = _create_ws(client, auth_header, "GPT 2")
+    canva = _canva_ws(client, auth_header, "Canva Team")
+    sub = _sub_admin(client, auth_header, n="hai-nhanh")
+
+    # Cấp Canva ở nhánh Canva, cấp GPT 1 ở nhánh ChatGPT.
+    assert client.put(
+        f"/api/v1/invite-config/users/{sub['id']}",
+        json={
+            "all_workspaces": False,
+            "workspace_ids": [canva["id"]],
+            "platform": "canva",
+        },
+        headers=auth_header,
+    ).status_code == 200
+    assert client.put(
+        f"/api/v1/invite-config/users/{sub['id']}",
+        json={"all_workspaces": False, "workspace_ids": [gpt1["id"]], "platform": "gpt"},
+        headers=auth_header,
+    ).status_code == 200
+
+    # Đổi đích ChatGPT sang GPT 2 — Canva phải còn nguyên.
+    resp = client.put(
+        f"/api/v1/invite-config/users/{sub['id']}",
+        json={"all_workspaces": False, "workspace_ids": [gpt2["id"]], "platform": "gpt"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    assert set(resp.json()["workspace_ids"]) == {gpt2["id"]}
+
+    rows = client.get(
+        "/api/v1/invite-config/users?platform=canva", headers=auth_header
+    ).json()
+    canva_row = next(r for r in rows if r["user_id"] == sub["id"])
+    assert set(canva_row["workspace_ids"]) == {canva["id"]}, "đích Canva bị gỡ oan"
+
+    # Trang Mời nhánh Canva của đại lý phải thấy lại đích đó.
+    targets = client.get(
+        "/api/v1/auto-invite/targets?platform=canva", headers=_bearer(sub["token"])
+    ).json()
+    assert [w["workspace_id"] for w in targets["workspaces"]] == [canva["id"]]
+
+
+def test_gpt_config_only_lists_gpt_targets(client: TestClient, auth_header: dict) -> None:
+    """Đọc cấu hình một nhánh chỉ trả đích của nhánh đó — id lạc nhánh gửi lên bị bỏ."""
+    canva = _canva_ws(client, auth_header, "Canva Team 2")
+    sub = _sub_admin(client, auth_header, n="loc-nhanh")
+
+    resp = client.put(
+        f"/api/v1/invite-config/users/{sub['id']}",
+        json={"all_workspaces": False, "workspace_ids": [canva["id"]], "platform": "gpt"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["workspace_ids"] == []
+    assert _config_of(client, auth_header, sub["id"])["workspace_ids"] == []
