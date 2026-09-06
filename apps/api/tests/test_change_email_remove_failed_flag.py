@@ -142,11 +142,14 @@ def test_remove_member_failed_flags_old_email_immediately(
     assert stuck_at is not None, "lệnh gỡ hỏng mà bản ghi không mang dấu vết nào"
     assert stuck_to == "new1@example.com"
 
-    # KHÔNG đoán hộ: bản ghi vẫn `removed` (task hỏng không phải bằng chứng email còn
-    # trên ChatGPT) — đồng bộ mới là nơi chốt.
+    # KHÔNG đoán hộ theo CẢ HAI chiều: task hỏng không phải bằng chứng email còn trên
+    # ChatGPT, nhưng cũng KHÔNG phải bằng chứng nó đã rời. Từ 5/9/2026 dòng cũ chưa
+    # từng bị đánh `removed` (ghế chỉ nhả khi gỡ có bằng chứng) nên nó ở nguyên trạng
+    # thái sống — lý do vẫn phải còn để chuỗi cũ→mới không đứt.
     with SessionLocal() as db:
         m = db.get(Member, uuid.UUID(old["id"]))
-        assert m.status == "removed"
+        assert m.status != "removed"
+        assert m.removed_at is None
         assert m.removed_reason == "email_changed"
 
     with SessionLocal() as db:

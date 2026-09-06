@@ -359,7 +359,14 @@ def transfer_subscription(
         type="REMOVE_MEMBER",
         status="PENDING",
         workspace_id=workspace_id,
-        payload={"member_id": str(source.id), "email": source_email},
+        payload={
+            "member_id": str(source.id),
+            "email": source_email,
+            # Lý do đi THEO TASK vì dòng member không còn mang nó nữa (xem bước 2):
+            # `completion.py` gắn lên `removed_reason` đúng lúc gỡ được thật, để nhãn
+            # tab "Đã xoá" và chuỗi cũ→mới không bị ghi thành "admin xoá"/"hết hạn".
+            "removal_reason": REMOVED_REASON_TRANSFERRED,
+        },
         created_by_id=user.id,
     )
     db.add(remove_qi)
@@ -380,14 +387,30 @@ def transfer_subscription(
         db.add(invite_qi)
     db.flush()
 
-    # ---- (2) Email CHO: mất hạn + rời workspace -----------------------------
-    source.status = "removed"
-    source.removed_at = now
-    source.removed_reason = REMOVED_REASON_TRANSFERRED
+    # ---- (2) Email CHO: mất hạn NGAY, nhưng CHƯA rời workspace --------------
     # Hạn đã chuyển đi ⇒ đặt HẾT HẠN NGAY (= now). TUYỆT ĐỐI không đặt NULL:
     # NULL nghĩa là "vô thời hạn" chứ không phải "mất hạn" (EXPIRY_RULES §5 — đã
     # có ca mất tiền vì đúng chỗ này).
     source.subscription_end_at = now
+    # Lý do rời team ghi NGAY (nhãn tab "Đã xoá" + chuỗi cũ→mới đọc cột này, và
+    # `completion.py`/`reconcile.py` đều dựa vào nó để không viết đè thành "admin
+    # xoá"/"sync_missing"). Ghi lý do KHÔNG PHẢI là gỡ: `status`/`removed_at` mới là
+    # thứ nhả ghế, và hai cột đó phải đợi bằng chứng.
+    source.removed_reason = REMOVED_REASON_TRANSFERRED
+    # CỐ Ý KHÔNG đặt `status='removed'`/`removed_at` ở đây (5/9/2026). Ghế trên
+    # ChatGPT chỉ được nhả khi lệnh REMOVE_MEMBER CHỨNG MINH được là đã gỡ — `completion.py` chỉ
+    # mark removed khi có `verified`, đúng như mọi đường gỡ khác trong hệ thống
+    # (`remove.py` cũng chỉ enqueue rồi chờ). Nhả sớm ở đây là nói dối phép đếm
+    # suất: DB tưởng còn một chỗ trống mà ChatGPT thì không, và chỗ ma đó được bán
+    # cho người tiếp theo. Đã xảy ra: GPT1 5/9/2026 — lệnh gỡ kết luận
+    # `absent_confirmed` mà không bấm xoá (email nằm ở tab Lời mời chứ không ở tab
+    # Người dùng), email ăn ghế thật thêm 16.7 tiếng, và workspace vượt trần
+    # 387/386 khi đồng bộ chữa lại sự thật.
+    #
+    # Hệ quả có chủ ý: email cho còn hiện trong danh sách (đúng — họ VẪN đang ở
+    # trong team ChatGPT) tới khi lệnh gỡ xong. Tick auto-remove không đẻ task
+    # trùng vì `_has_open_remove_task` thấy lệnh gỡ này đang mở; lệnh gỡ hỏng hẳn
+    # thì chính tick đó lo retry, thay vì để một dòng `removed` giả nằm im.
 
     # ---- (3) Email NHẬN: nhận hạn ------------------------------------------
     # `takeover` = bản ghi email nhận được TẠO MỚI hoặc TÁI DÙNG từ row `removed`

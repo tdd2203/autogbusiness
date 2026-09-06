@@ -14,6 +14,8 @@ from app.audit import log_event
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import (
+    REMOVED_REASON_EMAIL_CHANGED,
+    REMOVED_REASON_TRANSFERRED,
     AuditLog,
     EmailOtp,
     Invite,
@@ -457,9 +459,19 @@ def _enqueue_expired_removals_once() -> None:
                 # của nó bị đóng về `now` ngay lúc chuyển nên tick hết hạn mới nhặt
                 # được. Ghi đúng tên việc, kẻo timeline của email nói "Xoá do hết
                 # hạn" cho một email vừa chuyển hạn xong (user chỉ ra 4/9/2026).
+                # Đọc CẢ `removed_reason`, không chỉ cờ mắc kẹt: từ 5/9/2026 chuyển
+                # hạn/đổi email để dòng cũ SỐNG (mang sẵn lý do) cho tới khi lệnh gỡ
+                # chứng minh, nên tick này gặp nó ở trạng thái expired+active mà chưa
+                # có cờ nào. Thiếu vế sau thì timeline lại nói "Xoá do hết hạn" cho
+                # một email vừa chuyển hạn xong.
+                is_transfer_leftover = (
+                    member.email_change_stuck_at is not None
+                    or member.removed_reason
+                    in (REMOVED_REASON_EMAIL_CHANGED, REMOVED_REASON_TRANSFERRED)
+                )
                 queued_action = (
                     "MEMBER_EMAIL_CHANGE_REMOVE_RETRY"
-                    if member.email_change_stuck_at is not None
+                    if is_transfer_leftover
                     else "MEMBER_EXPIRED_REMOVE_QUEUED"
                 )
                 log_event(
@@ -473,7 +485,8 @@ def _enqueue_expired_removals_once() -> None:
                         "workspace_id": str(member.workspace_id),
                         "email": member.email,
                         "task_type": task_type,
-                        "changed_to": member.email_change_stuck_to,
+                        "changed_to": member.email_change_stuck_to
+                        or member.transferred_to_email,
                         "subscription_end_at": member.subscription_end_at.isoformat()
                         if member.subscription_end_at
                         else None,

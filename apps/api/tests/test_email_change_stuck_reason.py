@@ -12,6 +12,12 @@ File này chốt cả VÒNG ĐỜI của cờ `email_change_stuck_at`:
      `email_changed`, cờ gỡ sạch;
   3. gia hạn cho nó → cờ hết hiệu lực (đã thành ghế có trả tiền, hết là phần thừa).
 
+Từ 5/9/2026 `change_email`/`transfer_subscription` KHÔNG còn đánh dấu `removed` ngay
+lúc bấm — chúng chỉ ghi lý do rồi chờ lệnh gỡ chứng minh (không nhả ghế trước khi gỡ
+xong). Vì thế ca "hồi sinh" chỉ còn xảy ra với DÒNG CŨ đã nằm sẵn ở `removed` trong
+DB; các test hồi sinh dưới đây dựng thẳng trạng thái đó (`_force_legacy_removed`) thay
+vì đi qua endpoint. Lưới an toàn hồi sinh vẫn phải sống — production còn dòng như vậy.
+
 Xem `alembic/versions/0057_member_email_change_stuck.py` và `members/reconcile.py`.
 """
 
@@ -83,6 +89,48 @@ def _chain(client: TestClient, member_id: str, headers: dict) -> list[str]:
     return resp.json().get("email_changed_to") or []
 
 
+def _force_legacy_removed(
+    member_id: str, new_email: str, *, end_at=None
+) -> None:
+    """Dựng thẳng DÒNG CŨ kiểu trước 5/9/2026: đã `removed` ngay lúc đổi email mà
+    ChatGPT thì chưa gỡ. Production còn những dòng như vậy nên lưới an toàn hồi sinh
+    vẫn phải chạy — đi qua endpoint thì không dựng lại được nữa."""
+    from datetime import datetime, timezone
+
+    with SessionLocal() as db:
+        row = db.get(Member, uuid.UUID(member_id))
+        row.status = "removed"
+        row.removed_at = datetime.now(timezone.utc)
+        row.removed_reason = "email_changed"
+        row.transferred_to_email = new_email
+        if end_at is not None:
+            row.subscription_end_at = end_at
+        db.commit()
+
+
+def _fail_open_removal(client: TestClient, ws: dict, auth_header: dict) -> None:
+    """Lệnh gỡ email cũ CHỐT HỎNG → backend gắn cờ "đã ra lệnh xoá, chưa xác nhận"."""
+    tasks = client.get(
+        f"/api/v1/queue?workspace_id={ws['id']}&limit=50", headers=auth_header
+    ).json()
+    task = next(
+        t
+        for t in tasks
+        if t["type"] in ("REMOVE_MEMBER", "REVOKE_INVITES")
+        and t["status"] in ("PENDING", "IN_PROGRESS")
+    )
+    resp = client.patch(
+        f"/api/v1/queue/{task['id']}",
+        json={
+            "status": "FAILED",
+            "error_code": "UI_CHANGED",
+            "error_message": "không tìm thấy nút xoá",
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert resp.status_code == 200, resp.text
+
+
 def _stuck_after_failed_removal(
     client: TestClient, auth_header: dict, old_email: str, new_email: str
 ) -> tuple[dict, dict]:
@@ -101,9 +149,16 @@ def test_resurrection_keeps_lineage_and_flags_stuck(
     client: TestClient, auth_header: dict
 ) -> None:
     """Hồi sinh: `removed_reason` mất là ĐÚNG (dòng đang sống), nhưng dấu vết phải còn."""
-    ws, old = _stuck_after_failed_removal(
-        client, auth_header, "stuck-a@example.com", "stuck-b@example.com"
-    )
+    ws = _ws(client, auth_header)
+    _sync_active(client, ws, ["stuck-a@example.com"])
+    old = _member_by_email(client, ws["id"], "stuck-a@example.com", auth_header)
+    assert _change_email(
+        client, ws["id"], old["id"], "stuck-b@example.com", auth_header
+    ).status_code == 201
+    # Dòng kiểu CŨ: đã bị đánh `removed` ngay lúc đổi (xem docstring đầu file).
+    _force_legacy_removed(old["id"], "stuck-b@example.com")
+    # Lệnh gỡ HỎNG ⇒ ChatGPT vẫn trả về email cũ ⇒ đồng bộ hồi sinh nó.
+    _sync_active(client, ws, ["stuck-a@example.com", "stuck-b@example.com"])
 
     row = _row(old["id"])
     assert row.status == "active"
@@ -183,6 +238,9 @@ def test_renewal_clears_stuck_flag(client: TestClient, auth_header: dict) -> Non
     ws, old_row = _stuck_after_failed_removal(
         client, auth_header, "stuck-g@example.com", "stuck-h@example.com"
     )
+    # Cờ mắc kẹt nay đến từ chính lệnh gỡ CHỐT HỎNG (dòng không còn bị đánh `removed`
+    # sẵn để mà "hồi sinh" nữa).
+    _fail_open_removal(client, ws, auth_header)
     assert _row(old_row["id"]).email_change_stuck_at is not None
 
     resp = client.post(
@@ -262,12 +320,10 @@ def test_resurrection_closes_legacy_open_window(
     resp = _change_email(client, ws["id"], old["id"], "stuck-l@example.com", auth_header)
     assert resp.status_code == 201, resp.text
 
-    # Dựng lại dữ liệu CŨ: hạn dòng cũ còn ở tương lai (như trước bản vá 24/8).
+    # Dựng lại dữ liệu CŨ: dòng cũ đã `removed` NGAY lúc đổi và hạn còn ở tương lai
+    # (đúng hình dạng bản ghi trước bản vá 24/8 — xem docstring đầu file).
     future = datetime.now(timezone.utc) + timedelta(days=25)
-    with SessionLocal() as db:
-        row = db.get(Member, uuid.UUID(old["id"]))
-        row.subscription_end_at = future
-        db.commit()
+    _force_legacy_removed(old["id"], "stuck-l@example.com", end_at=future)
 
     # Lệnh gỡ hỏng ⇒ đồng bộ hồi sinh dòng cũ.
     _sync_active(client, ws, ["stuck-k@example.com", "stuck-l@example.com"])

@@ -866,6 +866,15 @@ def bulk_upsert_members(
                     m.removed_reason = REMOVED_REASON_EMAIL_CHANGED
                 m.email_change_stuck_at = None
                 m.email_change_stuck_to = None
+            elif m.removed_reason in (
+                REMOVED_REASON_EMAIL_CHANGED,
+                REMOVED_REASON_TRANSFERRED,
+            ):
+                # Dòng CÒN SỐNG mang sẵn lý do "đã chuyển hạn đi": từ 5/9/2026 chuyển
+                # hạn/đổi email chỉ ghi lý do rồi CHỜ lệnh gỡ chứng minh, không tự
+                # nhả ghế nữa. Nay đồng bộ mới thấy nó rời thật ⇒ giữ nguyên lý do,
+                # viết đè `sync_missing` là làm đứt chuỗi cũ→mới (22/8/2026).
+                pass
             else:
                 m.removed_reason = REMOVED_REASON_SYNC_MISSING
             m.last_synced_at = now

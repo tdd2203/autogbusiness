@@ -267,6 +267,10 @@ def test_removed_tab_shows_email_change_chain(
         headers=auth_header,
     )
     assert third.status_code == 201, third.text
+    # Từ 5/9/2026 đổi email KHÔNG tự đánh `removed` — ghế chỉ nhả khi lệnh gỡ chứng
+    # minh đã gỡ trên ChatGPT. Chốt cả hai lệnh gỡ thì hai email cũ mới vào tab "Đã xoá".
+    _complete_open_removal(client, auth_header, ws)
+    _complete_open_removal(client, auth_header, ws)
 
     rows = client.get("/api/v1/added-members?removed=true", headers=auth_header).json()
     chains = {r["email"]: r["email_changed_to"] for r in rows}
@@ -364,6 +368,9 @@ def test_removed_tab_chain_carries_member_ids(
         headers=auth_header,
     )
     assert third.status_code == 201, third.text
+    # Hai email cũ chỉ vào tab "Đã xoá" sau khi lệnh gỡ có bằng chứng (5/9/2026).
+    _complete_open_removal(client, auth_header, ws)
+    _complete_open_removal(client, auth_header, ws)
 
     rows = client.get("/api/v1/added-members?removed=true", headers=auth_header).json()
     row = next(r for r in rows if r["email"] == "chain1@example.com")

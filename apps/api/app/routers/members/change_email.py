@@ -136,7 +136,14 @@ def change_member_email(
         type="REMOVE_MEMBER",
         status="PENDING",
         workspace_id=workspace_id,
-        payload={"member_id": str(old.id), "email": old_email},
+        payload={
+            "member_id": str(old.id),
+            "email": old_email,
+            # Lý do đi theo TASK vì dòng member không mang `removed_reason` nữa —
+            # `completion.py` gắn lên đúng lúc gỡ được thật (giữ nhãn tab "Đã xoá"
+            # và chuỗi cũ→mới). Xem `transfer_subscription.py`.
+            "removal_reason": REMOVED_REASON_EMAIL_CHANGED,
+        },
         created_by_id=user.id,
     )
     remove_task_type = "REMOVE_MEMBER"
@@ -156,10 +163,13 @@ def change_member_email(
     db.add(invite_qi)
     db.flush()
 
-    # Email cũ → removed ngay trong DB (extension sẽ thực thi xoá trên ChatGPT).
+    # Email cũ MẤT HẠN ngay, nhưng CHƯA rời workspace: chỉ `completion.py` mới được
+    # đặt `status='removed'`, và chỉ khi lệnh REMOVE_MEMBER chứng minh đã gỡ thật.
+    # Nhả ghế sớm ở đây là bán một chỗ trống không tồn tại — xem giải thích dài ở
+    # `transfer_subscription.py` bước (2), cùng một cái sai, cùng một ca GPT1 5/9/2026.
     now = datetime.now(timezone.utc)
-    old.status = "removed"
-    old.removed_at = now
+    # Lý do ghi ngay (nhãn + chuỗi cũ→mới đọc cột này); `status`/`removed_at` mới là
+    # thứ nhả ghế nên chúng phải đợi bằng chứng.
     old.removed_reason = REMOVED_REASON_EMAIL_CHANGED
     # HẠN ĐÃ THEO EMAIL MỚI ĐI ⇒ đóng hạn dòng cũ NGAY (đặt = now), giống hệt
     # transfer_subscription làm với email cho. Trước 24/8/2026 dòng cũ giữ nguyên

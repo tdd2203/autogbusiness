@@ -8,9 +8,11 @@ Xác minh:
     tìm ở tab Người dùng rồi tự lùi sang tab Lời mời (4/9/2026, xem change_email.py).
   - Member mới (email mới) status=pending, subscription_end_at == hạn cũ (copy y nguyên);
     last_invited_at kế thừa từ email gốc (thời gian mời/tham gia giữ nguyên).
-  - Member cũ → status=removed ngay trong DB, và HẠN ĐÓNG NGAY (hạn đã theo email mới
-    đi ⇒ dòng cũ không được giữ bản sao mốc hết hạn — nếu giữ thì mời lại email cũ
-    được coi là "còn hạn → miễn phí", xem test_change_email_closes_old_member_window).
+  - Member cũ: HẠN ĐÓNG NGAY (hạn đã theo email mới đi ⇒ dòng cũ không được giữ bản
+    sao mốc hết hạn — nếu giữ thì mời lại email cũ được coi là "còn hạn → miễn phí",
+    xem test_change_email_closes_old_member_window) nhưng CHƯA `removed`: ghế chỉ nhả
+    khi lệnh REMOVE_MEMBER chứng minh đã gỡ trên ChatGPT (5/9/2026). Lý do
+    `email_changed` ghi ngay để chuỗi cũ→mới không đứt.
   - new_email trùng email cũ → 400.
   - new_email đã là member active khác → 409.
   - Đổi email của member đã removed → 409.
@@ -49,6 +51,21 @@ def _upsert_active(client: TestClient, ws: dict, emails: list[str]) -> None:
                 for e in emails
             ]
         },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def _finish_removal(client: TestClient, ws: dict, auth_header: dict, email: str) -> None:
+    """Extension chốt lệnh gỡ email đó KÈM BẰNG CHỨNG — chỉ lúc này ghế mới được nhả."""
+    task = next(
+        t
+        for t in _tasks(client, ws["id"], auth_header, "REMOVE_MEMBER")
+        if t["payload"]["email"] == email
+    )
+    resp = client.patch(
+        f"/api/v1/queue/{task['id']}",
+        json={"status": "COMPLETED", "result": {"data": {"verified": True}}},
         headers={"X-API-KEY": ws["extension_api_key"]},
     )
     assert resp.status_code == 200, resp.text
@@ -121,8 +138,10 @@ def test_change_email_closes_old_member_window(
         # ...còn email cũ hết hạn NGAY, và KHÔNG được là None ("vô thời hạn").
         assert source.subscription_end_at is not None
         assert source.subscription_end_at <= datetime.now(timezone.utc)
-        assert source.removed_at is not None
-        assert source.subscription_end_at == source.removed_at
+        # ...mà VẪN chưa rời workspace: đóng hạn là chuyện tiền, nhả ghế là chuyện
+        # ChatGPT — chỉ lệnh gỡ có bằng chứng mới được đặt `removed_at`.
+        assert source.status != "removed" and source.removed_at is None
+        assert source.removed_reason == "email_changed"
 
 
 def test_change_email_carries_expiry_and_enqueues_two_tasks(
@@ -149,10 +168,19 @@ def test_change_email_carries_expiry_and_enqueues_two_tasks(
     assert [t["payload"]["email"] for t in invites] == ["new@example.com"]
     assert _tasks(client, ws["id"], auth_header, "REVOKE_INVITES") == []
 
-    # Member cũ → removed ngay; member mới → pending với hạn cũ.
+    # Member cũ CHƯA removed (lệnh gỡ mới xếp hàng, ghế vẫn đang bị ăn thật);
+    # member mới → pending với hạn cũ.
     members = _members(client, ws["id"], auth_header)
-    assert members["old@example.com"]["status"] == "removed"
+    assert members["old@example.com"]["status"] != "removed"
     assert members["new@example.com"]["subscription_end_at"] == old_end
+
+    # Extension gỡ xong KÈM BẰNG CHỨNG → lúc này mới `removed`, và lý do phải giữ
+    # nguyên 'email_changed' (ghi 'removed_by_admin' là đứt chuỗi cũ→mới).
+    _finish_removal(client, ws, auth_header, "old@example.com")
+    with SessionLocal() as db:
+        row = db.get(Member, uuid.UUID(old["id"]))
+        assert row.status == "removed"
+        assert row.removed_reason == "email_changed"
 
 
 def test_change_email_pending_uses_remove_and_carries_invite_time(
@@ -198,8 +226,14 @@ def test_change_email_pending_uses_remove_and_carries_invite_time(
     assert "pending-new@example.com" in invite_emails
 
     members = _members(client, ws["id"], auth_header)
-    assert members["pending-old@example.com"]["status"] == "removed"
+    # Lời mời cũ vẫn treo trên ChatGPT tới khi lệnh gỡ chứng minh đã thu hồi.
+    assert members["pending-old@example.com"]["status"] != "removed"
     assert members["pending-new@example.com"]["status"] == "pending"
+    _finish_removal(client, ws, auth_header, "pending-old@example.com")
+    assert (
+        _members(client, ws["id"], auth_header)["pending-old@example.com"]["status"]
+        == "removed"
+    )
 
 
 def _added_row(client: TestClient, headers: dict, email: str) -> dict | None:
@@ -239,7 +273,10 @@ def test_change_email_carries_payment_status_and_cycles(
     assert new_row["payment_status"] == "paid"
     assert len(new_row["cycles"]) == old_cycle_count
     assert all(c["payment_status"] == "paid" for c in new_row["cycles"])
-    # Email cũ đã removed → không còn trong danh sách added-members.
+    # Email cũ chỉ rời danh sách added-members SAU khi lệnh gỡ có bằng chứng —
+    # trước đó nó vẫn đang ăn một ghế thật nên phải còn nhìn thấy.
+    assert _added_row(client, auth_header, "paid-old@example.com") is not None
+    _finish_removal(client, ws, auth_header, "paid-old@example.com")
     assert _added_row(client, auth_header, "paid-old@example.com") is None
 
 

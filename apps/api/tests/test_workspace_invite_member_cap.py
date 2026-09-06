@@ -21,6 +21,8 @@ Bất biến phải khoá:
      với chỗ hiện trên trang Mời, để đại lý không đọc hai kiểu chữ khác nhau.
   7. Trần phải được kiểm LẠI lúc hoá đơn QR được trả tiền, không chỉ lúc tạo hoá
      đơn: giữa hai mốc đó chỗ trống cuối cùng có thể đã bị lệnh khác lấy mất.
+  8. Ghế chỉ được NHẢ khi đã gỡ THẬT trên ChatGPT. Chuyển hạn/đổi email chỉ xếp lệnh
+     gỡ rồi chờ bằng chứng — nhả sớm là đếm ra một chỗ trống không tồn tại.
 """
 
 import uuid
@@ -336,3 +338,89 @@ def test_cap_filled_while_paying_qr_refuses_fulfillment(
     assert wallet_of(client, a["token"])["balance"] == FEE
     assert _member_count(ws["id"]) == 1
 
+
+def _member_id(client: TestClient, auth_header: dict, ws_id: str, email: str) -> str:
+    r = client.get(f"/api/v1/workspaces/{ws_id}/members", headers=auth_header)
+    assert r.status_code == 200, r.text
+    return {m["email"]: m["id"] for m in r.json()}[email]
+
+
+def _finish_removal(client: TestClient, ws: dict, auth_header: dict, email: str) -> None:
+    """Extension chốt lệnh gỡ KÈM BẰNG CHỨNG (`verified`) — chỉ lúc này ghế mới trống."""
+    tasks = client.get(
+        f"/api/v1/queue?workspace_id={ws['id']}&limit=50", headers=auth_header
+    ).json()
+    task = next(
+        t
+        for t in tasks
+        if t["type"] == "REMOVE_MEMBER" and (t["payload"] or {}).get("email") == email
+    )
+    r = client.patch(
+        f"/api/v1/queue/{task['id']}",
+        json={"status": "COMPLETED", "result": {"data": {"verified": True}}},
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_transfer_does_not_free_seat_until_removal_verified(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Bất biến 8 — GHẾ CHỈ ĐƯỢC NHẢ KHI ĐÃ GỠ THẬT.
+
+    Chuyển hạn/đổi email trước 5/9/2026 đánh dấu email cho là `removed` NGAY lúc bấm,
+    trong khi việc gỡ trên ChatGPT mới chỉ là một task vừa xếp hàng. Phép đếm suất vì
+    thế báo trống một chỗ mà ChatGPT không có, và chỗ ma đó được bán cho người tiếp
+    theo. Ca thật GPT1 5/9/2026: lệnh gỡ kết luận "không thấy ở tab Người dùng" rồi
+    mark removed mà KHÔNG bấm xoá — email ăn ghế thật thêm 16.7 tiếng, workspace vượt
+    trần 387/386 khi đồng bộ chữa lại sự thật.
+
+    Dùng ca CỘNG DỒN (email nhận đang là thành viên) để cô lập đúng một biến: không có
+    lệnh mời nào, nên mọi thay đổi của `seat_used` chỉ đến từ việc nhả ghế.
+    """
+    ws = create_ws(client, auth_header, "Cap WS transfer", seat_total=50)
+    _set_cap(client, auth_header, ws["id"], 2)
+    sub = make_beta_sub(client, auth_header, username="captrans", balance=FEE * 5)
+    assign(client, auth_header, ws["id"], sub["id"])
+
+    first = _invite(
+        client, sub["token"], ws["id"], "capt-a@example.com", "capt-b@example.com"
+    )
+    assert first.status_code == 202, first.text
+    assert _member_count(ws["id"]) == 2, "đã chạm đúng trần"
+
+    invites_before = _tasks_of_type(client, auth_header, ws["id"], "INVITE_MEMBER")
+    a_id = _member_id(client, auth_header, ws["id"], "capt-a@example.com")
+    moved = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{a_id}/transfer-subscription",
+        json={"target_email": "capt-b@example.com"},
+        headers=auth_header,
+    )
+    assert moved.status_code == 201, moved.text
+    # Email nhận đang dùng ⇒ chỉ cộng dồn hạn, KHÔNG sinh thêm lệnh mời nào.
+    assert (
+        _tasks_of_type(client, auth_header, ws["id"], "INVITE_MEMBER") == invites_before
+    )
+
+    # Ghế CHƯA trống: email cho vẫn đang ngồi trên ChatGPT tới khi lệnh gỡ chứng minh.
+    assert _member_count(ws["id"]) == 2
+    assert _seats_row(client, auth_header, ws["id"])["seat_used"] == 2
+    blocked = _invite(client, sub["token"], ws["id"], "capt-c@example.com")
+    assert blocked.status_code == 409, (
+        "chuyển hạn vừa nhả một ghế MA — đúng cách bán tràn quá trần"
+    )
+
+    # Gỡ xong KÈM BẰNG CHỨNG → giờ mới thật sự còn chỗ.
+    _finish_removal(client, ws, auth_header, "capt-a@example.com")
+    assert _member_count(ws["id"]) == 1
+    assert _seats_row(client, auth_header, ws["id"])["seat_used"] == 1
+    assert _invite(client, sub["token"], ws["id"], "capt-c@example.com").status_code == 202
+
+
+def _tasks_of_type(
+    client: TestClient, auth_header: dict, ws_id: str, ttype: str
+) -> int:
+    tasks = client.get(
+        f"/api/v1/queue?workspace_id={ws_id}&limit=50", headers=auth_header
+    ).json()
+    return sum(1 for t in tasks if t["type"] == ttype)

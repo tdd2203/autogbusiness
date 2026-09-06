@@ -617,6 +617,27 @@ def _email_change_removal_legs(
     return out
 
 
+#: Lý do gỡ của một lần chuyển hạn/đổi email. Danh sách trắng cố ý: lý do có thể đến
+#: từ payload task (backend tự đặt) nên không gán thẳng chuỗi lạ lên `removed_reason`.
+_TASK_REMOVAL_REASONS = frozenset(
+    {REMOVED_REASON_TRANSFERRED, REMOVED_REASON_EMAIL_CHANGED}
+)
+
+
+def _pending_transfer_reason(member: Member, payload: dict) -> str | None:
+    """Lý do "đã chuyển hạn đi, chờ gỡ" đang treo trên dòng này — None nếu không có.
+
+    Đọc CẢ HAI nguồn vì chúng hỏng theo hai kiểu khác nhau: cột trên member mất khi
+    một lần đồng bộ dọn dẹp chạy chen vào, còn payload chỉ có ở task do chính luồng
+    chuyển hạn xếp (tick auto-remove xếp lại thì không mang). Ưu tiên cột — nó là thứ
+    tab "Đã xoá" đang đọc.
+    """
+    for value in (member.removed_reason, payload.get("removal_reason")):
+        if value in _TASK_REMOVAL_REASONS:
+            return value
+    return None
+
+
 def _transfer_removal_reason(member: Member) -> str:
     """Lý do rời team cho một dòng vừa được gỡ MUỘN sau khi chuyển hạn/đổi email.
 
@@ -1968,6 +1989,7 @@ def update_task(
                 # Lý do lưu THẲNG lên member (cột removed_reason) để tab "Đã xoá"
                 # đọc trực tiếp, khỏi truy ngược audit log — nhiều đường xoá khác
                 # ghi log ở cấp WORKSPACE nên không tra ngược theo email được.
+                transfer_reason = _pending_transfer_reason(member, payload)
                 if member.email_change_stuck_at is not None:
                     # Ca ĐỔI EMAIL MẮC KẸT (lần gỡ trước hỏng → sync thấy email vẫn
                     # ở ChatGPT nên hồi sinh nó) nay đã gỡ được THẬT. Đây là kết cục
@@ -1978,6 +2000,15 @@ def update_task(
                     remove_data["removal_reason"] = member.removed_reason
                     member.email_change_stuck_at = None
                     member.email_change_stuck_to = None
+                elif transfer_reason:
+                    # Chuyển hạn / đổi email: từ 5/9/2026 hai luồng đó CHỈ ghi lý do
+                    # rồi chờ lệnh gỡ chứng minh, KHÔNG tự đặt `removed`. Lúc lệnh gỡ
+                    # về đây thì lý do đã nằm sẵn trên dòng (hoặc trong payload task,
+                    # phòng khi dòng bị dọn) — phải giữ, kẻo cú gỡ chốt muộn ghi đè
+                    # thành "admin xoá"/"hết hạn" và làm đứt chuỗi cũ→mới ở tab
+                    # "Đã xoá", đúng cái sai 22/8/2026.
+                    member.removed_reason = transfer_reason
+                    remove_data["removal_reason"] = member.removed_reason
                 elif expired_init:
                     remove_data["removal_reason"] = "expired"
                     member.removed_reason = REMOVED_REASON_EXPIRED
