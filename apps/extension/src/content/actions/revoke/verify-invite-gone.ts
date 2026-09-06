@@ -19,9 +19,10 @@
  *   · Mỗi vòng là một lần HỎI MỚI: xoá ô tìm kiếm → chờ danh sách đầy lại → gõ
  *     lại email. "Danh sách đầy lại" chính là bằng chứng ô tìm kiếm còn sống
  *     (positive control) — thiếu nó thì "không thấy" là vô nghĩa.
- *   · Phải ĐỦ HAI VÒNG ĐỘC LẬP cùng không ra dòng nào mới dám kết luận đã thu
- *     hồi. Kết luận nhầm chiều này đắt hơn: backend sẽ đánh dấu người ta đã bị
- *     gỡ trong khi lời mời còn nguyên trên ChatGPT và vẫn ăn một suất.
+ *   · MỘT vòng đọc được mà không ra dòng nào là đủ kết luận đã thu hồi, và hỏi
+ *     nhiều nhất hai lượt (user 6/9/2026). Vòng nào cũng đã tự chứng minh ô tìm
+ *     kiếm còn sống trước khi gõ, nên hỏi lại lần ba chỉ nhận đúng câu trả lời
+ *     cũ mà người dùng thì nhìn thấy máy gõ đi gõ lại một email.
  *   · Không có ô tìm kiếm (UI đổi) → ép nạp lại bằng cách nhảy sang tab "Người
  *     dùng" rồi quay lại, xong mới quét — vẫn là dữ liệu mới, không phải DOM cũ.
  */
@@ -51,8 +52,24 @@ const STABLE_HITS = 3;
 const STABLE_POLL_MS = 400;
 /** Nghỉ giữa hai vòng hỏi — để ChatGPT kịp cập nhật phía server. */
 const ROUND_GAP_MS = 3000;
-/** Số vòng độc lập cùng "không thấy" mới dám kết luận đã thu hồi. */
-const CONFIRM_ROUNDS = 2;
+/**
+ * Số vòng *đọc được* cùng "không thấy" mới dám kết luận đã thu hồi.
+ *
+ * 2 → 1 (user 6/9/2026: *"thực tế chỉ cần nhập 1 hoặc 2 lần là đủ"*). Một vòng ở
+ * đây KHÔNG phải một cú liếc: nó tự xoá ô tìm kiếm, chờ danh sách đầy lại (bằng
+ * chứng ô tìm kiếm còn sống), gõ email rồi soi 6 giây. Cộng thêm cú click thu
+ * hồi + hộp thoại đã tắt hẳn ngay trước đó, chừng ấy đủ để chốt.
+ */
+const CONFIRM_ROUNDS = 1;
+/**
+ * TRẦN số lượt hỏi — hết trần thì `inconclusive`, KHÔNG hỏi nữa dù còn ngân sách.
+ *
+ * Trước đây vòng lặp chỉ dừng khi đủ vòng trống hoặc hết 60s, nên một danh sách
+ * câm kéo theo 5-6 lần gõ lại cùng một email trong một phút — đúng cái mà người
+ * dùng nhìn thấy ở ca hieuthanh7478 (6/9/2026). Hỏi lần thứ ba trở đi cũng chỉ
+ * nhận lại đúng câu trả lời của lần thứ hai.
+ */
+const MAX_PROBES = 2;
 
 export type InviteAbsence =
   /** Vẫn thấy lời mời → thu hồi CHƯA có hiệu lực. */
@@ -88,12 +105,36 @@ function clearPendingSearch(input: HTMLInputElement): void {
   }
 }
 
-function visibleRowCount(): number {
-  const seen = new Set<Element>();
+/** Các dòng đang render (dedupe theo phần tử). */
+function renderedRows(): HTMLElement[] {
+  const seen = new Set<HTMLElement>();
   for (const sel of SELECTORS.memberRow) {
-    for (const row of Array.from(document.querySelectorAll(sel))) seen.add(row);
+    for (const row of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
+      seen.add(row);
+    }
   }
-  return seen.size;
+  return Array.from(seen);
+}
+
+function visibleRowCount(): number {
+  return renderedRows().length;
+}
+
+/** Bắt chuỗi email đầu tiên trong text của một dòng. */
+const EMAIL_IN_ROW = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+
+/**
+ * Danh sách lời mời có ĐANG RỖNG không — đo bằng CÓ EMAIL NÀO HIỆN RA KHÔNG,
+ * chứ không đo bằng số dòng.
+ *
+ * Vì sao không đếm dòng: selector dòng còn khớp cả dòng tiêu đề của bảng lẫn
+ * dòng "chưa có lời mời nào", nên danh sách rỗng vẫn đếm ra 1-2 dòng. Gõ email
+ * vào một danh sách như thế thì số dòng KHÔNG đổi ⇒ vòng nào cũng bị chấm "danh
+ * sách không phản hồi" ⇒ gõ lại tới hết giờ rồi báo hỏng, trong khi lời mời đã
+ * thu hồi xong (ca hieuthanh7478 6/9/2026: thu hồi ăn thật, lệnh vẫn FAILED).
+ */
+function listHasNoEmail(): boolean {
+  return !renderedRows().some((row) => EMAIL_IN_ROW.test(row.textContent ?? ""));
 }
 
 /**
@@ -134,6 +175,10 @@ export type RoundDeps = {
  * *đọc được* mà không thấy mới kết luận `gone`; vòng nào danh sách không phản
  * hồi thì KHÔNG tính về bên nào — đếm nó là "không thấy" chính là đường dẫn tới
  * đánh dấu đã thu hồi trong khi lời mời còn nguyên.
+ *
+ * Hỏi nhiều nhất `MAX_PROBES` lượt: hết trần là dừng, dù ngân sách còn. Ngân
+ * sách để dành cho MỘT lượt hỏi được chạy trọn vẹn, không phải để gõ lại nhiều
+ * lần cho hết giờ.
  */
 export async function runAbsenceRounds(
   deadlineAt: number,
@@ -142,7 +187,7 @@ export async function runAbsenceRounds(
   let emptyRounds = 0;
   let lastReason = "chưa hỏi được lần nào trong ngân sách";
   let round = 0;
-  while (deps.now() < deadlineAt && emptyRounds < CONFIRM_ROUNDS) {
+  while (deps.now() < deadlineAt && emptyRounds < CONFIRM_ROUNDS && round < MAX_PROBES) {
     round += 1;
     const probe = await deps.probe(round);
     console.log(`${LOG} vòng ${round}: ${probe}`);
@@ -153,7 +198,7 @@ export async function runAbsenceRounds(
     } else {
       lastReason = "danh sách lời mời không phản hồi lượt tra";
     }
-    if (emptyRounds >= CONFIRM_ROUNDS) break;
+    if (emptyRounds >= CONFIRM_ROUNDS || round >= MAX_PROBES) break;
     if (deps.now() + ROUND_GAP_MS >= deadlineAt) break;
     await deps.sleep(ROUND_GAP_MS);
   }
@@ -166,7 +211,9 @@ export async function runAbsenceRounds(
  *
  * `empty` chỉ được trả khi có bằng chứng danh sách đã phản hồi lượt hỏi này:
  * hoặc danh sách vừa đầy lại rồi rút xuống theo query, hoặc chính danh sách lời
- * mời đang RỖNG ỔN ĐỊNH (thu hồi cái cuối cùng thì đúng là chẳng còn dòng nào).
+ * mời đang RỖNG ỔN ĐỊNH (thu hồi cái cuối cùng thì đúng là chẳng còn lời mời
+ * nào để mà đổi) — xem `listHasNoEmail` về chuyện đo rỗng bằng email chứ không
+ * bằng số dòng.
  */
 async function probeBySearchInput(
   input: HTMLInputElement,
@@ -179,9 +226,9 @@ async function probeBySearchInput(
     console.warn(`${LOG} danh sách không đứng yên sau khi xoá ô tìm kiếm`);
     return "unresponsive";
   }
-  const listWasEmpty = restored === 0;
+  const listWasEmpty = listHasNoEmail();
   console.log(
-    `${LOG} xoá ô tìm kiếm → danh sách ${restored} dòng${listWasEmpty ? " (rỗng)" : ""}`,
+    `${LOG} xoá ô tìm kiếm → danh sách ${restored} dòng${listWasEmpty ? " (không còn lời mời nào)" : ""}`,
   );
 
   await humanType(input, email);

@@ -447,11 +447,11 @@ export async function executeRemove(
   // removed OAN → đồng bộ thấy còn → hồi sinh active → giờ sau xoá lại → VÒNG LẶP
   // xoá-giả vô hạn, không bao giờ xoá thật). Bản 2026-07-12 gỡ verify vì check QUÁ
   // SỚM: ChatGPT eventual-consistent, sau DELETE THẬT list còn hiện member ~34s rồi
-  // mới biến mất → verify sớm báo "còn" = fail oan. Cách đúng: tra tối đa 3 lần
-  // (cách nhau 3s, trần 60s) bằng chính ô lọc server-side (clear+gõ lại mỗi lần →
-  // fetch mới):
+  // mới biến mất → verify sớm báo "còn" = fail oan. Cách đúng: tra tối đa 2 lần
+  // (cách nhau 12s, trần 60s) bằng chính ô lọc server-side (clear+gõ lại mỗi lần
+  // → fetch mới):
   //   - Row biến mất trong hạn → xoá THỰC SỰ có hiệu lực → verified:true.
-  //   - Hết 3 lần vẫn còn → xoá KHÔNG có hiệu lực (ChatGPT chặn/quyền/ghế) →
+  //   - Hết 2 lần vẫn còn → xoá KHÔNG có hiệu lực (ChatGPT chặn/quyền/ghế) →
   //     REMOVE_VERIFY_FAILED (ok:false) → backend GIỮ member active, KHÔNG mark
   //     removed; tick sau retry; loop-guard backend chốt STUCK nếu lặp mãi.
   // Hướng an toàn: thà báo chưa-xoá (giữ member) còn hơn báo đã-xoá GIẢ.
@@ -465,23 +465,37 @@ export async function executeRemove(
   await sleep(2000);
 
   let gone = false;
-  // Tra TỐI ĐA 3 lần, mỗi lần cách nhau 3s (không còn bám sát 1.5s/vòng): một
-  // lần `filterOnceAndResolve` đã tự gõ 2 vòng lọc độc lập + positive control
-  // (~15-25s), gõ dồn thêm chỉ làm ChatGPT nuốt event chứ không sớm ra kết quả.
-  // Trần 60s giữ nguyên để không phá ngân sách 150s của task.
-  const VERIFY_ATTEMPTS = 3;
-  const VERIFY_GAP_MS = 3000;
+  // XÁC MINH SAU KHI ĐÃ BẤM XOÁ: gõ email MỘT LẦN là đủ, tối đa hai (user
+  // 6/9/2026: *"thực tế chỉ cần nhập 1 hoặc 2 lần là đủ"*).
+  //
+  // Trước đây là 3 lượt × 2 vòng = tới 6 lần gõ cùng một email, nhìn từ ngoài
+  // đúng kiểu "tra cứu liên tục" mà chẳng biết thêm gì: mỗi lượt đều hỏi lại
+  // đúng câu hỏi cũ, gõ dồn chỉ làm ChatGPT nuốt event.
+  //
+  // Vì sao ở ĐÂY hạ được xuống 1 vòng, còn lần tra TRƯỚC KHI CLICK vẫn giữ 2:
+  // chỗ này đã có cú click xoá + hộp thoại tắt hẳn làm bằng chứng, ô lọc chỉ còn
+  // việc xác nhận. Lần tra trước khi click thì kết luận "vắng mặt" tự nó đánh
+  // dấu removed mà không click lần nào — sai một cái là xoá-giả, nên vẫn nghiêm
+  // ngặt như cũ.
+  //
+  // Chốt chặn giữ nguyên: chỉ `absent` (ô lọc CÓ phản hồi query mà không ra row)
+  // mới tính là xoá xong; `inconclusive` (list câm) KHÔNG bao giờ được coi là đã
+  // xoá — thà báo chưa-xoá rồi tick sau thử lại còn hơn mark removed oan.
+  //
+  // `requireStableList: false`: list vừa bị CHÍNH cú click xoá làm đổi (row rơi
+  // ra, ChatGPT eventual-consistent) nên đòi nó "đứng yên" trước khi gõ chỉ đốt
+  // ngân sách.
+  const VERIFY_ATTEMPTS = 2;
+  // Lượt hai chỉ dành cho ca ChatGPT trả list chậm (~34s mới bỏ row đã xoá —
+  // đo từ 12/7/2026). Nghỉ 12s rồi hỏi lại mới có cái mới để đọc; hỏi dồn sau 3s
+  // chỉ nhận lại đúng câu trả lời cũ.
+  const VERIFY_GAP_MS = 12_000;
   const verifyDeadlineMs = Date.now() + 60_000;
   for (let attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt++) {
-    // Mỗi lần tra: clear + gõ lại email → ép fetch lọc mới, chờ list load xong.
-    // `absent` = ChatGPT không còn trả row nào khớp ⇒ xoá đã có hiệu lực.
-    // `inconclusive` (list không phản hồi) KHÔNG được coi là đã xoá — cứ để lần
-    // sau thử lại, hết lượt/hết giờ thì REMOVE_VERIFY_FAILED (giữ member).
-    //
-    // `requireStableList: false`: list vừa bị CHÍNH cú click xoá làm đổi (row rơi
-    // ra, ChatGPT eventual-consistent) nên đòi nó "đứng yên" trước khi gõ chỉ đốt
-    // ngân sách. Vẫn giữ 2 vòng lọc độc lập — false-absent ở đây cũng là xoá-giả.
-    const check = await filterOnceAndResolve(email, { requireStableList: false });
+    const check = await filterOnceAndResolve(email, {
+      requireStableList: false,
+      confirmRounds: 1,
+    });
     if (check.outcome === "absent") {
       gone = true;
       break;
