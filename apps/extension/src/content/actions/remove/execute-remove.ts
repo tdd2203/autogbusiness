@@ -177,6 +177,49 @@ async function tryRevokePendingFallback(
   };
 }
 
+/**
+ * SAU KHI XOÁ XONG ở tab "Người dùng": ghé tab "Lời mời đang chờ xử lý" tra ĐÚNG
+ * MỘT LẦN cho chắc, có thì thu hồi luôn (user 6/9/2026).
+ *
+ * Vì sao cần: gỡ người đã tham gia xong KHÔNG có nghĩa email đó sạch bóng khỏi
+ * workspace — nó vẫn có thể còn một lời mời treo (mời lại rồi chưa bấm nhận,
+ * hoặc lời mời cũ chưa từng được dọn). Lời mời treo cũng ăn một suất y như thành
+ * viên thật, mà dashboard thì đã coi email này xong việc.
+ *
+ * KHÔNG BAO GIỜ lật ngược kết quả xoá: cú gỡ đã có bằng chứng dương rồi. Thu hồi
+ * hỏng thì ghi nhãn vào kết quả để dashboard/đồng bộ dọn sau, chứ báo cả lệnh
+ * hỏng là đẩy member đã rời thật quay về `active`.
+ */
+async function sweepPendingAfterRemove(
+  taskId: string,
+  email: string,
+): Promise<"none" | "revoked" | "failed" | "skipped"> {
+  await reportProgress(
+    taskId,
+    { phase: "verifying", message: `Xem ${email} còn lời mời chờ nào không...` },
+    true,
+  );
+  if (!(await ensurePendingInvitesTab())) {
+    console.warn(`${LOG} ${email}: không sang được tab Lời mời để quét lần cuối`);
+    return "skipped";
+  }
+  // Ngân sách xác minh 20s (mặc định 60s): đây là bước quét thêm cho chắc, nó
+  // không được ăn hết ngân sách 150s của lệnh gỡ vốn đã chạy gần xong.
+  const r = await revokeInvite(email, 20_000);
+  if (r.notInPending) {
+    console.log(`${LOG} ${email}: tab Lời mời cũng không còn gì → sạch`);
+    return "none";
+  }
+  if (r.ok) {
+    console.log(`${LOG} ${email}: còn lời mời treo → đã thu hồi nốt`);
+    return "revoked";
+  }
+  console.warn(
+    `${LOG} ${email}: còn lời mời treo nhưng thu hồi không ăn (${r.reason ?? "không rõ lý do"})`,
+  );
+  return "failed";
+}
+
 export async function executeRemove(
   taskId: string,
   email: string,
@@ -441,20 +484,20 @@ export async function executeRemove(
   await waitForModalLockGone(5000, LOG);
   console.log(`${LOG} ${email}: dialog xoá đã tắt hẳn → bắt đầu xác minh bằng ô lọc`);
 
-  // ---- XÁC MINH THẬT: member phải BIẾN MẤT khỏi list, không chỉ dialog đóng ----
+  // ---- XÁC MINH: member phải BIẾN MẤT khỏi list, không chỉ dialog đóng ----
   // Dialog đóng = ChatGPT NHẬN lệnh, KHÔNG bảo đảm đã xoá server-side (bug user
   // 2026-07-21: dialog đóng → báo COMPLETED → nhưng member VẪN còn → backend mark
   // removed OAN → đồng bộ thấy còn → hồi sinh active → giờ sau xoá lại → VÒNG LẶP
-  // xoá-giả vô hạn, không bao giờ xoá thật). Bản 2026-07-12 gỡ verify vì check QUÁ
-  // SỚM: ChatGPT eventual-consistent, sau DELETE THẬT list còn hiện member ~34s rồi
-  // mới biến mất → verify sớm báo "còn" = fail oan. Cách đúng: tra tối đa 2 lần
-  // (cách nhau 12s, trần 60s) bằng chính ô lọc server-side (clear+gõ lại mỗi lần
-  // → fetch mới):
-  //   - Row biến mất trong hạn → xoá THỰC SỰ có hiệu lực → verified:true.
-  //   - Hết 2 lần vẫn còn → xoá KHÔNG có hiệu lực (ChatGPT chặn/quyền/ghế) →
-  //     REMOVE_VERIFY_FAILED (ok:false) → backend GIỮ member active, KHÔNG mark
-  //     removed; tick sau retry; loop-guard backend chốt STUCK nếu lặp mãi.
-  // Hướng an toàn: thà báo chưa-xoá (giữ member) còn hơn báo đã-xoá GIẢ.
+  // xoá-giả). Nên vẫn phải hỏi lại ChatGPT một câu.
+  //
+  // ĐÚNG MỘT CÂU (user 6/9/2026: *"sau khi xoá xong chỉ cần tìm 1 lần, không cần
+  // chờ, chẳng cần tìm lại"*). Trước đây là 3 lượt × 2 vòng = tới 6 lần gõ cùng
+  // một email — nhìn từ ngoài là máy tra cứu liên tục mà chẳng biết thêm gì.
+  //
+  // Đánh đổi đã biết: ChatGPT còn trả về row vừa xoá thêm ~34s mới chịu bỏ, nên
+  // một lần tra CÓ THỂ vẫn thấy row → báo REMOVE_VERIFY_FAILED oan. Không mất
+  // mát: member được GIỮ nguyên (không mark removed), tick sau xoá lại là xong.
+  // Hướng an toàn vẫn thế — thà báo chưa-xoá còn hơn báo đã-xoá GIẢ.
   await reportProgress(
     taskId,
     { phase: "verifying", message: `Xác minh ${email} đã rời workspace...` },
@@ -464,48 +507,20 @@ export async function executeRemove(
   // chứ gõ ngay lúc list đang thay chính là kiểu "tìm kiếm liên tục" vô ích.
   await sleep(2000);
 
-  let gone = false;
-  // XÁC MINH SAU KHI ĐÃ BẤM XOÁ: gõ email MỘT LẦN là đủ, tối đa hai (user
-  // 6/9/2026: *"thực tế chỉ cần nhập 1 hoặc 2 lần là đủ"*).
-  //
-  // Trước đây là 3 lượt × 2 vòng = tới 6 lần gõ cùng một email, nhìn từ ngoài
-  // đúng kiểu "tra cứu liên tục" mà chẳng biết thêm gì: mỗi lượt đều hỏi lại
-  // đúng câu hỏi cũ, gõ dồn chỉ làm ChatGPT nuốt event.
-  //
-  // Vì sao ở ĐÂY hạ được xuống 1 vòng, còn lần tra TRƯỚC KHI CLICK vẫn giữ 2:
-  // chỗ này đã có cú click xoá + hộp thoại tắt hẳn làm bằng chứng, ô lọc chỉ còn
-  // việc xác nhận. Lần tra trước khi click thì kết luận "vắng mặt" tự nó đánh
-  // dấu removed mà không click lần nào — sai một cái là xoá-giả, nên vẫn nghiêm
-  // ngặt như cũ.
-  //
-  // Chốt chặn giữ nguyên: chỉ `absent` (ô lọc CÓ phản hồi query mà không ra row)
-  // mới tính là xoá xong; `inconclusive` (list câm) KHÔNG bao giờ được coi là đã
-  // xoá — thà báo chưa-xoá rồi tick sau thử lại còn hơn mark removed oan.
-  //
   // `requireStableList: false`: list vừa bị CHÍNH cú click xoá làm đổi (row rơi
   // ra, ChatGPT eventual-consistent) nên đòi nó "đứng yên" trước khi gõ chỉ đốt
-  // ngân sách.
-  const VERIFY_ATTEMPTS = 2;
-  // Lượt hai chỉ dành cho ca ChatGPT trả list chậm (~34s mới bỏ row đã xoá —
-  // đo từ 12/7/2026). Nghỉ 12s rồi hỏi lại mới có cái mới để đọc; hỏi dồn sau 3s
-  // chỉ nhận lại đúng câu trả lời cũ.
-  const VERIFY_GAP_MS = 12_000;
-  const verifyDeadlineMs = Date.now() + 60_000;
-  for (let attempt = 1; attempt <= VERIFY_ATTEMPTS; attempt++) {
-    const check = await filterOnceAndResolve(email, {
-      requireStableList: false,
-      confirmRounds: 1,
-    });
-    if (check.outcome === "absent") {
-      gone = true;
-      break;
-    }
+  // ngân sách. `confirmRounds: 1`: đã có cú click + hộp thoại tắt hẳn làm bằng
+  // chứng, ô lọc chỉ còn việc xác nhận.
+  const check = await filterOnceAndResolve(email, {
+    requireStableList: false,
+    confirmRounds: 1,
+  });
+  const gone = check.outcome === "absent";
+  if (!gone) {
     console.log(
-      `${LOG} ${email}: xác minh lần ${attempt}/${VERIFY_ATTEMPTS} → ${check.outcome}` +
+      `${LOG} ${email}: tra lại sau khi xoá → ${check.outcome}` +
         (check.outcome === "inconclusive" ? ` (${check.reason})` : ""),
     );
-    if (attempt >= VERIFY_ATTEMPTS || Date.now() + VERIFY_GAP_MS >= verifyDeadlineMs) break;
-    await sleep(VERIFY_GAP_MS);
   }
 
   await clearMemberFilter();
@@ -515,12 +530,17 @@ export async function executeRemove(
       ok: false,
       error_code: "REMOVE_VERIFY_FAILED",
       error_message:
-        `Đã click xoá ${email} (dialog đã tắt hẳn) nhưng member VẪN còn trong tab ` +
-        `"Người dùng" sau ${VERIFY_ATTEMPTS} lần tra (trần 60s) → xoá CHƯA có hiệu ` +
-        `lực. Giữ nguyên (không mark removed), sẽ thử lại ở lần sau.`,
+        `Đã click xoá ${email} (dialog đã tắt hẳn) nhưng tra lại vẫn chưa chắc ` +
+        `member đã rời tab "Người dùng" (${check.outcome}) → xoá CHƯA có hiệu lực, ` +
+        `hoặc ChatGPT còn trả về row cũ. Giữ nguyên (không mark removed), sẽ thử lại.`,
     };
   }
 
   console.log(`${LOG} ${email}: đã BIẾN MẤT khỏi list sau khi xoá → verified → COMPLETED`);
-  return { ok: true, data: { email, verified: true } };
+  // `allowPendingFallback` tắt = chính lệnh THU HỒI gọi vào đây làm đường lui, ta
+  // vừa từ tab Lời mời sang → quay lại đó tra nữa là ping-pong vô ích.
+  const pendingSweep = allowPendingFallback
+    ? await sweepPendingAfterRemove(taskId, email)
+    : "skipped";
+  return { ok: true, data: { email, verified: true, pending_sweep: pendingSweep } };
 }
