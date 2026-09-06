@@ -231,12 +231,24 @@ export default function InviteMembers() {
   const historyFor = (email: string) => historyMap[email.toLowerCase()];
   /** Workspace ĐÍCH của 1 email. Email cũ (có lịch sử): user chọn > default lịch sử.
    * Email MỚI: 1 workspace đích, user chọn (nếu được cấp ≥2), ngược lại NGẪU NHIÊN
-   * (ổn định theo email nhờ ref). */
+   * (ổn định theo email nhờ ref).
+   *
+   * Lịch sử THẮNG phần workspace được cấp, kể cả khi tài khoản không còn được gán
+   * không gian đó: email cũ phải mời lại đúng chỗ đang giữ hạn của nó, chứ không
+   * được bốc sang không gian khác (backend nới đúng chỗ này —
+   * `_assert_invite_workspace_access`). Nhánh ngẫu nhiên bên dưới CHỈ dành cho email
+   * chưa từng có mặt ở đâu. */
   const targetWsId = (email: string): string | undefined => {
     const key = email.toLowerCase();
     const picked = workspaceByEmail[key];
     const h = historyFor(email);
-    if (h) return picked ?? h.default_workspace_id;
+    if (h) {
+      // Chỉ nhận lựa chọn NẰM TRONG lịch sử: lúc mới dán, lịch sử còn đang tải nên
+      // email hiện ra như email mới và dropdown cho chọn cả workspace được cấp —
+      // lựa chọn lỡ tay đó không được phép sống sót và kéo email cũ sang chỗ khác.
+      const ok = picked && h.workspaces.some((w) => w.workspace_id === picked);
+      return ok ? picked : h.default_workspace_id;
+    }
     if (eligibleIds.length <= 1) return eligibleIds[0];
     // Email mới nhưng user đã tự chọn không gian ở cột "Không gian" → tôn trọng.
     if (picked && eligibleIds.includes(picked)) return picked;
@@ -251,13 +263,14 @@ export default function InviteMembers() {
   };
   /** Không gian CHỌN ĐƯỢC cho 1 email (dùng chung desktop + mobile):
    * - email CŨ (có lịch sử): các workspace lịch sử — giữ nguyên ý nghĩa "chọn lại
-   *   không gian cũ" (kèm usageDays để hiện "đã dùng X tháng" ở tooltip);
+   *   không gian cũ" (kèm usageDays để hiện "đã dùng X tháng" ở tooltip;
+   *   `null` = chưa vào được lần nào, ví dụ vừa chuyển hạn sang mà lệnh mời hỏng);
    * - email MỚI: toàn bộ workspace đích được cấp → user đổi được thay vì chịu bản
    *   ngẫu nhiên (yêu cầu user 2026-08-22).
    * ≥2 phần tử thì UI hiện dropdown, 1 phần tử hiện chữ tĩnh. */
   const wsOptionsFor = (
     email: string,
-  ): { id: string; name: string; usageDays?: number }[] => {
+  ): { id: string; name: string; usageDays?: number | null }[] => {
     const h = historyFor(email);
     if (h)
       return h.workspaces.map((w) => ({
@@ -1224,7 +1237,7 @@ export default function InviteMembers() {
                               const selTitle =
                                 (sel === undefined
                                   ? t("inviteMembers.colWorkspace")
-                                  : sel.usageDays === undefined
+                                  : sel.usageDays == null
                                     ? sel.name
                                     : t("inviteMembers.wsOption", {
                                         name: sel.name,
@@ -1305,7 +1318,7 @@ export default function InviteMembers() {
                                         key={o.id}
                                         value={o.id}
                                         title={
-                                          o.usageDays === undefined
+                                          o.usageDays == null
                                             ? undefined
                                             : usedText(o.usageDays)
                                         }
@@ -1590,7 +1603,7 @@ function MobileInviteCard({
   renew: boolean;
   free: boolean;
   // Không gian chọn được (lịch sử cho email cũ / đích được cấp cho email mới).
-  wsOptions: { id: string; name: string; usageDays?: number }[];
+  wsOptions: { id: string; name: string; usageDays?: number | null }[];
   selectedWs: string | undefined;
   busy: boolean;
   usedText: (days: number) => string;
@@ -1619,7 +1632,7 @@ function MobileInviteCard({
   const selectedTitle =
     selectedOpt === undefined
       ? undefined
-      : selectedOpt.usageDays === undefined
+      : selectedOpt.usageDays == null
         ? selectedOpt.name
         : t("inviteMembers.wsOption", {
             name: selectedOpt.name,
@@ -1728,7 +1741,7 @@ function MobileInviteCard({
                     <option
                       key={o.id}
                       value={o.id}
-                      title={o.usageDays === undefined ? undefined : usedText(o.usageDays)}
+                      title={o.usageDays == null ? undefined : usedText(o.usageDays)}
                     >
                       {seatLabel(o.id) ? `${o.name} · ${seatLabel(o.id)}` : o.name}
                     </option>

@@ -49,11 +49,14 @@ export function useAutoInviteTargets(platform: Platform = "gpt") {
   });
 }
 
-/** 1 workspace mà email ĐÃ TỪNG tham gia (do chính user này mời) đủ lâu để hiện lại. */
+/** 1 workspace mà email ĐÃ CÓ MẶT (do chính user này mời) và được phép mời lại vào. */
 export type EmailWorkspaceUsage = {
   workspace_id: string;
   name: string;
-  usage_days: number;
+  /** null = chưa từng vào được workspace này (lời mời hỏng / vừa chuyển hạn sang). */
+  usage_days: number | null;
+  /** Workspace ĐANG GIỮ HẠN của email — backend xếp lên đầu để làm mặc định. */
+  holds_subscription?: boolean;
 };
 export type EmailHistoryEntry = {
   default_workspace_id: string;
@@ -63,9 +66,11 @@ export type EmailHistoryEntry = {
 export type EmailHistory = Record<string, EmailHistoryEntry>;
 
 /**
- * Với danh sách email dán vào, hỏi backend những workspace mà mỗi email đã từng
- * tham gia (≥30 ngày, do chính tài khoản này mời) để hiện cột chọn lại workspace cũ.
- * Chỉ chạy khi có email; key theo tập email đã sắp xếp (ổn định giữa các lần gõ).
+ * Với danh sách email dán vào, hỏi backend những workspace mà mỗi email đã có mặt
+ * (do chính tài khoản này mời) để hiện cột chọn lại workspace cũ. Bản ghi có hạn sử
+ * dụng luôn được kể, kể cả khi email chưa vào được lần nào — mời lại phải trỏ về
+ * đúng nơi đang giữ hạn thay vì bốc ngẫu nhiên một workspace được gán. Chỉ chạy khi
+ * có email; key theo tập email đã sắp xếp (ổn định giữa các lần gõ).
  */
 export function useEmailHistory(emails: string[], platform: Platform = "gpt") {
   const sorted = [...emails].map((e) => e.toLowerCase()).sort();

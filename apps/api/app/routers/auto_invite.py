@@ -37,6 +37,24 @@ router = APIRouter(prefix="/api/v1/auto-invite", tags=["auto-invite"])
 MIN_USAGE_DAYS_FOR_HISTORY = 30
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Mốc thời gian về UTC có tzinfo. Dữ liệu cũ trong DB có dòng naive, trừ thẳng
+    hai kiểu khác nhau là TypeError giữa lúc đang dán email."""
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+def _history_rank(entry: dict) -> tuple[int, int]:
+    """Thứ tự ưu tiên workspace trong lịch sử của 1 email: workspace ĐANG GIỮ HẠN
+    đứng trước, rồi mới tới workspace dùng lâu nhất. Giữ hạn nghĩa là tiền của email
+    đang nằm ở đó — mời lại chỗ khác là khách mất chỗ cũ mà vẫn không được hoàn."""
+    return (
+        1 if entry.get("holds_subscription") else 0,
+        entry.get("usage_days") or 0,
+    )
+
+
 def _resolve_eligible_workspaces(
     db: Session, user: User, platform: str = PLATFORM_GPT
 ) -> list[Workspace]:
@@ -129,21 +147,29 @@ def get_email_history(
     db: Session = Depends(get_session),
     user: User = Depends(require_permission(Permission.MEMBER_INVITE)),
 ) -> dict:
-    """Với danh sách email dán vào, trả những workspace mà email ĐÃ TỪNG THAM GIA
-    (do CHÍNH tài khoản này mời — cơ chế chủ sở hữu: chỉ chủ cũ mới mời lại được) và
-    đã dùng tối thiểu `MIN_USAGE_DAYS_FOR_HISTORY` ngày. Trang Mời thành viên dùng để
-    hiện cột "Không gian" + cho chọn lại workspace cũ (mặc định = lần dùng dài nhất).
+    """Với danh sách email dán vào, trả những workspace mà email ĐÃ CÓ MẶT (do CHÍNH
+    tài khoản này mời — cơ chế chủ sở hữu: chỉ chủ cũ mới mời lại được). Trang Mời
+    thành viên dùng để hiện cột "Không gian" + cho chọn lại workspace cũ; mặc định là
+    workspace ĐANG GIỮ HẠN của email, sau đó mới tới lần dùng dài nhất.
 
     "Thời gian đã sử dụng" 1 workspace = span của Member row đó: `joined_at` →
     `removed_at` (hoặc `now` nếu còn active). Mỗi (workspace, email) chỉ có 1 Member
-    row (unique constraint) nên đây chính là lần tham gia dài nhất. Chỉ xét member
-    đã THẬT SỰ tham gia (`joined_at` NOT NULL) — pending chưa vào thì chưa có usage.
+    row (unique constraint) nên đây chính là lần tham gia dài nhất. Chưa từng vào
+    (`joined_at` NULL) thì `usage_days = null` chứ không phải 0.
 
     NỚI 2026-07-20: email ĐÃ HẾT HẠN (`subscription_end_at <= now`) là "email cũ vô
     chủ" → lịch sử workspace hiện cho BẤT KỲ AI mời lại (không chỉ chủ cũ), để luôn
     trỏ về đúng workspace cũ email từng dùng. Email CÒN HẠN vẫn chỉ chủ cũ thấy (khớp
-    [[invite-owner-lock]] mặt còn-hạn). Email chưa từng tham gia / <30 ngày KHÔNG
-    xuất hiện → FE cho vào workspace đích do admin gán."""
+    [[invite-owner-lock]] mặt còn-hạn).
+
+    NỚI 2026-09-06: bản ghi CÓ HẠN SỬ DỤNG (còn hay hết) LUÔN là lịch sử, kể cả khi
+    email chưa kịp vào workspace lần nào. Trước đây đòi `joined_at` NOT NULL + đủ 30
+    ngày nên một email vừa chuyển hạn sang nhưng lệnh mời hỏng (chưa vào được lần
+    nào) bị coi là email MỚI → trang Mời bốc ngẫu nhiên một workspace được gán và
+    đẩy khách sang chỗ khác, trong khi tiền vẫn nằm ở workspace cũ. Ngưỡng 30 ngày
+    giờ chỉ còn áp cho bản ghi KHÔNG có hạn sử dụng. Quyền workspace không cản: mời
+    lại email mình sở hữu vào đúng workspace cũ vẫn chạy dù tài khoản không còn được
+    gán workspace đó (`_assert_invite_workspace_access`)."""
     wanted = {e.strip().lower() for e in body.emails if e and e.strip()}
     if not wanted:
         return {"emails": {}}
@@ -162,7 +188,6 @@ def get_email_history(
         .where(
             func.lower(Member.email).in_(wanted),
             Workspace.platform == body.platform,
-            Member.joined_at.isnot(None),
             or_(
                 # Lịch sử của CHÍNH mình (còn hạn hay hết hạn đều thấy).
                 Member.invited_by_user_id == user.id,
@@ -175,46 +200,45 @@ def get_email_history(
         )
     ).all()
 
-    # email -> workspace_id -> {name, usage_days} (giữ span dài nhất nếu trùng).
+    # email -> workspace_id -> {name, usage_days, holds_subscription}. Mỗi cặp
+    # (email, workspace) chỉ có 1 Member row nên không có chuyện trùng, `prev` chỉ để
+    # phòng dữ liệu cũ lẫn hoa/thường trong cột email.
     by_email: dict[str, dict[str, dict]] = {}
     for r in rows:
-        end = r.removed_at or now
-        joined = r.joined_at
-        if joined.tzinfo is None:
-            joined = joined.replace(tzinfo=timezone.utc)
-        if end.tzinfo is None:
-            end = end.replace(tzinfo=timezone.utc)
-        usage_days = max(0, (end - joined).days)
-        # Ngưỡng 30 ngày chỉ áp cho email CÒN HẠN (tính năng "chọn lại workspace" tiện
-        # lợi). Email đã HẾT HẠN (vô chủ) LUÔN hiện workspace cũ dù dùng ngắn — để mời
-        # lại luôn trỏ về đúng không gian cũ (yêu cầu user 2026-07-20). Re-invite reset
-        # joined_at nên usage có thể =0, không được để ngưỡng chặn.
-        is_expired = (
-            r.subscription_end_at is not None
-            and (
-                r.subscription_end_at.replace(tzinfo=timezone.utc)
-                if r.subscription_end_at.tzinfo is None
-                else r.subscription_end_at
-            )
-            <= now
+        joined = _as_utc(r.joined_at)
+        end_at = _as_utc(r.subscription_end_at)
+        # Chưa từng vào workspace (`joined_at` NULL: lời mời hỏng, hoặc vừa chuyển hạn
+        # sang mà lệnh mời chưa chạy xong) → không có số ngày sử dụng để khoe, nhưng
+        # VẪN là lịch sử của email.
+        usage_days = (
+            None
+            if joined is None
+            else max(0, ((_as_utc(r.removed_at) or now) - joined).days)
         )
-        if not is_expired and usage_days < MIN_USAGE_DAYS_FOR_HISTORY:
+        # Ngưỡng 30 ngày chỉ còn áp cho bản ghi KHÔNG có hạn sử dụng — nó vốn là tiện
+        # ích "chọn lại workspace đã dùng lâu". Bản ghi CÓ hạn thì workspace đó là chỗ
+        # tiền của email đang nằm (còn hạn) hoặc từng nằm (hết hạn), mời lại phải trỏ
+        # về đúng đó dù dùng ngắn hay chưa vào lần nào.
+        if end_at is None and (
+            usage_days is None or usage_days < MIN_USAGE_DAYS_FOR_HISTORY
+        ):
             continue
         ws_id = str(r.workspace_id)
+        entry = {
+            "workspace_id": ws_id,
+            "name": r.name,
+            "usage_days": usage_days,
+            # Đang giữ hạn = workspace phải mời lại vào, kể cả bản ghi đã `removed`.
+            "holds_subscription": end_at is not None and end_at > now,
+        }
         bucket = by_email.setdefault(r.email, {})
         prev = bucket.get(ws_id)
-        if prev is None or usage_days > prev["usage_days"]:
-            bucket[ws_id] = {
-                "workspace_id": ws_id,
-                "name": r.name,
-                "usage_days": usage_days,
-            }
+        if prev is None or _history_rank(entry) > _history_rank(prev):
+            bucket[ws_id] = entry
 
     result: dict[str, dict] = {}
     for email, bucket in by_email.items():
-        workspaces = sorted(
-            bucket.values(), key=lambda w: w["usage_days"], reverse=True
-        )
+        workspaces = sorted(bucket.values(), key=_history_rank, reverse=True)
         if not workspaces:
             continue
         result[email] = {

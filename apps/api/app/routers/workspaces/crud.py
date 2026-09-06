@@ -16,7 +16,7 @@ Endpoints (đăng ký lên router dùng chung từ `_shared`):
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -30,6 +30,7 @@ from app.deps import (
 from app.models import (
     CANVA_SEAT_TOTAL,
     PLATFORM_CANVA,
+    Member,
     User,
     Workspace,
     WorkspaceAssignment,
@@ -127,16 +128,22 @@ def list_workspace_seats(
 
     Phạm vi rộng hơn `GET /workspaces` một chút: user có cờ `invite_all_workspaces`
     được add email vào MỌI workspace nên phải thấy suất của mọi workspace, dù chưa
-    được gán cái nào.
+    được gán cái nào. Từ 2026-09-06 cũng trả workspace đang chứa email do CHÍNH user
+    này mời: mời lại email cũ vào đúng workspace đó vẫn chạy dù không còn được gán
+    (`_assert_invite_workspace_access`), nên trang Mời phải đọc được suất ở đó —
+    thiếu thì chip suất trống trơn đúng lúc sắp trừ suất của không gian ấy.
     """
     stmt = select(Workspace).order_by(Workspace.created_at.desc())
     if platform is not None:
         stmt = stmt.where(Workspace.platform == platform)
     if not (user.is_super_admin or user.invite_all_workspaces):
-        stmt = stmt.join(
-            WorkspaceAssignment,
-            WorkspaceAssignment.workspace_id == Workspace.id,
-        ).where(WorkspaceAssignment.user_id == user.id)
+        assigned = select(WorkspaceAssignment.workspace_id).where(
+            WorkspaceAssignment.user_id == user.id
+        )
+        owned = select(Member.workspace_id).where(
+            Member.invited_by_user_id == user.id
+        )
+        stmt = stmt.where(or_(Workspace.id.in_(assigned), Workspace.id.in_(owned)))
     return seats.seat_snapshot(db, list(db.execute(stmt).scalars()))
 
 
