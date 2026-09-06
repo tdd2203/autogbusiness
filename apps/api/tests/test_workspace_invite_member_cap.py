@@ -19,6 +19,8 @@ Bất biến phải khoá:
      (vượt trần là mất tiền thật, mà chính họ sửa được con số trong một cú bấm).
   6. Câu từ chối là câu ADMIN SOẠN, đã thay {conlai}/{ngay}/{ten} — cùng một câu
      với chỗ hiện trên trang Mời, để đại lý không đọc hai kiểu chữ khác nhau.
+  7. Trần phải được kiểm LẠI lúc hoá đơn QR được trả tiền, không chỉ lúc tạo hoá
+     đơn: giữa hai mốc đó chỗ trống cuối cùng có thể đã bị lệnh khác lấy mất.
 """
 
 import uuid
@@ -276,3 +278,61 @@ def test_broken_placeholder_does_not_crash_invite(
     )
     assert r.status_code == 409, r.text
     assert r.json()["detail"] == "Hết chỗ 0 {khong_ton_tai} {"
+
+
+def _webhook_body(note: str, amount: int, txn_id: str) -> dict:
+    return {
+        "transferType": "in",
+        "transferAmount": amount,
+        "content": note,
+        "id": txn_id,
+        "referenceCode": txn_id,
+    }
+
+
+def test_cap_filled_while_paying_qr_refuses_fulfillment(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Bất biến 7 — cửa sổ chờ trả tiền.
+
+    Ví thiếu ⇒ 402 + hoá đơn QR, và lúc đó CHƯA có Member nào được tạo. Trần thì
+    thường được đặt đúng bằng số đang dùng, nên chỗ trống cuối cùng bị đại lý khác
+    lấy mất trong lúc người này còn quét QR là chuyện thường ngày. Guard ở endpoint
+    chỉ chứng minh được lúc TẠO hoá đơn còn chỗ ⇒ phải kiểm LẠI lúc thực thi.
+
+    Tiền QR vẫn credit vào ví (không mất đồng nào), KHÔNG trừ phí, không tạo member,
+    không sinh queue, và `fulfillment_error` mang đúng câu admin soạn để đại lý đọc
+    được lý do thay vì ngồi chờ một lời mời không bao giờ tới.
+    """
+    ws = create_ws(client, auth_header, "Cap WS race")
+    _set_cap(client, auth_header, ws["id"], 1)
+    _set_message(client, auth_header, "Hết chỗ, còn {conlai} suất.")
+    a = make_beta_sub(client, auth_header, username="capracea", balance=0)
+    b = make_beta_sub(client, auth_header, username="capraceb", balance=FEE)
+    assign(client, auth_header, ws["id"], a["id"])
+    assign(client, auth_header, ws["id"], b["id"])
+
+    # A ví rỗng → 402 + hoá đơn. Lúc này còn đúng 1 chỗ nên guard endpoint cho qua.
+    r = _invite(client, a["token"], ws["id"], "capracea@example.com")
+    assert r.status_code == 402, r.text
+    order = r.json()["detail"]["order"]
+
+    # B lấy mất chỗ cuối TRƯỚC khi A trả tiền.
+    assert _invite(client, b["token"], ws["id"], "capraceb@example.com").status_code == 202
+    assert _member_count(ws["id"]) == 1
+
+    wh = client.post("/webhook/sepay", json=_webhook_body(order["note"], FEE, "ORD-CAP-1"))
+    assert wh.status_code == 200 and wh.json().get("success") is True
+
+    o = client.get(
+        f"/api/v1/wallet/orders/{order['id']}", headers=bearer(a["token"])
+    ).json()
+    assert o["status"] == "paid"
+    assert o["queue_item_id"] is None, "vượt trần thì KHÔNG được sinh lệnh mời"
+    assert o["fulfillment_error"] == "Hết chỗ, còn 0 suất.", (
+        "phải là câu admin soạn, không phải 'HTTPException(...)' hay mã 409"
+    )
+    # Tiền ở lại ví A, không trừ phí, và trần vẫn đúng 1 người.
+    assert wallet_of(client, a["token"])["balance"] == FEE
+    assert _member_count(ws["id"]) == 1
+

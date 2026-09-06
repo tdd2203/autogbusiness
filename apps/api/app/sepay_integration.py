@@ -267,7 +267,7 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
     )
     from app.routers.wallet._shared import get_payment_settings
     from app.schemas import MemberUpdateSubscriptionIn
-    from app.services import payment_flow, wallet_service
+    from app.services import payment_flow, seats, wallet_service
     from app.sse import publish_task_event
 
     user = db.get(User, order.user_id) if order.user_id else None
@@ -301,6 +301,15 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
         # Chỉ đếm email chiếm seat MỚI (email active = gia hạn, không thêm seat).
         _assert_seat_available(
             db, ws, _count_new_invite_seats(db, ws.id, [e for e, _ in entries]), user
+        )
+        # TRẦN THÀNH VIÊN cũng phải kiểm LẠI ở đây, không chỉ ở endpoint: trần là số
+        # suất đã mua thật, mà nó thường được đặt đúng bằng số đang dùng — chỗ trống
+        # cuối cùng bị lệnh khác lấy mất trong lúc người này còn đang quét QR là
+        # chuyện thường, không phải ca hiếm. Guard ở endpoint chỉ chứng minh lúc TẠO
+        # hoá đơn còn chỗ. `assert_under_cap` đo bằng `seat_used` (đã vào + đang chờ)
+        # nên khác `_assert_seat_available` ngay trên (đo suất ChatGPT, nới +50%).
+        seats.assert_under_cap(
+            db, ws, seats.new_seat_count(db, ws.id, [e for e, _ in entries])
         )
         single = len(entries) == 1
         # Giữ đúng hành vi mời-lại (cờ do endpoint re-invite gắn vào order payload):
@@ -384,6 +393,18 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
         db.flush()
     else:
         raise ValueError(f"unknown order kind {order.kind!r}")
+
+
+def _fulfillment_error_text(exc: Exception) -> str:
+    """Câu ghi vào `payment_orders.fulfillment_error` — ĐẠI LÝ ĐỌC được câu này.
+
+    Guard trong `_fulfill_order` ném `HTTPException`, mà `str()` của nó ra
+    "409: <câu thật>" — dán nguyên con số HTTP vào màn hình người bán hàng thì họ
+    không hiểu gì. Lấy thẳng `detail` (câu do admin soạn ở trang Mời). Lỗi lạ
+    không có `detail` thì giữ nguyên văn để còn truy được.
+    """
+    detail = getattr(exc, "detail", None)
+    return (str(detail) if detail else str(exc))[:500]
 
 
 def handle_order(
@@ -513,7 +534,7 @@ def handle_order(
             outcome.update(result="credited", note=f"hoá đơn {order.kind} — đã nạp ví và thực thi")
     except Exception as e:  # noqa: BLE001 — webhook luôn trả 200; ghi lỗi vào order
         logger.exception("[sepay] order=%s đã nạp nhưng thực thi lỗi", order.id)
-        order.fulfillment_error = str(e)[:500]
+        order.fulfillment_error = _fulfillment_error_text(e)
         if outcome is not None:
             outcome.update(result="error", note=f"đã nạp ví nhưng thực thi lỗi: {e}")
     db.add(order)

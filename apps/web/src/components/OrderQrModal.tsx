@@ -26,6 +26,10 @@ export default function OrderQrModal({
   const qc = useQueryClient();
   const { data: status } = useOrderStatus(order.id);
   const paid = status?.status === "paid";
+  // Đã nhận tiền NHƯNG backend từ chối thực thi (workspace hết chỗ, email đã có chủ…).
+  // Tiền nằm lại trong Ví. Không có màn này thì đại lý thấy toast "đang xử lý" rồi
+  // chờ mãi một lời mời không bao giờ tới.
+  const failure = paid ? (status?.fulfillment_error ?? null) : null;
 
   // Tiêu đề + động từ theo loại hoá đơn.
   const title =
@@ -72,11 +76,16 @@ export default function OrderQrModal({
     qc.invalidateQueries({ queryKey: ["added-members"] });
     qc.invalidateQueries({ queryKey: ["member-logs"] });
     qc.invalidateQueries({ queryKey: ["wallet"] });
-    toast.success(`Đã thanh toán — hệ thống đang xử lý ${actionWord}.`);
     onPaid?.();
+    // Thực thi hỏng → KHÔNG tự đóng modal: đây là lúc duy nhất đại lý đọc được lý do.
+    if (failure) {
+      toast.error(failure);
+      return;
+    }
+    toast.success(`Đã thanh toán — hệ thống đang xử lý ${actionWord}.`);
     const timer = setTimeout(onClose, 2500);
     return () => clearTimeout(timer);
-  }, [paid, actionWord, qc, onPaid, onClose]);
+  }, [paid, failure, actionWord, qc, onPaid, onClose]);
 
   return (
     <div style={backdrop} onClick={onClose}>
@@ -94,7 +103,22 @@ export default function OrderQrModal({
         </div>
 
         <div style={{ padding: "0 24px 24px" }}>
-          {paid ? (
+          {paid && failure ? (
+            <div style={{ textAlign: "center", padding: "20px 0 8px" }}>
+              <div style={expiredIcon}>⚠</div>
+              <p style={{ fontSize: 17, fontWeight: 700, color: "var(--ink)", marginTop: 14 }}>
+                Đã nhận {formatVnd(order.amount_vnd)} — chưa {actionWord} được
+              </p>
+              <p style={{ fontSize: 13, color: "var(--ink)", marginTop: 8, maxWidth: 330, marginInline: "auto", lineHeight: 1.5 }}>
+                {failure}
+              </p>
+              <p style={{ fontSize: 12.5, color: "var(--ink-3)", marginTop: 10, maxWidth: 330, marginInline: "auto", lineHeight: 1.5 }}>
+                Tiền đã vào Ví của bạn, không mất đồng nào. Xong vướng mắc thì {actionWord} lại,
+                hệ thống trừ thẳng từ Ví.
+              </p>
+              <button onClick={onClose} style={{ ...primaryBtn, marginTop: 20 }}>Đóng</button>
+            </div>
+          ) : paid ? (
             <div style={{ textAlign: "center", padding: "20px 0 8px" }}>
               <div style={paidCheck}>✓</div>
               <p style={{ fontSize: 17, fontWeight: 700, color: "var(--ink)", marginTop: 14 }}>
