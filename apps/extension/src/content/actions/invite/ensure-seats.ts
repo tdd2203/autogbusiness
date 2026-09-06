@@ -136,6 +136,45 @@ function membersListReady(): boolean {
  */
 const SEAT_STEP_BUDGET_MS = 45_000;
 
+/**
+ * Nhịp báo ra dashboard trong lúc MUA SUẤT.
+ *
+ * VÌ SAO (ca thật CHATGPT PRO 4→6/9/2026, 6 lệnh mời hỏng `CONTENT_TIMEOUT`):
+ * chặng đọc số ở trên có `note()` nên còn thấy nó sống, nhưng từ lúc mở hộp
+ * "Quản lý suất" tới lúc ChatGPT trừ xong tiền thì KHÔNG một nhịp nào — đo trong
+ * DB là 253 giây im lặng liên tục. Im lặng đó hỏng ba đường cùng lúc:
+ *   1. `runner.ts` không phân biệt được "đang trừ tiền" với "đã chết", nên trần
+ *      cứng 300s chém ngang một lệnh mời đã đi tới nơi;
+ *   2. service worker MV3 chỉ sống khi có việc — 253s không ai gọi tới nó là đủ
+ *      để Chrome khai tử, và đồng hồ timeout chết theo (xem `progress-beat.ts`);
+ *   3. người bấm lệnh nhìn dashboard thấy đứng hình suốt 4 phút.
+ *
+ * Nhịp này KHÔNG làm luồng mua chạy khác đi một li nào: nó chỉ nhả một dòng chữ
+ * song song. 5s là nhịp thưa nhất còn giữ được service worker sống (Chrome gia
+ * hạn 30s cho mỗi lần có message tới).
+ */
+const BUY_HEARTBEAT_MS = 5_000;
+
+/**
+ * Chạy `fn`, trong lúc chờ thì cứ `BUY_HEARTBEAT_MS` nhả một nhịp kèm số giây
+ * đã trôi. Dừng nhịp ngay khi `fn` xong, kể cả khi nó ném.
+ */
+async function withHeartbeat<T>(
+  note: (message: string) => Promise<void>,
+  describe: (elapsedSec: number) => string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    void note(describe(Math.round((Date.now() - startedAt) / 1000)));
+  }, BUY_HEARTBEAT_MS);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
 /** Nhịp soi tab "Người dùng" chờ trang in xong số thành viên và hàng thẻ suất. */
 const PAGE_NUMBERS_POLL_MS = 400;
 /** Trần chờ, ĐẾM THEO NHỊP (≈15s) chứ không theo đồng hồ — test tiêm `sleep` giả. */
@@ -469,6 +508,12 @@ export async function ensureSeatsForInvite(
   const note = async (message: string): Promise<void> => {
     await reportProgress(taskId, { phase: "seat-check", message }, true);
   };
+  // Phase RIÊNG cho khúc đụng vào hộp suất/tiền: `timing.phases` bên backend gộp
+  // theo phase, để chung "seat-check" thì đọc lại một lệnh hỏng chỉ thấy đúng một
+  // cục 300 giây không biết nằm ở đọc số hay ở trừ tiền. Xem `BUY_HEARTBEAT_MS`.
+  const buyNote = async (message: string): Promise<void> => {
+    await reportProgress(taskId, { phase: "seat-buying", message }, true);
+  };
   await note("Đang kiểm tra số suất còn trống của không gian...");
 
   // ── BƯỚC 1: SỐ THÀNH VIÊN + THẺ SUẤT, đọc thẳng trên trang ──────────────
@@ -632,7 +677,11 @@ export async function ensureSeatsForInvite(
   // Chỉ tới đây mới đụng vào hộp: hoặc thẻ trên trang không đọc được, hoặc số
   // đọc tận nơi nói THIẾU chỗ và phải mua bù. Nợ suất của lời mời đang chờ đã
   // đếm tận nơi ở BƯỚC 2 (`scannedPending`) — không đếm lại.
-  const check = await checkSeatAvailability();
+  const check = await withHeartbeat(
+    buyNote,
+    (sec) => `Đang mở hộp "Quản lý số suất" để đọc số suất... (${sec}s)`,
+    () => checkSeatAvailability(),
+  );
 
   // ── Workspace UI cũ → giữ nguyên hành vi trước đây ──────────────────────
   if (!check.supported) {
@@ -864,7 +913,12 @@ export async function ensureSeatsForInvite(
   }
 
   console.log(`${LOG} thiếu ${shortfall} suất → mua bù trước khi mời`);
-  const purchase = await executePurchaseSeat(taskId, shortfall);
+  const purchase = await withHeartbeat(
+    buyNote,
+    (sec) =>
+      `Đang mua ${shortfall} suất trên ChatGPT — chờ trừ tiền xong mới mời... (${sec}s)`,
+    () => executePurchaseSeat(taskId, shortfall),
+  );
 
   const purchaseData =
     purchase.ok && "data" in purchase
@@ -1037,7 +1091,11 @@ export async function ensureSeatsForInvite(
     };
   }
 
-  const recheck = await checkSeatAvailability();
+  const recheck = await withHeartbeat(
+    buyNote,
+    (sec) => `Đã trừ tiền — đang mở lại hộp suất để đọc kiểm số mới... (${sec}s)`,
+    () => checkSeatAvailability(),
+  );
   const after =
     recheck.availability && recheck.modalClosed ? recheck.availability : null;
 

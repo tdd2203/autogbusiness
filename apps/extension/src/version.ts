@@ -25,7 +25,7 @@
  * chỉ hiện 8 mục đầu, phần còn lại nằm sau nút "Xem thêm".
  */
 
-export const VERSION = "0.15.9";
+export const VERSION = "0.16.2";
 
 export type ChangelogEntry = {
   version: string;
@@ -44,6 +44,62 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.16.2",
+    date: "2026-09-06",
+    kind: "fix",
+    title: "Đồng bộ",
+    note: "Chuyển tab giữa lúc đang quét thì dừng và báo, không ghi nhầm danh sách.",
+  },
+  {
+    version: "0.16.1",
+    date: "2026-09-06",
+    kind: "fix",
+    title: "Chạy lệnh",
+    note: "Tab đang dùng lại cũng được đưa lên trước, không còn bỏ sót.",
+  },
+  {
+    version: "0.16.0",
+    date: "2026-09-06",
+    kind: "fix",
+    title: "Chạy lệnh",
+    note: "Tab ChatGPT nay mở ở chế độ đang xem, và mỗi lúc chỉ chạy một lệnh.",
+  },
+  {
+    version: "0.15.16",
+    date: "2026-09-06",
+    kind: "fix",
+    title: "Đồng bộ",
+    note: "Gỡ bản tăng tốc gây đọc nhầm danh sách người dùng thành lời mời chờ.",
+  },
+  {
+    version: "0.15.14",
+    date: "2026-09-06",
+    kind: "fix",
+    title: "Đồng bộ",
+    note: "Quét danh sách nhanh hơn nhiều lần, hết cảnh chạy giữa chừng rồi báo hết giờ.",
+  },
+  {
+    version: "0.15.12",
+    date: "2026-09-06",
+    kind: "fix",
+    title: "Mời thành viên",
+    note: "Không còn báo hỏng khi ChatGPT trừ tiền mua suất lâu hơn thường lệ.",
+  },
+  {
+    version: "0.15.11",
+    date: "2026-09-06",
+    kind: "fix",
+    title: "Gỡ thành viên",
+    note: "Chưa tra được danh sách lời mời chờ thì không báo đã gỡ xong, để lượt sau làm lại.",
+  },
+  {
+    version: "0.15.10",
+    date: "2026-09-03",
+    kind: "fix",
+    title: "Mời thành viên",
+    note: "ChatGPT lỗi lúc mở quyền mời ngoài miền thì dừng lại, không mời mù.",
+  },
   {
     version: "0.15.9",
     date: "2026-09-03",

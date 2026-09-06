@@ -18,6 +18,7 @@ import { getConfig } from "../shared/storage";
 import type { ExtensionConfig, QueueItem } from "../shared/types";
 import { runPaymentChain, scrapeInvoiceDetailInTab } from "./payment-chain";
 import { pickSeatFields, withExtraData } from "./invite-seat-fields";
+import { withLiveTimeout } from "./live-timeout";
 import { readProgressBeat } from "./progress-beat";
 import {
   planSeatReloadAfterPurchase,
@@ -180,6 +181,58 @@ const CHECK_ACTIVE_TIMEOUT_MS = 120_000;
  * báo `CONTENT_TIMEOUT` rõ ràng + giải phóng SW + task kế chạy ngay, thay vì để
  * backend auto-cleanup mơ hồ sau khi đã treo lâu.
  */
+/**
+ * Tab admin được mở/đưa lên làm TAB ĐANG HIỆN, không phải tab nền.
+ *
+ * VÌ SAO ĐỔI (đo 6/9/2026, chốt cùng user): trình duyệt chỉ cấp nhịp vẽ khung
+ * hình cho tab đang được nhìn. Tab nền không có nhịp nào — đo trực tiếp trên
+ * `/admin/members`: `requestAnimationFrame` chạy **0 lần**, và bấm sang tab
+ * "Lời mời" thì URL đổi sang `?tab=invites` nhưng **bảng vẫn nguyên 25 dòng của
+ * tab Người dùng sau 9 giây**. React của ChatGPT không dựng lại bảng khi không
+ * ai nhìn, nên bộ quét đọc trúng bảng CŨ dưới nhãn tab MỚI.
+ *
+ * Chờ lâu hơn KHÔNG chữa được: trang không chậm, nó dừng hẳn. Đây là gốc của
+ * loạt lệnh đồng bộ tự động hỏng `CONTENT_TIMEOUT` từ 25/8/2026 (ban đêm không
+ * ai bấm vào tab), và của ca 6/9/2026 suýt gắn nhãn "chờ tham gia" cho 396 người
+ * đang dùng.
+ *
+ * Chú thích cũ ở đây nói mở tab nền để "không cướp màn hình người dùng". Điều đó
+ * đúng khi extension chạy chung trình duyệt làm việc. Thực tế nó chạy trong một
+ * profile RIÊNG chỉ để chạy lệnh (user chốt 6/9/2026) — ở đó không có màn hình
+ * nào để cướp, và người vận hành còn xem được lệnh đang làm gì.
+ *
+ * ⚠️ RÀNG BUỘC KÉO THEO: mỗi cửa sổ chỉ có ĐÚNG MỘT tab đang hiện. Hai lệnh chạy
+ * song song trong cùng cửa sổ thì tab của lệnh sau đẩy tab của lệnh trước xuống
+ * nền — và lệnh trước lại đứng hình. Vì vậy `TAB_SLOTS` phải còn đúng một ô.
+ */
+const ADMIN_TAB_ACTIVE = true;
+
+/**
+ * Đưa tab lên làm tab ĐANG HIỆN của cửa sổ nó đang nằm, rồi trả lại chính nó.
+ *
+ * MỌI đường trả tab của `ensureAdminTab` phải đi qua đây — không phải chỉ đường
+ * mở tab mới. Hai đường TÁI DÙNG tab (đang sẵn ở /admin thì dùng luôn; đúng trang
+ * thì F5 tại chỗ) không hề đụng tới cờ `active`, nên trước 6/9/2026 chúng để tab
+ * nằm nguyên dưới nền — và tab nền thì trang không được vẽ lại (xem
+ * `ADMIN_TAB_ACTIVE`). Sót đúng một đường là lệnh đứng hình y như cũ.
+ *
+ * CỐ Ý KHÔNG gọi `chrome.windows.update({focused:true})`: đưa tab lên trong cửa
+ * sổ của nó là đủ để trình duyệt vẽ trang, còn kéo cả cửa sổ lên trước là giật
+ * chuột/bàn phím khỏi việc người dùng đang làm ở ứng dụng khác. Cửa sổ bị thu nhỏ
+ * hoặc bị che kín thì vẫn tính là ẩn — ca đó `page-visible.ts` báo lỗi rõ ràng
+ * chứ không đọc bừa.
+ */
+async function focusAdminTab<T extends chrome.tabs.Tab>(tab: T): Promise<T> {
+  if (!ADMIN_TAB_ACTIVE || tab.id === undefined || tab.active) return tab;
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+  } catch (e) {
+    // Tab vừa bị đóng — các lớp kiểm tra phía sau sẽ bắt.
+    console.warn(`[autogpt-runner] không đưa được tab ${tab.id} lên trước`, e);
+  }
+  return tab;
+}
+
 const CONTENT_TIMEOUTS: Record<string, number> = {
   // INVITE_MEMBER (2026-08-22): mời có thể phải MUA SUẤT trước nên tốn thêm gần
   // bằng một PURCHASE_SEAT — 150s sẽ cắt task GIỮA LÚC thanh toán (tiền đã trừ
@@ -217,6 +270,41 @@ const CONTENT_TIMEOUTS: Record<string, number> = {
 };
 /** Backend default 300s (5') → 270s. */
 const DEFAULT_CONTENT_TIMEOUT_MS = 270_000;
+
+/**
+ * TRẦN TRÊN của phần gia hạn: content còn báo nhịp thì được chạy tiếp quá mốc
+ * `CONTENT_TIMEOUTS`, nhưng không bao giờ quá con số này.
+ *
+ * VÌ SAO CÓ (ca thật CHATGPT PRO 4→6/9/2026): mốc `CONTENT_TIMEOUTS` là một con
+ * số CỨNG đoán trước "lượt chạy hợp lệ dài nhất". Đoán sai một chút là hỏng theo
+ * kiểu tệ nhất — lệnh mời trên workspace 400 người tốn đúng ~300s cho chặng chốt
+ * suất + mua suất, đúng bằng mốc, nên nó thành trò tung đồng xu: `buithithuthuy`
+ * 6/9 xong ở 312s và `sondavarica` 4/9 xong ở 335s (COMPLETED, vì đồng hồ chết
+ * theo service worker trước khi kịp nổ), còn 6 lệnh khác cùng khúc đó bị chém ở
+ * đúng 300s DÙ LỜI MỜI ĐÃ GỬI XONG.
+ *
+ * Nhịp tiến độ là thứ phân biệt được hai ca mà con số cứng không phân biệt nổi:
+ * `progress-beat.ts` đã đo sẵn "content còn sống hay không", trước đây chỉ dùng
+ * để VIẾT CÂU GIẢI THÍCH sau khi đã giết. Nay dùng để KHÔNG giết: quá mốc mà
+ * nhịp gần nhất còn trong `ALIVE_BEAT_WINDOW_MS` thì cho chạy tiếp tới trần này;
+ * im quá ngần ấy thì giết ngay, không cần đợi hết trần.
+ *
+ * Trần phải VẪN nhỏ hơn ngưỡng treo của backend (`STUCK_THRESHOLDS` trong
+ * queue/execution.py) ~30s để extension tự báo lỗi trước.
+ *
+ * ⚠️ Chỉ đặt trần cao hơn tuổi thọ service worker MV3 cho loại lệnh mà content
+ * ĐÃ báo nhịp đều: mỗi nhịp là một message tới SW nên Chrome gia hạn 30s cho nó.
+ * Lệnh mời báo nhịp 5s/lần suốt chặng mua suất (`BUY_HEARTBEAT_MS` bên
+ * `ensure-seats.ts`) — không có nhịp đó thì 450s ở đây vô nghĩa vì SW chết trước.
+ */
+const CONTENT_TIMEOUT_CEILINGS: Record<string, number> = {
+  // Backend 480s (8') → 450s.
+  INVITE_MEMBER: 450_000,
+  PURCHASE_SEAT: 450_000,
+};
+
+/** Nhịp soi lại xem content còn sống không, trong lúc đang tính giờ. */
+const LIVE_CHECK_MS = 5_000;
 
 /**
  * Loại lệnh mà MẺ GỘP chạy tuần tự từng email (mỗi email một vòng lọc → menu →
@@ -555,7 +643,7 @@ async function ensureAdminTab(
         console.log(
           `[autogpt-runner] ô ${slot}: dùng lại tab ${existingId} KHÔNG F5 (action tự làm mới trang)`,
         );
-        return current;
+        return await focusAdminTab(current);
       }
 
       console.log(
@@ -566,11 +654,13 @@ async function ensureAdminTab(
       // Mốc so để biết trang MỚI đã tiếp quản chưa (xem `content-ready.ts`).
       const prevLoadId = await readContentLoadId(existingId);
       if (onCleanMembers) {
+        // F5 tại chỗ KHÔNG đụng tới cờ `active` — phải tự đưa lên trước.
+        await focusAdminTab(current);
         await chrome.tabs.reload(existingId);
       } else {
         await chrome.tabs.update(existingId, {
           url: CHATGPT_ADMIN_URL,
-          active: false,
+          active: ADMIN_TAB_ACTIVE,
         });
       }
       const loaded = await waitForTabComplete(existingId, TAB_LOAD_TIMEOUT_MS);
@@ -607,7 +697,7 @@ async function ensureAdminTab(
           );
         }
         console.log(`[autogpt-runner] ô ${slot}: tab ${existingId} sẵn sàng ${loaded.url}`);
-        return loaded;
+        return await focusAdminTab(loaded);
       }
       console.warn(
         `[autogpt-runner] ô ${slot}: F5 xong tab ${existingId} VẪN là trang cũ ` +
@@ -627,10 +717,10 @@ async function ensureAdminTab(
   }
 
   console.log(
-    `[autogpt-runner] ô ${slot}: mở tab admin MỚI ${CHATGPT_ADMIN_URL} (nền) — dữ liệu đã mới, không F5`,
+    `[autogpt-runner] ô ${slot}: mở tab admin MỚI ${CHATGPT_ADMIN_URL} — dữ liệu đã mới, không F5`,
   );
   const created = await createTrackedTab(
-    { url: CHATGPT_ADMIN_URL, active: false },
+    { url: CHATGPT_ADMIN_URL, active: ADMIN_TAB_ACTIVE },
     "admin",
   );
   if (created.id === undefined) return null;
@@ -652,7 +742,7 @@ async function ensureAdminTab(
   console.log(
     `[autogpt-runner] ô ${slot}: tab mới ${created.id} sẵn sàng ${loaded.url}`,
   );
-  return loaded;
+  return await focusAdminTab(loaded);
 }
 
 /**
@@ -885,7 +975,7 @@ async function ensureContentInjected(
     }
     await forgetOpenedTab(tabId);
     const created = await createTrackedTab(
-      { url: CHATGPT_ADMIN_URL, active: false },
+      { url: CHATGPT_ADMIN_URL, active: ADMIN_TAB_ACTIVE },
       "admin",
     );
     if (created.id === undefined) {
@@ -2348,7 +2438,7 @@ async function handlePurchaseSeatSkipMode(
   if (!tab.url?.includes("billing") || !tab.url?.includes("tab=invoices")) {
     await chrome.tabs.update(tabId, {
       url: "https://chatgpt.com/admin/billing?tab=invoices",
-      active: false,
+      active: ADMIN_TAB_ACTIVE,
     });
     await waitForTabComplete(tabId, 20_000);
     await sleep(2500);
@@ -2677,7 +2767,7 @@ async function runOnceOnSlot(
       `[autogpt-runner] ${task.type}: tab đang ở "${tab.url}" (không phải sub-tab Người dùng) → navigate về ${CHATGPT_ADMIN_URL}`,
     );
     const prevLoadId = await readContentLoadId(tab.id);
-    await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: false });
+    await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: ADMIN_TAB_ACTIVE });
     const navigated = await waitForTabComplete(tab.id, 20_000);
     if (navigated?.url && !navigated.url.includes("/admin")) {
       console.warn(
@@ -2713,7 +2803,7 @@ async function runOnceOnSlot(
     const prevLoadId = await readContentLoadId(tab.id);
     await chrome.tabs.update(tab.id, {
       url: CHATGPT_USAGE_LIMIT_URL,
-      active: false,
+      active: ADMIN_TAB_ACTIVE,
     });
     const navigated = await waitForTabComplete(tab.id, 20_000);
     if (navigated?.url && !navigated.url.includes("/admin")) {
@@ -2756,26 +2846,37 @@ async function runOnceOnSlot(
     (MERGE_SEQUENTIAL_TYPES.has(task.type)
       ? sequentialUnits(task)
       : 1);
+  // Trần TRÊN của phần gia hạn khi content vẫn báo nhịp — xem
+  // `CONTENT_TIMEOUT_CEILINGS`. Không khai trần riêng thì trần = mốc cứng, tức
+  // giữ nguyên hành vi cũ.
+  const phase1Ceiling =
+    (CONTENT_TIMEOUT_CEILINGS[task.type] ?? phase1Timeout) *
+    (MERGE_SEQUENTIAL_TYPES.has(task.type) ? sequentialUnits(task) : 1);
   const phase1TabId = tab.id;
   const dispatchPhase1 = async (): Promise<ExecuteActionResponse> => {
     console.log(`[autogpt-runner] sending ${request.kind} to content script...`);
+    const startedAt = Date.now();
     try {
-      return await withTimeout(
-        sendToContent(phase1TabId, request),
-        phase1Timeout,
-        `content-${request.kind}`,
-      );
+      return await withLiveTimeout(sendToContent(phase1TabId, request), {
+        baseMs: phase1Timeout,
+        ceilingMs: phase1Ceiling,
+        aliveWindowMs: ALIVE_BEAT_WINDOW_MS,
+        checkMs: LIVE_CHECK_MS,
+        label: `content-${request.kind}`,
+        lastBeatAt: () => readProgressBeat(task.id)?.at ?? null,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
       console.warn(
-        `[autogpt-runner] Phase 1 ${request.kind} TIMEOUT/throw sau ${phase1Timeout}ms: ${msg}`,
+        `[autogpt-runner] Phase 1 ${request.kind} TIMEOUT/throw sau ${elapsedSec}s: ${msg}`,
       );
       return {
         ok: false,
         error_code: "CONTENT_TIMEOUT",
         error_message:
           `Content script không trả kết quả cho ${request.kind} trong ` +
-          `${Math.round(phase1Timeout / 1000)}s. Task được fail sớm để giải phóng ` +
+          `${elapsedSec}s. Task được fail sớm để giải phóng ` +
           `hàng đợi thay vì kẹt tới auto-cleanup. ` +
           contentTimeoutCause(task.id) +
           ` Lỗi gốc: ${msg}`,
@@ -2858,7 +2959,7 @@ async function runOnceOnSlot(
 
     try {
       const prevLoadId = await readContentLoadId(tab.id);
-      await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: false });
+      await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: ADMIN_TAB_ACTIVE });
       const reloaded = await waitForTabComplete(tab.id, 20_000);
       if (!reloaded?.url?.includes("/admin")) {
         response = seatReloadFailureResponse(purchased, {
@@ -2978,7 +3079,7 @@ async function runOnceOnSlot(
       const prevLoadId = await readContentLoadId(phase1TabId);
       await chrome.tabs.update(phase1TabId, {
         url: CHATGPT_ADMIN_URL,
-        active: false,
+        active: ADMIN_TAB_ACTIVE,
       });
       const reloaded = await waitForTabComplete(phase1TabId, 20_000);
       if (!reloaded?.url?.includes("/admin")) {
@@ -3263,7 +3364,7 @@ async function runOnceOnSlot(
       // bên dưới nhận ra "trang mới" bằng cách so instance, không phải bằng cách
       // tin vào status=complete. Xem `ensureFreshContentAfterNav`.
       const prevLoadId = await readContentLoadId(tab.id);
-      await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: false });
+      await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: ADMIN_TAB_ACTIVE });
       const reloaded = await waitForTabComplete(tab.id, 20_000);
       if (!reloaded?.url?.includes("/admin")) {
         response = {

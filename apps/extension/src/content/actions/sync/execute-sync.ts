@@ -9,6 +9,11 @@ import {
   detectChatGPTLocale,
   type ChatGPTLocale,
 } from "../../i18n-ui";
+import {
+  PAGE_HIDDEN_MESSAGE,
+  pageHiddenMidRunMessage,
+  waitForPageVisible,
+} from "../../page-visible";
 import { reportProgress } from "../../progress";
 import { getChatGPTUserInfo } from "../../scrapers/user";
 import { TEXT_FALLBACKS } from "../../selectors";
@@ -61,6 +66,17 @@ export async function executeSync(
       ok: false,
       error_code: "PAGE_NOT_ADMIN",
       error_message: `Trang hiện tại không phải admin (${location.pathname}). Mở chatgpt.com/admin/members trước.`,
+    };
+  }
+
+  // ── CỬA BẮT BUỘC: trang phải đang được vẽ ───────────────────────────────
+  // Tab ẩn thì React của ChatGPT không dựng lại bảng, và bộ quét sẽ đọc bảng CŨ
+  // dưới nhãn tab MỚI mà không có lỗi nào nổ ra. Xem `page-visible.ts`.
+  if (!(await waitForPageVisible())) {
+    return {
+      ok: false,
+      error_code: "PAGE_NOT_RENDERING",
+      error_message: PAGE_HIDDEN_MESSAGE,
     };
   }
 
@@ -165,12 +181,21 @@ export async function executeSync(
       )
     ) {
       invitesTabFound = true;
-      const { members } = await scrapeCurrentTab(
+      const { members, hidden } = await scrapeCurrentTab(
         taskId,
         "pending",
         "Lời mời",
         isOverTime,
       );
+      // Mất hiển thị giữa chừng ⇒ danh sách CHƯA đủ. Đi tiếp là để backend đối
+      // chiếu bằng một tập thiếu — nó đọc "vắng mặt" thành "đã rời workspace".
+      if (hidden) {
+        return {
+          ok: false,
+          error_code: "PAGE_NOT_RENDERING",
+          error_message: pageHiddenMidRunMessage(members.length),
+        };
+      }
       console.log(`[autogpt-sync] tab Lời mời: ${members.length} entries`);
       for (const m of members) merged.set(m.email, m);
     }
@@ -200,12 +225,19 @@ export async function executeSync(
     )
   ) {
     tab1Found = true;
-    const { members, expectedTotal } = await scrapeCurrentTab(
+    const { members, expectedTotal, hidden } = await scrapeCurrentTab(
       taskId,
       "active",
       "Người dùng",
       isOverTime,
     );
+    if (hidden) {
+      return {
+        ok: false,
+        error_code: "PAGE_NOT_RENDERING",
+        error_message: pageHiddenMidRunMessage(merged.size + members.length),
+      };
+    }
     activeExpectedTotal = expectedTotal;
     console.log(
       `[autogpt-sync] tab Người dùng: ${members.length} entries (header ${expectedTotal ?? "?"})`,
@@ -231,12 +263,19 @@ export async function executeSync(
     console.warn(
       "[autogpt-sync] không tìm được tab buttons — scrape DOM hiện tại như Người dùng",
     );
-    const { members, expectedTotal } = await scrapeCurrentTab(
+    const { members, expectedTotal, hidden } = await scrapeCurrentTab(
       taskId,
       "active",
       "DOM hiện tại",
       isOverTime,
     );
+    if (hidden) {
+      return {
+        ok: false,
+        error_code: "PAGE_NOT_RENDERING",
+        error_message: pageHiddenMidRunMessage(merged.size + members.length),
+      };
+    }
     activeExpectedTotal = expectedTotal;
     for (const m of members) merged.set(m.email, m);
   }

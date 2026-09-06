@@ -78,6 +78,10 @@ _FRIENDLY: dict[str, str] = {
         "Trình duyệt chạy lệnh không mở đúng trang quản trị ChatGPT. Vui lòng báo "
         "quản trị viên."
     ),
+    "PAGE_NOT_RENDERING": (
+        "Tab ChatGPT trên trình duyệt chạy lệnh đang chạy ngầm nên trang không "
+        "được vẽ lại. Mở cửa sổ đó lên rồi chạy lại lệnh."
+    ),
     "CONTENT_NOT_INJECTED": (
         "Trình duyệt chạy lệnh chưa sẵn sàng. Vui lòng thử lại sau vài phút."
     ),
@@ -163,6 +167,7 @@ _SHORT: dict[str, tuple[str, bool]] = {
     # ── Trình duyệt chạy lệnh ────────────────────────────────────────────────
     "NOT_LOGGED_IN_CHATGPT": ("Trình duyệt chạy lệnh chưa sẵn sàng", False),
     "PAGE_NOT_ADMIN": ("Trình duyệt chạy lệnh chưa sẵn sàng", False),
+    "PAGE_NOT_RENDERING": ("Tab chạy lệnh đang chạy ngầm", False),
     "CONTENT_NOT_INJECTED": ("Trình duyệt chạy lệnh chưa sẵn sàng", False),
     "STALE_BUILD": ("Tiện ích trình duyệt là bản cũ", False),
     "CONTENT_TIMEOUT": ("Lệnh chạy quá lâu", False),

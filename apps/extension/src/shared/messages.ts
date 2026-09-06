@@ -288,6 +288,10 @@ export type ExecuteActionResponse =
         // loop-guard chốt STUCK nếu lặp mãi (bug user 2026-07-21).
         | "REMOVE_VERIFY_FAILED"
         | "PAGE_NOT_ADMIN"
+        // Tab chạy ngầm nên trình duyệt không vẽ lại trang: cú bấm đổi tab vẫn
+        // ăn nhưng bảng dữ liệu không bao giờ được dựng lại. Dừng thay vì đọc
+        // bảng cũ — xem `content/page-visible.ts`.
+        | "PAGE_NOT_RENDERING"
         // DOM/UX ChatGPT thay đổi ngoài dự kiến: phần tử CẤU TRÚC bắt buộc phải
         // có (nút mở dialog mời, dropdown vai trò trên row ĐÃ tìm thấy, nút menu
         // "…", nút xác nhận xoá…) KHÔNG xuất hiện dù đang đúng trang/ngữ cảnh.

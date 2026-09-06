@@ -30,6 +30,7 @@ const STEP_BY_PHASE: Record<string, string> = {
   "seat-check": "seatCheck",
   "seat-reload": "seatCheck",
   "seat-reload-verify": "seatCheck",
+  "seat-buying": "seatBuying",
   "seat-repurchase": "seatBuying",
   charge_modal: "seatBuying",
   confirm_charge: "seatBuying",

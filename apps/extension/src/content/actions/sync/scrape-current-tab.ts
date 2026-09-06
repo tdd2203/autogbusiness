@@ -1,5 +1,6 @@
 import type { ScrapedMember } from "../../../shared/messages";
 import { humanClick, sleep, waitFor, waitForCountStable } from "../../human";
+import { pageIsVisible } from "../../page-visible";
 import { reportProgress } from "../../progress";
 import {
   findPaginationState,
@@ -184,6 +185,11 @@ async function collectRowsByScrolling(
   window.scrollTo({ top: 0, behavior: "auto" });
   await sleep(400);
 
+  // Chụp DANH SÁCH EMAIL trước khi cuộn — dùng để nhận ra bảng có ảo hoá không.
+  // Không dùng số đếm: bảng ảo hoá gỡ bớt dòng cũ khi cuộn nên số có thể bằng
+  // nhau trong khi các dòng đã khác hẳn. So theo tập email mới chắc.
+  const beforeScroll = new Set(visibleEmails());
+
   const totalAfterScroll = await scrollUntilAllLoaded(
     isOverTime,
     200,
@@ -194,6 +200,46 @@ async function collectRowsByScrolling(
     `[autogpt-sync] [${tag}] scroll xong: ~${totalAfterScroll} rows` +
       (expectedTotal ? ` (mốc header ${expectedTotal})` : ""),
   );
+
+  // ── ĐƯỜNG TẮT: bảng KHÔNG ảo hoá ────────────────────────────────────────
+  // Cuộn hết một lượt mà tập email y hệt lúc chưa cuộn ⇒ mọi dòng của trang này
+  // đã nằm sẵn trong DOM, không có dòng nào chờ được nạp thêm và không dòng nào
+  // bị gỡ đi. Đọc một phát là đủ; lượt cuộn-từng-màn-hình phía dưới chỉ đọc lại
+  // đúng ngần ấy dòng.
+  //
+  // ĐO THẬT 6/9/2026, tab "Người dùng" của CHATGPT PRO: 25 dòng/trang, 16 trang,
+  // cuộn xuống đáy KHÔNG sinh thêm dòng nào. Vậy mà mỗi trang vẫn phải trả giá
+  // cho một lượt cuộn thứ hai — hơn chục nhịp chờ, nhân 16 trang. Bảng ảo hoá
+  // thật (workspace khác, ChatGPT đổi UI) thì tập email sẽ khác và mọi thứ chạy
+  // như cũ; đây là đường tắt CÓ ĐIỀU KIỆN, không phải bỏ bớt bước.
+  //
+  // ⚠️ ĐỪNG "TỐI ƯU" TIẾP BẰNG CÁCH DÒ MỘT LẦN RỒI DÙNG CHO MỌI TRANG. Đã thử
+  // đúng cách đó (v0.15.15, 6/9/2026) và nó hỏng ngay lần chạy đầu: tab "Lời mời"
+  // có thanh phân trang của bảng "Người dùng" nằm ẩn phía sau, bấm sang trang là
+  // lôi bảng kia ra — mà đường tắt "đã biết rồi, đọc thẳng" thì không soi lại
+  // đang đứng ở tab nào, nên nó gom 396 người ĐANG DÙNG dưới nhãn "chờ tham gia".
+  // Chỉ có chốt chặn "không quay lại được tab Người dùng" ở `execute-sync.ts` cứu.
+  // Muốn tắt qua nhiều trang thì phải KIỂM CHỨNG TAB ở từng trang trước đã.
+  const afterScroll = visibleRows();
+  const sameRows =
+    afterScroll.length === beforeScroll.size &&
+    afterScroll.every((m) => beforeScroll.has(m.email));
+  // Còn thiếu so với mốc header thì tuyệt đối không tắt: thà cuộn thêm còn hơn
+  // trả về danh sách thiếu (backend đọc "vắng mặt" thành "đã rời workspace").
+  const reachedHeader = !expectedTotal || afterScroll.length >= expectedTotal;
+  if (sameRows && reachedHeader && afterScroll.length > 0) {
+    for (const m of afterScroll) collected.set(m.email, { ...m, status });
+    console.log(
+      `[autogpt-sync] [${tag}] bảng không ảo hoá (${afterScroll.length} dòng có sẵn) ` +
+        "— đọc một lượt, bỏ vòng cuộn từng màn hình",
+    );
+    await reportProgress(taskId, {
+      phase: "scraping",
+      current: collected.size,
+      message: `[${tag}] Đã thu ${collected.size}`,
+    });
+    return false;
+  }
 
   window.scrollTo({ top: 0, behavior: "auto" });
   await sleep(400);
@@ -255,6 +301,8 @@ export async function scrapeCurrentTab(
   members: ScrapedMember[];
   timedOut: boolean;
   expectedTotal: number | null;
+  /** Tab bị đẩy xuống nền giữa chừng → danh sách CHƯA đủ, caller phải dừng. */
+  hidden: boolean;
 }> {
   await reportProgress(
     taskId,
@@ -278,6 +326,9 @@ export async function scrapeCurrentTab(
 
   const collected = new Map<string, ScrapedMember>();
   let timedOut = false;
+  // Mất hiển thị giữa chừng: từ nhịp đó trở đi trang không được vẽ lại nữa nên
+  // mọi thứ đọc thêm đều là bảng cũ. Xem `pageIsVisible`.
+  let hidden = false;
 
   // Tổng kỳ vọng đọc từ header (mốc dừng) — chỉ có ý nghĩa với tab active.
   const expectedTotal = status === "active" ? readHeaderMemberCount() : null;
@@ -295,6 +346,14 @@ export async function scrapeCurrentTab(
     for (let guard = 0; guard < MAX_PAGINATION_PAGES; guard++) {
       if (isOverTime()) {
         timedOut = true;
+        break;
+      }
+      if (!pageIsVisible()) {
+        console.warn(
+          `[autogpt-sync] [${label}] tab bị đẩy xuống nền ở trang ${guard + 1} — ` +
+            "dừng, KHÔNG đọc tiếp bảng cũ",
+        );
+        hidden = true;
         break;
       }
 
@@ -361,5 +420,16 @@ export async function scrapeCurrentTab(
     );
   }
 
-  return { members: Array.from(collected.values()), timedOut, expectedTotal };
+  if (!hidden && !pageIsVisible()) {
+    console.warn(
+      `[autogpt-sync] [${label}] tab bị đẩy xuống nền trong lúc quét — dừng`,
+    );
+    hidden = true;
+  }
+  return {
+    members: Array.from(collected.values()),
+    timedOut,
+    expectedTotal,
+    hidden,
+  };
 }

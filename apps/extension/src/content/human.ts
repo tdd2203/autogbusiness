@@ -12,10 +12,19 @@
  *   setTimeout về ~1000ms → gõ từng ký tự = ~1s/ký tự. Xem `humanType`.
  */
 
+import { sleepAccurate } from "./unthrottled-sleep";
+
 const DELAY_MULTIPLIER = 0.18;
 
+/**
+ * MỌI nhịp chờ của content đi qua đây — kể cả `waitFor` bên dưới.
+ *
+ * Tab admin chạy nền nên `setTimeout` bị Chrome bóp về ~1 giây (đo 6/9/2026:
+ * `sleep(300)` mất 957ms). Nhịp ngắn vì thế được nhờ service worker đếm giờ hộ;
+ * chi tiết và số đo ở [`unthrottled-sleep.ts`](./unthrottled-sleep.ts).
+ */
 export function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return sleepAccurate(ms);
 }
 
 export function randomDelay(minMs = 1500, maxMs = 4000): Promise<void> {

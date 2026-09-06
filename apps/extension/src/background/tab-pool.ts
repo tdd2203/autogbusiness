@@ -23,8 +23,27 @@
 
 const POOL_KEY = "autogpt.tabPool";
 
-/** Số tab tối đa extension được mở để chạy lệnh = số lệnh chạy song song tối đa. */
-export const TAB_SLOTS = [1, 2] as const;
+/**
+ * Số tab tối đa extension được mở để chạy lệnh = số lệnh chạy song song tối đa.
+ *
+ * MỘT Ô kể từ 6/9/2026, vì hai lý do độc lập cùng chỉ về đây:
+ *
+ * 1. **Tab phải đang hiện mới chạy được.** Trình duyệt chỉ cấp nhịp vẽ cho tab
+ *    đang được nhìn; tab nền thì React của ChatGPT không dựng lại bảng và bộ quét
+ *    đọc trúng bảng cũ (xem `ADMIN_TAB_ACTIVE` bên `runner.ts`). Mà mỗi cửa sổ
+ *    chỉ có ĐÚNG MỘT tab đang hiện — nên chạy song song trong một cửa sổ là tự
+ *    đẩy lệnh kia xuống nền cho nó đứng hình.
+ *
+ * 2. **Hai lệnh cùng lúc giẫm chân nhau.** Đo trên 1.090 lệnh trong 30 ngày: khi
+ *    hai lệnh chạy chồng thời gian, tỷ lệ hỏng tăng gấp 2-2,6 lần (gỡ chồng gỡ
+ *    50% so với nền 19,6%; thu hồi chồng mời hỏng bằng `FAILED_UI_CHANGED` — đúng
+ *    dấu vết hai lệnh giành nhau tab "Lời mời"). Hai ô tab tách được TAB nhưng
+ *    không tách được workspace: vẫn một danh sách, một bộ đếm suất.
+ *
+ * Đổi lại: thông lượng trên giấy giảm một nửa. Thực tế chưa chắc, vì phần lớn
+ * cái mất là những lượt chạy chồng vốn đang hỏng rồi phải chạy lại.
+ */
+export const TAB_SLOTS = [1] as const;
 export type TabSlot = (typeof TAB_SLOTS)[number];
 
 type PoolMap = Partial<Record<TabSlot, number>>;

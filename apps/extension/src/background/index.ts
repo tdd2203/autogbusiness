@@ -234,6 +234,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
+  // Đếm giờ hộ content script. Tab admin chạy nền nên `setTimeout` của NÓ bị
+  // Chrome bóp về tối thiểu ~1 giây (đo 6/9/2026: `sleep(300)` → 957ms), khiến
+  // mỗi trang của bộ quét tốn hơn chục giây cho những nhịp chờ lẽ ra vài trăm
+  // mili giây. Service worker không phải một tab nên đồng hồ của nó chạy đúng.
+  // Xem `content/unthrottled-sleep.ts`.
+  if (msg?.type === "sleep" && typeof msg.ms === "number") {
+    const ms = Math.min(Math.max(0, msg.ms), 5_000);
+    setTimeout(() => sendResponse(true), ms);
+    return true;
+  }
   if (msg?.type === "task-progress" && typeof msg.taskId === "string") {
     // Đóng dấu nhịp NGAY, trước cả khi đẩy lên backend: runner đọc dấu này để
     // biết content còn sống hay không lúc đồng hồ timeout nổ (xem

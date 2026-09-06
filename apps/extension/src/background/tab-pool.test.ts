@@ -6,26 +6,29 @@ import { describe, expect, it } from "vitest";
 import { acquireSlot, anySlotLeased, releaseSlot, TAB_SLOTS } from "./tab-pool";
 
 describe("bể ô tab", () => {
-  it("cấp đủ 2 ô khác nhau, ô thứ 3 phải đợi", async () => {
+  it("CHỈ MỘT ô — lệnh thứ hai phải xếp hàng", async () => {
+    // Một ô là chốt cố ý, không phải cấu hình tạm: tab admin phải là tab ĐANG
+    // HIỆN mới được trình duyệt vẽ, mà mỗi cửa sổ chỉ có một tab đang hiện.
+    // Chạy song song = tự đẩy lệnh kia xuống nền cho nó đứng hình. Xem chú thích
+    // của `TAB_SLOTS`.
+    expect(TAB_SLOTS).toHaveLength(1);
+
     const a = await acquireSlot();
-    const b = await acquireSlot();
-    expect(a).not.toBe(b);
     expect(TAB_SLOTS).toContain(a);
-    expect(TAB_SLOTS).toContain(b);
     expect(anySlotLeased()).toBe(true);
 
-    let third: number | null = null;
-    const pending = acquireSlot().then((s) => (third = s));
-    // Chưa ai trả ô → vẫn treo.
+    let second: number | null = null;
+    const pending = acquireSlot().then((s) => (second = s));
+    // Chưa ai trả ô → lệnh thứ hai vẫn treo, KHÔNG được cấp ô song song.
     await Promise.resolve();
-    expect(third).toBeNull();
+    expect(second).toBeNull();
 
     releaseSlot(a);
     await pending;
-    expect(third).toBe(a);
+    // Nhận đúng ô vừa được trả, không phải một ô thứ hai.
+    expect(second).toBe(a);
 
     releaseSlot(a);
-    releaseSlot(b);
     expect(anySlotLeased()).toBe(false);
   });
 });
