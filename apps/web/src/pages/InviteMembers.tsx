@@ -16,6 +16,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useFormatDate, useT, useTranslateEnum } from "../i18n";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { buildSeatRun } from "../lib/seatRun";
 import { useAuth } from "../hooks/useAuth";
 import { usePlatform } from "../hooks/usePlatform";
 import { parseEmailsFromText } from "../lib/emailParser";
@@ -34,6 +35,8 @@ const MIN_MONTHS = 1;
 const MAX_MONTHS = 60;
 const QUICK_MONTHS = [1, 3, 6, 12] as const;
 const DAYS_PER_MONTH = 30;
+// Mũi tên nối các dòng giữa của dãy suất (dòng đầu và dòng cuối mới hiện số).
+const SEAT_RUN_ARROW = "↓";
 
 function clampMonths(n: number): number {
   if (!Number.isFinite(n)) return DEFAULT_MONTHS;
@@ -621,6 +624,54 @@ export default function InviteMembers() {
     return after === 0;
   };
 
+  /**
+   * DÃY SUẤT của cột "Không gian": số suất tụt dần từ dòng đầu tới dòng cuối thay vì
+   * lặp cùng một con số ở mọi dòng. Luật + ca biên nằm trong `lib/seatRun.ts`; ở đây
+   * chỉ nối dữ liệu vào và dịch từng `kind` ra chữ.
+   */
+  const seatRunByEmail = buildSeatRun(
+    entries.map((e) => {
+      const wsId = targetWsId(e.email);
+      return {
+        email: e.email,
+        workspaceId: wsId,
+        // Email đang giữ suất ở CHÍNH không gian đích thì mời lại không tốn suất mới
+        // (mirror seatPlan + cách đếm seat_used của backend).
+        takesSeat: !(
+          wsId &&
+          members.some(
+            (m) =>
+              m.status !== "removed" &&
+              m.workspace_id === wsId &&
+              m.email.toLowerCase() === e.email.toLowerCase(),
+          )
+        ),
+      };
+    }),
+    (wsId) => seatMap.get(wsId)?.seat_left ?? null,
+  );
+  /** Ô suất của ĐÚNG dòng email đó trong dãy → chữ hiện trên chip + có tô đỏ không. */
+  const seatCell = (email: string): { text: string; alarm: boolean } => {
+    const cell = seatRunByEmail.get(email.toLowerCase());
+    switch (cell?.kind) {
+      case "none":
+        return { text: t("inviteMembers.seatsNone"), alarm: true };
+      case "single":
+        return {
+          text: t("inviteMembers.seatsRunOne", { from: cell.from, to: cell.to }),
+          alarm: false,
+        };
+      case "start":
+        return { text: String(cell.value), alarm: false };
+      case "end":
+        return { text: String(cell.value), alarm: false };
+      case "arrow":
+        return { text: SEAT_RUN_ARROW, alarm: false };
+      default:
+        return { text: "", alarm: false };
+    }
+  };
+
   /** Tổng suất phải MUA THÊM trên ChatGPT nếu bấm mời ngay bây giờ (cộng mọi không
    * gian trong danh sách đang dán). >0 nghĩa là lệnh mời sẽ kèm bước mua suất, chạy
    * lâu hơn hẳn — footer phải nói trước. */
@@ -1148,7 +1199,7 @@ export default function InviteMembers() {
                             busy={bulkInvite.isPending}
                             usedText={usedText}
                             seatLabel={seatLabel}
-                            seatAlarm={seatAlarm(selectedWs)}
+                            seatCell={seatCell(row.email)}
                             onWs={(v) =>
                               setWorkspaceByEmail((w) => ({
                                 ...w,
@@ -1226,7 +1277,10 @@ export default function InviteMembers() {
                               const opts = wsOptionsFor(row.email);
                               const sel = opts.find((o) => o.id === selectedWs);
                               const info = seatInfo(selectedWs);
-                              const seatText = seatLabel(selectedWs);
+                              // Ô suất của ĐÚNG dòng này trong dãy (số đầu · mũi
+                              // tên · số cuối), không phải nhãn chung của không gian.
+                              const cell = seatCell(row.email);
+                              const seatText = cell.text;
                               const seatTitle =
                                 info.left === null
                                   ? t("inviteMembers.seatsUnknownHint")
@@ -1245,9 +1299,9 @@ export default function InviteMembers() {
                                       })) +
                                 " · " +
                                 seatTitle;
-                              // Suất trống KHÔNG đủ cho danh sách đang dán → nhãn đỏ:
-                              // mời tiếp là extension đi mua thêm suất bằng tiền thật.
-                              const alarm = seatAlarm(selectedWs);
+                              // Nhãn đỏ CHỈ ở dòng thật sự không còn suất — mời tiếp
+                              // là extension đi mua thêm suất bằng tiền thật.
+                              const alarm = cell.alarm;
                               const seatBadge = seatText ? (
                                 <span
                                   style={{
@@ -1590,7 +1644,7 @@ function MobileInviteCard({
   busy,
   usedText,
   seatLabel,
-  seatAlarm,
+  seatCell,
   onWs,
   onDec,
   onInc,
@@ -1609,8 +1663,9 @@ function MobileInviteCard({
   usedText: (days: number) => string;
   /** Nhãn suất còn trống của 1 không gian ("còn 4" / "hết suất"), "" khi chưa biết tổng. */
   seatLabel: (wsId: string | undefined) => string;
+  /** Ô suất của riêng dòng này trong dãy — xem `seatRunByEmail`. */
   /** Hết suất hoặc không đủ cho danh sách đang dán → nhãn suất chuyển đỏ. */
-  seatAlarm: boolean;
+  seatCell: { text: string; alarm: boolean };
   onWs: (v: string) => void;
   onDec: () => void;
   onInc: () => void;
@@ -1766,7 +1821,7 @@ function MobileInviteCard({
             )}
             {/* Suất còn trống của không gian đang chọn — đỏ khi không đủ cho
                 danh sách đang dán (mời tiếp = mua thêm suất bằng tiền thật). */}
-            {seatLabel(selectedWs) ? (
+            {seatCell.text ? (
               <span
                 style={{
                   flex: "none",
@@ -1775,11 +1830,11 @@ function MobileInviteCard({
                   fontWeight: 600,
                   padding: "2px 7px",
                   borderRadius: 6,
-                  background: seatAlarm ? "var(--danger-bg)" : "var(--surface-2)",
-                  color: seatAlarm ? "var(--danger)" : "var(--ink-2)",
+                  background: seatCell.alarm ? "var(--danger-bg)" : "var(--surface-2)",
+                  color: seatCell.alarm ? "var(--danger)" : "var(--ink-2)",
                 }}
               >
-                {seatLabel(selectedWs)}
+                {seatCell.text}
               </span>
             ) : null}
           </div>

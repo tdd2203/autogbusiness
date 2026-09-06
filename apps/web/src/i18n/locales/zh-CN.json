@@ -1533,6 +1533,7 @@
   "inviteMembers.wsOption": "{name} · {used}",
   "inviteMembers.seatsLeft": "剩 {n}",
   "inviteMembers.seatsNone": "无空位",
+  "inviteMembers.seatsRunOne": "{from} → {to}",
   "inviteMembers.seatsHint": "剩余 {left} 个空位 · 此列表需要 {need} 个新席位",
   "inviteMembers.seatFreeWord": "个空位",
   "inviteMembers.seatTotalUnknown": "尚未同步总席位",
