@@ -27,6 +27,12 @@ import {
 } from "../dialog-commit";
 import { ensurePendingInvitesTab } from "../revoke/pending-tab";
 import { revokeInvite } from "../revoke/revoke-invite";
+import {
+  LOAD_BUDGET_MS as PENDING_LOAD_BUDGET_MS,
+  readPendingSnapshot,
+  waitForPendingListLoaded,
+} from "../invite/pending-list-loaded";
+import { emailsInListRegion } from "../invite/scan-pending-page";
 
 const LOG = "[autogpt-remove]";
 
@@ -127,8 +133,24 @@ function findConfirmRemoveButton(texts: readonly string[]): HTMLElement | null {
 
 
 /**
+ * Ba kết cục KHÁC HẲN NHAU của cú ghé tab "Lời mời đang chờ xử lý".
+ *
+ * Trước 6/9/2026 cả ba gộp vào một `null` và caller hiểu là "đã rời workspace
+ * thật" ⇒ `absent: true` ⇒ backend mark removed mà chưa click xoá lần nào. Đó
+ * đúng là cách một ghế bị nhả oan — xem nhánh `unchecked` trong `executeRemove`
+ * và `execute-remove.absent-guard.test.ts`.
+ */
+type PendingProbe =
+  /** Đã xử lý xong ở tab Lời mời (thu hồi được, hoặc thu hồi hỏng) — trả thẳng. */
+  | { kind: "handled"; response: ExecuteActionResponse }
+  /** ĐÃ TRA và danh sách lời mời CHẮC CHẮN không có email này. */
+  | { kind: "absent" }
+  /** KHÔNG tra được (không vào nổi tab / danh sách chưa nạp xong) — chưa chứng minh gì. */
+  | { kind: "unchecked"; reason: string };
+
+/**
  * FALLBACK khi email KHÔNG có ở tab "Người dùng": sang tab "Lời mời đang chờ xử
- * lý" và thu hồi lời mời của email đó.
+ * lý", CHỜ danh sách nạp xong, rồi thu hồi lời mời của email đó.
  *
  * Thứ tự này do user chốt (2026-08-21) cho luồng "Chuyển hạn sử dụng đến": *tìm
  * kiếm trong người dùng — có thì xoá khỏi workspace, không có thì chuyển sang
@@ -136,16 +158,21 @@ function findConfirmRemoveButton(texts: readonly string[]): HTMLElement | null {
  * email đang là lời mời chờ thì trước đây báo COMPLETED (backend mark removed)
  * trong khi lời mời VẪN sống trên ChatGPT.
  *
+ * ⚠️ CỬA CHỜ NẠP XONG (`waitForPendingListLoaded`, 6/9/2026) là phần quan trọng
+ * nhất ở đây. `revokeInvite` kết luận `notInPending` bằng ô "Search for invites"
+ * (nhiều trang) hoặc quét vị trí (1 trang) — mà một danh sách CHƯA VẼ cũng cho ra
+ * đúng hình dạng "không có dòng nào". Không chờ thì "chưa tra được" đội lốt "đã
+ * tra và không thấy", và cái lốt đó đi thẳng vào `absent: true`. Vòng chờ này
+ * chính là thứ `count-pending-invites.ts` đã dựng cho phép đếm nợ suất, cùng một
+ * nguyên tắc: *chỉ chốt khi có BẰNG CHỨNG, không phải khi hết giờ*.
+ *
  * `revokeInvite` tự lo phần định vị đúng luật (1 trang → quét vị trí; nhiều
  * trang → ô "Search for invites") và tự CHỜ ChatGPT chốt + quét lại xác nhận.
- *
- * Trả `null` = email KHÔNG có ở tab Lời mời (caller kết luận đã rời workspace
- * thật). Trả response = đã xử lý xong (ok hoặc fail, caller trả thẳng ra).
  */
-async function tryRevokePendingFallback(
+async function probePendingInvites(
   taskId: string,
   email: string,
-): Promise<ExecuteActionResponse | null> {
+): Promise<PendingProbe> {
   console.log(
     `${LOG} ${email}: không có ở tab Người dùng → thử tab "Lời mời đang chờ xử lý"`,
   );
@@ -154,26 +181,53 @@ async function tryRevokePendingFallback(
     { phase: "searching", message: `Tìm ${email} ở tab Lời mời đang chờ xử lý...` },
     true,
   );
+  // Mốc so: email đang hiện ở tab "Người dùng" NGAY TRƯỚC khi bấm sang. Còn thấy
+  // chúng sau khi sang tab nghĩa là React chưa gỡ bảng cũ — đọc lúc đó là đọc
+  // nhầm danh sách.
+  const baseline = emailsInListRegion();
   if (!(await ensurePendingInvitesTab())) {
-    console.warn(
-      `${LOG} ${email}: không sang được tab Lời mời → bỏ fallback, giữ kết luận theo tab Người dùng`,
-    );
-    return null;
+    return {
+      kind: "unchecked",
+      reason: 'không sang được tab "Lời mời đang chờ xử lý"',
+    };
+  }
+  const verdict = await waitForPendingListLoaded(PENDING_LOAD_BUDGET_MS, baseline, {
+    read: readPendingSnapshot,
+    now: () => Date.now(),
+    sleep,
+  });
+  if (!verdict.loaded) {
+    return {
+      kind: "unchecked",
+      reason: `danh sách lời mời chưa nạp xong sau ${verdict.waitedMs}ms (${verdict.reason})`,
+    };
   }
   const r = await revokeInvite(email);
-  if (r.notInPending) return null; // không có ở cả 2 tab ⇒ đã rời thật.
+  if (r.inconclusive) {
+    // Vào được tab, danh sách đã vẽ, NHƯNG cú tra vẫn không chứng minh được gì
+    // (không có ô tìm kiếm, hoặc gõ vào mà list không nhúc nhích). Vẫn là "chưa
+    // tra được" — xem `revoke/locate-pending-row.ts`.
+    return { kind: "unchecked", reason: r.reason ?? "không tra được tab Lời mời" };
+  }
+  if (r.notInPending) return { kind: "absent" }; // đã tra cả 2 tab ⇒ rời thật.
   if (r.ok) {
     console.log(`${LOG} ${email}: đã THU HỒI lời mời chờ → COMPLETED`);
-    return { ok: true, data: { email, verified: true, via_revoke: true } };
+    return {
+      kind: "handled",
+      response: { ok: true, data: { email, verified: true, via_revoke: true } },
+    };
   }
   // Có lời mời nhưng thu hồi KHÔNG ăn → báo fail để backend giữ member và retry,
   // thà báo chưa-xong còn hơn mark removed trong khi lời mời vẫn sống.
   return {
-    ok: false,
-    error_code: "REMOVE_VERIFY_FAILED",
-    error_message:
-      `${email} không có ở tab "Người dùng" nhưng ĐANG có lời mời chờ xử lý, và ` +
-      `thu hồi lời mời thất bại: ${r.reason ?? "không rõ lý do"}`,
+    kind: "handled",
+    response: {
+      ok: false,
+      error_code: "REMOVE_VERIFY_FAILED",
+      error_message:
+        `${email} không có ở tab "Người dùng" nhưng ĐANG có lời mời chờ xử lý, và ` +
+        `thu hồi lời mời thất bại: ${r.reason ?? "không rõ lý do"}`,
+    },
   };
 }
 
@@ -206,6 +260,12 @@ async function sweepPendingAfterRemove(
   // Ngân sách xác minh 20s (mặc định 60s): đây là bước quét thêm cho chắc, nó
   // không được ăn hết ngân sách 150s của lệnh gỡ vốn đã chạy gần xong.
   const r = await revokeInvite(email, 20_000);
+  if (r.inconclusive) {
+    // Quét thêm cho chắc mà không tra được thì im lặng bỏ qua: cú gỡ chính đã có
+    // bằng chứng dương rồi, đồng bộ sẽ dọn lời mời sót (nếu có).
+    console.warn(`${LOG} ${email}: không tra được tab Lời mời khi quét lần cuối (${r.reason})`);
+    return "skipped";
+  }
   if (r.notInPending) {
     console.log(`${LOG} ${email}: tab Lời mời cũng không còn gì → sạch`);
     return "none";
@@ -307,8 +367,28 @@ export async function executeRemove(
       // đang chờ xử lý" thu hồi (đúng thứ tự user chốt 2026-08-21 cho luồng
       // "Chuyển hạn sử dụng đến"); không có ở đó nữa thì mới là đã rời thật.
       if (allowPendingFallback) {
-        const viaRevoke = await tryRevokePendingFallback(taskId, email);
-        if (viaRevoke) return viaRevoke;
+        const probe = await probePendingInvites(taskId, email);
+        if (probe.kind === "handled") return probe.response;
+        if (probe.kind === "unchecked") {
+          // CHƯA TRA ĐƯỢC ≠ ĐÃ TRA VÀ KHÔNG THẤY. Trả `absent` ở đây là ký giấy
+          // "email đã rời workspace" dựa trên một tab chưa từng mở ra — backend
+          // nhận `absent_confirmed`, mark removed KHÔNG click xoá lần nào, và ghế
+          // trên ChatGPT ở lại trong tay email đó. Ca thật GPT1 5/9/2026: gỡ lúc
+          // 18:00, email vẫn ăn ghế 16.7 giờ, workspace vượt trần 387/386 khi lần
+          // đồng bộ sau chữa lại sự thật. FAILED thì tick auto-remove xếp lại lệnh
+          // — chậm vài phút, không mất ghế.
+          console.warn(
+            `${LOG} ${email}: không tra được tab Lời mời (${probe.reason}) → KHÔNG kết luận đã rời`,
+          );
+          return {
+            ok: false,
+            error_code: "MEMBER_NOT_IN_WORKSPACE",
+            error_message:
+              `Không thấy ${email} ở tab "Người dùng", và KHÔNG tra được tab "Lời mời ` +
+              `đang chờ xử lý" (${probe.reason}) → chưa chứng minh được là đã rời hay ` +
+              `vẫn còn lời mời treo → GIỮ nguyên (không đánh dấu removed), sẽ thử lại.`,
+          };
+        }
       }
 
       console.log(

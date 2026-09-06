@@ -34,7 +34,7 @@ import {
 import { dbLabelsFor, reportLabelMismatch } from "../../../shared/ui-labels";
 import { findRowMenuButton } from "../member-row";
 import { waitForChatGptCommit } from "../dialog-commit";
-import { locatePendingRow } from "./locate-pending-row";
+import { lookupPendingRow } from "./locate-pending-row";
 import { verifyInviteGone } from "./verify-invite-gone";
 
 const LOG = "[autogpt-revoke]";
@@ -89,6 +89,16 @@ export type RevokeResult = {
   menuWithoutRevoke?: boolean;
   /** Email được xử lý qua fallback REMOVE (xoá khỏi tab Người dùng) thay vì revoke. */
   viaRemove?: boolean;
+  /**
+   * KHÔNG TRA ĐƯỢC tab "Lời mời đang chờ xử lý" (không có ô tìm kiếm, hoặc gõ vào
+   * mà danh sách không nhúc nhích) — khác hẳn `notInPending`.
+   *
+   * Vì sao phải tách (6/9/2026): `notInPending` được caller đem đi kết luận "email
+   * đã rời workspace" và cuối cùng thành `absent_confirmed` ở backend = NHẢ MỘT
+   * GHẾ. Gộp "chưa tra được" vào đó là ký giấy dựa trên một lần tra chưa từng
+   * chạy. Caller nhận cờ này thì GIỮ NGUYÊN email và để lượt sau tra lại.
+   */
+  inconclusive?: boolean;
 };
 
 /** Nút đóng/huỷ của hộp thoại — KHÔNG BAO GIỜ được bấm khi tìm nút xác nhận. */
@@ -146,15 +156,28 @@ export async function revokeInvite(
   // scroll-scan list virtualized vốn dễ MISS → kết luận nhầm notInPending →
   // fallback nhầm sang tab "Người dùng". Fallback scroll-scan nằm trong
   // locatePendingRow khi UI không có ô search.
-  const row = await locatePendingRow(email);
-  if (!row) {
+  const lookup = await lookupPendingRow(email);
+  if (lookup.outcome === "inconclusive") {
+    return {
+      email,
+      ok: false,
+      inconclusive: true,
+      reason:
+        `Không tra được tab Lời mời (${lookup.reason}, ${lookup.rows_before} dòng) → ` +
+        `chưa chứng minh được email có lời mời treo hay không.`,
+    };
+  }
+  if (lookup.outcome === "absent") {
     return {
       email,
       ok: false,
       notInPending: true,
-      reason: `Row email không tìm thấy trên tab Lời mời (đã search + scroll-scan).`,
+      reason:
+        `Row email không tìm thấy trên tab Lời mời (ô tìm kiếm trống và đã chứng ` +
+        `minh còn sống, ${lookup.rows_before} dòng).`,
     };
   }
+  const row = lookup.row;
 
   const menuBtn = findRowMenuButton(row);
   if (!menuBtn) {
