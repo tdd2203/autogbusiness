@@ -43,6 +43,7 @@ from ._shared import (
     _end_from_purchase,
     _extend_subscription_end,
     _get_workspace_or_404,
+    claim_ownership,
 )
 
 
@@ -198,7 +199,9 @@ def manual_add_members(
                 _drop_open_cycles(db, existing, boundary=now)
                 existing.status = "active"
                 existing.chatgpt_role = role
-                existing.invited_by_user_id = user.id
+                # Chủ = người mời ĐẦU TIÊN; thêm tay hộ không sang tên (xem
+                # `_shared.claim_ownership`).
+                claim_ownership(existing, user.id, now)
                 existing.joined_at = now
                 existing.removed_at = None
                 existing.removed_reason = None

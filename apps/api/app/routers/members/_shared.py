@@ -44,6 +44,44 @@ SUBSCRIPTION_DAYS_PER_MONTH = 30
 # scheduler nền (main.py) để 2 nơi luôn cùng rule — xem remove.md §4.
 SUBSCRIPTION_GRACE_AFTER_EXPIRY = timedelta(0)
 
+# ÂN HẠN QUYỀN SỞ HỮU — khác hẳn ân hạn XOÁ ngay trên (chốt user 2026-09-07). Gói
+# hết hạn thì email bị gỡ khỏi workspace ngay, nhưng nó vẫn còn là KHÁCH CỦA ĐẠI LÝ
+# đã bán: khách trả tiền muộn vài hôm là chuyện thường, và trong lúc đó không ai
+# được nhận email đó thành của mình. Hết 30 ngày mà vẫn không thanh toán thì email
+# mới thành vô chủ, ai mời cũng được.
+OWNERSHIP_GRACE_AFTER_EXPIRY = timedelta(days=30)
+
+
+def ownership_cutoff(now: datetime) -> datetime:
+    """Mốc `subscription_end_at` sớm nhất mà quyền sở hữu CÒN được giữ. Gói hết hạn
+    trước mốc này = đã quá 30 ngày không thanh toán → email vô chủ."""
+    return now - OWNERSHIP_GRACE_AFTER_EXPIRY
+
+
+def ownership_still_held(member: Member, now: datetime) -> bool:
+    """Email này còn thuộc về ai không?
+
+    CHỦ = NGƯỜI MỜI ĐẦU TIÊN, không phải người bấm nút gần nhất (chốt user
+    2026-09-07). Còn hạn (hoặc vô thời hạn) → còn chủ; hết hạn → còn chủ thêm 30
+    ngày ân hạn; sau đó vô chủ."""
+    if member.invited_by_user_id is None:
+        return False
+    if member.subscription_end_at is None:
+        return True
+    return member.subscription_end_at > ownership_cutoff(now)
+
+
+def claim_ownership(member: Member, user_id: UUID, now: datetime) -> None:
+    """Gán chủ cho lệnh mời — CHỈ khi email đang VÔ CHỦ (chưa ai mời, hoặc chủ cũ đã
+    hết 30 ngày ân hạn).
+
+    Trước 7/9/2026 mọi lệnh mời đều `invited_by_user_id = user.id`, nên chỉ cần
+    super-admin bấm "Mời lại" hộ một đại lý (lời mời của họ hỏng giữa chừng) là email
+    ĐỔI CHỦ sang admin — mất khỏi sổ của đại lý, dù tiền vẫn là tiền họ trả. Mời hộ
+    là giúp một lượt gọi, không phải sang tên. Xem `ownership.md`."""
+    if not ownership_still_held(member, now):
+        member.invited_by_user_id = user_id
+
 
 def _end_from_purchase(
     purchased_at: datetime, months: int | None

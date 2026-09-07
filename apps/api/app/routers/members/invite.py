@@ -61,7 +61,10 @@ from ._shared import (
     _get_workspace_or_404,
     _is_paid_period_active,
     _member_or_404_visible,
+    claim_ownership,
     find_movable_paid_members,
+    ownership_cutoff,
+    ownership_still_held,
 )
 
 
@@ -278,7 +281,7 @@ def perform_invite_core(
                         existing.removed_reason = None
                     existing.status = "pending"
                     existing.chatgpt_role = role
-                    existing.invited_by_user_id = user.id
+                    claim_ownership(existing, user.id, now)
                     existing.last_invited_at = now
                     member = existing
                 elif existing.status == "removed" and movable is not None:
@@ -307,7 +310,7 @@ def perform_invite_core(
                         existing.removed_reason = None
                     existing.status = "pending"
                     existing.chatgpt_role = role
-                    existing.invited_by_user_id = user.id
+                    claim_ownership(existing, user.id, now)
                     existing.subscription_months = months
                     existing.subscription_purchased_at = now
                     existing.subscription_end_at = sub_end
@@ -700,12 +703,12 @@ def _assert_email_ownership(
     tài khoản đã mời — tài khoản KHÁC (kể cả super-admin) không mời được email đó nữa.
     Chủ sở hữu cũ vẫn mời lại được (owner_id == user.id → bỏ qua).
 
-    **Chỉ khoá khi email CÒN HẠN** (chốt user 2026-07-20): quyền sở hữu chỉ tồn tại
-    khi gói còn hiệu lực — `subscription_end_at` ở tương lai (còn hạn) HOẶC NULL (vô
-    hạn). Khi đã HẾT HẠN (`subscription_end_at <= now`, thường kèm bị gỡ khỏi
-    workspace) email thành "email cũ vô chủ" → ai cũng mời lại được. Đây là mặt nới
-    của [[invite-owner-lock]] (khách ngừng trả tiền cho chủ cũ → email được giải
-    phóng cho người khác).
+    **Khoá khi email còn hạn + 30 NGÀY ÂN HẠN** (chốt user 2026-07-20, thêm ân hạn
+    2026-09-07): quyền sở hữu tồn tại khi `subscription_end_at` ở tương lai (còn hạn)
+    HOẶC NULL (vô hạn), VÀ còn thêm 30 ngày sau ngày hết hạn — khách trả muộn vài hôm
+    không phải là mất khách. Chỉ khi hết hạn quá 30 ngày mà vẫn không thanh toán,
+    email mới thành "email cũ vô chủ" → ai cũng mời lại được. Đây là mặt nới của
+    [[invite-owner-lock]]; ngưỡng sống ở `_shared.ownership_cutoff`.
 
     Phạm vi: mọi workspace TRONG CÙNG NHÁNH (không lọc theo workspace_id). Chủ sở
     hữu là chuyện của từng nhánh — một khách mua ChatGPT của đại lý A vẫn được mua
@@ -726,11 +729,11 @@ def _assert_email_ownership(
             Workspace.platform == platform,
             Member.invited_by_user_id.isnot(None),
             Member.invited_by_user_id != user.id,
-            # Chỉ email CÒN HẠN (end tương lai) hoặc VÔ HẠN (end NULL) mới còn chủ.
-            # Hết hạn (end <= now) → vô chủ, không khoá nữa.
+            # Còn hạn / vô hạn / mới hết hạn trong vòng 30 ngày → vẫn còn chủ.
+            # Hết hạn quá 30 ngày mà không thanh toán → vô chủ, không khoá nữa.
             or_(
                 Member.subscription_end_at.is_(None),
-                Member.subscription_end_at > now,
+                Member.subscription_end_at > ownership_cutoff(now),
             ),
         )
         .limit(1)
@@ -743,6 +746,38 @@ def _assert_email_ownership(
                 f"bạn không thể mời email này."
             ),
         )
+
+
+def _assert_reinvite_not_billing_other_owner(
+    db: Session, member: Member, user: User, now: datetime
+) -> None:
+    """MỜI HỘ được, MUA HỘ thì không (chốt user 2026-09-07).
+
+    Super-admin thấy mọi email nên bấm được "Mời lại" hộ đại lý — và việc đó ĐÚNG khi
+    lời mời hỏng giữa chừng: gói đã trả rồi, mời lại miễn phí, chủ giữ nguyên (xem
+    `claim_ownership`). Nhưng email ĐÃ HẾT HẠN mà vẫn còn chủ (trong 30 ngày ân hạn)
+    thì lần mời lại là một chu kỳ MỚI CÓ PHÍ: tiền trừ ví người bấm, còn email nằm
+    trong sổ của chủ cũ — không ai muốn cảnh đó. Email hết hạn thì để chính chủ mời
+    (hoặc thu hồi quyền sở hữu trước, trang "Email đã thêm").
+
+    Đây là chốt riêng của luồng mời lại: `_assert_email_ownership` không chạy ở đây
+    vì mời lại hộ email CÒN HẠN là việc hợp lệ."""
+    owner_id = member.invited_by_user_id
+    if owner_id is None or owner_id == user.id:
+        return
+    if not ownership_still_held(member, now):
+        return  # quá 30 ngày không thanh toán → email vô chủ, ai mời cũng được
+    if _is_paid_period_active(member, now):
+        return  # còn hạn đã trả → mời lại miễn phí, không đổi chủ
+    owner = db.get(User, owner_id)
+    who = owner.email if owner is not None else "tài khoản khác"
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            f"Email {member.email} đã hết hạn nhưng vẫn thuộc chủ sở hữu {who} — "
+            f"để chủ tự mời lại, hoặc thu hồi quyền sở hữu trước khi mời."
+        ),
+    )
 
 
 def _assert_single_workspace(
@@ -989,6 +1024,11 @@ def reinvite_member(
     """
     ws = _get_workspace_or_404(db, workspace_id)
     member = _member_or_404_visible(db, workspace_id, member_id, user)
+    # Mời hộ email CÒN HẠN của đại lý khác thì được (miễn phí, chủ giữ nguyên); email
+    # đã hết hạn thì không — lần mời đó là chu kỳ mới có phí.
+    _assert_reinvite_not_billing_other_owner(
+        db, member, user, datetime.now(timezone.utc)
+    )
     _unblock_active_if_sync_missing(member)
 
     email = member.email.lower()
