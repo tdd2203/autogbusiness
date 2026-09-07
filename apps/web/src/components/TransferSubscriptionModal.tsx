@@ -137,14 +137,6 @@ function CalcPanel({ preview }: { preview: TransferPreview }) {
         }}
       />
       <CalcRow label={t("transfer.rowNewEnd")} value={newEnd} strong />
-
-      <div
-        className="cell-muted"
-        style={{ fontSize: 11.5, marginTop: 8, lineHeight: 1.5 }}
-      >
-        {t("transfer.noteRemoval", { email: source.email })}
-        <div style={{ marginTop: 4 }}>{t("transfer.noteInviteIfNeeded")}</div>
-      </div>
     </div>
   );
 }
