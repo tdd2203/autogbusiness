@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { buildGroups, importantGroup, otherBucketOf } from "./AuditLogs";
 
-/* Phân tab nhật ký (chốt user 2026-08-26, sửa 2026-08-30):
-     • tab "Chính" CHỈ có 3 chip — Bảo mật (lịch sử đăng nhập) · Thành viên (ĐÚNG 2
-       lệnh: mời và gia hạn) · Thanh toán (tiền của chính các lệnh đó);
-     • mọi chuyện khác của một email (xoá, hết hạn, đổi chủ, đổi email, đồng bộ)
-       xuống tab "Khác" nhánh "Thành viên";
+/* Phân tab nhật ký (chốt user 2026-08-26, sửa 2026-09-07):
+     • tab "Chính" CHỈ có 3 chip — Bảo mật (lịch sử đăng nhập) · Thành viên ·
+       Thanh toán (tiền của chính các lệnh thành viên);
+     • chip "Thành viên" chia 3 rẽ nhánh: mời + gia hạn · xoá · đồng bộ;
+     • chuyện CÒN LẠI của một email (hết hạn, đổi chủ, đổi email, đổi vai trò,
+       rút/gỡ hạn) xuống tab "Khác" nhánh "Thành viên";
      • mọi thứ còn lại xuống tab "Khác" và tự chia nhóm phụ;
      • mã hoá đơn trên lệnh mời/gia hạn phải TRÙNG mã trên khoản trừ phí tương ứng
        thì bấm vào mới ra đúng chi tiết thanh toán. */
@@ -132,6 +133,7 @@ describe("tab Chính chỉ gồm 3 nhóm", () => {
       }),
     ]);
     expect(g.buckets).toEqual(["member"]);
+    expect(g.memberSub).toBe("sync");
     expect(g.otherBucket).toBeNull();
     expect(g.title).toBe("Đồng bộ lời mời hàng loạt");
   });
@@ -150,6 +152,7 @@ describe("tab Chính chỉ gồm 3 nhóm", () => {
       }),
     ]);
     expect(g.buckets).toEqual(["member"]);
+    expect(g.memberSub).toBe("sync");
   });
 
   it("lệnh gia hạn và khoản trừ phí của nó dùng CHUNG mã hoá đơn (member_id)", () => {
@@ -236,6 +239,124 @@ describe("tab Chính chỉ gồm 3 nhóm", () => {
   });
 });
 
+/* 3 rẽ nhánh của chip "Thành viên" (chốt user 2026-09-07). */
+describe("chip Thành viên chia 3 rẽ nhánh", () => {
+  it("lệnh mời và lệnh gia hạn vào nhánh Mời + gia hạn", () => {
+    const invite = only([
+      ev({
+        id: "queued",
+        action: "MEMBER_BULK_INVITE_QUEUED",
+        result: "PENDING",
+        target_type: "QUEUE_ITEM",
+        target_id: QID,
+        data: { emails: [EMAIL] },
+      }),
+    ]);
+    expect(invite.memberSub).toBe("invite");
+    const renew = only([
+      ev({
+        id: "renew",
+        action: "MEMBER_SUBSCRIPTION_RENEWED",
+        result: "OK",
+        target_type: "MEMBER",
+        target_id: MEMBER_ID,
+        data: { email: EMAIL, months: 1 },
+      }),
+    ]);
+    expect(renew.memberSub).toBe("invite");
+  });
+
+  it("gỡ thành viên và thu hồi lời mời vào nhánh Xoá", () => {
+    for (const action of [
+      "MEMBER_REMOVE_QUEUED",
+      "MEMBER_BULK_REMOVE_QUEUED",
+      "MEMBER_EXPIRED_REMOVE_QUEUED",
+      "MEMBER_REMOVED_SYNCED",
+      "MEMBER_REMOVE_STUCK",
+      "REVOKE_INVITES_QUEUED",
+      "MEMBER_INVITE_REVOKED",
+      "QUEUE_PICKED:REMOVE_MEMBER",
+    ]) {
+      const g = only([
+        ev({
+          id: action,
+          action,
+          target_type: "QUEUE_ITEM",
+          target_id: QID,
+          data: { email: EMAIL },
+        }),
+      ]);
+      expect(g.buckets).toEqual(["member"]);
+      expect(g.memberSub).toBe("remove");
+      expect(g.otherBucket).toBeNull();
+    }
+  });
+
+  it("đồng bộ trên email vào nhánh Đồng bộ", () => {
+    for (const action of [
+      "SYNC_MEMBER_QUEUED",
+      "SYNC_MEMBERS_BATCH_QUEUED",
+      "QUEUE_TIMEOUT:SYNC_MEMBER",
+      "MEMBER_SYNC_MISMATCH",
+      "MEMBER_BULK_UPSERT",
+      "MEMBER_ROLE_SYNCED",
+    ]) {
+      const g = only([
+        ev({
+          id: action,
+          action,
+          target_type: "MEMBER",
+          target_id: MEMBER_ID,
+          data: { email: EMAIL },
+        }),
+      ]);
+      expect(g.buckets).toEqual(["member"]);
+      expect(g.memberSub).toBe("sync");
+    }
+  });
+
+  /* Mẻ mời có dòng đồng bộ nâng trạng thái đi kèm — việc của nhóm vẫn là MỜI,
+     không được nhảy sang nhánh Đồng bộ. */
+  it("nhóm chạm nhiều loại dòng thì lấy việc nặng nhất", () => {
+    const g = only([
+      ev({
+        id: "promoted",
+        action: "MEMBER_SYNC_PROMOTED_ACTIVE",
+        target_type: "MEMBER",
+        target_id: MEMBER_ID,
+        data: { email: EMAIL, queue_item_id: QID },
+      }),
+      ev({
+        id: "queued",
+        timestamp: "2026-08-26T09:58:00.000Z",
+        action: "MEMBER_BULK_INVITE_QUEUED",
+        result: "PENDING",
+        target_type: "QUEUE_ITEM",
+        target_id: QID,
+        data: { emails: [EMAIL] },
+      }),
+    ]);
+    expect(g.memberSub).toBe("invite");
+  });
+
+  /* Đổi email có một bước gỡ trên ChatGPT, nhưng việc của nhóm là ĐỔI EMAIL →
+     vẫn ở tab "Khác", không lọt vào nhánh Xoá. */
+  it("bước gỡ nằm trong việc đổi email không kéo cả nhóm lên nhánh Xoá", () => {
+    const g = only([
+      ev({
+        id: "retry",
+        action: "MEMBER_EMAIL_CHANGE_REMOVE_RETRY",
+        target_type: "MEMBER",
+        target_id: MEMBER_ID,
+        data: { email: EMAIL },
+      }),
+    ]);
+    expect(g.buckets).toEqual([]);
+    expect(g.memberSub).toBeNull();
+    expect(g.otherBucket).toBe("member");
+  });
+});
+
 describe("phần còn lại tự phân nhóm ở tab Khác", () => {
   it("đổi chủ sở hữu / đổi hạn là thao tác thành viên khác, KHÔNG lên tab Chính", () => {
     const g = only([
@@ -245,21 +366,6 @@ describe("phần còn lại tự phân nhóm ở tab Khác", () => {
         target_type: "MEMBER",
         target_id: MEMBER_ID,
         data: { email: EMAIL },
-      }),
-    ]);
-    expect(g.buckets).toEqual([]);
-    expect(g.otherBucket).toBe("member");
-  });
-
-  it("xoá email là chuyện của email, KHÔNG còn chiếm chỗ ở chip Thành viên", () => {
-    const g = only([
-      ev({
-        id: "rm",
-        action: "MEMBER_REMOVE_QUEUED",
-        result: "PENDING",
-        target_type: "QUEUE_ITEM",
-        target_id: QID,
-        data: { email: EMAIL, task_type: "REMOVE_MEMBER" },
       }),
     ]);
     expect(g.buckets).toEqual([]);

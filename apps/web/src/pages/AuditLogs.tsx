@@ -165,12 +165,12 @@ export function importantGroup(action: string): ImpGroup | null {
 /* ------------------------------------------------------------------
  * PHÂN TAB (chốt user 2026-08-26, sửa 2026-08-31). Tab "Chính" CHỈ có 3 nhóm:
  *   • Bảo mật    — lịch sử đăng nhập / mật khẩu của các TÀI KHOẢN quản trị.
- *   • Thành viên — vòng đời LỜI MỜI (mời · đồng bộ lời mời) và lệnh GIA HẠN.
+ *   • Thành viên — 3 rẽ nhánh: MỜI + GIA HẠN · XOÁ · ĐỒNG BỘ (user 2026-09-07).
  *   • Thanh toán — TIỀN của chính các lệnh đó: trừ phí mời/gia hạn, hoàn phí,
  *     hoá đơn QR (mã ORDER) trả cho lệnh mời/gia hạn.
  * Mọi thứ còn lại rơi xuống tab "Khác" và TỰ chia nhóm phụ ở đó; riêng nhánh
- * "Thành viên" của tab Khác ôm TẤT CẢ chuyện còn lại của một email — xoá, hết hạn,
- * thu hồi lời mời, đổi chủ, đổi email, các dòng đồng bộ trên email.
+ * "Thành viên" của tab Khác ôm những chuyện CÒN LẠI của một email — hết hạn, đổi
+ * chủ, đổi email, đổi vai trò, rút/gỡ hạn.
  *
  * Một nhóm được phép thuộc NHIỀU chip cùng lúc: lệnh mời vừa là "Thành viên"
  * (bản thân lệnh) vừa là "Thanh toán" (phí mời nằm CÙNG nhóm nhờ chung
@@ -209,12 +209,10 @@ const AUTH_OPS = new Set([
   "SUPER_ADMIN_SEEDED",
 ]);
 
-/* Chip "Thành viên" của tab "Chính" chỉ ôm VÒNG ĐỜI LỜI MỜI (mời, đồng bộ lời
-   mời) và LỆNH GIA HẠN (chốt user 2026-08-30, thêm đồng bộ lời mời 2026-08-31).
-   Mọi chuyện khác của một email — xoá, hết hạn, thu hồi lời mời, đổi chủ, đổi
-   email, các dòng đồng bộ lẻ — nằm ở tab "Khác" nhánh "Thành viên". Trước đây
-   nhánh ấy gần như rỗng: lệnh xoá bị giữ lại ở tab Chính, còn các dòng đồng bộ
-   trên email thì bị nhánh "Hàng đợi" nuốt. */
+/* Rẽ nhánh "Mời + gia hạn" của chip Thành viên: LỆNH MỜI và LỆNH GIA HẠN (chốt
+   user 2026-08-30). Xoá và đồng bộ là hai rẽ nhánh riêng bên cạnh (xem
+   `MEMBER_REMOVE_OPS` / `MEMBER_SYNC_OPS`); hết hạn, đổi chủ, đổi email, rút hạn
+   vẫn nằm ở tab "Khác" nhánh "Thành viên". */
 const MAIN_MEMBER_OPS = new Set([
   "MEMBER_INVITE_QUEUED",
   "MEMBER_BULK_INVITE_QUEUED",
@@ -222,14 +220,6 @@ const MAIN_MEMBER_OPS = new Set([
   "MEMBER_INVITE_FAILED",
   "MEMBER_INVITE_VERIFY_RECONCILE",
   "MEMBER_SUBSCRIPTION_RENEWED",
-  /* Đồng bộ lời mời (nút "Đồng bộ lời mời" — task SYNC_MEMBERS_BATCH) là bước
-     CHỐT của lệnh mời: nó xác nhận email đã vào nhóm. Trước đây cả mẻ bị xếp
-     theo action KHỞI TẠO nên rơi xuống tab "Khác" nhánh "Hàng đợi" — chạy xong
-     42 email mà tab mặc định không thấy gì (user 2026-08-31). Ghi cả LỆNH lẫn
-     KẾT QUẢ: lệnh để luôn thấy dù chưa email nào đổi trạng thái, kết quả để dòng
-     "đã tham gia" còn ở lại tab Chính khi dòng khởi tạo bị đẩy khỏi cửa sổ. */
-  "SYNC_MEMBERS_BATCH_QUEUED",
-  "MEMBER_SYNC_PROMOTED_ACTIVE",
 ]);
 
 /** Đổi hạn có KÉO DÀI = một lần gia hạn. Nút "Gia hạn" ghi `MEMBER_SUBSCRIPTION_
@@ -249,6 +239,76 @@ function isMainMemberEvent(e: EventLike): boolean {
   if (op.startsWith("QUEUE_") && sub === "INVITE_MEMBER") return true;
   if (op === "MEMBER_SUBSCRIPTION_UPDATED") return isSubscriptionExtend(e.data);
   return false;
+}
+
+/* RẼ NHÁNH của chip "Thành viên" (chốt user 2026-09-07): Mời + gia hạn · Xoá ·
+   Đồng bộ. Ba việc này lên thẳng tab "Chính"; mọi chuyện CÒN LẠI của một email
+   (đổi chủ, đổi email, đổi vai trò, rút/gỡ hạn, hết hạn…) vẫn ở tab "Khác" nhánh
+   "Thành viên" như cũ. */
+export type MemberSub = "invite" | "remove" | "sync";
+export const MEMBER_SUBS: MemberSub[] = ["invite", "remove", "sync"];
+
+/** Gỡ email khỏi nhóm — kể cả thu hồi lời mời của người còn đang chờ (cùng là bỏ
+ *  một người ra) và các cảnh báo gỡ mãi không xong. Bước gỡ NẰM TRONG việc đổi
+ *  email (`MEMBER_EMAIL_CHANGE_REMOVE_*`) không tính: việc của nhóm đó là đổi
+ *  email, vẫn thuộc tab "Khác". */
+const MEMBER_REMOVE_OPS = new Set([
+  "MEMBER_REMOVE",
+  "MEMBER_REMOVE_QUEUED",
+  "MEMBER_BULK_REMOVE",
+  "MEMBER_BULK_REMOVE_QUEUED",
+  "MEMBER_REMOVED_SYNCED",
+  "MEMBER_EXPIRED_REMOVE_QUEUED",
+  "MEMBER_REMOVE_STUCK",
+  "MEMBER_REMOVE_UNVERIFIED",
+  "MEMBER_REMOVE_FAKE_DETECTED",
+  "REVOKE_INVITES",
+  "REVOKE_INVITES_QUEUED",
+  "MEMBER_INVITE_REVOKED",
+  "MEMBER_INVITE_REVOKE_FAILED",
+]);
+const REMOVE_QUEUE_SUBS = new Set(["REMOVE_MEMBER", "REVOKE_INVITES"]);
+
+/** Đọc lại trạng thái trên ChatGPT rồi ghi về AutoGPT — cả LỆNH đồng bộ lời mời
+ *  lẫn từng dòng nó sinh ra trên một email. Đồng bộ CẢ WORKSPACE
+ *  (`WORKSPACE_SYNC_QUEUED` / `SYNC_DATA`) không thuộc đây: đó là việc của hàng
+ *  đợi, không phải việc của một email. */
+const MEMBER_SYNC_OPS = new Set([
+  "SYNC_MEMBER",
+  "SYNC_MEMBER_QUEUED",
+  "SYNC_MEMBERS_BATCH",
+  "SYNC_MEMBERS_BATCH_QUEUED",
+  "MEMBER_SYNC_MISMATCH",
+  "MEMBER_SYNC_PROMOTED_ACTIVE",
+  "MEMBER_ACTIVE_DOWNGRADED_PENDING",
+  "MEMBER_BULK_UPSERT",
+  "MEMBER_ROLE_SYNCED",
+  "MEMBER_LICENSE_TYPE_SYNCED",
+  "MEMBER_USAGE_LIMIT_SYNCED",
+  "MEMBER_RECONCILE_SKIPPED",
+  "MEMBER_NOT_IN_WORKSPACE",
+]);
+const SYNC_QUEUE_SUBS = new Set(["SYNC_MEMBER", "SYNC_MEMBERS_BATCH"]);
+
+/** Rẽ nhánh Thành viên của MỘT sự kiện (null = không thuộc chip "Thành viên"). */
+function memberSubOfEvent(e: EventLike): MemberSub | null {
+  if (isMainMemberEvent(e)) return "invite";
+  const [op, sub] = e.action.split(":");
+  const queued = op.startsWith("QUEUE_") && !!sub;
+  if (MEMBER_REMOVE_OPS.has(op) || (queued && REMOVE_QUEUE_SUBS.has(sub)))
+    return "remove";
+  if (MEMBER_SYNC_OPS.has(op) || (queued && SYNC_QUEUE_SUBS.has(sub)))
+    return "sync";
+  return null;
+}
+
+/** Rẽ nhánh của cả NHÓM; null = nhóm không thuộc chip "Thành viên". Một nhóm có
+ *  thể chạm nhiều loại dòng (mẻ mời có dòng đồng bộ nâng trạng thái đi kèm) nên
+ *  xét theo thứ tự mời → xoá → đồng bộ: việc NẶNG nhất là việc của nhóm. */
+export function memberSubOf(evs: EventLike[]): MemberSub | null {
+  for (const want of MEMBER_SUBS)
+    if (evs.some((e) => memberSubOfEvent(e) === want)) return want;
+  return null;
 }
 
 /** Tiền CỦA lệnh mời / lệnh gia hạn. Nạp ví, rút, điều chỉnh… là tiền NGOÀI lệnh
@@ -275,7 +335,7 @@ function isPayEvent(e: EventLike): boolean {
 export function mainBucketsOf(evs: EventLike[]): MainBucket[] {
   const out: MainBucket[] = [];
   if (evs.some((e) => AUTH_OPS.has(opOf(e.action)))) out.push("security");
-  if (evs.some(isMainMemberEvent)) out.push("member");
+  if (memberSubOf(evs) !== null) out.push("member");
   if (evs.some(isPayEvent)) out.push("billing");
   return out;
 }
@@ -746,6 +806,8 @@ type Group = {
   impGroup: ImpGroup | null;
   /** Chip của tab "Chính" mà nhóm thuộc về; RỖNG = nhóm nằm ở tab "Khác". */
   buckets: MainBucket[];
+  /** Rẽ nhánh trong chip "Thành viên" (null khi nhóm không thuộc chip đó). */
+  memberSub: MemberSub | null;
   /** Nhóm phụ trong tab "Khác" (null khi nhóm ở tab "Chính"). */
   otherBucket: OtherBucket | null;
   /** Khoá mà giao dịch ví neo vào — bấm để lọc nhật ký về dòng tiền của lệnh. */
@@ -1013,6 +1075,7 @@ function makeGroup(key: string, evs: Decorated[]): Group {
   // Phân tab: 3 chip của "Chính"; không thuộc chip nào → "Khác" + nhóm phụ theo
   // action KHỞI TẠO (nhóm phụ đọc theo việc đã làm, không theo sự kiện mới nhất).
   const buckets = mainBucketsOf(evs);
+  const memberSub = memberSubOf(evs);
   const otherBucket = buckets.length ? null : otherBucketOf(initiator.action);
   const payRefs = payRefsOf(evs);
   const orderRefs = orderRefsOf(evs);
@@ -1036,6 +1099,7 @@ function makeGroup(key: string, evs: Decorated[]): Group {
     cat: evs[0].cat,
     impGroup,
     buckets,
+    memberSub,
     otherBucket,
     payRefs,
     orderRefs,
@@ -3118,6 +3182,9 @@ export default function AuditLogs() {
   // hạn là thứ user vào nhật ký để xem, bảo mật và thanh toán chỉ tra khi cần.
   // Bấm lại chip (hoặc bấm tab Chính) để bỏ lọc, xem cả 3 nhóm.
   const [bucket, setBucket] = useState<MainBucket | null>("member"); // chip trong tab Chính
+  // Rẽ nhánh của chip "Thành viên" (mời + gia hạn · xoá · đồng bộ). Mở trang là
+  // chưa rẽ: thấy cả 3 việc, bấm một nhánh mới thu hẹp lại.
+  const [memberSub, setMemberSub] = useState<MemberSub | null>(null);
   const [otherCat, setOtherCat] = useState<OtherBucket | null>(null); // chip trong tab Khác
   // Lọc theo MÃ HOÁ ĐƠN: bấm mã trên lệnh mời/gia hạn → chỉ còn dòng tiền của lệnh đó.
   const [payRef, setPayRef] = useState<string | null>(null);
@@ -3294,6 +3361,18 @@ export default function AuditLogs() {
      gỡ — hay gặp đúng lúc mới mở trang, chip mặc định "Thành viên" chưa có sự
      kiện nào. Nhóm rỗng ⇒ coi như không lọc. */
   const activeBucket = bucket && mainCounts[bucket] > 0 ? bucket : null;
+  const memberCounts = useMemo(() => {
+    const by: Record<MemberSub, number> = { invite: 0, remove: 0, sync: 0 };
+    for (const g of groups) if (g.memberSub) by[g.memberSub] += 1;
+    return by;
+  }, [groups]);
+  /* Rẽ nhánh đang lọc THẬT SỰ — nhánh rỗng không được render nên cũng không được
+     lọc, y như chip cha (xem `activeBucket`). */
+  const activeMemberSub =
+    activeBucket === "member" && memberSub && memberCounts[memberSub] > 0
+      ? memberSub
+      : null;
+
 
   const filtered = useMemo(() => {
     // Đang tìm trên server: trả gì hiện nấy. Lọc lại theo tab/chip ở đây là đúng lỗi
@@ -3307,6 +3386,7 @@ export default function AuditLogs() {
       if (view === "main") {
         if (!g.buckets.length) return false;
         if (activeBucket && !g.buckets.includes(activeBucket)) return false;
+        if (activeMemberSub && g.memberSub !== activeMemberSub) return false;
       } else {
         if (g.buckets.length) return false;
         if (otherCat && g.otherBucket !== otherCat) return false;
@@ -3320,7 +3400,16 @@ export default function AuditLogs() {
       }
       return true;
     });
-  }, [groups, view, activeBucket, otherCat, payRef, search, searching]);
+  }, [
+    groups,
+    view,
+    activeBucket,
+    activeMemberSub,
+    otherCat,
+    payRef,
+    search,
+    searching,
+  ]);
 
   const total = groups.length;
   // Số trên chip đếm theo TOÀN BỘ nhật ký (không theo bộ lọc đang bật) → bấm qua
@@ -3358,6 +3447,7 @@ export default function AuditLogs() {
   const goTab = (next: "main" | "other") => {
     setView(next);
     setBucket(null);
+    setMemberSub(null);
     setOtherCat(null);
     setPayRef(null);
   };
@@ -3374,6 +3464,7 @@ export default function AuditLogs() {
     setSearch(""); // lọc theo mã là bộ lọc tại chỗ — đang tìm server thì nó bị bỏ qua
     setView("main");
     setBucket(billing.length ? "billing" : null);
+    setMemberSub(null);
     setOtherCat(null);
     setPayRef(ref);
     setExpanded((billing[0] ?? hits[0])?.key ?? null);
@@ -3505,6 +3596,7 @@ export default function AuditLogs() {
                   active={activeBucket === b}
                   onClick={() => {
                     setBucket((prev) => (prev === b ? null : b));
+                    setMemberSub(null); // đổi chip cha thì bỏ luôn rẽ nhánh cũ
                     setPayRef(null);
                   }}
                   label={t(`audit.cat.${b}`)}
@@ -3522,6 +3614,40 @@ export default function AuditLogs() {
                   count={otherCounts[b]}
                 />
               ))}
+          {/* Rẽ nhánh của chip "Thành viên": mời + gia hạn · xoá · đồng bộ. Chỉ hiện
+              khi chính chip đó đang bật, để thanh lọc không dài ra vô cớ. */}
+          {view === "main" &&
+            activeBucket === "member" &&
+            MEMBER_SUBS.some((sub) => memberCounts[sub] > 0) && (
+              <>
+                {/* Mũi nhỏ: dãy sau đây là con của chip "Thành viên", không phải
+                    chip ngang hàng với nó. */}
+                <span
+                  aria-hidden
+                  style={{
+                    color: "var(--ink-3)",
+                    fontSize: 13,
+                    margin: "0 2px",
+                  }}
+                >
+                  ›
+                </span>
+                {MEMBER_SUBS.filter((sub) => memberCounts[sub] > 0).map(
+                  (sub) => (
+                    <Chip
+                      key={sub}
+                      active={activeMemberSub === sub}
+                      onClick={() => {
+                        setMemberSub((prev) => (prev === sub ? null : sub));
+                        setPayRef(null);
+                      }}
+                      label={t(`audit.memberSub.${sub}`)}
+                      count={memberCounts[sub]}
+                    />
+                  ),
+                )}
+              </>
+            )}
           {/* Đang lọc theo mã hoá đơn — nói rõ đang xem tiền của lệnh nào + nút bỏ lọc. */}
           {payRef && (
             <button
