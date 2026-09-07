@@ -2876,6 +2876,32 @@ async function runOnceOnSlot(
     (CONTENT_TIMEOUT_CEILINGS[task.type] ?? phase1Timeout) *
     (MERGE_SEQUENTIAL_TYPES.has(task.type) ? sequentialUnits(task) : 1);
   const phase1TabId = tab.id;
+  /**
+   * Chờ MỘT LƯỢT GỌI content của lệnh này theo luật nhịp tiến độ (xem
+   * `CONTENT_TIMEOUT_CEILINGS`) thay vì mốc cứng.
+   *
+   * VÌ SAO KHÔNG CHỈ LƯỢT ĐẦU: luồng mời bị CẮT LÀM BA lượt (chốt suất → mua
+   * suất/bật công tắc → mời thật). Chỉ lượt đầu đi theo nhịp, hai lượt sau vẫn
+   * bị mốc cứng chém, mà chúng mới là chỗ đắt nhất:
+   *   • lượt sau khi MUA SUẤT — tiền đã trừ rồi mới gọi lại;
+   *   • lượt Phase A' — chính cú bấm "Gửi lời mời".
+   * Chém nhầm ở đó là báo hỏng một lời mời ĐÃ ĐI: backend hoàn phí + xoá bản ghi
+   * trong khi người nhận vẫn có thư mời trong hộp (ca 31/7/2026 — hoàn 340.000đ
+   * oan, hôm sau phải thu lại tay).
+   */
+  const sendToContentLive = (
+    tabId: number,
+    msg: ExecuteActionRequest,
+    label: string,
+  ): Promise<ExecuteActionResponse> =>
+    withLiveTimeout(sendToContent(tabId, msg), {
+      baseMs: phase1Timeout,
+      ceilingMs: phase1Ceiling,
+      aliveWindowMs: ALIVE_BEAT_WINDOW_MS,
+      checkMs: LIVE_CHECK_MS,
+      label,
+      lastBeatAt: () => readProgressBeat(task.id)?.at ?? null,
+    });
   const dispatchPhase1 = async (): Promise<ExecuteActionResponse> => {
     console.log(`[autogpt-runner] sending ${request.kind} to content script...`);
     const startedAt = Date.now();
@@ -2980,6 +3006,7 @@ async function runOnceOnSlot(
         : `Đã mua ${purchased} suất (tiền đã trừ) — tải lại trang admin cho sạch rồi mời...`,
     });
 
+    const seatReloadStartedAt = Date.now();
     try {
       const prevLoadId = await readContentLoadId(tab.id);
       await chrome.tabs.update(tab.id, { url: CHATGPT_ADMIN_URL, active: ADMIN_TAB_ACTIVE });
@@ -2997,9 +3024,9 @@ async function runOnceOnSlot(
         response = seatReloadFailureResponse(purchased, { reason: "stale_content" });
       } else {
         const retry = seatReloadRetryRequest(request, seatReloadPlan);
-        response = await withTimeout(
-          sendToContent(tab.id, retry),
-          phase1Timeout,
+        response = await sendToContentLive(
+          tab.id,
+          retry,
           `content-${retry.kind}-seatsReady`,
         );
         console.log(
@@ -3017,8 +3044,9 @@ async function runOnceOnSlot(
         error_code: "CONTENT_TIMEOUT",
         error_message:
           `ĐÃ MUA ${purchased} suất (tiền đã trừ trên ChatGPT). Sau khi tải lại trang, ` +
-          `content không trả kết quả mời trong ${Math.round(phase1Timeout / 1000)}s. ` +
-          SESSION_RECOVERY_HINT +
+          `content không trả kết quả mời trong ` +
+          `${Math.round((Date.now() - seatReloadStartedAt) / 1000)}s. ` +
+          contentTimeoutCause(task.id) +
           ` Lỗi gốc: ${msg}`,
       };
     }
@@ -3382,6 +3410,7 @@ async function runOnceOnSlot(
       (response as { data?: Record<string, unknown> }).data,
     );
 
+    const phaseAPrimeStartedAt = Date.now();
     try {
       // `loadId` của instance ĐANG chạy — đọc TRƯỚC khi ra lệnh điều hướng để
       // bên dưới nhận ra "trang mới" bằng cách so instance, không phải bằng cách
@@ -3411,9 +3440,9 @@ async function runOnceOnSlot(
         };
       } else {
         const reinvite: ExecuteActionRequest = { ...request, externalReady: true };
-        response = await withTimeout(
-          sendToContent(tab.id, reinvite),
-          phase1Timeout,
+        response = await sendToContentLive(
+          tab.id,
+          reinvite,
           `content-${reinvite.kind}-externalReady`,
         );
         console.log(
@@ -3433,8 +3462,8 @@ async function runOnceOnSlot(
         error_code: "CONTENT_TIMEOUT",
         error_message:
           `Sau khi bật 'mời ngoài tên miền' + reload, content không trả kết quả mời trong ` +
-          `${Math.round(phase1Timeout / 1000)}s. ` +
-          SESSION_RECOVERY_HINT +
+          `${Math.round((Date.now() - phaseAPrimeStartedAt) / 1000)}s. ` +
+          contentTimeoutCause(task.id) +
           ` Lỗi gốc: ${msg}`,
       };
     }
@@ -3589,9 +3618,15 @@ async function runOnceOnSlot(
       await reportRunnerProgress(config, task.id, {
         phase: "f5-verify",
         message:
-          round === 1
-            ? "Submit invite OK — F5 trang admin để ChatGPT load lại pending list..."
-            : `Còn email chưa thấy — F5 lại (lần ${round}) để ChatGPT load tiếp...`,
+          round > 1
+            ? `Còn email chưa thấy — F5 lại (lần ${round}) để ChatGPT load tiếp...`
+            : // Nhánh CỨU (`inviteSalvageMode`) vào đây với lượt mời đã chết giữa
+              // chừng — nói "Submit invite OK" ở đó là nói ngược hẳn với cái vừa
+              // xảy ra, mà đây đúng là dòng cuối người bấm lệnh đọc được trong
+              // nhật ký khi lệnh hỏng (ca `731262ab` ngày 6/9/2026).
+              inviteSalvageMode
+              ? "Chưa rõ lời mời đã đi hay chưa — F5 trang admin rồi soi tab Lời mời để phân xử..."
+              : "Submit invite OK — F5 trang admin để ChatGPT load lại pending list...",
       });
       try {
         const prevLoadId = await readContentLoadId(tab.id);
