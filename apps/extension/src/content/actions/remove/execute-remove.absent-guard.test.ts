@@ -74,6 +74,7 @@ vi.mock("../dialog-commit", () => ({
   confirmDialogBusy: () => false,
   confirmDialogOpen: () => false,
   openDialogText: () => "",
+  paidSeatDialogOpen: () => false,
   waitForConfirmDialogClosed: vi.fn(async () => true),
   waitForModalLockGone: vi.fn(async () => true),
 }));

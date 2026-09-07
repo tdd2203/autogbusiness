@@ -22,6 +22,7 @@ import {
   confirmDialogBusy,
   confirmDialogOpen,
   openDialogText,
+  paidSeatDialogOpen,
   waitForConfirmDialogClosed,
   waitForModalLockGone,
 } from "../dialog-commit";
@@ -108,6 +109,11 @@ function findConfirmRemoveButton(texts: readonly string[]): HTMLElement | null {
   const dialog = document.querySelector<HTMLElement>(
     '[role="alertdialog"], [role="dialog"]',
   );
+  // Hộp "Gỡ suất trả phí?" (bồi sau khi gỡ xong) cũng có nút đỏ, khớp cả
+  // `button[data-variant="destructive"]` lẫn nhãn lỏng "Remove" kiểu `startsWith`
+  // → quét ở đây là bấm trúng "Remove paid seat", workspace tụt suất đã mua.
+  // Hộp đó do `keepPaidSeatIfAsked` lo, tuyệt đối không phải việc của hàm này.
+  if (dialog && paidSeatDialogOpen()) return null;
   const root: ParentNode = dialog ?? document;
   const sel = querySelectorFirst<HTMLElement>(SELECTORS.confirmRemoveButton, root);
   if (sel) return sel;
@@ -551,12 +557,19 @@ export async function executeRemove(
     // xoá THẬT bại (không phải trễ list). Đọc text dialog để báo rõ nguyên nhân.
     const dialogText = openDialogText();
     const busy = confirmDialogBusy();
+    // Hộp "Gỡ suất trả phí?" còn nằm đó = member ĐÃ bị gỡ xong, chỉ là extension
+    // không nhận ra nút giữ suất nên không dám bấm. Báo đúng chuyện đó thay vì
+    // đoán OTP/2FA, kẻo lần sau lại đi mò nhầm chỗ.
+    const reason = paidSeatDialogOpen()
+      ? 'hộp "Gỡ suất trả phí?" đang mở mà extension không nhận ra nút giữ suất ' +
+        "(ChatGPT đổi nhãn) → member có thể ĐÃ gỡ xong, cần vào bấm GIỮ SUẤT bằng tay"
+      : "ChatGPT có thể yêu cầu OTP/2FA hoặc báo lỗi cho thao tác xoá. Cần xoá thủ công.";
     return {
       ok: false,
       error_code: "VERIFY_FAILED",
       error_message:
         `Dialog xác nhận xoá KHÔNG đóng sau 30s (${busy ? "nút xác nhận vẫn đang quay" : "dialog đứng im"}) → ` +
-        "ChatGPT có thể yêu cầu OTP/2FA hoặc báo lỗi cho thao tác xoá. Cần xoá thủ công." +
+        reason +
         (dialogText ? ` Dialog: "${dialogText.slice(0, 200)}"` : ""),
     };
   }

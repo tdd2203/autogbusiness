@@ -20,21 +20,30 @@
  *      sau dialog một nhịp; gõ ô lọc trong lúc đó thì event `input` rơi vào lớp
  *      phủ, query lọc không bao giờ chạy.
  *   3. Quét lại nguồn sự thật (ô lọc / ô search) — xem từng action.
+ *
+ * Xen giữa bước 1 và 2 còn một nhánh: ChatGPT có thể bồi thêm hộp thoại "Gỡ suất
+ * trả phí?" sau khi thao tác đã chạy xong — xem `keepPaidSeatIfAsked` và
+ * [`paid-seat-guard.ts`](./paid-seat-guard.ts).
  */
 
-import { sleep } from "../human";
+import { humanClick, sleep } from "../human";
+import { decidePaidSeatDialog } from "./paid-seat-guard";
+
+/** Dialog đang mở (phần tử), `null` nếu không có. */
+function openDialogEl(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    '[role="alertdialog"], [role="dialog"]',
+  );
+}
 
 /** Dialog xác nhận (bất kỳ) đang mở không? */
 export function confirmDialogOpen(): boolean {
-  return (
-    document.querySelector('[role="alertdialog"], [role="dialog"]') !== null
-  );
+  return openDialogEl() !== null;
 }
 
 /** Text dialog đang mở — để báo lý do khi verify fail (OTP/2FA/lỗi). */
 export function openDialogText(): string {
-  const d = document.querySelector('[role="alertdialog"], [role="dialog"]');
-  return (d?.textContent ?? "").trim();
+  return (openDialogEl()?.textContent ?? "").trim();
 }
 
 /**
@@ -43,7 +52,7 @@ export function openDialogText(): string {
  * không đóng ngay như bản cũ. Chỉ dùng để log cho dễ soi, không để quyết định.
  */
 export function confirmDialogBusy(): boolean {
-  const d = document.querySelector('[role="alertdialog"], [role="dialog"]');
+  const d = openDialogEl();
   if (!d) return false;
   if (
     d.querySelector(
@@ -69,6 +78,74 @@ export function modalLockPresent(): boolean {
   return document.querySelector("[data-radix-dialog-overlay]") !== null;
 }
 
+/** Text mọi nút trong dialog đang mở (thứ tự DOM). */
+function openDialogButtons(): HTMLElement[] {
+  const d = openDialogEl();
+  return d ? Array.from(d.querySelectorAll<HTMLElement>("button")) : [];
+}
+
+/** Dialog đang mở CÓ PHẢI hộp "Gỡ suất trả phí?" — để báo lý do cho đúng. */
+export function paidSeatDialogOpen(): boolean {
+  const d = openDialogEl();
+  if (!d) return false;
+  const decision = decidePaidSeatDialog(
+    d.textContent ?? "",
+    openDialogButtons().map((b) => (b.textContent ?? "").trim()),
+  );
+  return decision.kind !== "not_paid_seat";
+}
+
+/** Kết quả một lượt xử lý hộp "Gỡ suất trả phí?". */
+export type PaidSeatOutcome =
+  /** Không có hộp đó (trường hợp thường). */
+  | "none"
+  /** Đã bấm "Giữ suất". */
+  | "kept"
+  /** Đúng là nó nhưng không nhận ra nút giữ suất → KHÔNG bấm gì. */
+  | "unknown";
+
+/**
+ * ChatGPT bồi hộp "Gỡ suất trả phí?" sau khi thao tác gỡ đã chạy xong (ảnh user
+ * 8/9/2026) → bấm "Giữ suất" cho hộp tắt đi, thao tác chính coi như xong.
+ *
+ * MẶC ĐỊNH LÀ GIỮ và hiện chưa có đường nào khác: suất đã trả tiền tới ngày gia
+ * hạn nên gỡ giữa kỳ không hoàn lại gì, mà mất luôn chỗ trống để chuyển người
+ * sang. Lý do đầy đủ + chỗ sẽ thêm công tắc "gỡ suất ngày chốt chu kỳ" xem
+ * [`paid-seat-guard.ts`](./paid-seat-guard.ts).
+ *
+ * Không nhận ra nút giữ suất thì KHÔNG bấm bừa: nút còn lại là nút đỏ gỡ suất,
+ * bấm nhầm là workspace tụt suất đã mua. Trả `"unknown"` và để lệnh hết giờ —
+ * người dùng bấm tay, chậm một nhịp còn hơn mất suất.
+ */
+export async function keepPaidSeatIfAsked(
+  log = "[autogpt]",
+): Promise<PaidSeatOutcome> {
+  const d = openDialogEl();
+  if (!d) return "none";
+  const btns = openDialogButtons();
+  const texts = btns.map((b) => (b.textContent ?? "").trim());
+  const decision = decidePaidSeatDialog(d.textContent ?? "", texts);
+  if (decision.kind === "not_paid_seat") return "none";
+  if (decision.kind === "unknown_labels") {
+    console.warn(
+      `${log} hộp "Gỡ suất trả phí?" đang mở nhưng KHÔNG nhận ra nút giữ suất ` +
+        `→ không bấm gì (tránh bấm nhầm nút gỡ suất). Nút trong hộp: ` +
+        JSON.stringify(decision.buttons),
+    );
+    return "unknown";
+  }
+  const keepBtn = btns[decision.index];
+  if (!keepBtn) return "unknown";
+  console.log(
+    `${log} hộp "Gỡ suất trả phí?" → bấm giữ suất: ${JSON.stringify(texts[decision.index])}`,
+  );
+  await humanClick(keepBtn);
+  return "kept";
+}
+
+/** Số lần tối đa bấm "Giữ suất" trong MỘT lượt chờ (chống bấm liên hồi). */
+const MAX_PAID_SEAT_KEEPS = 3;
+
 /** Poll 300ms; đòi 4 nhịp LIÊN TIẾP không thấy dialog mới coi là "tắt hẳn". */
 export const DIALOG_POLL_MS = 300;
 const DIALOG_GONE_STABLE_HITS = 4;
@@ -87,12 +164,19 @@ export async function waitForConfirmDialogClosed(
   const deadline = Date.now() + timeoutMs;
   let clearHits = 0;
   let loggedBusy = false;
+  let keeps = 0;
   while (Date.now() < deadline) {
     if (confirmDialogOpen()) {
       clearHits = 0;
       if (!loggedBusy && confirmDialogBusy()) {
         loggedBusy = true;
         console.log(`${log} dialog xác nhận đang quay (chờ ChatGPT trả lời)...`);
+      }
+      // Hộp "Gỡ suất trả phí?" bồi sau khi thao tác đã xong — không bấm giữ suất
+      // thì nó đứng đó tới hết hạn và lệnh báo hỏng oan. Chỉ bấm khi hộp KHÔNG
+      // còn quay, và tối đa vài lần (mỗi member gỡ đi kèm một hộp).
+      if (keeps < MAX_PAID_SEAT_KEEPS && !confirmDialogBusy()) {
+        if ((await keepPaidSeatIfAsked(log)) === "kept") keeps += 1;
       }
     } else {
       clearHits += 1;
