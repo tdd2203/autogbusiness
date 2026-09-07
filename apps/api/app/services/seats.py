@@ -33,14 +33,20 @@ chủ đội chỉ vào bảng `members` sau khi CANVA_SYNC quét trang People. 
 `owner_reserve_map`.
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.models import PLATFORM_CANVA, InviteSettings, Member, Workspace
+from app.models import (
+    PLATFORM_CANVA,
+    InviteSettings,
+    Member,
+    MemberSubscriptionCycle,
+    Workspace,
+)
 
 # Trần overcommit khi mời: cho phép vượt `seat_total` tới +50% rồi mới chặn, vì
 # `seat_total` là số scrape có thể cũ — chặn đúng bằng nó sẽ khoá oan lúc admin vừa
@@ -149,6 +155,96 @@ def new_seat_count(db: Session, workspace_id: UUID, emails: list[str]) -> int:
         .all()
     )
     return sum(1 for e in lowered if e not in holding)
+
+
+def paid_seat_emails(
+    db: Session, workspace_id: UUID, emails: list[str], *, now: datetime | None = None
+) -> set[str]:
+    """Trong `emails`, những email ĐÃ TRẢ TIỀN cho chính workspace này, kỳ CÒN HẠN.
+
+    Đây là nhóm được MIỄN TRẦN THÀNH VIÊN (chốt user 7/9/2026): tiền đã thu rồi thì
+    chỗ ngồi là món nợ của mình với khách, không phải một quyết định chi tiêu mới.
+    Trần sinh ra để gác chuyện mua suất cho NGƯỜI MỚI; chặn cả khách đã trả tiền là
+    bắt họ chờ tới ngày admin mở trần — trong khi hạn của họ vẫn trôi.
+
+    Ca sinh ra luật (GPT1, `mme.hebrahimi` 6/9/2026): lệnh mời chết vì hết giờ nên
+    backend hoàn phí + xoá bản ghi, gói vẫn còn hạn tới 5/10. Mời lại thì trần
+    388/388 chặn — khách đã trả tiền mà không có đường vào.
+
+    "Đã trả tiền" đọc y hệt `_period_is_funded` bên `routers/members/_shared.py`:
+    nhãn `payment_status='paid'` cấp member, HOẶC còn một chu kỳ `paid` phủ hiện tại.
+    Giữ hai vế vì tài khoản được miễn phí (super-admin, đại lý chưa bật Ví) không có
+    bút toán nào nhưng vẫn là kỳ có tiền.
+
+    CÒN HẠN là bắt buộc và mốc phải CỤ THỂ: hết hạn rồi thì lần mời sau là một chu
+    kỳ MỚI có phí, tức chi tiêu mới — chuyện đó vẫn phải xin phép trần. Vô thời hạn
+    (`subscription_end_at` NULL) cũng không tính, cùng cách hiểu với
+    `_is_paid_period_active`.
+
+    CHỈ dòng `removed` — người đã trả tiền mà HIỆN KHÔNG có chỗ ngồi. `active` và
+    `pending` đang giữ chỗ sẵn nên không cần miễn gì (`new_seat_count` vốn đã bỏ họ
+    ra), mà nới cho họ là phá luật "lời mời chờ chưa nhận không phải khách cũ" chốt
+    cùng ngày: bản ghi `pending` chưa ai bấm nhận thì chưa từng tốn một suất nào.
+    """
+    lowered = [e.strip().lower() for e in emails if e]
+    if not lowered:
+        return set()
+    at = now or datetime.now(timezone.utc)
+    funded_cycle = (
+        select(MemberSubscriptionCycle.id)
+        .where(
+            MemberSubscriptionCycle.member_id == Member.id,
+            MemberSubscriptionCycle.payment_status == "paid",
+            or_(
+                MemberSubscriptionCycle.end_at.is_(None),
+                MemberSubscriptionCycle.end_at > at,
+            ),
+        )
+        .exists()
+    )
+    rows = (
+        db.execute(
+            select(Member.email).where(
+                Member.workspace_id == workspace_id,
+                Member.email.in_(lowered),
+                Member.status == "removed",
+                Member.subscription_end_at.isnot(None),
+                Member.subscription_end_at > at,
+                or_(Member.payment_status == "paid", funded_cycle),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {str(e).strip().lower() for e in rows}
+
+
+def paid_new_seats(db: Session, workspace_id: UUID, emails: list[str]) -> int:
+    """Bao nhiêu suất MỚI trong `emails` là của khách ĐÃ TRẢ TIỀN (miễn trần).
+
+    Dùng để NỚI trần đúng bằng ngần ấy khi gửi giấy phép mua suất xuống extension —
+    xem `purchase_allowance`. Không phải nới trần vĩnh viễn: chỉ lệnh này, chỉ ngần
+    này suất, chỉ cho những email đã có tiền nằm trong két.
+    """
+    lowered = [e.strip().lower() for e in emails if e]
+    if not lowered:
+        return 0
+    paid = paid_seat_emails(db, workspace_id, lowered)
+    return new_seat_count(db, workspace_id, [e for e in lowered if e in paid])
+
+
+def cap_new_seats(db: Session, workspace_id: UUID, emails: list[str]) -> int:
+    """`new_seat_count` nhưng BỎ RA khách đã trả tiền — con số đem so với TRẦN.
+
+    Mọi đường tạo lệnh mời phải gác trần bằng hàm này chứ không phải `new_seat_count`
+    thô, nếu không khách đã trả tiền lại bị chính cái trần đó chặn. Xem
+    `paid_seat_emails`.
+    """
+    lowered = [e.strip().lower() for e in emails if e]
+    if not lowered:
+        return 0
+    paid = paid_seat_emails(db, workspace_id, lowered)
+    return new_seat_count(db, workspace_id, [e for e in lowered if e not in paid])
 
 
 def cap_used(db: Session, workspace: Workspace) -> int:
@@ -285,11 +381,14 @@ def purchase_allowance(db: Session, workspace: Workspace, emails: list[str]) -> 
     Hai điều kiện, user chốt 7/9/2026, phải ĐỦ CẢ HAI mới được mua:
 
     1. MỌI email của lệnh đều đã từng tham gia workspace này (khách cũ quay lại
-       hoặc gia hạn — xem `returning_emails`). Suất cho người mới là quyết định
+       hoặc gia hạn — xem `returning_emails`) HOẶC đã trả tiền và còn hạn ở đây
+       (`paid_seat_emails`). Suất cho người mới chưa trả đồng nào là quyết định
        tiêu tiền, phải do người bấm, không để lệnh tự làm.
     2. Tổng suất SAU khi mua không vượt TRẦN THÀNH VIÊN (`invite_member_cap`) —
        con số super-admin tự gõ, đọc là "số suất tôi duyệt chi". Không đặt trần
-       (`None`) ⇒ điều kiện này không chặn gì.
+       (`None`) ⇒ điều kiện này không chặn gì. Trần gửi xuống được NỚI đúng bằng
+       số suất của khách đã trả tiền trong chính lệnh này (`paid_new_seats`): tiền
+       đã thu thì chỗ ngồi là nợ phải trả, không phải khoản chi mới xin duyệt.
 
     Điều kiện 2 CỐ Ý để extension chốt, không chốt sẵn ở đây: tổng suất thật nằm
     trên ChatGPT (`workspace.seat_total` chỉ là số scrape, có thể cũ hàng ngày),
@@ -307,8 +406,20 @@ def purchase_allowance(db: Session, workspace: Workspace, emails: list[str]) -> 
     """
     lowered = [e.strip().lower() for e in emails if e]
     cap = workspace.invite_member_cap
-    max_total = None if cap is None else int(cap)
-    known = returning_emails(db, workspace.id, lowered)
+    # KHÁCH ĐÃ TRẢ TIỀN NỚI ĐƯỢC TRẦN, đúng bằng số suất họ cần (chốt user
+    # 7/9/2026). Không nới thì hai điều kiện dưới mâu thuẫn nhau ở đúng ca hay gặp
+    # nhất: backend cho lệnh chạy vì khách đã trả tiền (`cap_new_seats` bỏ họ ra),
+    # rồi extension tới nơi lại từ chối mua vì tổng suất sau khi mua vượt trần —
+    # lệnh đi hết 5 phút để về tay không. Nới có giới hạn: chỉ lệnh này, chỉ ngần
+    # ấy suất, và chỉ cho email có tiền nằm sẵn trong két (xem `paid_seat_emails`).
+    paid_stretch = paid_new_seats(db, workspace.id, lowered)
+    max_total = None if cap is None else int(cap) + paid_stretch
+    # Khách đã trả tiền tính là "người của mình" kể cả khi CHƯA từng vào đội được:
+    # `returning_emails` đòi mốc `joined_at`, mà đúng ca cần cứu nhất là lời mời đầu
+    # tiên chết giữa chừng nên họ chưa có mốc nào (`mme.hebrahimi` 6/9/2026).
+    known = returning_emails(db, workspace.id, lowered) | paid_seat_emails(
+        db, workspace.id, lowered
+    )
     newcomers = [e for e in lowered if e not in known]
     if newcomers:
         shown = ", ".join(newcomers[:3])

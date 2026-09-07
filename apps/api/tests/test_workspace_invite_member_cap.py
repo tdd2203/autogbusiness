@@ -424,3 +424,88 @@ def _tasks_of_type(
         f"/api/v1/queue?workspace_id={ws_id}&limit=50", headers=auth_header
     ).json()
     return sum(1 for t in tasks if t["type"] == ttype)
+
+
+def _mark_paid_removed(ws_id: str, email: str, *, joined: bool = False) -> None:
+    """Dựng KHÁCH ĐÃ TRẢ TIỀN MÀ MẤT CHỖ: còn hạn, `paid`, nhưng đã bị gỡ.
+
+    `joined=False` là đúng ca sinh ra luật (`mme.hebrahimi` 6/9/2026): lệnh mời đầu
+    tiên chết vì hết giờ nên họ chưa từng vào đội, backend hoàn phí rồi xoá bản ghi,
+    trong khi gói vẫn còn hạn.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import SessionLocal
+    from app.models import Member
+
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        m = (
+            db.query(Member)
+            .filter(Member.workspace_id == uuid.UUID(ws_id), Member.email == email)
+            .one()
+        )
+        m.status = "removed"
+        m.removed_at = now
+        m.joined_at = now - timedelta(days=2) if joined else None
+        m.payment_status = "paid"
+        m.subscription_end_at = now + timedelta(days=28)
+        db.commit()
+
+
+def test_paid_customer_who_lost_seat_gets_back_in_at_cap(
+    client: TestClient, auth_header: dict
+) -> None:
+    """(9) Trần KHÔNG chặn khách ĐÃ TRẢ TIỀN mà đang mất chỗ (chốt user 7/9/2026).
+
+    Trần gác chuyện tiêu tiền cho NGƯỜI MỚI. Khách đã trả tiền thì chỗ ngồi là món
+    nợ của mình với họ — bắt họ chờ tới ngày admin mở trần là hạn cứ trôi mà không
+    dùng được ngày nào.
+    """
+    ws = create_ws(client, auth_header, "Cap WS paid")
+    _set_cap(client, auth_header, ws["id"], 1)
+    sub = make_beta_sub(client, auth_header, username="cappaid", balance=FEE * 4)
+    assign(client, auth_header, ws["id"], sub["id"])
+
+    assert _invite(client, sub["token"], ws["id"], "daitra@example.com").status_code == 202
+    _mark_paid_removed(ws["id"], "daitra@example.com")
+    # Trần đã đầy bởi một người khác đang ngồi.
+    assert _invite(client, sub["token"], ws["id"], "nguoikhac@example.com").status_code == 202
+    assert _member_count(ws["id"]) == 1
+
+    back = _invite(client, sub["token"], ws["id"], "daitra@example.com")
+    assert back.status_code == 202, back.text
+
+
+def test_cap_still_stops_expired_customer_coming_back(
+    client: TestClient, auth_header: dict
+) -> None:
+    """(9) Hết hạn thì KHÔNG được miễn: lần mời sau là chu kỳ mới có phí, tức chi
+    tiêu mới — vẫn phải xin phép trần."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.db import SessionLocal
+    from app.models import Member
+
+    ws = create_ws(client, auth_header, "Cap WS expired")
+    _set_cap(client, auth_header, ws["id"], 1)
+    sub = make_beta_sub(client, auth_header, username="capexp", balance=FEE * 4)
+    assign(client, auth_header, ws["id"], sub["id"])
+
+    assert _invite(client, sub["token"], ws["id"], "hethan@example.com").status_code == 202
+    _mark_paid_removed(ws["id"], "hethan@example.com")
+    with SessionLocal() as db:
+        m = (
+            db.query(Member)
+            .filter(
+                Member.workspace_id == uuid.UUID(ws["id"]),
+                Member.email == "hethan@example.com",
+            )
+            .one()
+        )
+        m.subscription_end_at = datetime.now(timezone.utc) - timedelta(days=1)
+        db.commit()
+    assert _invite(client, sub["token"], ws["id"], "nguoikhac@example.com").status_code == 202
+
+    stopped = _invite(client, sub["token"], ws["id"], "hethan@example.com")
+    assert stopped.status_code == 409, stopped.text

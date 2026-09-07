@@ -176,3 +176,87 @@ def test_moi_lenh_moi_deu_co_giay_phep(client: TestClient, auth_header: dict):
 
     assert "seat_purchase" in payload
     assert set(payload["seat_purchase"]) == {"allowed", "max_total", "reason"}
+
+
+def _mark_paid_removed(ws_id: str, email: str) -> None:
+    """Khách ĐÃ TRẢ TIỀN mà mất chỗ: còn hạn, `paid`, đã bị gỡ, CHƯA từng vào đội."""
+    from app.db import SessionLocal
+    from app.models import Member
+
+    now = datetime.now(timezone.utc)
+    with SessionLocal() as db:
+        m = (
+            db.query(Member)
+            .filter(Member.workspace_id == uuid.UUID(ws_id), Member.email == email)
+            .one()
+        )
+        m.status = "removed"
+        m.removed_at = now
+        m.joined_at = None
+        m.payment_status = "paid"
+        m.subscription_end_at = now + timedelta(days=28)
+        db.commit()
+
+
+def test_khach_da_tra_tien_mat_cho_thi_duoc_mua(client: TestClient, auth_header: dict):
+    """Đã trả tiền + còn hạn + đang mất chỗ ⇒ được mua bù, dù CHƯA từng vào đội.
+
+    Ca `mme.hebrahimi` 6/9/2026: lệnh mời chết vì hết giờ nên chưa có mốc
+    `joined_at` nào — `returning_emails` một mình sẽ xếp họ vào nhóm "người lạ" và
+    cấm mua, trong khi tiền của họ đã nằm trong két.
+    """
+    ws = create_ws(client, auth_header, "Allow Paid WS", plan="business", seat_total=60)
+    _invite_payload(client, auth_header, ws["id"], "da-tra@example.com")
+    _mark_paid_removed(ws["id"], "da-tra@example.com")
+
+    got = _allowance(ws["id"], ["da-tra@example.com"])
+
+    assert got["allowed"] is True
+    assert got["reason"] is None
+
+
+def test_tran_duoc_noi_dung_bang_so_suat_cua_khach_da_tra_tien(
+    client: TestClient, auth_header: dict
+):
+    """Trần gửi xuống extension = trần + số suất của khách đã trả tiền trong lệnh.
+
+    Không nới thì hai cửa nói ngược nhau: backend cho lệnh chạy (trần miễn cho họ)
+    rồi extension tới nơi từ chối mua vì tổng suất sau khi mua vượt trần — lệnh đi
+    hết 5 phút để về tay không.
+    """
+    ws = create_ws(client, auth_header, "Allow Paid Cap WS", plan="business", seat_total=60)
+    _invite_payload(client, auth_header, ws["id"], "da-tra@example.com")
+    _mark_paid_removed(ws["id"], "da-tra@example.com")
+    _set_cap(client, auth_header, ws["id"], 60)
+
+    got = _allowance(ws["id"], ["da-tra@example.com"])
+
+    assert got["max_total"] == 61
+    assert got["allowed"] is True
+
+
+def test_khach_het_han_khong_duoc_noi_tran(client: TestClient, auth_header: dict):
+    """Hết hạn ⇒ chu kỳ mới có phí = chi tiêu mới ⇒ trần giữ nguyên, cấm mua."""
+    from app.db import SessionLocal
+    from app.models import Member
+
+    ws = create_ws(client, auth_header, "Allow Expired WS", plan="business", seat_total=60)
+    _invite_payload(client, auth_header, ws["id"], "het-han@example.com")
+    _mark_paid_removed(ws["id"], "het-han@example.com")
+    with SessionLocal() as db:
+        m = (
+            db.query(Member)
+            .filter(
+                Member.workspace_id == uuid.UUID(ws["id"]),
+                Member.email == "het-han@example.com",
+            )
+            .one()
+        )
+        m.subscription_end_at = datetime.now(timezone.utc) - timedelta(days=1)
+        db.commit()
+    _set_cap(client, auth_header, ws["id"], 60)
+
+    got = _allowance(ws["id"], ["het-han@example.com"])
+
+    assert got["max_total"] == 60
+    assert got["allowed"] is False

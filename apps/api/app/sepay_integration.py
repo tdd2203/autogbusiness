@@ -309,7 +309,7 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
         # hoá đơn còn chỗ. `assert_under_cap` đo bằng `seat_used` (đã vào + đang chờ)
         # nên khác `_assert_seat_available` ngay trên (đo suất ChatGPT, nới +50%).
         seats.assert_under_cap(
-            db, ws, seats.new_seat_count(db, ws.id, [e for e, _ in entries])
+            db, ws, seats.cap_new_seats(db, ws.id, [e for e, _ in entries])
         )
         single = len(entries) == 1
         # Giữ đúng hành vi mời-lại (cờ do endpoint re-invite gắn vào order payload):
