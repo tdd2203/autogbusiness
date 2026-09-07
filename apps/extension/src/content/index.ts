@@ -110,6 +110,7 @@ async function dispatch(
         msg.noSeatPurchase ?? false,
         msg.seatsReady ?? false,
         msg.seatsPurchasedAlready,
+        msg.seatPurchase,
       );
     case "SET_EXTERNAL_INVITES":
       return executeSetExternalInvites(msg.enabled);

@@ -164,6 +164,44 @@ def test_thieu_suat_cho_loi_moi_treo_thi_tu_mua_bu(
     assert "AUTO_PURCHASE_SEAT_QUEUED" in _audit_actions(ws["id"])
 
 
+def test_tran_thanh_vien_chan_ca_duong_tu_mua(client: TestClient, auth_header: dict):
+    """Trần 60 mà mua bù sẽ thành 61 suất ⇒ KHÔNG mua, ghi nhật ký để admin xử tay.
+
+    Trần là số suất super-admin duyệt chi. Đường này tiêu tiền lúc không ai ngồi
+    trước máy nên nó phải tôn trọng trần y như lệnh mời — ca GPT1 7/9/2026 mất
+    ₫41.452 vì đúng chỗ này không ai gác (user chốt 7/9/2026).
+    """
+    ws = _ws_with_pending(client, auth_header, "Auto Buy Cap WS")
+    r = client.patch(
+        f"/api/v1/workspaces/{ws['id']}",
+        json={"invite_member_cap": 60},
+        headers=auth_header,
+    )
+    assert r.status_code == 200, r.text
+
+    _finish_sync(client, ws, _sync_item(ws["id"]))
+
+    assert _purchases(ws["id"]) == []
+    assert "AUTO_PURCHASE_SEAT_SKIPPED" in _audit_actions(ws["id"])
+
+
+def test_tran_con_cho_thi_van_mua_bu(client: TestClient, auth_header: dict):
+    """Trần 61 ⇒ mua 1 suất vẫn nằm trong mức duyệt chi ⇒ mua như cũ."""
+    ws = _ws_with_pending(client, auth_header, "Auto Buy Under Cap WS")
+    r = client.patch(
+        f"/api/v1/workspaces/{ws['id']}",
+        json={"invite_member_cap": 61},
+        headers=auth_header,
+    )
+    assert r.status_code == 200, r.text
+
+    _finish_sync(client, ws, _sync_item(ws["id"]))
+
+    got = _purchases(ws["id"])
+    assert len(got) == 1, got
+    assert got[0]["quantity"] == 1
+
+
 def test_con_du_cho_thi_khong_mua_gi(client: TestClient, auth_header: dict):
     """55 đã gán + 1 chờ trên 60 suất ⇒ còn dư 4 ⇒ TUYỆT ĐỐI không tiêu tiền."""
     ws = _ws_with_pending(client, auth_header, "Auto Buy Room WS")

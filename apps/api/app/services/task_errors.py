@@ -35,6 +35,14 @@ _FRIENDLY: dict[str, str] = {
         "Mua thêm suất không thành công nên lệnh dừng lại. Chưa gửi lời mời nào. "
         "Vui lòng báo quản trị viên."
     ),
+    # Khác hẳn ba mã trên: KHÔNG có gì hỏng cả, luật không cho lệnh này tiêu tiền
+    # mua suất (chạm trần thành viên, hoặc trong mẻ có email chưa từng tham gia).
+    # Mời lại y hệt cũng sẽ dừng y hệt, nên câu phải nói thẳng là chờ quản trị viên.
+    "SEAT_PURCHASE_NOT_ALLOWED": (
+        "Không gian đã hết suất trống và lệnh này không được phép mua thêm suất. "
+        "Chưa gửi lời mời nào, đã hoàn phí. Vui lòng báo quản trị viên mở thêm suất "
+        "thay vì mời lại."
+    ),
     "SEAT_RELOAD_FAILED": (
         "Đã mua suất nhưng trang ChatGPT chưa tải lại được. Vui lòng thử lại sau "
         "vài phút."
@@ -157,6 +165,10 @@ _SHORT: dict[str, tuple[str, bool]] = {
     "SEAT_CHECK_FAILED": ("Mua suất thất bại", False),
     "SEAT_PURCHASE_FAILED": ("Mua suất thất bại", False),
     "SEAT_RELOAD_FAILED": ("Mua suất thất bại", False),
+    # KHÔNG gộp vào "Mua suất thất bại": ca này không hỏng, mà là luật chặn — gộp
+    # thì bảng lý do ở trang Tổng quan sẽ báo hệ thống hỏng trong khi nó đang làm
+    # đúng việc được giao.
+    "SEAT_PURCHASE_NOT_ALLOWED": ("Không được phép mua thêm suất", False),
     "SEAT_LOCK_REQUIRED": ("Lệnh khác đang mua suất", False),
     # ── Gửi lời mời ───────────────────────────────────────────────────────────
     # EXTERNAL_TOGGLE_FAILED: xem chú thích ở `_FRIENDLY` — không đặt nhãn riêng.

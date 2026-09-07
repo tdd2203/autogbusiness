@@ -37,7 +37,7 @@ from datetime import date
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import PLATFORM_CANVA, InviteSettings, Member, Workspace
@@ -241,6 +241,88 @@ def assert_under_cap(db: Session, workspace: Workspace, additional: int = 0) -> 
             status_code=status.HTTP_409_CONFLICT,
             detail=cap_message(db, workspace) or DEFAULT_CAP_MESSAGE,
         )
+
+
+def returning_emails(db: Session, workspace_id: UUID, emails: list[str]) -> set[str]:
+    """Trong `emails`, những email ĐÃ TỪNG THAM GIA chính workspace này.
+
+    "Đã từng tham gia" = có mốc `joined_at` (đồng bộ/xác minh đã thấy họ trong tab
+    "Người dùng" của ChatGPT), hoặc đang `active`. KHÔNG tính lời mời chờ chưa bao
+    giờ được nhận: `pending` + `joined_at` NULL là người CHƯA vào đội — cùng cách
+    hiểu `auto_invite` và `queue/completion` đang dùng để nhận ra "lời mời ma".
+
+    Vẫn nhận `status='active'` làm bằng chứng dự phòng vì vài bản ghi cũ (trước khi
+    có cột `joined_at`) không có mốc: 2 dòng active + 3 dòng removed trên production
+    ngày 7/9/2026. Thiếu lưới đó thì chính khách cũ bị chặn oan.
+    """
+    lowered = [e.strip().lower() for e in emails if e]
+    if not lowered:
+        return set()
+    rows = (
+        db.execute(
+            select(Member.email).where(
+                Member.workspace_id == workspace_id,
+                Member.email.in_(lowered),
+                or_(Member.joined_at.isnot(None), Member.status == "active"),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {str(e).strip().lower() for e in rows}
+
+
+def purchase_allowance(db: Session, workspace: Workspace, emails: list[str]) -> dict:
+    """GIẤY PHÉP MUA SUẤT gửi kèm lệnh mời — extension chỉ được trừ tiền khi có nó.
+
+    Vì sao phải có (ca thật GPT1 7/9/2026, task `b7ced59e`): trần thành viên đang
+    đặt 387 mà lệnh mời `tnguyen281187` vẫn nâng suất ChatGPT lên 388 và bị trừ
+    ₫41.452 ngay lập tức. Trần chỉ gác ở cửa TẠO lệnh (`assert_under_cap`, đếm
+    người trong DB), còn khâu MUA nằm bên extension và không biết gì về trần: nó
+    thấy ChatGPT hết chỗ là mua. ChatGPT không có bước xác nhận thanh toán — bấm
+    Continue trong hộp "Quản lý suất" là tiền đi khỏi thẻ.
+
+    Hai điều kiện, user chốt 7/9/2026, phải ĐỦ CẢ HAI mới được mua:
+
+    1. MỌI email của lệnh đều đã từng tham gia workspace này (khách cũ quay lại
+       hoặc gia hạn — xem `returning_emails`). Suất cho người mới là quyết định
+       tiêu tiền, phải do người bấm, không để lệnh tự làm.
+    2. Tổng suất SAU khi mua không vượt TRẦN THÀNH VIÊN (`invite_member_cap`) —
+       con số super-admin tự gõ, đọc là "số suất tôi duyệt chi". Không đặt trần
+       (`None`) ⇒ điều kiện này không chặn gì.
+
+    Điều kiện 2 CỐ Ý để extension chốt, không chốt sẵn ở đây: tổng suất thật nằm
+    trên ChatGPT (`workspace.seat_total` chỉ là số scrape, có thể cũ hàng ngày),
+    còn con số vừa đọc tận nơi thì extension mới có. Backend gửi cái trần, bên kia
+    so với số thật.
+
+    Trả về dict đi thẳng vào `payload["seat_purchase"]`:
+      * `allowed` — điều kiện 1 đã đạt chưa.
+      * `max_total` — trần suất, `None` khi workspace không đặt trần.
+      * `reason` — câu giải thích cho người dùng khi `allowed=False`.
+
+    ⚠️ THIẾU field này trong payload nghĩa là CẤM MUA (extension fail-closed). Đừng
+    "dọn" bằng cách bỏ qua khi mảng email rỗng — mọi đường tạo INVITE_MEMBER phải
+    gắn nó, kể cả đổi email và chuyển hạn.
+    """
+    lowered = [e.strip().lower() for e in emails if e]
+    cap = workspace.invite_member_cap
+    max_total = None if cap is None else int(cap)
+    known = returning_emails(db, workspace.id, lowered)
+    newcomers = [e for e in lowered if e not in known]
+    if newcomers:
+        shown = ", ".join(newcomers[:3])
+        more = f" và {len(newcomers) - 3} email nữa" if len(newcomers) > 3 else ""
+        return {
+            "allowed": False,
+            "max_total": max_total,
+            "reason": (
+                f"Lệnh có email chưa từng tham gia không gian này ({shown}{more}) "
+                "nên không được mua thêm suất. Mua suất trước trên ChatGPT rồi chạy "
+                "lại lệnh, hoặc mời họ vào không gian còn chỗ trống."
+            ),
+        }
+    return {"allowed": True, "max_total": max_total, "reason": None}
 
 
 def owner_reserve_map(db: Session, workspaces: list[Workspace]) -> dict[UUID, int]:

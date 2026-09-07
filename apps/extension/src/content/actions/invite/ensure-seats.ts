@@ -48,6 +48,10 @@ import {
 } from "../purchase-seat/read-seat-cards";
 import { navigateTo } from "../external-invites/navigate";
 import { countPendingInvites } from "./count-pending-invites";
+import {
+  blockedPurchaseReason,
+  type SeatPurchasePolicy,
+} from "./purchase-policy";
 import { readMemberCountFromPage } from "./read-member-count";
 import {
   dashboardPendingDebt,
@@ -102,6 +106,12 @@ export type EnsureSeatsResult = {
     | "NOT_ENOUGH_SEATS"
     | "SEAT_CHECK_FAILED"
     | "SEAT_PURCHASE_FAILED"
+    /**
+     * Thiếu suất VÀ luật không cho lệnh này mua bù (chạm trần thành viên, hoặc
+     * trong mẻ có email chưa từng tham gia). KHÔNG phải hỏng — xem
+     * `purchase-policy.ts`. Backend hoàn phí cho mã này.
+     */
+    | "SEAT_PURCHASE_NOT_ALLOWED"
     /** Đang chạy song song mà chỗ trống hết chắc chắn → cần khoá độc quyền. */
     | "SEAT_LOCK_REQUIRED";
   error_message?: string;
@@ -488,7 +498,12 @@ export async function ensureSeatsForInvite(
   need: number,
   inviteEmails: string[],
   seatHint?: SeatHint,
-  opts: { noPurchase?: boolean; alreadyPurchased?: number } = {},
+  opts: {
+    noPurchase?: boolean;
+    alreadyPurchased?: number;
+    /** Giấy phép mua suất backend gửi kèm task. Thiếu ⇒ CẤM mua (fail-closed). */
+    purchasePolicy?: SeatPurchasePolicy;
+  } = {},
 ): Promise<EnsureSeatsResult> {
   // Hàng nút "Quản lý số suất" thuộc tab "Người dùng". Tiền tố "Mời lại" trước
   // đó có thể đã chuyển sang tab "Lời mời đang chờ" (?tab=invites) — kiểm tra ở
@@ -908,6 +923,33 @@ export async function ensureSeatsForInvite(
         seat_shortfall: shortfall,
         seat_purchased: opts.alreadyPurchased,
         seat_after_source: "recheck_after_reload",
+      },
+    };
+  }
+
+  // ── LUẬT MUA SUẤT: cửa cuối trước khi tiền rời khỏi thẻ ─────────────────
+  // Mọi số đã chốt (tổng thật `before.total`, số cần mua `shortfall`), giờ mới
+  // hỏi: lệnh này CÓ ĐƯỢC PHÉP mua không. Đặt sát ngay trên `executePurchaseSeat`
+  // để không đường nhánh nào phía trên lách qua được. Xem `purchase-policy.ts`.
+  const blocked = blockedPurchaseReason(
+    opts.purchasePolicy,
+    before.total,
+    shortfall,
+  );
+  if (blocked) {
+    console.warn(`${LOG} KHÔNG mua ${shortfall} suất: ${blocked}`);
+    return {
+      ok: false,
+      skipped: false,
+      error_code: "SEAT_PURCHASE_NOT_ALLOWED",
+      error_message:
+        `Thiếu ${shortfall} suất (cần ${need}, còn trống ${freeReal}). ${blocked}`,
+      data: {
+        ...baseData,
+        seat_shortfall: shortfall,
+        seat_purchased: opts.alreadyPurchased ?? 0,
+        seat_purchase_blocked: true,
+        seat_purchase_max_total: opts.purchasePolicy?.maxTotal ?? null,
       },
     };
   }

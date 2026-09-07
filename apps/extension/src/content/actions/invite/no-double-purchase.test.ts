@@ -123,10 +123,12 @@ describe("đã mua ở lượt trước → CẤM mua lần hai", () => {
 });
 
 describe("lượt mời bình thường (chưa mua gì) vẫn mua bù như cũ", () => {
-  it("thiếu suất → gọi đúng luồng mua với số suất còn thiếu", async () => {
+  it("thiếu suất + có giấy phép → gọi đúng luồng mua với số suất còn thiếu", async () => {
     checkSeatAvailability.mockResolvedValue(seatModal(62, 62));
 
-    await ensureSeatsForInvite("task-1", 1, ["a@x.com"]);
+    await ensureSeatsForInvite("task-1", 1, ["a@x.com"], undefined, {
+      purchasePolicy: { allowed: true, maxTotal: null },
+    });
 
     expect(executePurchaseSeat).toHaveBeenCalledWith("task-1", 1);
   });
@@ -140,5 +142,62 @@ describe("lượt mời bình thường (chưa mua gì) vẫn mua bù như cũ",
 
     expect(executePurchaseSeat).not.toHaveBeenCalled();
     expect(r.error_code).toBe("SEAT_LOCK_REQUIRED");
+  });
+});
+
+/**
+ * GIẤY PHÉP MUA SUẤT — cùng lý do tồn tại với bộ test "không mua lần hai" ở trên:
+ * thứ cần khoá là THỨ TỰ. Chốt giấy phép phải đứng TRƯỚC `executePurchaseSeat`,
+ * dời cú gọi mua lên trên nó thì chỉ chỗ này bắt được. Luật của giấy phép có test
+ * riêng ở `purchase-policy.test.ts`.
+ */
+describe("giấy phép mua suất chặn trước khi tiền rời khỏi thẻ", () => {
+  it("không kèm giấy phép ⇒ KHÔNG mua (fail-closed)", async () => {
+    checkSeatAvailability.mockResolvedValue(seatModal(62, 62));
+
+    const r = await ensureSeatsForInvite("task-1", 1, ["a@x.com"]);
+
+    expect(executePurchaseSeat).not.toHaveBeenCalled();
+    expect(r.ok).toBe(false);
+    expect(r.error_code).toBe("SEAT_PURCHASE_NOT_ALLOWED");
+  });
+
+  it("ca thật GPT1 7/9/2026: mua 1 suất sẽ vượt trần 387 ⇒ dừng, không mời", async () => {
+    // 387 suất, 386 đã gán, cần 1 → thiếu 1. Trước bản này chỗ này trừ ₫41.452.
+    checkSeatAvailability.mockResolvedValue(seatModal(387, 387));
+
+    const r = await ensureSeatsForInvite("task-1", 1, ["a@x.com"], undefined, {
+      purchasePolicy: { allowed: true, maxTotal: 387 },
+    });
+
+    expect(executePurchaseSeat).not.toHaveBeenCalled();
+    expect(r.ok).toBe(false);
+    expect(r.error_code).toBe("SEAT_PURCHASE_NOT_ALLOWED");
+    expect(r.data.seat_purchase_blocked).toBe(true);
+  });
+
+  it("email chưa từng tham gia ⇒ không mua, giữ nguyên câu backend gửi", async () => {
+    checkSeatAvailability.mockResolvedValue(seatModal(62, 62));
+
+    const r = await ensureSeatsForInvite("task-1", 1, ["a@x.com"], undefined, {
+      purchasePolicy: {
+        allowed: false,
+        maxTotal: null,
+        reason: "Lệnh có email chưa từng tham gia không gian này (a@x.com).",
+      },
+    });
+
+    expect(executePurchaseSeat).not.toHaveBeenCalled();
+    expect(r.error_message).toContain("chưa từng tham gia");
+  });
+
+  it("còn dưới trần ⇒ vẫn mua như cũ", async () => {
+    checkSeatAvailability.mockResolvedValue(seatModal(62, 62));
+
+    await ensureSeatsForInvite("task-1", 1, ["a@x.com"], undefined, {
+      purchasePolicy: { allowed: true, maxTotal: 100 },
+    });
+
+    expect(executePurchaseSeat).toHaveBeenCalledWith("task-1", 1);
   });
 });

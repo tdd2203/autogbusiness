@@ -13,6 +13,7 @@ import { locatePendingRow } from "../revoke/locate-pending-row";
 import { revokeInvite } from "../revoke";
 import { clickTabAndWait } from "../sync";
 import { ensureSeatsForInvite, type SeatHint } from "./ensure-seats";
+import type { SeatPurchasePolicy } from "./purchase-policy";
 import { executeInviteInner } from "./execute-invite-inner";
 import { findInviteOpenButton } from "./finders/find-invite-open-button";
 import { scanPendingForEmails } from "./scan-pending-page";
@@ -164,6 +165,11 @@ export async function executeInvite(
   noSeatPurchase = false,
   seatsReady = false,
   seatsPurchasedAlready?: number,
+  /**
+   * Giấy phép mua suất backend gửi kèm task (`payload.seat_purchase`). Thiếu ⇒
+   * bước suất KHÔNG mua gì cả — xem `purchase-policy.ts`.
+   */
+  seatPurchase?: SeatPurchasePolicy,
 ): Promise<ExecuteActionResponse> {
   console.log(
     `[autogpt-invite] START ${emails.length} email(s) role=${role} verifiedDomain=${verifiedDomain ?? "(chưa cấu hình)"} externalReady=${externalReady} reinvite=${reinvite} pathname=${location.pathname}`,
@@ -237,6 +243,7 @@ export async function executeInvite(
     const seats = await ensureSeatsForInvite(taskId, need, emails, seatHint, {
       noPurchase: noSeatPurchase,
       alreadyPurchased: seatsPurchasedAlready,
+      purchasePolicy: seatPurchase,
     });
     seatData = seats.data;
     // ── ĐÃ MUA SUẤT MÀ TRANG CÒN BẨN → NHỜ BACKGROUND TẢI LẠI ───────────────
@@ -283,7 +290,13 @@ export async function executeInvite(
             ? "SEAT_LOCK_REQUIRED"
             : seats.error_code === "SEAT_CHECK_FAILED"
               ? "FAILED_UI_CHANGED"
-              : "NOT_ENOUGH_SEATS",
+              : // `SEAT_PURCHASE_NOT_ALLOWED` cũng đi NGUYÊN mã về backend: gộp vào
+                // NOT_ENOUGH_SEATS là rơi vào luật "giữ tiền làm phiếu mời lại miễn
+                // phí" (chốt 28/8/2026), trong khi ca này phải HOÀN PHÍ — email sẽ
+                // không mời lại được cho tới khi admin mở thêm suất.
+                seats.error_code === "SEAT_PURCHASE_NOT_ALLOWED"
+                ? "SEAT_PURCHASE_NOT_ALLOWED"
+                : "NOT_ENOUGH_SEATS",
         error_message: seats.error_message ?? "Không đủ suất để mời.",
         data: seatData,
       };

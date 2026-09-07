@@ -40,7 +40,7 @@ from app.models import (
 )
 from app.permissions import Permission
 from app.schemas import MemberChangeEmailIn, MemberOut
-from app.services import transfer_link
+from app.services import seats, transfer_link
 from app.sse import publish_task_event
 
 from ._shared import router, _get_workspace_or_404, _member_or_404_visible
@@ -157,6 +157,10 @@ def change_member_email(
             "email": new_email,
             "role": role,
             "verified_domain": ws.verified_domain,
+            # Giấy phép mua suất: email MỚI chưa từng tham gia nên luật CẤM mua —
+            # đúng ý, đổi email không được phép đẻ ra tiền suất; ghế của email cũ
+            # sẽ nhả sau khi lệnh gỡ chạy xong.
+            "seat_purchase": seats.purchase_allowance(db, ws, [new_email]),
         },
         created_by_id=user.id,
     )

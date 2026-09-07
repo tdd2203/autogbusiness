@@ -1473,6 +1473,24 @@ def _auto_buy_seats_for_pending(
             commit=False,
         )
 
+    # (1b) TRẦN THÀNH VIÊN CHẶN CẢ ĐƯỜNG TỰ MUA (user chốt 7/9/2026) — trần là số
+    # suất super-admin duyệt chi, mà đường này tiêu tiền lúc không ai ngồi trước
+    # máy. Không mua thì lời mời chờ vẫn nằm nguyên đó; nhật ký
+    # `AUTO_PURCHASE_SEAT_SKIPPED` là chỗ admin đọc để quyết định nâng trần hay mua
+    # tay.
+    #
+    # CỐ Ý KHÔNG áp điều kiện "chỉ mua cho người ĐÃ TỪNG tham gia" như lệnh mời
+    # (`seats.purchase_allowance`): ở đây người đang chờ suất theo định nghĩa là
+    # người CHƯA vào đội, nên áp vào là tắt hẳn tính năng — mà tắt không giữ được
+    # đồng nào. Nợ suất của lời mời treo đằng nào cũng tới: người ta bấm nhận thì
+    # ChatGPT tự cấp suất và tự tính tiền theo giá nó chọn. Mua trước chỉ là trả
+    # sớm khoản chắc chắn phải trả, đổi lại giữ được quyền chọn thời điểm và số
+    # lượng. Trần mới là chỗ chặn chi tiêu, và nó chặn ngay dưới đây.
+    cap = workspace.invite_member_cap
+    if cap is not None and total + shortfall > int(cap):
+        _skip("over_member_cap", {"cap": int(cap), "seat_total_after": total + shortfall})
+        return None
+
     # (2) Số mơ hồ thì tuyệt đối không mua — tiền đã trừ không đòi lại được.
     if result.get("seat_uncertain") is True:
         _skip("seat_uncertain")

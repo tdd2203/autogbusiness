@@ -218,6 +218,12 @@ def perform_invite_core(
             # Số suất dashboard đang biết → extension dùng để BỎ QUA bước mở hộp
             # "Quản lý suất" khi thấy chắc chắn còn thừa chỗ. Xem `_seat_hint`.
             payload["seat_hint"] = _seat_hint(db, workspace, invite_emails)
+            # GIẤY PHÉP MUA SUẤT: extension chỉ được trừ tiền trên ChatGPT khi field
+            # này cho phép VÀ tổng suất sau khi mua không vượt `max_total`. Thiếu
+            # field ⇒ bên kia cấm mua — xem `seats.purchase_allowance`.
+            payload["seat_purchase"] = seats.purchase_allowance(
+                db, workspace, invite_emails
+            )
         if single and len(invite_entries) == 1:
             payload["email"] = invite_emails[0]
         else:

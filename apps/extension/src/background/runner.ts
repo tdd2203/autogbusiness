@@ -1181,6 +1181,28 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
           typeof h.pending === "number" && h.pending >= 0 ? h.pending : undefined;
         if (occupied !== null) seatHint = { total, occupied, pending };
       }
+      // Giấy phép mua suất (backend `seats.purchase_allowance`). Đọc CHẶT: hình
+      // dạng lạ ⇒ để `undefined`, và content hiểu undefined là CẤM mua. Suy diễn
+      // dễ dãi ở đây (mặc định allowed) là mở lại đúng lỗ hổng đã làm workspace
+      // GPT1 bị trừ tiền ngoài trần ngày 7/9/2026.
+      const rawPurchase = p.seat_purchase;
+      let seatPurchase:
+        | { allowed: boolean; maxTotal: number | null; reason?: string | null }
+        | undefined;
+      if (rawPurchase && typeof rawPurchase === "object") {
+        const q = rawPurchase as Record<string, unknown>;
+        if (typeof q.allowed === "boolean") {
+          const maxTotal =
+            typeof q.max_total === "number" && Number.isFinite(q.max_total) && q.max_total >= 0
+              ? q.max_total
+              : null;
+          seatPurchase = {
+            allowed: q.allowed,
+            maxTotal,
+            reason: typeof q.reason === "string" ? q.reason : null,
+          };
+        }
+      }
       return {
         kind: "INVITE_MEMBER",
         taskId: task.id,
@@ -1189,6 +1211,7 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
         verifiedDomain,
         newSeatCount,
         seatHint,
+        seatPurchase,
         // Action "Mời lại": chạy tiền tố tìm-thu-hồi trước khi mời (payload.reinvite).
         reinvite: p.reinvite === true,
       };

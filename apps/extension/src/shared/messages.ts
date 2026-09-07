@@ -85,6 +85,17 @@ export type ExecuteActionRequest =
        * mua đúp bằng tiền thật.
        */
       seatsPurchasedAlready?: number;
+      /**
+       * GIẤY PHÉP MUA SUẤT (backend `seats.purchase_allowance`, payload
+       * `seat_purchase`): `allowed` = mọi email của lệnh đã từng tham gia
+       * workspace này, `maxTotal` = trần thành viên (tổng suất tối đa được phép
+       * có, null = không đặt trần), `reason` = câu giải thích khi bị cấm.
+       *
+       * THIẾU field này ⇒ content KHÔNG MUA gì cả (fail-closed): mặc định ngược
+       * lại thì mỗi đường tạo lệnh quên gắn là một lần tiêu tiền ngoài ý người
+       * dùng. Xem `content/actions/invite/purchase-policy.ts`.
+       */
+      seatPurchase?: { allowed: boolean; maxTotal: number | null; reason?: string | null };
     }
   /**
    * Bật/tắt toggle "Cho phép lời mời ngoài tên miền" như một LỆNH RIÊNG.
@@ -325,6 +336,12 @@ export type ExecuteActionResponse =
         // suất đã mua vẫn nằm trong workspace nên chạy lại lệnh là mời được ngay
         // mà không mua lần nữa. Xem `awaiting_seat_reload` trong `runner.ts`.
         | "SEAT_RELOAD_FAILED"
+        // INVITE_MEMBER: thiếu suất, mua bù thì ĐƯỢC nhưng LUẬT KHÔNG CHO (user
+        // chốt 7/9/2026) — tổng suất sau khi mua sẽ vượt TRẦN THÀNH VIÊN, hoặc
+        // trong mẻ có email chưa từng tham gia workspace. Khác `NOT_ENOUGH_SEATS`
+        // ở chỗ KHÔNG có gì hỏng cả, nên backend hoàn phí thay vì giữ tiền làm
+        // phiếu mời lại miễn phí. Xem `content/actions/invite/purchase-policy.ts`.
+        | "SEAT_PURCHASE_NOT_ALLOWED"
         | "UNKNOWN";
       error_message: string;
       /**
