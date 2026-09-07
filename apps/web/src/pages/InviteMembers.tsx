@@ -556,11 +556,49 @@ export default function InviteMembers() {
     return need;
   })();
   /**
+   * Trong danh sách đang dán, mỗi không gian có bao nhiêu suất được MIỄN TRẦN.
+   *
+   * Backend không tính khách ĐÃ TRẢ TIỀN mà đang mất chỗ vào trần thành viên (xem
+   * `seats.cap_new_seats`): tiền đã thu thì chỗ ngồi là nợ phải trả, không phải
+   * khoản chi mới xin duyệt. Chỗ này phải đếm y hệt, nếu không trang Mời dựng
+   * băng-rôn đỏ "tạm ngưng add" cho đúng cái lệnh mà backend sẽ cho chạy.
+   *
+   * Đọc `payment_status` thay vì soi từng chu kỳ như backend: đây chỉ là băng-rôn
+   * cảnh báo, người quyết vẫn là backend. Lệch (member chỉ có chu kỳ `paid` mà nhãn
+   * cấp member chưa lên) thì cùng lắm hiện thừa một câu doạ, không chặn ai.
+   */
+  const capExemptPlan = (() => {
+    const paidBack = new Set(
+      members
+        .filter(
+          (m) =>
+            m.status === "removed" &&
+            m.payment_status === "paid" &&
+            !!m.subscription_end_at &&
+            new Date(m.subscription_end_at).getTime() > nowMs,
+        )
+        .map((m) => `${m.email.toLowerCase()}|${m.workspace_id}`),
+    );
+    const out = new Map<string, number>();
+    for (const e of entries) {
+      const ws = targetWsId(e.email);
+      if (!ws) continue;
+      if (paidBack.has(`${e.email.toLowerCase()}|${ws}`))
+        out.set(ws, (out.get(ws) ?? 0) + 1);
+    }
+    return out;
+  })();
+  /**
    * Không gian ĐANG TẠM NGƯNG vì TRẦN THÀNH VIÊN (super-admin đặt ở nút ⚙️).
    *
    * Hiện khi hết sạch chỗ tới trần, HOẶC khi danh sách đang dán cần nhiều hơn số
    * chỗ còn lại — đúng lúc người dùng cần biết, chứ không đợi bấm Mời rồi mới ăn
    * 409. Khác dải ngưng mời: trần KHÔNG tự hết giờ.
+   *
+   * Đang dán vào không gian nào thì XÉT THEO DANH SÁCH ĐÓ, không xét theo mỗi con
+   * số "còn 0 chỗ": khách đã trả tiền được miễn trần nên lệnh vẫn chạy, mà băng-rôn
+   * đỏ nói ngược lại thì người dùng không dám bấm (ca `mme.hebrahimi` 7/9/2026).
+   * Chưa dán gì vào đó thì vẫn báo hết chỗ như cũ — lúc đó nó là tin tức đúng.
    *
    * Câu chữ lấy nguyên từ backend (`invite_cap_message`, admin soạn ở nút ⚙️) —
    * đừng ghép chữ ở đây, luật thay {ten}/{conlai}/{ngay} chỉ sống ở `seats.py`.
@@ -571,7 +609,9 @@ export default function InviteMembers() {
       .filter((x) => {
         const left = x.row?.invite_cap_left;
         if (left === null || left === undefined) return false;
-        return left === 0 || (seatPlan.get(x.id) ?? 0) > left;
+        const need = seatPlan.get(x.id);
+        if (need === undefined) return left === 0;
+        return need - (capExemptPlan.get(x.id) ?? 0) > left;
       })
       .map((x) => ({
         id: x.id,
