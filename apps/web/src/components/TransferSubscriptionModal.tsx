@@ -8,14 +8,18 @@
  * nhận sau khi cộng) → xác nhận thì backend gỡ email cho khỏi workspace và dồn
  * hạn sang email nhận.
  *
- * LUẬT: mỗi email chỉ được chuyển hạn 1 LẦN — nói thẳng trong modal TRƯỚC khi bấm
- * gửi, và backend trả `blocked_reason` cho lần thứ 2 nên nút bị khoá kèm lý do.
+ * TRẦN SỐ LẦN CHUYỂN: nói thẳng trong modal TRƯỚC khi bấm gửi, và backend trả
+ * `blocked_reason` khi hết lượt nên nút bị khoá kèm lý do. Super-admin được MIỄN trần
+ * (user 8/9/2026) — họ chỉ nhận `repeat_notice` để biết người này đã chuyển rồi, nút
+ * vẫn mở. CON SỐ của trần nằm ở backend (`transfer_link.MAX_TRANSFERS_PER_USER`);
+ * chuỗi i18n ở đây CỐ Ý không chép số vào, nếu không đổi trần là chữ sai ngay.
  *
  * Phép tính do BACKEND trả (`useTransferPreview`) chứ KHÔNG tự tính ở web: con số
  * admin nhìn thấy chính là con số sẽ được ghi. Xem hooks/useTransferSubscription.md.
  */
 import { useEffect, useMemo, useState } from "react";
 import { useFormatDateTime, useT } from "../i18n";
+import { useAuth } from "../hooks/useAuth";
 import type { Member, TransferPreview } from "../types";
 import {
   useTransferPreview,
@@ -151,6 +155,10 @@ export function TransferSubscriptionModal({
   onClose: () => void;
 }) {
   const t = useT();
+  const { user } = useAuth();
+  // Ai được vượt trần là do BACKEND quyết (transfer_link.SUPER_ADMIN_EXEMPT); ở đây
+  // chỉ dùng để bớt một dòng luật không áp cho họ, không phải để mở khoá nút.
+  const exemptFromLimit = user?.is_super_admin === true;
   const [email, setEmail] = useState("");
   const [debounced, setDebounced] = useState("");
   const transfer = useTransferSubscription(workspaceId);
@@ -242,10 +250,13 @@ export function TransferSubscriptionModal({
                 {t("transfer.sameEmailError")}
               </div>
             )}
-            {/* Luật phải đọc được TRƯỚC khi bấm gửi, không đợi backend từ chối. */}
-            <div className="cell-muted" style={{ fontSize: 11.5, marginTop: 4 }}>
-              {t("transfer.onceOnlyRule")}
-            </div>
+            {/* Luật phải đọc được TRƯỚC khi bấm gửi, không đợi backend từ chối.
+                Admin được miễn trần nên không hiện — với họ đó là luật của người khác. */}
+            {!exemptFromLimit && (
+              <div className="cell-muted" style={{ fontSize: 11.5, marginTop: 4 }}>
+                {t("transfer.limitRule")}
+              </div>
+            )}
           </div>
 
           {/* Phép tính — chỉ hiện khi đã nhập xong email nhận. */}
@@ -299,6 +310,19 @@ export function TransferSubscriptionModal({
                   }}
                 >
                   {blocked}
+                </div>
+              )}
+              {/* Hết lượt nhưng KHÔNG bị chặn = người đang thao tác được miễn trần:
+                  vẫn cho đổi, chỉ nhắc để biết mình đang phá lệ. */}
+              {!blocked && preview.data.repeat_notice && (
+                <div
+                  style={{
+                    fontSize: 12.5,
+                    color: "var(--warning)",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {preview.data.repeat_notice}
                 </div>
               )}
             </>

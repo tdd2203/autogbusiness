@@ -953,9 +953,10 @@ class MemberTransferPreviewOut(BaseModel):
     removal_task_type: str = "REMOVE_MEMBER"
     #: != NULL → KHÔNG chuyển được; modal khoá nút xác nhận và hiện lý do này.
     blocked_reason: str | None = None
-    #: != NULL → người dùng này ĐÃ chuyển hạn một lần rồi (đây là lần 2+). Hiện luật
-    #: là "mỗi email chỉ chuyển 1 lần" nên `blocked_reason` cũng mang đúng câu này;
-    #: tách riêng để lúc mở đường B → C kèm thu phí, modal chỉ việc đổi cách hiện.
+    #: != NULL → người dùng này đã HẾT LƯỢT chuyển (trần
+    #: `transfer_link.MAX_TRANSFERS_PER_USER`). Tài khoản phụ thì `blocked_reason`
+    #: mang đúng câu này; super-admin được miễn trần nên chỉ nhận ghi chú, nút xác
+    #: nhận vẫn mở.
     repeat_notice: str | None = None
 
 

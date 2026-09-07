@@ -820,7 +820,7 @@
   "transfer.rowTargetEnd": "Hạn hiện tại của {email}",
   "transfer.rowNewEnd": "Hạn mới của email nhận",
   "transfer.targetExpiredHint": "Hạn này đã qua → phần chuyển sang tính từ bây giờ.",
-  "transfer.onceOnlyRule": "Mỗi email chỉ được chuyển hạn 1 lần.",
+  "transfer.limitRule": "Số lần chuyển hạn của mỗi người dùng có giới hạn.",
   "transfer.confirm": "Chuyển hạn",
   "transfer.unitDays": "{n} ngày",
   "transfer.unitHours": "{n} giờ",

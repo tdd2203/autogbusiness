@@ -16,8 +16,10 @@ khỏi giao diện vì hai chức năng làm đúng một việc — gỡ email 
 email nhận NẾU họ chưa ở trong team (đang là thành viên thì chỉ CỘNG DỒN hạn, không
 mời lại). `change_email.py` giữ lại cho client cũ; sửa nghiệp vụ thì sửa ở đây.
 
-LUẬT: mỗi người dùng (tính theo EMAIL GỐC) chỉ được chuyển hạn 1 lần — chốt chặn nằm
-ở `services/transfer_link.py`, sẽ mở lại kèm thu phí.
+LUẬT: mỗi người dùng (tính theo EMAIL GỐC) chỉ được chuyển hạn tối đa
+`transfer_link.MAX_TRANSFERS_PER_USER` lần, và super-admin được miễn trần (admin đổi
+hộ khách thì đổi được — user 8/9/2026). Trần lẫn quyền miễn trừ đều là THAM SỐ trong
+`services/transfer_link.py`; đổi luật là đổi số ở đó, không sửa file này.
 
 Email CHO hạn bị gỡ khỏi workspace bằng 1 task `REMOVE_MEMBER`: extension tìm ở
 tab "Người dùng", KHÔNG thấy thì tự chuyển sang tab "Lời mời đang chờ xử lý" và
@@ -80,9 +82,10 @@ class TransferPlan:
     remaining: timedelta
     will_invite: bool
     blocked_reason: str | None
-    # Người dùng này đã chuyển hạn một lần rồi ⇒ lần này bị TỪ CHỐI (`blocked_reason`
-    # mang đúng câu này). Tách riêng để lúc mở đường B → C kèm thu phí chỉ phải đổi
-    # cách hiện — công tắc ở `transfer_link.ALLOW_REPEAT_TRANSFER`.
+    # Người dùng này đã hết lượt chuyển. Với tài khoản phụ thì `blocked_reason` mang
+    # đúng câu này (bị từ chối); với super-admin chỉ là GHI CHÚ — họ được miễn trần
+    # nên vẫn chuyển được. Tham số: `transfer_link.MAX_TRANSFERS_PER_USER` +
+    # `SUPER_ADMIN_EXEMPT`.
     repeat_notice: str | None = None
 
 
@@ -210,15 +213,16 @@ def _plan_transfer(
     )
 
 
-def _apply_repeat_rule(plan: TransferPlan) -> None:
-    """Luật "mỗi người dùng chỉ chuyển hạn 1 lần" lên một `TransferPlan` đã tính.
+def _apply_repeat_rule(db: Session, plan: TransferPlan, actor: User) -> None:
+    """Trần "mỗi người dùng chuyển hạn được mấy lần" lên một `TransferPlan` đã tính.
 
     Dùng CHUNG cho preview và lệnh thật nên modal khoá nút với ĐÚNG câu mà endpoint
-    sẽ trả 409. Công tắc mở đường B → C (kèm thu phí) nằm ở
-    `transfer_link.ALLOW_REPEAT_TRANSFER` — chỉ một chỗ.
+    sẽ trả 409. Ghi chú luôn được tính (admin đọc để biết người này đã chuyển rồi),
+    còn chặn hay không do `transfer_link.repeat_transfer_block` quyết — super-admin
+    được miễn trần. Tham số nằm gọn trong `services/transfer_link.py`.
     """
-    plan.repeat_notice = transfer_link.repeat_transfer_notice(plan.source)
-    block = transfer_link.repeat_transfer_block(plan.source)
+    plan.repeat_notice = transfer_link.repeat_transfer_notice(db, plan.source)
+    block = transfer_link.repeat_transfer_block(db, plan.source, actor=actor)
     if block and not plan.blocked_reason:
         plan.blocked_reason = block
 
@@ -314,7 +318,7 @@ def preview_transfer_subscription(
         db, workspace_id, member_id, body.target_email, user
     )
     plan = _plan_transfer(db, workspace_id, source, target_email, now)
-    _apply_repeat_rule(plan)
+    _apply_repeat_rule(db, plan, user)
     return _plan_to_preview(plan, now)
 
 
@@ -339,7 +343,7 @@ def transfer_subscription(
         db, workspace_id, member_id, body.target_email, user
     )
     plan = _plan_transfer(db, workspace_id, source, target_email, now)
-    _apply_repeat_rule(plan)
+    _apply_repeat_rule(db, plan, user)
     if plan.blocked_reason:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=plan.blocked_reason)
 

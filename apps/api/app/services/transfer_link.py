@@ -13,32 +13,45 @@ tab "Đã xoá", ô gộp tiền của email cũ, kế thừa trạng thái than
 chiều) và nhật ký `MEMBER_SUBSCRIPTION_TRANSFERRED` thì KHÔNG nơi nào đọc — gộp hai
 chức năng về một mà giữ cách đó là mất trắng cả chuỗi lẫn tiền.
 
-LUẬT "MỖI NGƯỜI DÙNG CHỈ CHUYỂN 1 LẦN" (user chốt 4/9/2026): bản ghi nào đã có
-`origin_email` nghĩa là nó vốn sinh ra từ một lần chuyển ⇒ lần chuyển tiếp (B → C)
-bị TỪ CHỐI — nhưng CHỈ tính những lần chuyển ghi từ `REPEAT_RULE_FROM` trở đi
-("các email cũ đã đổi thì cứ kệ nó, giờ bắt đầu áp dụng"). Ca CỘNG DỒN không ghi
-`origin_email` lên email nhận (họ giữ nguyên danh tính của chính mình, chỉ được tặng
-thêm ngày) nên không bao giờ bị chặn.
+TRẦN SỐ LẦN CHUYỂN CỦA MỘT NGƯỜI DÙNG (user chốt 4/9/2026): mỗi lần chuyển ghi lên
+chuỗi `origin_email` / `transferred_*` tiêu một lượt của CÙNG một người dùng, quá trần
+thì lần chuyển tiếp (B → C) bị TỪ CHỐI — nhưng CHỈ tính những lần chuyển ghi từ
+`REPEAT_RULE_FROM` trở đi ("các email cũ đã đổi thì cứ kệ nó, giờ bắt đầu áp dụng").
+Ca CỘNG DỒN không ghi `origin_email` lên email nhận (họ giữ nguyên danh tính của chính
+mình, chỉ được tặng thêm ngày) nên không bao giờ tiêu lượt.
 
-Đường B → C sẽ được mở lại KÈM THU PHÍ; chốt chặn vì thế gom vào ĐÚNG một cờ
-`ALLOW_REPEAT_TRANSFER` + một hàm sinh câu chữ, để lúc mở chỉ phải bật cờ và nối
-phần tính phí chứ không phải đi lục lại từng nơi.
+SUPER-ADMIN KHÔNG BỊ TRẦN (user 8/9/2026): admin đổi hộ khách thì đổi được, trần chỉ
+áp cho tài khoản phụ. Admin vẫn ĐỌC được câu nhắc "người này đã chuyển rồi" —
+`repeat_transfer_notice` trả câu đó kể cả khi không chặn.
+
+Mọi con số của luật nằm ở khối THAM SỐ ngay dưới đây — nâng trần hay mở/khoá miễn trừ
+là sửa ĐÚNG một dòng, không đi lục logic hay câu chữ (câu từ chối tự sinh theo trần).
 """
 
 from datetime import datetime, timezone
 
-from app.models import Member
+from sqlalchemy.orm import Session
+
+from app.models import Member, User
 
 # Kiểu chuyển ghi trên bản ghi CHO.
 TRANSFER_KIND_TAKEOVER = "takeover"  # email nhận tiếp quản danh tính (có mời vào)
 TRANSFER_KIND_ACCUMULATE = "accumulate"  # cộng dồn vào email đang dùng
 
-# CÔNG TẮC DUY NHẤT của luật "1 người dùng chuyển 1 lần".
-#   False (hiện tại) → lần chuyển thứ 2+ bị từ chối, câu chữ lấy từ
-#     `repeat_transfer_notice`; cột `origin_email`/`transferred_*` vẫn ghi đủ nên dữ
-#     liệu sẵn sàng cho lúc mở.
-#   True  → cho chuyển tiếp; NHỚ nối phần THU PHÍ trước khi bật (user 4/9/2026).
-ALLOW_REPEAT_TRANSFER = False
+# ═══════════════════════════════════════════════════════════════════════════════
+# THAM SỐ CỦA LUẬT — đổi số Ở ĐÂY, tuyệt đối không viết số vào logic hay câu chữ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Trần số lần chuyển hạn của MỘT người dùng (tính theo email gốc; chỉ đếm những lần
+# ghi từ `REPEAT_RULE_FROM` trở đi). `None` = không giới hạn.
+# Mở đường B → C kèm THU PHÍ thì nâng số này rồi nối phần tính phí — câu từ chối tự
+# đổi theo, không phải sửa chữ ở đâu khác (user 4/9/2026).
+MAX_TRANSFERS_PER_USER: int | None = 1
+
+# Super-admin có được vượt trần không (user 8/9/2026: "admin đổi thì cho phép, người
+# dùng thì bị giới hạn"). True = admin đổi hộ khách lúc nào cũng được; tài khoản phụ
+# luôn theo trần trên. Đổi thành False là siết cả admin, không cần đụng chỗ nào khác.
+SUPER_ADMIN_EXEMPT = True
 
 # LUẬT CHỈ TÍNH TỪ MỐC NÀY (user chốt 4/9/2026: "các email cũ đã đổi thì cứ kệ nó,
 # giờ bắt đầu áp dụng"). Migration 0066 backfill đủ chuỗi của 52 lần đổi email cũ —
@@ -52,7 +65,7 @@ REPEAT_RULE_FROM = datetime(2026, 9, 4, 8, 0, tzinfo=timezone.utc)
 
 
 def _counts_for_rule(moment: datetime | None) -> bool:
-    """Lần chuyển ở mốc này có tính vào luật "1 lần" không.
+    """Lần chuyển ở mốc này có tiêu một lượt của người dùng không.
 
     `None` (dòng cũ chưa có cột, hoặc backfill thiếu mốc) → KHÔNG tính: thà bỏ sót
     còn hơn khoá nhầm một khách chưa từng dùng lượt nào dưới luật mới.
@@ -68,39 +81,69 @@ def origin_email_of(member: Member) -> str:
     return (member.origin_email or member.email or "").lower()
 
 
-def repeat_transfer_notice(member: Member) -> str | None:
-    """Câu "người dùng này đã chuyển hạn rồi" — preview và lệnh thật dùng CHUNG.
+def transfers_used(db: Session, member: Member) -> int:
+    """Số lượt chuyển hạn mà NGƯỜI DÙNG đứng sau bản ghi này đã tiêu.
 
-    Trả None nếu đây là lần chuyển đầu TÍNH THEO LUẬT (lần chuyển trước `REPEAT_RULE_FROM`
-    không tiêu lượt). Có câu ⇒ đây là lần thứ 2+ của CÙNG một người dùng;
-    `ALLOW_REPEAT_TRANSFER` quyết định câu đó là lời từ chối (hiện tại) hay chỉ là ghi
-    chú (khi đã mở kèm thu phí).
+    Đi ngược chuỗi `transferred_from_member_id` (A ← B ← C): mỗi mắt xích là một lần
+    chuyển, cộng thêm một lượt nếu chính bản ghi này cũng đã trao hạn đi rồi. Chỉ
+    đếm mắt xích ghi từ `REPEAT_RULE_FROM` trở đi.
+
+    Đếm bằng chuỗi chứ không bằng cột đếm sẵn: chuỗi là thứ đã có và luôn đúng, còn
+    một cột đếm là thêm chỗ để lệch. `seen` chặn vòng lặp nếu dữ liệu cũ có mắt xích
+    trỏ vòng.
     """
+    used = 1 if _counts_for_rule(member.transferred_out_at) else 0
+    seen = {member.id}
+    node = member
+    while node.transferred_from_member_id is not None:
+        if _counts_for_rule(node.transferred_in_at):
+            used += 1
+        previous = db.get(Member, node.transferred_from_member_id)
+        if previous is None or previous.id in seen:
+            break
+        seen.add(previous.id)
+        node = previous
+    return used
+
+
+def actor_exempt(user: User) -> bool:
+    """Người đang thao tác có được miễn trần không (admin đổi hộ khách)."""
+    return SUPER_ADMIN_EXEMPT and bool(user.is_super_admin)
+
+
+def repeat_transfer_notice(db: Session, member: Member) -> str | None:
+    """Câu "người dùng này hết lượt chuyển rồi" — preview và lệnh thật dùng CHUNG.
+
+    Trả None khi còn lượt (lần chuyển trước `REPEAT_RULE_FROM` không tiêu lượt). Có
+    câu ⇒ đã chạm trần `MAX_TRANSFERS_PER_USER`; câu đó là lời TỪ CHỐI với tài khoản
+    phụ, còn với admin chỉ là ghi chú (xem `repeat_transfer_block`).
+    """
+    limit = MAX_TRANSFERS_PER_USER
+    if limit is None:
+        return None
+    used = transfers_used(db, member)
+    if used < limit:
+        return None
+    quota = f"mỗi người dùng chỉ được chuyển hạn {limit} lần (đã dùng {used})"
     if _counts_for_rule(member.transferred_out_at):
         to = member.transferred_to_email or "email khác"
-        return (
-            f"{member.email} đã chuyển hạn sang {to} rồi — mỗi người dùng chỉ được "
-            "chuyển hạn 1 lần."
-        )
-    if member.origin_email and _counts_for_rule(member.transferred_in_at):
-        frm = member.transferred_from_email or member.origin_email
-        return (
-            f"{member.email} vốn nhận hạn chuyển từ {frm} (email gốc: "
-            f"{member.origin_email}) — mỗi người dùng chỉ được chuyển hạn 1 lần, "
-            "chưa mở đường chuyển tiếp sang email thứ ba."
-        )
-    return None
+        return f"{member.email} đã chuyển hạn sang {to} rồi — {quota}."
+    frm = member.transferred_from_email or member.origin_email or "email khác"
+    return (
+        f"{member.email} vốn nhận hạn chuyển từ {frm} "
+        f"(email gốc: {origin_email_of(member)}) — {quota}."
+    )
 
 
-def repeat_transfer_block(member: Member) -> str | None:
-    """Lý do TỪ CHỐI lần chuyển thứ 2+, hoặc None nếu được phép.
+def repeat_transfer_block(db: Session, member: Member, *, actor: User) -> str | None:
+    """Lý do TỪ CHỐI lần chuyển này, hoặc None nếu được phép.
 
     Một chỗ duy nhất cho cả preview lẫn lệnh thật ⇒ modal khoá nút với ĐÚNG câu mà
     endpoint sẽ trả 409, không lệch chữ.
     """
-    if ALLOW_REPEAT_TRANSFER:
+    if actor_exempt(actor):
         return None
-    return repeat_transfer_notice(member)
+    return repeat_transfer_notice(db, member)
 
 
 def record_transfer(

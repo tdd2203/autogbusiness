@@ -254,10 +254,10 @@ def test_transfer_rejects_expired_and_self(client: TestClient, auth_header: dict
     assert _tasks(client, ws["id"], auth_header, "REMOVE_MEMBER") == []
 
 
-def test_transfer_records_identity_chain_and_blocks_second_hop(
+def test_transfer_records_identity_chain_and_super_admin_may_repeat(
     client: TestClient, auth_header: dict
 ):
-    """A → B ghi được danh tính người dùng; B → C bị từ chối (mỗi email 1 lần).
+    """A → B ghi được danh tính người dùng; B → C thì SUPER-ADMIN vẫn chuyển được.
 
     Chuỗi cũ→mới nằm trên CỘT (`transferred_to_*` / `transferred_from_*` /
     `origin_email`, migration 0066) chứ không phải dò nhật ký, nên tab "Đã xoá",
@@ -279,20 +279,104 @@ def test_transfer_records_identity_chain_and_blocks_second_hop(
     assert row_b["transferred_from_email"] == "a@example.com"
     assert row_b["origin_email"] == "a@example.com"
 
-    # B → C: cùng MỘT người dùng chuyển lần thứ hai → chặn ở CẢ preview lẫn lệnh thật,
-    # cùng một câu chữ (công tắc mở đường này: transfer_link.ALLOW_REPEAT_TRANSFER).
+    # B → C: cùng MỘT người dùng chuyển lần thứ hai → hết lượt theo trần
+    # `MAX_TRANSFERS_PER_USER`, nhưng super-admin được MIỄN (SUPER_ADMIN_EXEMPT):
+    # vẫn nhận ghi chú để biết, còn nút thì không bị khoá.
     prev = _preview(client, ws["id"], row_b["id"], "c@example.com", auth_header)
     assert prev.status_code == 200, prev.text
     body = prev.json()
     assert body["repeat_notice"] is not None
-    assert body["blocked_reason"] == body["repeat_notice"]
+    assert body["blocked_reason"] is None
 
     resp = _transfer(client, ws["id"], row_b["id"], "c@example.com", auth_header)
-    assert resp.status_code == 409, resp.text
-    # Bị chặn thì KHÔNG được đụng gì vào DB.
+    assert resp.status_code == 201, resp.text
     after = _members(client, ws["id"], auth_header)
-    assert "c@example.com" not in after
-    assert after["b@example.com"]["status"] == row_b["status"]
+    # Chuỗi nối dài chứ không đứt: C vẫn tra ngược được về email gốc A.
+    assert after["c@example.com"]["origin_email"] == "a@example.com"
+    assert after["c@example.com"]["transferred_from_email"] == "b@example.com"
+
+
+def _sub_admin_with_workspace(
+    client: TestClient, auth_header: dict, username: str
+) -> tuple[dict, dict]:
+    """Tạo workspace + một tài khoản phụ đủ quyền chuyển hạn trong đó.
+
+    Trả (workspace, headers của tài khoản phụ). Sub-admin chỉ thấy member DO HỌ mời
+    (`invited_by_user_id`), nên member dùng để thử phải được mời bằng chính token này.
+    """
+    from tests.wallet_helpers import assign, bearer, create_user, login
+
+    ws = _create_workspace(client, auth_header)
+    sub = create_user(
+        client,
+        auth_header,
+        username,
+        ["MEMBER_VIEW", "MEMBER_INVITE", "MEMBER_REMOVE"],
+    )
+    assign(client, auth_header, ws["id"], sub["id"])
+    return ws, bearer(login(client, username))
+
+
+def _invite(client: TestClient, ws: dict, headers: dict, email: str) -> dict:
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/invite",
+        json={"email": email, "role": "member", "subscription_months": 3},
+        headers=headers,
+    )
+    assert resp.status_code in (200, 201), resp.text
+    return resp.json()
+
+
+def test_repeat_transfer_blocks_sub_admin(client: TestClient, auth_header: dict):
+    """Tài khoản phụ hết lượt là bị TỪ CHỐI — trần chỉ miễn cho super-admin.
+
+    User 8/9/2026: "admin đổi thì cho phép đổi còn người dùng thì sẽ bị giới hạn".
+    """
+    ws, sub_header = _sub_admin_with_workspace(client, auth_header, "trans1")
+    a = _invite(client, ws, sub_header, "sub-a@example.com")
+
+    assert _transfer(client, ws["id"], a["id"], "sub-b@example.com", sub_header).status_code == 201
+    b = _members(client, ws["id"], sub_header)["sub-b@example.com"]
+
+    prev = _preview(client, ws["id"], b["id"], "sub-c@example.com", sub_header)
+    assert prev.status_code == 200, prev.text
+    body = prev.json()
+    assert body["repeat_notice"] is not None
+    # Preview và lệnh thật nói CÙNG một câu → modal khoá nút với đúng lý do sẽ nhận.
+    assert body["blocked_reason"] == body["repeat_notice"]
+
+    resp = _transfer(client, ws["id"], b["id"], "sub-c@example.com", sub_header)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == body["blocked_reason"]
+    # Bị chặn thì KHÔNG được đụng gì vào DB.
+    after = _members(client, ws["id"], sub_header)
+    assert "sub-c@example.com" not in after
+    assert after["sub-b@example.com"]["status"] == b["status"]
+
+
+def test_transfer_limit_is_a_parameter(client: TestClient, auth_header: dict, monkeypatch):
+    """Nâng trần là ĐỔI ĐÚNG MỘT SỐ — không có "1 lần" nào nằm cứng trong logic.
+
+    Trần = 2 ⇒ tài khoản phụ đi được A → B → C rồi mới hết lượt ở C → D, và câu từ
+    chối cũng tự đổi theo trần chứ không phải chuỗi viết sẵn.
+    """
+    monkeypatch.setattr(transfer_link, "MAX_TRANSFERS_PER_USER", 2)
+    ws, sub_header = _sub_admin_with_workspace(client, auth_header, "trans2")
+    a = _invite(client, ws, sub_header, "lim-a@example.com")
+
+    assert _transfer(client, ws["id"], a["id"], "lim-b@example.com", sub_header).status_code == 201
+    b = _members(client, ws["id"], sub_header)["lim-b@example.com"]
+    # Lượt thứ 2 vẫn trong trần.
+    assert _transfer(client, ws["id"], b["id"], "lim-c@example.com", sub_header).status_code == 201
+
+    c = _members(client, ws["id"], sub_header)["lim-c@example.com"]
+    prev = _preview(client, ws["id"], c["id"], "lim-d@example.com", sub_header)
+    assert prev.status_code == 200, prev.text
+    reason = prev.json()["blocked_reason"]
+    assert reason is not None
+    # Câu chữ sinh TỪ tham số: trần 2 thì nói "2 lần", không phải "1 lần".
+    assert "2 lần" in reason
+    assert _transfer(client, ws["id"], c["id"], "lim-d@example.com", sub_header).status_code == 409
 
 
 def test_transfer_accumulate_keeps_target_identity(client: TestClient, auth_header: dict):

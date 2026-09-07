@@ -820,7 +820,7 @@
   "transfer.rowTargetEnd": "{email} 当前的到期时间",
   "transfer.rowNewEnd": "接收邮箱的新到期时间",
   "transfer.targetExpiredHint": "该到期时间已过 → 转入部分从现在开始计算。",
-  "transfer.onceOnlyRule": "每个邮箱只能转移一次有效期。",
+  "transfer.limitRule": "每位用户可转移有效期的次数有限。",
   "transfer.confirm": "转移有效期",
   "transfer.unitDays": "{n} 天",
   "transfer.unitHours": "{n} 小时",
