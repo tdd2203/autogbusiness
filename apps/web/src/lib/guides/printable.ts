@@ -11,7 +11,7 @@
  *
  *  `guidePrintHtml` là hàm thuần để test được — xem `guides.test.ts`.
  */
-import type { GuideContent, GuideStep } from "./types";
+import type { GuideContent, GuideStep, GuideTable } from "./types";
 
 export type GuidePrintOptions = {
   /** Ngôn ngữ đang xem, đặt vào `<html lang>` cho ngắt dòng đúng tiếng Trung. */
@@ -50,6 +50,15 @@ function absUrl(url: string, base?: string): string {
   }
 }
 
+/** Bảng của bước — nằm TRONG cột chữ, để bên cạnh ảnh vẫn còn nguyên cột ảnh. */
+function tableHtml(table: GuideTable): string {
+  const head = table.head.map((cell) => `<th>${markup(cell)}</th>`).join("");
+  const rows = table.rows
+    .map((row) => `<tr>${row.map((cell) => `<td>${markup(cell)}</td>`).join("")}</tr>`)
+    .join("");
+  return `<table class="step-table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
 function stepHtml(step: GuideStep, index: number, base?: string): string {
   const num = String(index).padStart(2, "0");
   // Có ảnh thì xếp hai cột (chữ trái, ảnh phải) — xếp dọc thì bài 9 bước ra 6
@@ -58,7 +67,9 @@ function stepHtml(step: GuideStep, index: number, base?: string): string {
     `<div class="step${step.image ? " step-cols" : ""}">`,
     `<div class="step-row"><span class="step-num">${esc(num)}</span>`,
     `<div class="step-text"><div class="step-title">${markup(step.title)}</div>`,
-    `<p class="step-body">${markup(step.body)}</p></div></div>`,
+    `<p class="step-body">${markup(step.body)}</p>`,
+    step.table ? tableHtml(step.table) : "",
+    `</div></div>`,
   ];
   if (step.image) {
     const cap = step.caption ? `<figcaption>${esc(step.caption)}</figcaption>` : "";
@@ -128,6 +139,13 @@ h1 { font-size: 18pt; line-height: 1.25; letter-spacing: -.02em; margin: 3pt 0 6
 .step-text { min-width: 0; }
 .step-title { font-size: 11.5pt; font-weight: 700; letter-spacing: -.01em; }
 .step-body { margin: 1pt 0 0; color: #3f3b36; }
+/* Bảng nhỏ trong bước (phần tính tiền). Không bo góc: viền gộp kiểu collapse thì
+   góc bo không cắt được, mà trên giấy đường kẻ thẳng lại dễ đọc hơn. */
+.step-table { width: 100%; border-collapse: collapse; margin-top: 2.5mm; font-size: 9.5pt; break-inside: avoid; page-break-inside: avoid; }
+.step-table th { text-align: left; font-size: 8pt; letter-spacing: .06em; text-transform: uppercase; font-weight: 600; color: #6c655c; background: #faf8f5; border: 1px solid #e2ddd5; padding: 1.5mm 2.5mm; }
+.step-table td { border: 1px solid #e2ddd5; padding: 2mm 2.5mm; color: #3f3b36; }
+.step-table td:first-child { color: #1c1a17; font-weight: 600; white-space: nowrap; }
+.step-table td:last-child { white-space: nowrap; }
 figure { margin: 0; break-inside: avoid; page-break-inside: avoid; }
 /* Chặn CHIỀU CAO ảnh (vẫn giữ tỉ lệ) — ảnh chụp cao cả trăm mm là thứ làm bản
    in phình ra. Ai cần đọc chữ trong ảnh thì bấm ảnh trong popup xem cỡ đầy đủ. */

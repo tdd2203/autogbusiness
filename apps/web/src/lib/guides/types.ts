@@ -6,13 +6,29 @@
  */
 import type { Lang } from "../../i18n";
 
-/** Một bước: tiêu đề + mô tả + ảnh minh hoạ (tuỳ chọn).
+/** Bảng nhỏ trong một bước — dùng cho phần TÍNH TIỀN.
+ *
+ *  Hai ca mua đặt cạnh nhau trong bảng đọc nhanh hơn hẳn một đoạn văn nhồi cả bốn
+ *  con số vào (chốt user 8/9/2026). Không phải bảng dữ liệu: chỉ vài dòng cố định
+ *  do người viết bài gõ tay.
+ *
+ *  Giữ TỐI ĐA 3 CỘT — cột chữ của bài chỉ rộng cỡ một trang sách, cột thứ tư là
+ *  mọi ô vỡ dòng. Ô nhận cùng cú pháp `**đậm**` và cùng chỗ trống `{tên}` như
+ *  `body`, nên số tiền trong bảng cũng theo đơn giá của người đang đọc. */
+export type GuideTable = {
+  head: string[];
+  rows: string[][];
+};
+
+/** Một bước: tiêu đề + mô tả + bảng/ảnh minh hoạ (tuỳ chọn).
  *
  *  `body` nhận cú pháp `**đậm**` — xem `renderMarkup` trong DailyGuideModal. Đây là
  *  toàn bộ markup được phép: nội dung do mình viết nên không cần HTML thô. */
 export type GuideStep = {
   title: string;
   body: string;
+  /** Bảng ngay dưới `body`, trước ảnh nếu có cả hai. */
+  table?: GuideTable;
   /** URL ảnh do Vite sinh khi `import` file trong `src/assets/guides/...`. */
   image?: string;
   imageAlt?: string;

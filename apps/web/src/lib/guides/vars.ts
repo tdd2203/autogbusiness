@@ -7,7 +7,7 @@
  *  Cú pháp chỗ trống: `{tên}` (chữ, số, gạch dưới). Nội dung không có `{...}` nào
  *  thì hàm này trả lại đúng bài cũ.
  */
-import type { GuideContent } from "./types";
+import type { GuideContent, GuideStep } from "./types";
 
 const SLOT = /\{([A-Za-z0-9_]+)\}/g;
 
@@ -21,6 +21,32 @@ function unresolved(text: string): boolean {
   return SLOT.test(text);
 }
 
+/** Điền cả bảng của bước, không riêng câu chữ: số tiền ví dụ nằm trong ô bảng. */
+function fillStep(step: GuideStep, vars: Record<string, string>): GuideStep {
+  const next: GuideStep = {
+    ...step,
+    title: put(step.title, vars),
+    body: put(step.body, vars),
+  };
+  if (step.table) {
+    next.table = {
+      head: step.table.head.map((cell) => put(cell, vars)),
+      rows: step.table.rows.map((row) => row.map((cell) => put(cell, vars))),
+    };
+  }
+  return next;
+}
+
+/** Bước còn chỗ trống ở BẤT KỲ đâu — kể cả một ô bảng — thì bỏ cả bước.
+ *
+ *  Bảng thiếu một ô tiền trông còn hỏng hơn câu văn thiếu số: hàng vẫn đứng đó
+ *  với một ô trắng, người đọc tưởng chưa tính ra. */
+function stepUnresolved(step: GuideStep): boolean {
+  if (unresolved(step.title) || unresolved(step.body)) return true;
+  if (!step.table) return false;
+  return [...step.table.head, ...step.table.rows.flat()].some(unresolved);
+}
+
 export function fillGuideVars(
   content: GuideContent,
   vars: Record<string, string>,
@@ -29,12 +55,8 @@ export function fillGuideVars(
     .map((section) => ({
       ...section,
       steps: section.steps
-        .map((step) => ({
-          ...step,
-          title: put(step.title, vars),
-          body: put(step.body, vars),
-        }))
-        .filter((step) => !unresolved(step.title) && !unresolved(step.body)),
+        .map((step) => fillStep(step, vars))
+        .filter((step) => !stepUnresolved(step)),
     }))
     // Phần rỗng sạch bước thì bỏ luôn, kẻo còn trơ mỗi cái tiêu đề.
     .filter((section) => section.steps.length > 0);

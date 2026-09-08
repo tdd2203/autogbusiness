@@ -3058,9 +3058,109 @@ body {
     box-shadow: var(--shadow-sm);
   }
   .guide-content {
-    padding: 16px 22px 22px;
+    padding: 20px 26px 28px;
     overflow-y: auto;
     min-width: 0;
+  }
+
+  /* PHẦN ĐỌC — khống chế BỀ NGANG DÒNG CHỮ, không khống chế cả cột (chốt user
+     8/9/2026). Cột cũ cho chữ chạy gần 100 ký tự một dòng, mắt trượt dòng khi
+     xuống hàng. Trần đặt riêng cho khối chữ (`.guide-measure`) chứ không đặt cho
+     `.guide-article`, vì ẢNH chụp màn hình vẫn cần rộng hết cỡ mới đọc nổi chữ
+     bên trong — bó ảnh theo bề ngang chữ là làm hỏng bài kia. */
+  .guide-article {
+    max-width: 780px;
+    margin: 0 auto;
+  }
+  .guide-measure {
+    max-width: 640px;
+  }
+  .guide-lede {
+    margin: 0;
+    font-size: 15.5px;
+    line-height: 1.7;
+    color: var(--ink-2);
+  }
+  .guide-rule {
+    height: 1px;
+    background: var(--border);
+    margin: 20px 0 0;
+  }
+  .guide-step {
+    display: flex;
+    gap: 13px;
+    margin-top: 24px;
+  }
+  /* Số bước là HUY HIỆU tròn chứ không phải hai chữ số trôi nổi: nó neo mắt vào
+     đầu mỗi bước, nhờ đó bỏ được các đường kẻ ngăn bước — kẻ thêm thì bài toàn
+     đường ngang. */
+  .guide-step-num {
+    flex: none;
+    width: 26px;
+    height: 26px;
+    border-radius: 999px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--success);
+    background: var(--success-bg);
+    border: 1px solid var(--success-border);
+  }
+  .guide-step-main {
+    flex: 1;
+    min-width: 0;
+    padding-top: 2px;
+  }
+  .guide-step-title {
+    font-size: 15.5px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.4;
+    color: var(--ink);
+  }
+  .guide-step-text {
+    margin: 6px 0 0;
+    font-size: 15px;
+    line-height: 1.72;
+    color: var(--ink-2);
+  }
+  /* Bảng trong bài mượn `.data-table` của app, chỉ hạ đệm cho vừa cột chữ hẹp. */
+  .guide-table-wrap {
+    margin-top: 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .guide-table thead th,
+  .guide-table tbody td {
+    padding: 10px 14px;
+  }
+  .guide-table tbody td {
+    font-size: 14px;
+    color: var(--ink-2);
+  }
+  .guide-table tbody td:first-child,
+  .guide-table tbody td:last-child {
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .guide-table tbody td:first-child {
+    font-weight: 600;
+  }
+  /* Bảng minh hoạ vài dòng, không phải bảng dữ liệu bấm được — sáng lên khi rê
+     chuột chỉ khiến người đọc tưởng bấm được. */
+  .guide-table tbody tr:hover {
+    background: transparent;
+  }
+  .guide-notes {
+    margin-top: 28px;
+    padding: 14px 18px 15px;
+    border: 1px solid var(--warning-border);
+    border-left: 3px solid var(--warning-accent);
+    background: var(--warning-bg);
+    border-radius: 12px;
   }
 
   @media (max-width: 760px) {
@@ -3081,6 +3181,30 @@ body {
       flex-shrink: 0;
       white-space: nowrap;
       font-size: 13px;
+    }
+    .guide-content {
+      padding: 16px 16px 22px;
+    }
+    /* Màn hẹp thì bề ngang màn hình ĐÃ là trần của dòng chữ, trần 640px chỉ tổ
+       chừa lề thừa. Huy hiệu số cũng thu lại để chữ được thêm chỗ. */
+    .guide-measure {
+      max-width: none;
+    }
+    .guide-step {
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .guide-step-num {
+      width: 22px;
+      height: 22px;
+      font-size: 10.5px;
+    }
+    .guide-step-text {
+      font-size: 14.5px;
+    }
+    .guide-table thead th,
+    .guide-table tbody td {
+      padding: 9px 11px;
     }
   }
 

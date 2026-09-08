@@ -221,34 +221,39 @@ export default function DailyGuideModal() {
           )}
 
           <div className="guide-content" ref={bodyRef}>
-            <p style={intro}>{renderMarkup(content.intro)}</p>
+            <div className="guide-article">
+              <p className="guide-lede guide-measure">{renderMarkup(content.intro)}</p>
+              {/* Vạch dưới đoạn mở bài: tách phần "chuyện gì đang xảy ra" khỏi
+                  danh sách bước, thay cho việc chừa một khoảng trắng to. */}
+              <div className="guide-rule guide-measure" />
 
-            {content.sections.map((section, si) => (
-              <div key={si} style={{ marginTop: si === 0 ? 22 : 30 }}>
-                {section.heading && (
-                  <div style={sectionHead}>
-                    <span style={sectionHeadText}>{section.heading}</span>
-                    <span style={sectionRule} />
-                  </div>
-                )}
-                {section.steps.map((step, i) => (
-                  <Step key={i} step={step} index={i + 1} zoomHint={t("guide.zoomHint")} />
-                ))}
-              </div>
-            ))}
-
-            {content.notes && content.notes.length > 0 && (
-              <div style={noteBox}>
-                <div style={noteHead}>{t("guide.notes")}</div>
-                <ul style={noteList}>
-                  {content.notes.map((note, i) => (
-                    <li key={i} style={{ marginTop: i === 0 ? 0 : 8 }}>
-                      {renderMarkup(note)}
-                    </li>
+              {content.sections.map((section, si) => (
+                <div key={si} style={{ marginTop: si === 0 ? 0 : 30 }}>
+                  {section.heading && (
+                    <div style={sectionHead} className="guide-measure">
+                      <span style={sectionHeadText}>{section.heading}</span>
+                      <span style={sectionRule} />
+                    </div>
+                  )}
+                  {section.steps.map((step, i) => (
+                    <Step key={i} step={step} index={i + 1} zoomHint={t("guide.zoomHint")} />
                   ))}
-                </ul>
-              </div>
-            )}
+                </div>
+              ))}
+
+              {content.notes && content.notes.length > 0 && (
+                <div className="guide-notes guide-measure">
+                  <div style={noteHead}>{t("guide.notes")}</div>
+                  <ul style={noteList}>
+                    {content.notes.map((note, i) => (
+                      <li key={i} style={{ marginTop: i === 0 ? 0 : 8 }}>
+                        {renderMarkup(note)}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
@@ -281,42 +286,62 @@ function Step({
   zoomHint: string;
 }) {
   return (
-    <div style={{ marginTop: 22 }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
-        <span style={stepNum}>{String(index).padStart(2, "0")}</span>
-        <div style={{ minWidth: 0 }}>
-          <div style={stepTitle}>{step.title}</div>
-          <p style={stepBody}>{renderMarkup(step.body)}</p>
-        </div>
+    <div className="guide-step">
+      <span className="guide-step-num">{String(index).padStart(2, "0")}</span>
+      <div className="guide-step-main">
+        <div className="guide-step-title guide-measure">{step.title}</div>
+        <p className="guide-step-text guide-measure">{renderMarkup(step.body)}</p>
+        {step.table && (
+          <div className="guide-table-wrap guide-measure">
+            <table className="data-table guide-table">
+              <thead>
+                <tr>
+                  {step.table.head.map((cell, i) => (
+                    <th key={i}>{renderMarkup(cell)}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {step.table.rows.map((row, r) => (
+                  <tr key={r}>
+                    {row.map((cell, c) => (
+                      <td key={c}>{renderMarkup(cell)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {step.image && (
+          <figure style={figure}>
+            {/* Ảnh chụp màn hình co lại trong popup thì chữ bé; mở tab mới là cách
+                phóng to rẻ nhất, không phải dựng lightbox riêng. */}
+            <a href={step.image} target="_blank" rel="noreferrer" title={zoomHint}>
+              <img
+                src={step.image}
+                alt={step.imageAlt ?? step.title}
+                loading="lazy"
+                decoding="async"
+                style={{
+                  display: "block",
+                  width: "100%",
+                  maxWidth: step.imageMaxWidth ?? "100%",
+                  border: "1px solid var(--border)",
+                  borderRadius: 10,
+                  background: "var(--surface-2)",
+                }}
+              />
+            </a>
+            <figcaption style={caption}>
+              <span>{step.caption}</span>
+              {/* Nói thẳng ra là bấm được — ảnh chụp thu nhỏ đọc chữ không nổi, mà
+                  không ai đoán được cái ảnh tĩnh lại mở ra cỡ đầy đủ. */}
+              <span style={{ color: "var(--ink-4)" }}>{zoomHint}</span>
+            </figcaption>
+          </figure>
+        )}
       </div>
-      {step.image && (
-        <figure style={figure}>
-          {/* Ảnh chụp màn hình co lại trong popup thì chữ bé; mở tab mới là cách
-              phóng to rẻ nhất, không phải dựng lightbox riêng. */}
-          <a href={step.image} target="_blank" rel="noreferrer" title={zoomHint}>
-            <img
-              src={step.image}
-              alt={step.imageAlt ?? step.title}
-              loading="lazy"
-              decoding="async"
-              style={{
-                display: "block",
-                width: "100%",
-                maxWidth: step.imageMaxWidth ?? "100%",
-                border: "1px solid var(--border)",
-                borderRadius: 10,
-                background: "var(--surface-2)",
-              }}
-            />
-          </a>
-          <figcaption style={caption}>
-            <span>{step.caption}</span>
-            {/* Nói thẳng ra là bấm được — ảnh chụp thu nhỏ đọc chữ không nổi, mà
-                không ai đoán được cái ảnh tĩnh lại mở ra cỡ đầy đủ. */}
-            <span style={{ color: "var(--ink-4)" }}>{zoomHint}</span>
-          </figcaption>
-        </figure>
-      )}
     </div>
   );
 }
@@ -348,20 +373,17 @@ const titleStyle: React.CSSProperties = { ...cardTitle, fontSize: 22, marginBott
 const headerActions: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, flexShrink: 0 };
 const pdfBtn: React.CSSProperties = { ...secondaryBtn, padding: "6px 11px", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", flexShrink: 0 };
 const closeBtn: React.CSSProperties = { width: 30, height: 30, borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--ink-3)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
-// Khung hai cột (mục lục + bài) nằm ở `index.css`, lớp `.guide-split` — chỗ đó
-// cần media query nên không đặt inline được như phần còn lại của popup.
-const intro: React.CSSProperties = { margin: 0, fontSize: 15, lineHeight: 1.65, color: "var(--ink-2)" };
+// PHẦN THÂN BÀI nằm ở `index.css` (`.guide-split`, `.guide-article`,
+// `.guide-measure`, `.guide-step*`, `.guide-table*`, `.guide-notes`) chứ không
+// phải style inline như khung popup: chỗ đó cần media query cho màn hẹp, cần
+// `:hover`, và bảng thì mượn thẳng `.data-table` của app.
 const sectionHead: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
 const sectionHeadText: React.CSSProperties = { ...cardKicker, ...SANS, height: "auto", color: "var(--ink)", fontWeight: 700, flexShrink: 0 };
 const sectionRule: React.CSSProperties = { height: 1, flex: 1, background: "var(--border)" };
-const stepNum: React.CSSProperties = { ...SANS, fontSize: 13, color: "var(--success)", width: 22, flex: "none", fontWeight: 700 };
-const stepTitle: React.CSSProperties = { ...cardTitle, fontSize: 16, marginBottom: 0, lineHeight: 1.4 };
-const stepBody: React.CSSProperties = { margin: "5px 0 0", fontSize: 14.5, lineHeight: 1.6, color: "var(--ink-2)" };
-const figure: React.CSSProperties = { margin: "12px 0 0 34px", display: "flex", flexDirection: "column", gap: 7 };
+const figure: React.CSSProperties = { margin: "12px 0 0", display: "flex", flexDirection: "column", gap: 7 };
 const caption: React.CSSProperties = { ...SANS, fontSize: 11.5, color: "var(--ink-3)", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "baseline" };
-const noteBox: React.CSSProperties = { marginTop: 30, padding: "16px 18px", border: "1px solid var(--border)", background: "var(--surface-2)", borderRadius: 12 };
-const noteHead: React.CSSProperties = { ...cardKicker, ...SANS, height: "auto", color: "var(--warning)", marginBottom: 10, fontWeight: 600 };
-const noteList: React.CSSProperties = { margin: 0, paddingLeft: 18, listStyleType: "disc", fontSize: 14, lineHeight: 1.6, color: "var(--ink-2)" };
+const noteHead: React.CSSProperties = { ...cardKicker, ...SANS, height: "auto", color: "var(--warning)", marginBottom: 9, fontWeight: 700 };
+const noteList: React.CSSProperties = { margin: 0, paddingLeft: 18, listStyleType: "disc", fontSize: 14.5, lineHeight: 1.65, color: "var(--ink-2)" };
 const footer: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 22px", borderTop: "1px solid var(--border)", background: "var(--surface-2)", flexWrap: "wrap" };
 const muteLabel: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--ink-2)", cursor: "pointer", userSelect: "none" };
 const primaryBtn: React.CSSProperties = sharedPrimaryBtn;
