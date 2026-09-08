@@ -71,7 +71,7 @@ def test_khong_co_neo_va_khong_co_ngay_gia_han_thi_tu_choi():
     anchor, error = _plan()
     assert anchor is None
     assert error is not None
-    assert "ngày chốt chu kỳ" in error
+    assert "ngày thanh toán" in error
 
 
 def test_moi_ngay_neo_tu_ngay_gia_han_theo_gio_UTC():
@@ -257,7 +257,7 @@ def test_thieu_moc_neo_bi_tu_choi(client: TestClient, auth_header: dict):
     ws = create_ws(client, auth_header, "WS-NO-ANCHOR")
     resp = _switch(client, auth_header, ws["id"], mode="cycle_aligned")
     assert resp.status_code == 400, resp.text
-    assert "ngày chốt chu kỳ" in resp.json()["detail"]
+    assert "ngày thanh toán" in resp.json()["detail"]
     assert _ws_row(ws["id"])["billing_mode"] == "legacy_30d"
 
 

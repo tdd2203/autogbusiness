@@ -168,7 +168,7 @@ describe("fillGuideVars", () => {
   });
 });
 
-describe("bài ngày chốt — số tiền theo đơn giá của người đọc", () => {
+describe("bài ngày thanh toán — số tiền theo đơn giá của người đọc", () => {
   const guide = GUIDES.find((g) => g.id === "cycle-billing")!;
 
   it.each([

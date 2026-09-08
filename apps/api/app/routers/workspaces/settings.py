@@ -188,7 +188,7 @@ def plan_billing_mode_switch(
       4. Chưa có ngày neo thì MỒI từ `renewal_date`, ép UTC trước khi đọc `.day`.
     """
     for label, value in (
-        ("Ngày chốt chu kỳ", requested_anchor_day),
+        ("Ngày thanh toán của không gian", requested_anchor_day),
         ("Ngày ép thêm tháng", requested_force_from_day),
     ):
         if value is not None and not (CYCLE_DAY_MIN <= value <= CYCLE_DAY_MAX):
@@ -231,9 +231,9 @@ def plan_billing_mode_switch(
         # Không có neo thì mọi lượt bán sẽ ném 409 giữa chừng
         # (`members/_shared._require_anchor_day`) — gạt xong là hỏng cả workspace.
         return None, (
-            "Không gian này chưa biết ngày chốt chu kỳ: chưa có ngày chốt lưu sẵn "
-            "và cũng chưa có ngày gia hạn nào để suy ra. Nhập 'ngày chốt chu kỳ' "
-            "(1–31) rồi gạt lại, hoặc dán một hoá đơn trước."
+            "Không gian này chưa biết ngày thanh toán: chưa có ngày thanh toán lưu "
+            "sẵn và cũng chưa có ngày gia hạn nào để suy ra. Nhập 'ngày thanh toán "
+            "của không gian' (1–31) rồi gạt lại, hoặc dán một hoá đơn trước."
         )
     return anchor_day, None
 

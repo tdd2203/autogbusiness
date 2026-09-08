@@ -1,4 +1,4 @@
-/** Bài hướng dẫn: hạn dùng của cả không gian rơi vào MỘT ngày chốt hàng tháng.
+/** Bài hướng dẫn: hạn dùng của cả không gian rơi vào MỘT ngày thanh toán hàng tháng.
  *
  *  Bài này giải thích cách tính mới cho đại lý, nên chỉ nói thứ họ nhìn thấy và
  *  quyết định được: hạn rơi ngày nào, trả bao nhiêu tiền, khi nào phải gia hạn.
@@ -66,31 +66,31 @@ const cycleBilling: Guide = {
   content: {
     vi: {
       eyebrow: "Hướng dẫn · cách tính mới",
-      title: "Hạn dùng theo ngày chốt của không gian",
+      title: "Hạn dùng theo ngày thanh toán của không gian",
       intro:
-        "Từ **8/9/2026**, mọi email trong một không gian ChatGPT cùng hết hạn vào **một ngày duy nhất trong tháng** — gọi là **ngày chốt**. Tiền thì tính đúng theo số ngày khách dùng.",
+        "Từ **8/9/2026**, mọi email trong một không gian ChatGPT cùng hết hạn vào **một ngày duy nhất trong tháng** — gọi là **ngày thanh toán của không gian**. Tiền thì tính đúng theo số ngày khách dùng.",
       sections: [
         {
           steps: [
             {
               title: "Cả không gian hết hạn cùng một ngày",
-              body: "Ngày chốt lặp lại hàng tháng, lúc **10 giờ sáng**. Ai đang còn hạn cũ thì giữ nguyên hạn đó, tới lần gia hạn sau mới về chung ngày chốt.",
+              body: "Ngày thanh toán lặp lại hàng tháng, lúc **10 giờ sáng**. Ai đang còn hạn cũ thì giữ nguyên hạn đó, tới lần gia hạn sau mới về chung ngày thanh toán.",
             },
             {
               title: "Tiền tính theo ngày",
-              body: "Giá một ngày = **đơn giá tháng chia cho số ngày của tháng đó**. Mua giữa tháng thì chỉ trả từ hôm mua tới ngày chốt. Gia hạn sớm tính tiếp từ hạn cũ nên không thu trùng ngày nào. **Tổng tiền hiện sẵn trong bảng mời** trước khi bạn bấm gửi.",
+              body: "Giá một ngày = **đơn giá tháng chia cho số ngày của tháng đó**. Mua giữa tháng thì chỉ trả từ hôm mua tới ngày thanh toán. Gia hạn sớm tính tiếp từ hạn cũ nên không thu trùng ngày nào. **Tổng tiền hiện sẵn trong bảng mời** trước khi bạn bấm gửi.",
             },
             {
-              title: "Mua sát ngày chốt thì trả thêm một tháng",
-              body: "Quãng còn lại lúc đó quá ngắn để bán riêng. Mua trong **khoảng một tuần cuối** trước ngày chốt thì trả **số ngày còn lại cộng một tháng**, và khách dùng thẳng tới ngày chốt của tháng sau.",
+              title: "Mua sát ngày thanh toán thì trả thêm một tháng",
+              body: "Quãng còn lại lúc đó quá ngắn để bán riêng. Mua trong **khoảng một tuần cuối** trước ngày thanh toán thì trả **số ngày còn lại cộng một tháng**, và khách dùng thẳng tới ngày thanh toán của tháng sau.",
             },
             {
               title: "Không có ân hạn",
-              body: "Đúng **10 giờ sáng giờ Việt Nam** ngày chốt, email chưa gia hạn **bị gỡ ngay**. Nhắc khách gia hạn trước đó.",
+              body: "Đúng **10 giờ sáng giờ Việt Nam** ngày thanh toán, email chưa gia hạn **bị gỡ ngay**. Nhắc khách gia hạn trước đó.",
             },
             {
               title: "Ví dụ",
-              body: "Đơn giá của bạn **{donGia}/tháng**, ngày chốt mùng 1. Tháng 8 có 31 ngày nên một ngày khoảng **{giaNgay}**.",
+              body: "Đơn giá của bạn **{donGia}/tháng**, ngày thanh toán mùng 1. Tháng 8 có 31 ngày nên một ngày khoảng **{giaNgay}**.",
               feeInput: true,
               table: {
                 head: ["Ngày mua", "Phải trả", "Dùng tới"],
