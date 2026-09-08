@@ -81,25 +81,22 @@ describe("nội dung các bài", () => {
     "%s: mọi ngôn ngữ cùng số phần và cùng số bước",
     (_id, guide) => {
       const shape = (c: GuideContent) => c.sections.map((s) => s.steps.length);
-      // Dải thẻ vẽ theo `sections` của ĐÚNG ngôn ngữ đang xem: bản dịch thiếu một
-      // phần thì người xem tiếng đó mất hẳn một thẻ mà không có gì báo.
+      // Bài vẽ theo `sections` của ĐÚNG ngôn ngữ đang xem: bản dịch thiếu một phần
+      // thì người xem tiếng đó mất hẳn phần đó mà không có gì báo.
       const first = shape(guide.content[LANGS[0]]);
       for (const lang of LANGS) expect(shape(guide.content[lang])).toEqual(first);
     },
   );
 
   it.each(GUIDES.map((g) => [g.id, g] as const))(
-    "%s: bài nhiều phần thì phần nào cũng có nhãn thẻ",
+    "%s: mọi ngôn ngữ đều có tiêu đề đủ ngắn cho mục lục",
     (_id, guide) => {
       for (const lang of LANGS) {
-        const { sections } = guide.content[lang];
-        if (sections.length < 2) continue;
-        for (const section of sections) {
-          const label = section.tab ?? section.heading;
-          expect(label).toBeTruthy();
-          // Thẻ dài quá thì dải thẻ tràn ngang, phải cuộn mới thấy phần cuối.
-          expect(label!.length).toBeLessThanOrEqual(24);
-        }
+        const { title } = guide.content[lang];
+        // Tiêu đề CHÍNH LÀ nhãn trong mục lục bên trái; dài quá thì một dòng mục
+        // lục ăn ba bốn dòng, cột trái thành khối chữ.
+        expect(title.trim()).not.toBe("");
+        expect(title.length).toBeLessThanOrEqual(48);
       }
     },
   );

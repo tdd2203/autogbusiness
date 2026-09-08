@@ -18,11 +18,10 @@ const cycleBilling: Guide = {
       eyebrow: "Hướng dẫn · 4 phần",
       title: "Hạn dùng theo ngày chốt của không gian",
       intro:
-        "Một số không gian đã đổi sang cách tính mới: thay vì mỗi email đếm riêng 30 ngày, **cả không gian dùng chung một ngày chốt hàng tháng** và tiền tính đúng theo số ngày khách dùng. Bốn thẻ dưới đây nói đủ những gì bạn cần biết.",
+        "Một số không gian đã đổi sang cách tính mới: thay vì mỗi email đếm riêng 30 ngày, **cả không gian dùng chung một ngày chốt hàng tháng** và tiền tính đúng theo số ngày khách dùng. Bốn phần dưới đây nói đủ những gì bạn cần biết.",
       sections: [
         {
           heading: "Ngày chốt chung cho cả không gian",
-          tab: "Có gì đổi",
           steps: [
             {
               title: "Mọi email hết hạn cùng một ngày",
@@ -40,7 +39,6 @@ const cycleBilling: Guide = {
         },
         {
           heading: "Trả đúng số ngày dùng thật",
-          tab: "Tính tiền",
           steps: [
             {
               title: "Tính theo ngày, không làm tròn lên tháng",
@@ -62,7 +60,6 @@ const cycleBilling: Guide = {
         },
         {
           heading: "Khi chỉ còn ít ngày là tới ngày chốt",
-          tab: "Mua sát ngày chốt",
           steps: [
             {
               title: "Còn quá ít ngày thì tính luôn tháng sau",
@@ -79,24 +76,23 @@ const cycleBilling: Guide = {
           ],
         },
         {
-          heading: "Ví dụ: ngày chốt mùng 1, đơn giá 300.000đ/tháng",
-          tab: "Ví dụ",
+          heading: "Ví dụ: ngày chốt mùng 1, đơn giá 380.000đ/tháng",
           steps: [
             {
               title: "Mua ngày 10/8, chọn 1 tháng",
-              body: "Còn 22 ngày tới ngày chốt ⇒ trả khoảng **213.000đ**, dùng tới **10 giờ sáng 1/9**.",
+              body: "Còn 22 ngày tới ngày chốt ⇒ trả khoảng **270.000đ**, dùng tới **10 giờ sáng 1/9**.",
             },
             {
               title: "Mua ngày 10/8, chọn 2 tháng",
-              body: "22 ngày lẻ cộng một tháng trọn ⇒ trả khoảng **513.000đ**, dùng tới **1/10**.",
+              body: "22 ngày lẻ cộng một tháng trọn ⇒ trả khoảng **650.000đ**, dùng tới **1/10**.",
             },
             {
               title: "Mua ngày 25/8 — sát ngày chốt",
-              body: "Chỉ còn 7 ngày nên lần bán này gồm luôn tháng sau ⇒ trả khoảng **368.000đ**, dùng tới **1/10** chứ không phải 1/9.",
+              body: "Chỉ còn 7 ngày nên lần bán này gồm luôn tháng sau ⇒ trả khoảng **466.000đ**, dùng tới **1/10** chứ không phải 1/9.",
             },
             {
               title: "Gia hạn cho khách đang có hạn tới 12/9",
-              body: "Bấm gia hạn ngày 1/9, hệ thống tính từ **12/9** tới ngày chốt kế ⇒ trả khoảng **190.000đ** cho 19 ngày, khách dùng liền tới **1/10**. Từ lần sau họ trả tròn một tháng như mọi người.",
+              body: "Bấm gia hạn ngày 1/9, hệ thống tính từ **12/9** tới ngày chốt kế ⇒ trả khoảng **241.000đ** cho 19 ngày, khách dùng liền tới **1/10**. Từ lần sau họ trả tròn một tháng như mọi người.",
             },
           ],
         },
@@ -105,17 +101,17 @@ const cycleBilling: Guide = {
         "Đúng **10 giờ sáng ngày chốt**, email chưa gia hạn bị gỡ khỏi không gian ngay, **không có ngày ân hạn**. Nhắc khách gia hạn trước hôm đó.",
         "Cách tính này chỉ áp cho không gian đã bật. Không gian còn lại vẫn tính 30 ngày cho mỗi tháng như trước.",
         "Ngày chốt đi theo kỳ thanh toán của không gian nên có thể dời khi kỳ đổi. Hạn dùng hiển thị trong bảng thành viên luôn là ngày đúng.",
+        "Phần Ví dụ tính theo đơn giá **380.000đ/tháng**. Đơn giá của bạn có thể khác, cách tính vẫn y như vậy.",
       ],
     },
     "zh-CN": {
       eyebrow: "使用指南 · 4 部分",
       title: "按工作区结算日计算到期时间",
       intro:
-        "部分工作区已改用新的计算方式：不再每个邮箱各自算 30 天，而是**整个工作区共用每月同一个结算日**，费用按客户实际使用的天数计算。下面四张卡片讲清你需要知道的全部内容。",
+        "部分工作区已改用新的计算方式：不再每个邮箱各自算 30 天，而是**整个工作区共用每月同一个结算日**，费用按客户实际使用的天数计算。下面四个部分讲清你需要知道的全部内容。",
       sections: [
         {
           heading: "整个工作区共用一个结算日",
-          tab: "有什么变化",
           steps: [
             {
               title: "所有邮箱在同一天到期",
@@ -133,7 +129,6 @@ const cycleBilling: Guide = {
         },
         {
           heading: "按实际使用天数付费",
-          tab: "费用怎么算",
           steps: [
             {
               title: "按天计算，不向上凑成整月",
@@ -155,7 +150,6 @@ const cycleBilling: Guide = {
         },
         {
           heading: "距离结算日只剩几天时",
-          tab: "临近结算日购买",
           steps: [
             {
               title: "剩余天数太少就连下个月一起算",
@@ -172,24 +166,23 @@ const cycleBilling: Guide = {
           ],
         },
         {
-          heading: "示例：结算日为 1 号，月单价 300.000đ",
-          tab: "示例",
+          heading: "示例：结算日为 1 号，月单价 380.000đ",
           steps: [
             {
               title: "8 月 10 日购买，选 1 个月",
-              body: "距结算日还有 22 天 ⇒ 约付 **213.000đ**，可用到 **9 月 1 日上午 10 点**。",
+              body: "距结算日还有 22 天 ⇒ 约付 **270.000đ**，可用到 **9 月 1 日上午 10 点**。",
             },
             {
               title: "8 月 10 日购买，选 2 个月",
-              body: "22 天零头加一整月 ⇒ 约付 **513.000đ**，可用到 **10 月 1 日**。",
+              body: "22 天零头加一整月 ⇒ 约付 **650.000đ**，可用到 **10 月 1 日**。",
             },
             {
               title: "8 月 25 日购买 — 临近结算日",
-              body: "只剩 7 天，这次售卖会包含下个月 ⇒ 约付 **368.000đ**，可用到 **10 月 1 日**，而不是 9 月 1 日。",
+              body: "只剩 7 天，这次售卖会包含下个月 ⇒ 约付 **466.000đ**，可用到 **10 月 1 日**，而不是 9 月 1 日。",
             },
             {
               title: "为有效期到 9 月 12 日的客户续费",
-              body: "9 月 1 日点续费，系统从 **9 月 12 日**算到下一个结算日 ⇒ 19 天约付 **190.000đ**，客户可连续用到 **10 月 1 日**。从下一次起，他们就和其他人一样按整月付费。",
+              body: "9 月 1 日点续费，系统从 **9 月 12 日**算到下一个结算日 ⇒ 19 天约付 **241.000đ**，客户可连续用到 **10 月 1 日**。从下一次起，他们就和其他人一样按整月付费。",
             },
           ],
         },
@@ -198,6 +191,7 @@ const cycleBilling: Guide = {
         "**结算日上午 10 点整**，尚未续费的邮箱会立即被移出工作区，**没有宽限期**。请提前提醒客户续费。",
         "该计算方式只适用于已启用的工作区，其余工作区仍按每月 30 天计算。",
         "结算日跟随工作区的账单周期，周期变动时可能顺延。成员列表中显示的到期时间始终以实际为准。",
+        "示例按月单价 **380.000đ** 计算。你的单价可能不同，但计算方式完全一样。",
       ],
     },
   },

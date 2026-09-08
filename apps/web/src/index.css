@@ -3014,6 +3014,76 @@ body {
     }
   }
 
+  /* Popup hướng dẫn = trang bookmark: cột trái là mục lục các bài, cột phải là
+     bài đang đọc. Phần còn lại của popup dùng style inline, riêng chỗ này phải ra
+     CSS vì cần media query — màn hẹp thì mục lục đổi thành dải trượt ngang chứ
+     không còn là cột, hai cột trên điện thoại là bài chỉ còn nửa gang tay. */
+  .guide-split {
+    display: grid;
+    grid-template-columns: 232px minmax(0, 1fr);
+    flex: 1;
+    min-height: 0;
+  }
+  .guide-index {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 12px 10px;
+    border-right: 1px solid var(--border);
+    background: var(--surface-2);
+    overflow-y: auto;
+  }
+  .guide-index-item {
+    appearance: none;
+    border: none;
+    background: transparent;
+    text-align: left;
+    padding: 9px 11px;
+    border-radius: 9px;
+    font-family: inherit;
+    font-size: 13.5px;
+    font-weight: 600;
+    line-height: 1.4;
+    color: var(--ink-2);
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+  }
+  .guide-index-item:hover {
+    background: var(--surface);
+    color: var(--ink);
+  }
+  .guide-index-item.on {
+    background: var(--surface);
+    color: var(--ink);
+    box-shadow: var(--shadow-sm);
+  }
+  .guide-content {
+    padding: 16px 22px 22px;
+    overflow-y: auto;
+    min-width: 0;
+  }
+
+  @media (max-width: 760px) {
+    .guide-split {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    .guide-index {
+      flex-direction: row;
+      gap: 6px;
+      padding: 8px 12px;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .guide-index-item {
+      flex-shrink: 0;
+      white-space: nowrap;
+      font-size: 13px;
+    }
+  }
+
   @media (max-width: 480px) {
     .app-main {
       padding: 14px 12px 40px;
