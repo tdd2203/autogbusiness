@@ -2497,8 +2497,6 @@ function FeeDetailModal({
     {
       key: "cycle",
       label: t("invite.feeDetailCycle"),
-      // Trong cột thì bỏ đuôi "· 31 ngày": đã có cột thời gian riêng, nhắc lại chỉ
-      // tổ làm bảng tràn ngang rồi cột tiền bị đẩy khuất.
       short: (r) =>
         r.cycle_start && r.cycle_end
           ? `${formatVnDate(lang, r.cycle_start)} → ${formatVnDate(
@@ -2519,59 +2517,45 @@ function FeeDetailModal({
           : "",
     },
     {
-      key: "from",
-      label: t("invite.feeDetailFrom"),
-      value: (r) => formatVnMoment(lang, r.from),
-    },
-    {
       key: "to",
       label: t("invite.feeDetailUntil"),
       value: (r) => formatVnMoment(lang, r.to),
-      hint: t("invite.feeDetailUntilHint"),
       short: (r) => formatVnMoment(lang, r.to),
+      hint: t("invite.feeDetailUntilHint"),
     },
     {
+      // GỘP "thời gian thực dùng" + "số ngày" làm MỘT. Tách đôi thì thành hai con
+      // số trông như mâu thuẫn (16 ngày 19 giờ vs 17 ngày); để cạnh nhau kèm mũi
+      // tên thì tự nó giải thích luật nửa-ngày.
       key: "span",
       label: t("invite.feeDetailSpan"),
-      // Quãng THẬT tới từng giờ. Đặt cạnh "Số ngày" để thấy ngay vì sao ra con số
-      // đó: 16 ngày 19 giờ ⇒ dư 19 giờ > 12 ⇒ tính tròn 17 ngày (EXPIRY_RULES
-      // §3.6.4). Không có dòng này thì luật nửa-ngày trông như tuỳ tiện.
       value: (r) => {
-        if (!r.to) return "";
+        const rounded = t("invite.feeDetailDays", { n: num(r.half_days) });
+        if (!r.to) return rounded;
         const ms = new Date(r.to).getTime() - new Date(r.from).getTime();
-        if (!Number.isFinite(ms) || ms <= 0) return "";
+        if (!Number.isFinite(ms) || ms <= 0) return rounded;
         const d = Math.floor(ms / 86400000);
         const h = Math.floor((ms % 86400000) / 3600000);
-        return h === 0
-          ? t("invite.feeDetailDays", { n: String(d) })
-          : t("invite.feeDetailSpanValue", { d: String(d), h: String(h) });
+        const real =
+          h === 0
+            ? t("invite.feeDetailDays", { n: String(d) })
+            : t("invite.feeDetailSpanValue", { d: String(d), h: String(h) });
+        return `${real} → ${t("invite.feeDetailRounded", { n: rounded })}`;
       },
-    },
-    {
-      key: "days",
-      label: t("invite.feeDetailDuration"),
-      value: (r) => t("invite.feeDetailDays", { n: num(r.half_days) }),
+      short: (r) => t("invite.feeDetailDays", { n: num(r.half_days) }),
     },
     {
       key: "unit",
       label: t("invite.feeDetailUnit"),
-      // Đơn giá THÁNG kèm đơn giá NGÀY trên cùng một dòng (chốt user 8/9/2026):
-      // người bán cần con số theo ngày để nhẩm nhanh khi khách hỏi, mà bắt họ tự
-      // chia 20.000/31 thì chẳng ai chia.
-      //
-      // Có dấu ≈ vì đây là con số THAM KHẢO: tiền thật làm tròn MỘT LẦN ở tổng
-      // (EXPIRY_RULES §3.6.5), không phải làm tròn từng ngày rồi nhân lên — nhân
-      // ngược lại từ số này sẽ lệch vài trăm đồng.
       value: (r) => {
         if (r.unit_price_vnd == null) return "";
         const perMonth = t("invite.feeDetailUnitValue", {
           price: formatVnd(r.unit_price_vnd),
         });
         if (!r.cycle_days) return perMonth;
-        // Hai con số, cố ý để cạnh nhau: giá THẬT của một ngày (chia đúng, làm tròn
-        // tới đồng) và giá SAU KHI làm tròn lên bội trăm. Chỉ hiện số đã làm tròn
-        // thì người bán tưởng đó là giá thật rồi nhân ngược lại ra sai; chỉ hiện số
-        // thật thì không khớp con số họ thấy trên hoá đơn.
+        // Giá THẬT của một ngày và giá SAU khi làm tròn lên bội trăm. Chỉ hiện số
+        // đã làm tròn thì người bán nhân ngược lại ra sai; chỉ hiện số thật thì
+        // không khớp con số trên hoá đơn.
         const exact = Math.round(r.unit_price_vnd / r.cycle_days);
         const rounded = Math.ceil(r.unit_price_vnd / r.cycle_days / 100) * 100;
         return `${perMonth} · ${t("invite.feeDetailUnitPerDay", {
@@ -2582,28 +2566,30 @@ function FeeDetailModal({
       },
     },
     {
-      key: "whole",
-      label: t("invite.feeDetailWhole"),
-      value: (r) =>
-        (r.whole_months ?? 0) > 0
-          ? t("invite.feeDetailMonths", { n: String(r.whole_months) })
-          : "",
-    },
-    {
-      key: "prorated",
-      label: t("invite.feeDetailProrated"),
-      value: (r) =>
-        (r.prorated_half_days ?? 0) > 0
-          ? `${t("invite.feeDetailDays", {
+      // Thay cho "Phần lẻ" + "Chu kỳ trọn" — hai nhãn đó là tiếng lóng nội bộ,
+      // người bán đọc không ra. Ở đây nói thẳng TỈ LỆ dùng để nhân tiền.
+      //
+      // CỐ Ý không kèm kết quả: tiền của mỗi email nằm ở cột Thành tiền do server
+      // chốt. Nhân ra ở đây là dựng nguồn sự thật thứ hai cho tiền.
+      key: "ratio",
+      label: t("invite.feeDetailRatio"),
+      value: (r) => {
+        const parts: string[] = [];
+        if ((r.prorated_half_days ?? 0) > 0 && r.cycle_days) {
+          parts.push(
+            t("invite.feeDetailRatioDays", {
               n: num(r.prorated_half_days ?? 0),
-            })}${
-              r.cycle_days != null
-                ? ` ${t("invite.feeDetailOfCycle", {
-                    n: String(r.cycle_days),
-                  })}`
-                : ""
-            }`
-          : "",
+              total: String(r.cycle_days),
+            }),
+          );
+        }
+        if ((r.whole_months ?? 0) > 0) {
+          parts.push(
+            t("invite.feeDetailMonths", { n: String(r.whole_months) }),
+          );
+        }
+        return parts.join(" + ");
+      },
     },
   ];
 
@@ -2627,13 +2613,26 @@ function FeeDetailModal({
             <h3 className="tg-h" style={{ flex: 1 }}>
               {t("invite.feeDetailTitle")}
             </h3>
-            <button onClick={onClose} aria-label={t("common.close")}>
+            <button
+              className="ntpl-x"
+              onClick={onClose}
+              aria-label={t("common.close")}
+            >
               ×
             </button>
           </div>
         </div>
         <div className="tg-modal-body">
-          {/* DÙNG CHUNG cho mọi email — nói một lần. */}
+          {/* DÙNG CHUNG cho mọi email — nói một lần, gom trong MỘT thẻ để mắt thấy
+              ngay đây là phần chung, còn bảng bên dưới mới là phần riêng. */}
+          <div
+            style={{
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 12,
+              padding: "2px 14px",
+            }}
+          >
           {shared.map((f) => (
             <div className="info-row" key={f.key}>
               <div className="key">{f.label}</div>
@@ -2643,12 +2642,14 @@ function FeeDetailModal({
                 {f
                   .value(rows[0])
                   .split(" · ")
-                  .map((part, i, all) => (
+                  .map((part, i) => (
+                    // Dấu phân cách đi KÈM đoạn phía sau: để nó đứng cuối đoạn
+                    // trước thì khi xuống dòng sẽ có một dấu · mồ côi treo lơ lửng.
                     <span key={part} style={{ whiteSpace: "nowrap" }}>
-                      {part}
-                      {i < all.length - 1 && (
-                        <span style={{ color: "var(--ink-4)" }}> · </span>
+                      {i > 0 && (
+                        <span style={{ color: "var(--ink-4)" }}>{" · "}</span>
                       )}
+                      {part}
                     </span>
                   ))}
                 {f.hint && (
@@ -2659,6 +2660,7 @@ function FeeDetailModal({
               </div>
             </div>
           ))}
+          </div>
 
           <div
             style={{
