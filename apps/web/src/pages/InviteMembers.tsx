@@ -1743,19 +1743,9 @@ export default function InviteMembers() {
                     <button
                       type="button"
                       onClick={() => setFeeDetailOpen((v) => !v)}
-                      className="btn-link"
-                      style={{
-                        background: "none",
-                        border: 0,
-                        padding: 0,
-                        cursor: "pointer",
-                        color: "var(--accent)",
-                        font: "inherit",
-                      }}
+                      className="btn btn-ghost btn-sm"
                     >
-                      {feeDetailOpen
-                        ? t("invite.feeDetailHide")
-                        : t("invite.feeDetailShow")}
+                      {t("invite.feeDetailShow")}
                     </button>
                   </>
                 )}
@@ -2529,6 +2519,23 @@ function FeeDetailModal({
       hint: t("invite.feeDetailUntilHint"),
     },
     {
+      key: "span",
+      label: t("invite.feeDetailSpan"),
+      // Quãng THẬT tới từng giờ. Đặt cạnh "Số ngày" để thấy ngay vì sao ra con số
+      // đó: 16 ngày 19 giờ ⇒ dư 19 giờ > 12 ⇒ tính tròn 17 ngày (EXPIRY_RULES
+      // §3.6.4). Không có dòng này thì luật nửa-ngày trông như tuỳ tiện.
+      value: (r) => {
+        if (!r.to) return "";
+        const ms = new Date(r.to).getTime() - new Date(r.from).getTime();
+        if (!Number.isFinite(ms) || ms <= 0) return "";
+        const d = Math.floor(ms / 86400000);
+        const h = Math.floor((ms % 86400000) / 3600000);
+        return h === 0
+          ? t("invite.feeDetailDays", { n: String(d) })
+          : t("invite.feeDetailSpanValue", { d: String(d), h: String(h) });
+      },
+    },
+    {
       key: "days",
       label: t("invite.feeDetailDuration"),
       value: (r) => t("invite.feeDetailDays", { n: num(r.half_days) }),
@@ -2549,12 +2556,16 @@ function FeeDetailModal({
           price: formatVnd(r.unit_price_vnd),
         });
         if (!r.cycle_days) return perMonth;
-        // LÀM TRÒN LÊN, bội TRĂM — khớp luật tiền (`price_round_to_vnd`, luôn lên,
-        // không bao giờ xuống). `Math.round` sẽ làm tròn XUỐNG ở phần lẻ < 0,5 nên
-        // con số tham khảo hiện ra thấp hơn giá thật.
-        const perDay = Math.ceil(r.unit_price_vnd / r.cycle_days / 100) * 100;
+        // Hai con số, cố ý để cạnh nhau: giá THẬT của một ngày (chia đúng, làm tròn
+        // tới đồng) và giá SAU KHI làm tròn lên bội trăm. Chỉ hiện số đã làm tròn
+        // thì người bán tưởng đó là giá thật rồi nhân ngược lại ra sai; chỉ hiện số
+        // thật thì không khớp con số họ thấy trên hoá đơn.
+        const exact = Math.round(r.unit_price_vnd / r.cycle_days);
+        const rounded = Math.ceil(r.unit_price_vnd / r.cycle_days / 100) * 100;
         return `${perMonth} · ${t("invite.feeDetailUnitPerDay", {
-          price: formatVnd(perDay),
+          price: formatVnd(exact),
+        })} · ${t("invite.feeDetailUnitRounded", {
+          price: formatVnd(rounded),
         })}`;
       },
     },
