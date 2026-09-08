@@ -100,7 +100,6 @@ const cycleBilling: Guide = {
       ],
       notes: [
         "Ngày lẻ **trên 12 tiếng tính tròn một ngày, dưới 12 tiếng tính nửa ngày** — tiền cũng chỉ một nửa.",
-        "Chỉ áp cho không gian đã bật cách tính này. Nơi khác vẫn tính 30 ngày cho mỗi tháng.",
       ],
     },
     "zh-CN": {
@@ -143,7 +142,6 @@ const cycleBilling: Guide = {
       ],
       notes: [
         "零头**超过 12 小时算一整天，不足 12 小时算半天**——费用也只收一半。",
-        "仅适用于已启用该方式的工作区，其余工作区仍按每月 30 天计算。",
       ],
     },
   },
