@@ -35,6 +35,13 @@ export type GuideStep = {
   caption?: string;
   /** Ảnh chụp khung hẹp (menu, hộp thoại nhỏ) phóng hết chiều ngang trông vỡ nét. */
   imageMaxWidth?: number;
+  /** Hiện ô cho người đọc gõ ĐƠN GIÁ khác ngay dưới đoạn văn của bước này.
+   *
+   *  Gõ vào thì mọi con số của bài (và bản PDF in ra) tính lại theo giá đó —
+   *  đại lý hay phải báo giá cho khách theo một mức khác mức của chính mình.
+   *  Chỉ là số để xem: KHÔNG lưu, đóng popup là về đơn giá thật. Đặt cờ này ở
+   *  bước có ví dụ, chứ đặt ở bước không dùng số thì ô nhập đứng đó vô duyên. */
+  feeInput?: boolean;
 };
 
 /** Nhóm bước — dùng khi một bài có nhiều CÁCH làm (vd: trên web / trên app). */

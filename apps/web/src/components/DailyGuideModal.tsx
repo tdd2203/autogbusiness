@@ -7,6 +7,8 @@
  *
  * Bài có thể chèn số liệu của CHÍNH người đang đọc (đơn giá tháng của họ) qua
  * `guide.vars`; câu nào cần số mà chưa có thì bị bỏ khỏi bài, không hiện số sai.
+ * Bước nào bật `feeInput` thì có thêm ô gõ đơn giá khác để thử số — cả bài lẫn
+ * bản PDF tính lại theo giá vừa gõ, và giá đó KHÔNG được lưu lại ở đâu.
  *
  * Popup là một TRANG MỤC LỤC: cột trái liệt kê mọi bài đang có, cột phải là bài
  * đang đọc. Mỗi ngày hệ thống mở sẵn một bài (luật bốc bài ở `lib/guides`), còn
@@ -40,12 +42,14 @@ import {
   pickGuideId,
   readSessionSeenDay,
   readState,
+  readerFeeVnd,
   shouldOpen,
   vnDayKey,
   writeState,
   type Guide,
   type GuideStep,
 } from "../lib/guides";
+import { MoneyInput } from "./priceEditor";
 
 /** Đợi một nhịp cho trang vẽ xong rồi mới bật popup — bật ngay lúc mount thì nó
  *  chồng lên khung xương đang tải, nhìn như lỗi. */
@@ -82,6 +86,9 @@ export default function DailyGuideModal() {
   const { lang, t } = useI18n();
   const [guide, setGuide] = useState<Guide | null>(null);
   const [mute, setMute] = useState(false);
+  // Đơn giá người đọc tự gõ để thử (chuỗi chữ số, `null` = đang dùng giá thật).
+  // Chỉ là state của lượt đọc này — không ghi vào ví, cũng không vào localStorage.
+  const [feeDraft, setFeeDraft] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const day = useMemo(() => vnDayKey(), []);
   // Đơn giá tháng của chính người đang đọc, cho bài nào cần tới. CÙNG khoá cache
@@ -93,6 +100,21 @@ export default function DailyGuideModal() {
     queryFn: () => api<Wallet>("/api/v1/wallet"),
     enabled: !!guide && (!!user?.wallet_beta || !!user?.is_super_admin),
   });
+
+  const walletFee = wallet?.invite_fee_vnd ?? null;
+  const feeVnd = readerFeeVnd(feeDraft, walletFee);
+  // Bài đã điền số — dùng cho cả phần hiện trên màn hình lẫn bản in, khỏi hai
+  // đường tính song song rồi lệch nhau.
+  const content = useMemo(
+    () =>
+      guide
+        ? fillGuideVars(
+            guide.content[lang] ?? guide.content.vi,
+            guide.vars?.({ feeVnd }) ?? {},
+          )
+        : null,
+    [guide, lang, feeVnd],
+  );
 
   useEffect(() => {
     const state = readState();
@@ -130,6 +152,9 @@ export default function DailyGuideModal() {
   // giữa bài mới, tưởng mất phần đầu.
   useEffect(() => {
     bodyRef.current?.scrollTo({ top: 0 });
+    // Đơn giá gõ tay chỉ sống trong lượt đọc: sang bài khác hay đóng popup là về
+    // đúng giá thật của họ.
+    setFeeDraft(null);
   }, [guide]);
 
   function close() {
@@ -141,20 +166,14 @@ export default function DailyGuideModal() {
   // Bản in dựng lại nội dung ở trang riêng (xem `lib/guides/printable.ts`), chứ
   // in thẳng popup thì ra bản cụt: popup cuộn trong khung, ảnh còn lazy-load.
   function exportPdf() {
-    if (!guide) return;
-    // In ra phải là bài NGƯỜI ĐỌC đang thấy, kể cả phần số đã điền theo đơn giá
-    // của họ — in bản thô là ra giấy đầy chỗ trống "{donGia}".
-    const printed = openGuidePrint(
-      fillGuideVars(
-        guide.content[lang] ?? guide.content.vi,
-        guide.vars?.({ feeVnd: wallet?.invite_fee_vnd ?? null }) ?? {},
-      ),
-      {
-        lang,
-        notesLabel: t("guide.notes"),
-        baseUrl: window.location.href,
-      },
-    );
+    if (!content) return;
+    // In ra phải là bài NGƯỜI ĐỌC đang thấy — đúng những con số trên màn hình,
+    // kể cả đơn giá họ vừa gõ tay. In bản thô là ra giấy đầy chỗ trống "{donGia}".
+    const printed = openGuidePrint(content, {
+      lang,
+      notesLabel: t("guide.notes"),
+      baseUrl: window.location.href,
+    });
     if (!printed) toast.warning(t("guide.exportPdfBlocked"));
   }
 
@@ -168,11 +187,7 @@ export default function DailyGuideModal() {
     // Nghe lại khi `mute` đổi để `close` trong closure thấy giá trị mới nhất.
   }, [guide, mute]);
 
-  if (!guide) return null;
-  const content = fillGuideVars(
-    guide.content[lang] ?? guide.content.vi,
-    guide.vars?.({ feeVnd: wallet?.invite_fee_vnd ?? null }) ?? {},
-  );
+  if (!guide || !content) return null;
 
   return (
     <div style={backdrop} onClick={close}>
@@ -236,7 +251,27 @@ export default function DailyGuideModal() {
                     </div>
                   )}
                   {section.steps.map((step, i) => (
-                    <Step key={i} step={step} index={i + 1} zoomHint={t("guide.zoomHint")} />
+                    <Step
+                      key={i}
+                      step={step}
+                      index={i + 1}
+                      zoomHint={t("guide.zoomHint")}
+                      feeInput={
+                        // Chưa biết giá thật thì bước ví dụ đã bị bỏ khỏi bài rồi;
+                        // còn hiện được ô nhập thì phải có mốc để bấm quay về.
+                        step.feeInput && walletFee !== null ? (
+                          <FeeInput
+                            value={feeDraft ?? String(walletFee)}
+                            onChange={setFeeDraft}
+                            onReset={
+                              feeDraft !== null && feeDraft !== String(walletFee)
+                                ? () => setFeeDraft(null)
+                                : null
+                            }
+                          />
+                        ) : null
+                      }
+                    />
                   ))}
                 </div>
               ))}
@@ -280,10 +315,13 @@ function Step({
   step,
   index,
   zoomHint,
+  feeInput,
 }: {
   step: GuideStep;
   index: number;
   zoomHint: string;
+  /** Ô gõ đơn giá, đã dựng sẵn ở trên — `null` khi bước này không có. */
+  feeInput?: React.ReactNode;
 }) {
   return (
     <div className="guide-step">
@@ -291,6 +329,9 @@ function Step({
       <div className="guide-step-main">
         <div className="guide-step-title guide-measure">{step.title}</div>
         <p className="guide-step-text guide-measure">{renderMarkup(step.body)}</p>
+        {/* Ô nhập đứng GIỮA câu văn và bảng: đọc xong câu "đơn giá của bạn là…"
+            là thấy ngay chỗ đổi giá, rồi mới tới bảng số đổi theo. */}
+        {feeInput}
         {step.table && (
           <div className="guide-table-wrap guide-measure">
             <table className="data-table guide-table">
@@ -342,6 +383,41 @@ function Step({
           </figure>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Ô gõ thử một ĐƠN GIÁ khác cho bài đang đọc.
+ *
+ *  Đại lý hay phải báo giá cho khách theo mức khác mức của chính mình — gõ vào
+ *  đây là mọi con số trong bài (và bản PDF xuất ra) tính lại theo giá đó.
+ *
+ *  Số này KHÔNG được lưu: đóng popup hay sang bài khác là về giá thật. Giá bán
+ *  thật vẫn chỉ đổi được ở trang giá, nên không ai lỡ tay đổi giá khi đọc bài.
+ *
+ *  Mượn `MoneyInput` của phần sửa giá cho ô số giống hệt mọi chỗ nhập tiền khác
+ *  (chỉ ăn chữ số, tự chấm phần nghìn). */
+function FeeInput({
+  value,
+  onChange,
+  onReset,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  /** `null` khi đang là giá thật của họ — lúc đó nút quay về không có việc gì. */
+  onReset: (() => void) | null;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="guide-fee guide-measure">
+      <span className="guide-fee-label">{t("guide.feeTry")}</span>
+      <MoneyInput value={value} onChange={onChange} width={148} />
+      {onReset && (
+        <button type="button" className="guide-fee-reset" onClick={onReset}>
+          {t("guide.feeReset")}
+        </button>
+      )}
+      <span className="guide-fee-hint">{t("guide.feeTryHint")}</span>
     </div>
   );
 }

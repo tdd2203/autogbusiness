@@ -18,6 +18,10 @@
  *  giá (ví chưa trả lời) thì `fillGuideVars` bỏ luôn cả bước ví dụ — thà thiếu một
  *  bước còn hơn hiện sai tiền.
  *
+ *  BƯỚC VÍ DỤ CÓ Ô GÕ ĐƠN GIÁ (`feeInput`, 8/9/2026): đại lý hay phải báo giá cho
+ *  khách theo một mức khác mức của chính mình, gõ vào là cả bài lẫn bản PDF tính
+ *  lại theo giá đó. Chỉ để xem, không lưu — giá bán thật vẫn nằm ở trang giá.
+ *
  *  Không có ảnh: đây là bài về cách tính, ảnh chụp màn hình không nói thêm được gì
  *  mà lại cũ đi mỗi lần giao diện đổi.
  */
@@ -87,6 +91,7 @@ const cycleBilling: Guide = {
             {
               title: "Ví dụ",
               body: "Đơn giá của bạn **{donGia}/tháng**, ngày chốt mùng 1. Tháng 8 có 31 ngày nên một ngày khoảng **{giaNgay}**.",
+              feeInput: true,
               table: {
                 head: ["Ngày mua", "Phải trả", "Dùng tới"],
                 rows: [
@@ -129,6 +134,7 @@ const cycleBilling: Guide = {
             {
               title: "示例",
               body: "你的月单价是 **{donGia}**，结算日为 1 号。8 月有 31 天，所以每天大约 **{giaNgay}**。",
+              feeInput: true,
               table: {
                 head: ["购买日", "应付", "可用到"],
                 rows: [

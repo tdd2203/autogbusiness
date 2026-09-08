@@ -3154,6 +3154,49 @@ body {
   .guide-table tbody tr:hover {
     background: transparent;
   }
+  /* Ô gõ thử đơn giá dưới bước ví dụ: nhãn, ô số, nút quay về giá thật, rồi câu
+     nói rõ là chỉ để xem. Nền chìm và bo góc như một mảnh rời — nó là thứ BẤM
+     ĐƯỢC nằm giữa bài đọc, trông giống đoạn văn thì không ai biết gõ vào được. */
+  .guide-fee {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface-2);
+  }
+  .guide-fee-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-2);
+  }
+  .guide-fee-reset {
+    appearance: none;
+    padding: 7px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--ink-2);
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .guide-fee-reset:hover {
+    color: var(--ink);
+    border-color: var(--ink-4);
+  }
+  /* Câu giải thích co lại được và tự xuống dòng khi hết chỗ — cột chữ hẹp thì ô
+     số phải còn nguyên bề ngang, chứ chữ mới là thứ nhường được. */
+  .guide-fee-hint {
+    flex: 1 1 240px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--ink-3);
+  }
   .guide-notes {
     margin-top: 28px;
     padding: 14px 18px 15px;

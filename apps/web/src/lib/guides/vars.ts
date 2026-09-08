@@ -11,6 +11,23 @@ import type { GuideContent, GuideStep } from "./types";
 
 const SLOT = /\{([A-Za-z0-9_]+)\}/g;
 
+/** Đơn giá dùng để tính số trong bài: giá người đọc vừa gõ, không thì giá thật.
+ *
+ *  `draft` là đúng thứ đang nằm trong ô nhập (chuỗi chữ số, `null` = chưa gõ gì).
+ *  Gõ dở — ô rỗng, số 0, hay chữ lạc vào — thì LÙI VỀ giá thật chứ không trả
+ *  `null`: trả `null` là `fillGuideVars` bỏ luôn bước ví dụ, ô nhập biến mất
+ *  theo, người đang xoá để gõ lại hết đường lùi.
+ *
+ *  Cố ý KHÔNG lưu lại ở đâu: đây là số để thử, giá bán thật nằm ở trang giá. */
+export function readerFeeVnd(
+  draft: string | null,
+  walletFeeVnd: number | null,
+): number | null {
+  const typed = Number(draft);
+  if (draft !== null && Number.isFinite(typed) && typed > 0) return typed;
+  return walletFeeVnd;
+}
+
 function put(text: string, vars: Record<string, string>): string {
   return text.replace(SLOT, (whole, name: string) => vars[name] ?? whole);
 }

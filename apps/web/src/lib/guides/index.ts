@@ -26,7 +26,7 @@ export type {
   GuideVarContext,
 } from "./types";
 export { guidePrintHtml, openGuidePrint } from "./printable";
-export { fillGuideVars } from "./vars";
+export { fillGuideVars, readerFeeVnd } from "./vars";
 
 /** Thêm bài mới: viết file nội dung rồi đẩy vào đây, không phải sửa gì thêm. */
 export const GUIDES: Guide[] = [chatgptResetLimit, cycleBilling];

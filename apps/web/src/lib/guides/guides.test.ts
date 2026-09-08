@@ -4,6 +4,7 @@ import {
   fillGuideVars,
   guidePrintHtml,
   pickGuideId,
+  readerFeeVnd,
   shouldOpen,
   vnDayKey,
   type GuideState,
@@ -199,6 +200,34 @@ describe("bài ngày chốt — số tiền theo đơn giá của người đọ
     expect(steps(blank)).toBe(steps(full) - 1);
     // Không còn chỗ trống nào lọt ra màn hình dưới dạng "{donGia}".
     expect(JSON.stringify(blank)).not.toMatch(/\{[A-Za-z0-9_]+\}/);
+  });
+});
+
+describe("readerFeeVnd", () => {
+  it("chưa gõ gì thì lấy đơn giá thật của người đọc", () => {
+    expect(readerFeeVnd(null, 330_000)).toBe(330_000);
+  });
+
+  it("gõ giá khác thì bài tính theo giá vừa gõ", () => {
+    expect(readerFeeVnd("450000", 330_000)).toBe(450_000);
+  });
+
+  it("gõ dở (rỗng, 0) thì lùi về giá thật, không làm mất bước ví dụ", () => {
+    // Trả null ở đây là `fillGuideVars` bỏ cả bước, ô nhập biến mất theo — người
+    // đang xoá để gõ lại hết đường lùi.
+    expect(readerFeeVnd("", 330_000)).toBe(330_000);
+    expect(readerFeeVnd("0", 330_000)).toBe(330_000);
+  });
+
+  it("chưa biết giá thật mà cũng chưa gõ thì vẫn là chưa biết", () => {
+    expect(readerFeeVnd(null, null)).toBeNull();
+  });
+
+  it("số trong bài đổi theo đúng giá vừa gõ", () => {
+    const guide = GUIDES.find((g) => g.id === "cycle-billing")!;
+    const vars = guide.vars!({ feeVnd: readerFeeVnd("380000", 330_000) });
+    expect(vars.donGia).toBe("380.000 ₫");
+    expect(vars.vdSom).toBe("269.700 ₫");
   });
 });
 
