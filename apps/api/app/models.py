@@ -70,9 +70,10 @@ CYCLE_FORCE_EXTRA_FROM_DAY_DEFAULT = 23
 # UTC = 16h giờ VN). KHÔNG dùng để tính tiền — chỉ để biết đợt gỡ có kịp không:
 # gỡ xong sau mốc này thì hoá đơn đã tính đủ ghế cũ, kỳ đó không tiết kiệm được gì.
 CYCLE_INVOICE_UTC_DEFAULT = dtime(9, 0)
-# Tiền kỳ lẻ làm tròn LÊN bội số này. Tiền lẻ hàng trăm đồng chỉ tổ lệch khi đối
-# soát chuyển khoản (cùng lý do với `canva_price._ROUND_TO`).
-PRICE_ROUND_TO_VND_DEFAULT = 1000
+# Tiền kỳ lẻ làm tròn LÊN bội số này — LUÔN LÊN, không bao giờ xuống (chốt user
+# 8/9/2026). Làm tròn hàng TRĂM: bội 1.000 khiến một ngày lẻ chênh tới gần một
+# nghìn đồng, mà giá theo ngày thì chênh đó thấy rõ trên hoá đơn.
+PRICE_ROUND_TO_VND_DEFAULT = 100
 
 # Team Canva trả phí có sẵn 50 suất và KHÔNG mua thêm được (user 2026-09-01). Dùng
 # làm seat_total mặc định khi tạo team, và làm TRẦN CỨNG khi mời — nhánh GPT cho
@@ -1323,7 +1324,7 @@ class PaymentSettings(Base):
         Integer,
         nullable=False,
         default=PRICE_ROUND_TO_VND_DEFAULT,
-        server_default="1000",
+        server_default="100",
     )
     updated_by_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True

@@ -31,8 +31,8 @@ Con số mặc định (sửa được ở DB, không hard-code trong code — E
                               gia hạn RỒI hạ seat_total.
   cycle_force_extra_from_day  23. Mua từ ngày thứ 23 của chu kỳ trở đi thì bắt buộc cộng
                               thêm 1 tháng — kỳ đầu quá ngắn thì vừa mua đã hết hạn.
-  price_round_to_vnd          1000. Tiền lẻ hàng trăm đồng chỉ tổ lệch khi đối soát
-                              chuyển khoản.
+  price_round_to_vnd          100. Làm tròn LÊN bội trăm (chốt user 8/9/2026) — bội
+                              nghìn khiến một ngày lẻ chênh gần một nghìn đồng.
   cycle_invoice_utc           09:00 UTC = 16h giờ VN, giờ ChatGPT chốt hoá đơn. KHÔNG
                               dùng tính tiền — chỉ để cảnh báo khi đợt gỡ chưa xong
                               trước lúc hoá đơn tính đủ ghế cũ.
@@ -136,7 +136,7 @@ def upgrade() -> None:
             "price_round_to_vnd",
             sa.Integer(),
             nullable=False,
-            server_default="1000",
+            server_default="100",
         ),
     )
     op.add_column(

@@ -2549,7 +2549,10 @@ function FeeDetailModal({
           price: formatVnd(r.unit_price_vnd),
         });
         if (!r.cycle_days) return perMonth;
-        const perDay = Math.round(r.unit_price_vnd / r.cycle_days);
+        // LÀM TRÒN LÊN, bội TRĂM — khớp luật tiền (`price_round_to_vnd`, luôn lên,
+        // không bao giờ xuống). `Math.round` sẽ làm tròn XUỐNG ở phần lẻ < 0,5 nên
+        // con số tham khảo hiện ra thấp hơn giá thật.
+        const perDay = Math.ceil(r.unit_price_vnd / r.cycle_days / 100) * 100;
         return `${perMonth} · ${t("invite.feeDetailUnitPerDay", {
           price: formatVnd(perDay),
         })}`;
