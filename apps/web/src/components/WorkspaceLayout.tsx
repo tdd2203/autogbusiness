@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, NavLink, Outlet, useParams } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
@@ -187,6 +187,14 @@ export default function WorkspaceLayout() {
   // tick mới hiện; super-admin luôn có. (Đồng bộ pending lẻ / batch ở tab "Chờ
   // tham gia" là tính năng khác, mở mặc định — không bị khoá theo nút này.)
   const canSync = hasPermission("WORKSPACE_FULL_SYNC");
+  // Mỗi tab chỉ hiện nút của chính nó: Thành viên có đồng bộ/thêm thủ công/mời,
+  // Thanh toán chỉ có Hoá đơn, các tab còn lại (task, extension, cài đặt) không
+  // có nút nào ở hàng tab.
+  const { pathname } = useLocation();
+  const activeTab =
+    pathname.replace(/\/+$/, "").split("/").pop() || "members";
+  const isMembersTab = activeTab === "members" || activeTab === workspaceId;
+  const isBillingTab = activeTab === "billing";
   const canInvite = hasPermission("MEMBER_INVITE");
   const alreadySyncedBilling = !!workspace?.last_billing_synced_at;
 
@@ -247,7 +255,7 @@ export default function WorkspaceLayout() {
             </div>
             {/* Hàng nút hành động — căn phải sát mép bảng, hiển thị thẳng hàng. */}
             <div className="flex items-center" style={{ gap: 8, flexWrap: "wrap" }}>
-              {user?.is_super_admin && !isCanva && (
+              {user?.is_super_admin && !isCanva && isBillingTab && (
                 <button
                   onClick={() => setPasteBillingOpen(true)}
                   className={`btn btn-sm ${alreadySyncedBilling ? "btn-ghost" : "btn-primary"}`}
@@ -256,7 +264,7 @@ export default function WorkspaceLayout() {
                   {t("billing.syncButton")}
                 </button>
               )}
-              {canSync && (
+              {canSync && isMembersTab && (
                 <button
                   onClick={() => syncMembers.mutate()}
                   disabled={syncMembers.isPending}
@@ -270,7 +278,7 @@ export default function WorkspaceLayout() {
               )}
               {/* "Thêm thủ công" — CHỈ super-admin: ghi nhận email đã ở trên ChatGPT
                   (auto-create) để quản lý, không mời qua extension / không trừ ví. */}
-              {user?.is_super_admin && (
+              {user?.is_super_admin && isMembersTab && (
                 <button
                   onClick={() => setShowManualAddModal(true)}
                   className="btn btn-sm btn-ghost"
@@ -279,7 +287,7 @@ export default function WorkspaceLayout() {
                   {t("member.manualAddButton")}
                 </button>
               )}
-              {canInvite && (
+              {canInvite && isMembersTab && (
                 <button
                   onClick={openInviteForm}
                   className="btn btn-sm btn-primary"
