@@ -1749,7 +1749,7 @@ export default function InviteMembers() {
                         border: 0,
                         padding: 0,
                         cursor: "pointer",
-                        color: "var(--brand)",
+                        color: "var(--accent)",
                         font: "inherit",
                       }}
                     >
@@ -2536,12 +2536,24 @@ function FeeDetailModal({
     {
       key: "unit",
       label: t("invite.feeDetailUnit"),
-      value: (r) =>
-        r.unit_price_vnd == null
-          ? ""
-          : t("invite.feeDetailUnitValue", {
-              price: formatVnd(r.unit_price_vnd),
-            }),
+      // Đơn giá THÁNG kèm đơn giá NGÀY trên cùng một dòng (chốt user 8/9/2026):
+      // người bán cần con số theo ngày để nhẩm nhanh khi khách hỏi, mà bắt họ tự
+      // chia 20.000/31 thì chẳng ai chia.
+      //
+      // Có dấu ≈ vì đây là con số THAM KHẢO: tiền thật làm tròn MỘT LẦN ở tổng
+      // (EXPIRY_RULES §3.6.5), không phải làm tròn từng ngày rồi nhân lên — nhân
+      // ngược lại từ số này sẽ lệch vài trăm đồng.
+      value: (r) => {
+        if (r.unit_price_vnd == null) return "";
+        const perMonth = t("invite.feeDetailUnitValue", {
+          price: formatVnd(r.unit_price_vnd),
+        });
+        if (!r.cycle_days) return perMonth;
+        const perDay = Math.round(r.unit_price_vnd / r.cycle_days);
+        return `${perMonth} · ${t("invite.feeDetailUnitPerDay", {
+          price: formatVnd(perDay),
+        })}`;
+      },
     },
     {
       key: "whole",
@@ -2608,32 +2620,75 @@ function FeeDetailModal({
             </div>
           ))}
 
-          <table className="table" style={{ marginTop: 14 }}>
-            <thead>
-              <tr>
-                <th>{t("invite.feeDetailEmail")}</th>
-                {varying.map((f) => (
-                  <th key={f.key}>{f.label}</th>
-                ))}
-                <th style={{ textAlign: "right" }}>
-                  {t("invite.feeDetailFee")}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.email}>
-                  <td>{r.email}</td>
+          <div
+            style={{
+              marginTop: 18,
+              fontSize: 11,
+              fontWeight: 500,
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              color: "var(--ink-3)",
+            }}
+          >
+            {t("invite.feeDetailPerEmail")}
+          </div>
+          <div
+            style={{
+              marginTop: 8,
+              border: "1px solid var(--border)",
+              borderRadius: 12,
+              overflow: "hidden",
+            }}
+          >
+            <table className="data-table data-table-compact">
+              <thead>
+                <tr>
+                  <th>{t("invite.feeDetailEmail")}</th>
                   {varying.map((f) => (
-                    <td key={f.key}>{f.value(r) || "—"}</td>
+                    <th key={f.key}>{f.label}</th>
                   ))}
-                  <td style={{ textAlign: "right", fontWeight: 600 }}>
-                    {formatVnd(r.fee)}
+                  <th style={{ textAlign: "right" }}>
+                    {t("invite.feeDetailFee")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.email}>
+                    <td>{r.email}</td>
+                    {varying.map((f) => (
+                      <td key={f.key}>{f.value(r) || "—"}</td>
+                    ))}
+                    <td
+                      style={{
+                        textAlign: "right",
+                        fontFamily: "var(--font-mono)",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {formatVnd(r.fee)}
+                    </td>
+                  </tr>
+                ))}
+                {/* Tổng nằm ngay dưới các dòng chứ không bắt người đọc tự cộng —
+                    đây là con số họ sẽ đối chiếu với footer bên ngoài. */}
+                <tr style={{ background: "var(--bg)", fontWeight: 600 }}>
+                  <td colSpan={1 + varying.length}>
+                    {t("invite.feeDetailTotal")}
+                  </td>
+                  <td
+                    style={{
+                      textAlign: "right",
+                      fontFamily: "var(--font-mono)",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {formatVnd(rows.reduce((sum, r) => sum + r.fee, 0))}
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
