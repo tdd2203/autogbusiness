@@ -10,7 +10,7 @@
  * preview với chip workspace, stepper tháng, ngày hết hạn) + cột phải task/lịch sử.
  * Logic mời/phí TÁI SỬ DỤNG bulk-invite; gom nhóm theo workspace đích khi dán trộn.
  */
-import { useMemo, useRef, useState } from "react";
+import { Fragment, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
@@ -2643,14 +2643,20 @@ function FeeDetailModal({
                   .value(rows[0])
                   .split(" · ")
                   .map((part, i) => (
-                    // Dấu phân cách đi KÈM đoạn phía sau: để nó đứng cuối đoạn
-                    // trước thì khi xuống dòng sẽ có một dấu · mồ côi treo lơ lửng.
-                    <span key={part} style={{ whiteSpace: "nowrap" }}>
-                      {i > 0 && (
-                        <span style={{ color: "var(--ink-4)" }}>{" · "}</span>
-                      )}
-                      {part}
-                    </span>
+                    <Fragment key={part}>
+                      {/* KHOẢNG TRẮNG THẬT giữa các đoạn — không có nó thì trình
+                          duyệt không có chỗ ngắt dòng, mà mỗi đoạn lại `nowrap`
+                          nên cả dòng tràn ra ngoài và bị cắt cụt. */}
+                      {i > 0 && " "}
+                      <span style={{ whiteSpace: "nowrap" }}>
+                        {/* Dấu phân cách đi KÈM đoạn phía sau: để nó đứng cuối
+                            đoạn trước thì xuống dòng sẽ có dấu · mồ côi. */}
+                        {i > 0 && (
+                          <span style={{ color: "var(--ink-3)" }}>{"· "}</span>
+                        )}
+                        {part}
+                      </span>
+                    </Fragment>
                   ))}
                 {f.hint && (
                   <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
