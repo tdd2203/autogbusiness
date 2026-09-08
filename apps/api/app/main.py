@@ -42,6 +42,7 @@ from app.sse import publish_task_event
 from app.routers import (
     added_members,
     admin_limits,
+    announcements,
     audit_logs,
     auth,
     auto_invite,
@@ -1346,6 +1347,7 @@ def create_app() -> FastAPI:
     app.include_router(sepay_webhook.router)
     app.include_router(telegram.router)
     app.include_router(admin_limits.router)
+    app.include_router(announcements.router)
     app.include_router(dashboard.router)
     app.include_router(canva.router)
 

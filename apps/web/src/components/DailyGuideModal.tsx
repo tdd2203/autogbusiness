@@ -18,10 +18,15 @@
  * Popup này KHÔNG chặn việc gì cả: đóng lúc nào cũng được (nút ✕, nút "Đã hiểu",
  * phím Esc, bấm ra ngoài). Tick "Không hiện lại hôm nay" mới là tắt tới hết ngày.
  *
+ * NGOẠI LỆ DUY NHẤT là ĐỢT THÔNG BÁO HỆ THỐNG (`lib/announcement.ts`): khi
+ * super-admin mở một đợt, popup mở đúng bài được chỉ định và GIỮ vài giây trước
+ * khi cho đóng — mỗi người mỗi ngày một lần, hết số ngày của đợt thì tự thôi.
+ * Nút ⚙ cạnh tiêu đề (chỉ super-admin thấy) là chỗ bật/tắt đợt đó.
+ *
  * Xem DailyGuideModal.md.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "../i18n";
 import { useAuth } from "../hooks/useAuth";
 import { api } from "../lib/api";
@@ -50,6 +55,13 @@ import {
   type GuideStep,
 } from "../lib/guides";
 import { MoneyInput } from "./priceEditor";
+import AnnouncementSettingsModal from "./AnnouncementSettingsModal";
+import {
+  ANNOUNCEMENT_KEY,
+  fetchAnnouncement,
+  forcedGuideId,
+  markAnnouncementSeen,
+} from "../lib/announcement";
 
 /** Đợi một nhịp cho trang vẽ xong rồi mới bật popup — bật ngay lúc mount thì nó
  *  chồng lên khung xương đang tải, nhìn như lỗi. */
@@ -91,6 +103,22 @@ export default function DailyGuideModal() {
   const [feeDraft, setFeeDraft] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const day = useMemo(() => vnDayKey(), []);
+  const qc = useQueryClient();
+  // Số giây CÒN PHẢI GIỮ popup. `null` = lượt đọc thường, đóng lúc nào cũng được.
+  const [lockLeft, setLockLeft] = useState<number | null>(null);
+  // Lượt này là do đợt thông báo hệ thống mở, không phải bài ngẫu nhiên của ngày.
+  const [forced, setForced] = useState(false);
+  // Super-admin đang xem thử: giống hệt lượt ép đọc thật, chỉ khác là không ghi
+  // "đã đọc hôm nay" lên server và không tắt popup của ngày.
+  const [preview, setPreview] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const locked = lockLeft !== null && lockLeft > 0;
+  // Bản sao của `locked` cho `openNow` — hàm đó đăng ký một lần vào `openHandler`
+  // nên closure của nó không thấy state mới, phải soi qua ref.
+  const lockedRef = useRef(false);
+  useEffect(() => {
+    lockedRef.current = locked;
+  }, [locked]);
   // Đơn giá tháng của chính người đang đọc, cho bài nào cần tới. CÙNG khoá cache
   // với `useWallet` nên không tốn thêm lượt gọi nếu trang đã hỏi ví; `enabled`
   // buộc chỉ hỏi khi popup mở, khỏi để mọi trang phải gánh một lượt gọi ví.
@@ -99,6 +127,22 @@ export default function DailyGuideModal() {
     queryKey: ["wallet", "balance"],
     queryFn: () => api<Wallet>("/api/v1/wallet"),
     enabled: !!guide && (!!user?.wallet_beta || !!user?.is_super_admin),
+  });
+
+  // Đợt ép đọc đang chạy (nếu có). Hỏi một lần cho mỗi lượt vào web: câu này nhẹ
+  // nhưng cũng không có lý do hỏi lại giữa chừng — đợt đổi thì lần vào sau mới cần
+  // biết. Lỗi mạng ⇒ coi như không có đợt: popup thường vẫn chạy, không ai bị chặn
+  // màn hình vì một câu API hỏng.
+  const announcement = useQuery({
+    queryKey: ANNOUNCEMENT_KEY,
+    queryFn: fetchAnnouncement,
+    staleTime: 10 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: 1,
+  });
+  const markSeen = useMutation({
+    mutationFn: markAnnouncementSeen,
+    onSuccess: (next) => qc.setQueryData(ANNOUNCEMENT_KEY, next),
   });
 
   const walletFee = wallet?.invite_fee_vnd ?? null;
@@ -116,7 +160,30 @@ export default function DailyGuideModal() {
     [guide, lang, feeVnd],
   );
 
+  // Quyết định mở popup gì cho LƯỢT VÀO WEB NÀY. Chạy đúng một lần, và chỉ sau khi
+  // đã biết có đợt ép đọc hay không — hỏi xong mới quyết thì mới khỏi cảnh mở bài
+  // ngẫu nhiên trước rồi giật sang bài thông báo nửa giây sau.
+  const booted = useRef(false);
+  const announcementReady = !announcement.isPending;
+  const forcedId = forcedGuideId(announcement.data);
   useEffect(() => {
+    if (!announcementReady || booted.current) return;
+    booted.current = true;
+
+    // Đợt ép đọc đi TRƯỚC luật thường: đã tick "không hiện lại hôm nay" hay đã đọc
+    // bài của ngày thì vẫn phải xem thông báo. Bài của đợt không còn trong bundle
+    // (vừa gỡ khỏi `GUIDES`) thì lui về luật thường, không treo popup rỗng.
+    const announced = forcedId ? findGuide(forcedId) : null;
+    if (announced) {
+      const seconds = Math.max(0, announcement.data?.lock_seconds ?? 0);
+      const timer = setTimeout(() => {
+        setForced(true);
+        setLockLeft(seconds);
+        setGuide(announced);
+      }, OPEN_DELAY_MS);
+      return () => clearTimeout(timer);
+    }
+
     const state = readState();
     if (!shouldOpen(day, state, readSessionSeenDay())) return;
     const id = pickGuideId(day, state);
@@ -128,9 +195,56 @@ export default function DailyGuideModal() {
     writeState({ ...state, day, guideId: id });
     const timer = setTimeout(() => setGuide(picked), OPEN_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [day]);
+  }, [announcementReady, forcedId, day]);
+
+  // Đồng hồ giữ popup. Chỉ đếm KHI TAB ĐANG HIỆN: trình duyệt bóp đồng hồ của tab
+  // nền, mà đọc thì phải nhìn mới là đọc — để nó chạy trong tab ẩn thì mở web rồi
+  // bỏ đó là xong nghĩa vụ.
+  const counting = forced && lockLeft !== null && lockLeft > 0;
+  useEffect(() => {
+    if (!counting) return;
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      setLockLeft((left) => (left === null ? null : Math.max(0, left - 1)));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [counting]);
+
+  // Hết giờ giữ = đã đọc xong thông báo của hôm nay. Ghi nhận ngay tại đây chứ
+  // không đợi người ta bấm đóng: bấm hay không thì họ cũng đã ngồi đủ số giây.
+  // Ngược lại, F5 giữa chừng là chưa tính — mở lại vẫn bị giữ, đó mới là ép đọc.
+  const marked = useRef(false);
+  useEffect(() => {
+    if (!forced || lockLeft === null || lockLeft > 0 || marked.current) return;
+    marked.current = true;
+    if (preview) return;
+    markSeen.mutate();
+    // Hôm nay thế là đủ: người vừa bị giữ mấy giây không nên mở tab khác lại gặp
+    // thêm một bài ngẫu nhiên nữa.
+    markSeenThisSession(day);
+    writeState({ ...readState(), mutedDay: day });
+    // `markSeen` là handle ổn định của react-query, đưa vào deps chỉ tổ chạy lại.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forced, lockLeft, day, preview]);
+
+  /** Mở thử lượt ép đọc ĐÚNG như người dùng sẽ thấy, nhưng không ghi gì lên
+   *  server. Super-admin cần xem trước khi bật đợt, và xem lại bao nhiêu lần cũng
+   *  được — bật thật để tự thử thì xem xong một lần là hết ngày mới xem lại được,
+   *  mà lúc đó cả nhà cũng đã bị ép đọc theo. */
+  const previewNow = useCallback((guideId: string, seconds: number) => {
+    const picked = findGuide(guideId);
+    if (!picked) return;
+    marked.current = false;
+    setPreview(true);
+    setForced(true);
+    setMute(false);
+    setLockLeft(Math.max(0, seconds));
+    setGuide(picked);
+  }, []);
 
   const openNow = useCallback(() => {
+    // Đang giữ popup thông báo thì nút "Hướng dẫn" không được đổi bài giữa chừng.
+    if (lockedRef.current) return;
     const state = readState();
     const id = pickGuideId(day, state);
     if (!id) return;
@@ -158,9 +272,14 @@ export default function DailyGuideModal() {
   }, [guide]);
 
   function close() {
+    // Chưa hết giờ giữ thì mọi đường đóng đều câm: nút ✕, Esc, bấm ra ngoài.
+    if (locked) return;
     markSeenThisSession(day);
     if (mute) writeState({ ...readState(), mutedDay: day });
     setGuide(null);
+    setForced(false);
+    setPreview(false);
+    setLockLeft(null);
   }
 
   // Bản in dựng lại nội dung ở trang riêng (xem `lib/guides/printable.ts`), chứ
@@ -184,8 +303,10 @@ export default function DailyGuideModal() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // Nghe lại khi `mute` đổi để `close` trong closure thấy giá trị mới nhất.
-  }, [guide, mute]);
+    // Nghe lại khi `mute`/`locked` đổi để `close` trong closure thấy giá trị mới
+    // nhất — thiếu `locked` thì hết giờ giữ rồi Esc vẫn câm, vì handler đăng ký từ
+    // lúc còn khoá.
+  }, [guide, mute, locked]);
 
   if (!guide || !content) return null;
 
@@ -194,10 +315,24 @@ export default function DailyGuideModal() {
       <div style={modal} onClick={(e) => e.stopPropagation()} role="dialog" aria-modal>
         <div style={header}>
           <div style={{ minWidth: 0 }}>
-            <div style={eyebrow}>{content.eyebrow}</div>
+            {/* Ép đọc thì nói thẳng đây là thông báo hệ thống, không phải mẹo dùng
+                hằng ngày — bằng không người ta tưởng popup hỏng vì bấm mãi không tắt. */}
+            <div style={forced ? forcedEyebrow : eyebrow}>
+              {forced ? t("announce.eyebrow") : content.eyebrow}
+            </div>
             <div style={titleStyle}>{content.title}</div>
           </div>
           <div style={headerActions}>
+            {user?.is_super_admin && (
+              <button
+                onClick={() => setAdminOpen(true)}
+                style={gearBtn}
+                title={t("announce.settings")}
+                aria-label={t("announce.settings")}
+              >
+                <GearIcon />
+              </button>
+            )}
             <button
               onClick={exportPdf}
               style={pdfBtn}
@@ -206,7 +341,13 @@ export default function DailyGuideModal() {
               <DownloadIcon />
               {t("guide.exportPdf")}
             </button>
-            <button onClick={close} style={closeBtn} aria-label={t("common.close")}>
+            <button
+              onClick={close}
+              style={locked ? closeBtnLocked : closeBtn}
+              disabled={locked}
+              title={locked ? t("announce.closeLocked", { n: lockLeft ?? 0 }) : undefined}
+              aria-label={t("common.close")}
+            >
               ✕
             </button>
           </div>
@@ -220,11 +361,15 @@ export default function DailyGuideModal() {
               {GUIDES.map((g) => {
                 const label = (g.content[lang] ?? g.content.vi).title;
                 const on = g.id === guide.id;
+                // Đang bị giữ ở bài thông báo thì mục lục nghỉ: bấm sang bài khác
+                // giữa lúc đếm giờ là đọc bài khác, chứ không phải bài đang được
+                // thông báo.
                 return (
                   <button
                     key={g.id}
                     type="button"
                     onClick={() => setGuide(g)}
+                    disabled={locked}
                     aria-current={on ? "true" : undefined}
                     className={on ? "guide-index-item on" : "guide-index-item"}
                   >
@@ -293,19 +438,45 @@ export default function DailyGuideModal() {
         </div>
 
         <div style={footer}>
-          <label style={muteLabel}>
-            <input
-              type="checkbox"
-              checked={mute}
-              onChange={(e) => setMute(e.target.checked)}
-              style={{ width: 15, height: 15, accentColor: "var(--ink)", cursor: "pointer" }}
-            />
-            {t("guide.dontShowToday")}
-          </label>
-          <button onClick={close} style={primaryBtn}>
-            {t("guide.gotIt")}
+          {forced ? (
+            // Ô tick "không hiện lại hôm nay" biến mất khi ép đọc: đợt thông báo
+            // không phải thứ tự tắt được, mà hứa hẹn ngược lại thì thành nút hỏng.
+            <span style={forcedNote}>
+              {locked
+                ? t("announce.lockedNote", { n: lockLeft ?? 0 })
+                : t("announce.unlockedNote")}
+            </span>
+          ) : (
+            <label style={muteLabel}>
+              <input
+                type="checkbox"
+                checked={mute}
+                onChange={(e) => setMute(e.target.checked)}
+                style={{ width: 15, height: 15, accentColor: "var(--ink)", cursor: "pointer" }}
+              />
+              {t("guide.dontShowToday")}
+            </label>
+          )}
+          <button
+            onClick={close}
+            style={locked ? primaryBtnLocked : primaryBtn}
+            disabled={locked}
+          >
+            {/* Đếm ngược ngay trên nút: người đọc thấy còn bao lâu thì thôi bấm
+                loạn, và biết đây là chờ có hạn chứ không phải trang treo. */}
+            {locked ? `${t("guide.gotIt")} (${lockLeft})` : t("guide.gotIt")}
           </button>
         </div>
+
+        {/* Bảng cấu hình đợt thông báo — chỉ super-admin mở được (nút ⚙ ở trên).
+            Đặt TRONG khung popup (khung này đã chặn click lan ra ngoài) nên bấm ra
+            ngoài bảng chỉ đóng bảng, không đóng luôn bài đang đọc. */}
+        {adminOpen && (
+          <AnnouncementSettingsModal
+            onClose={() => setAdminOpen(false)}
+            onPreview={previewNow}
+          />
+        )}
       </div>
     </div>
   );
@@ -422,6 +593,21 @@ function FeeInput({
   );
 }
 
+/** Bánh răng — dấu "cài đặt" quen mắt, vẽ tay cho khỏi kéo thêm bộ icon. */
+function GearIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="8" cy="8" r="2.3" stroke="currentColor" strokeWidth="1.4" />
+      <path
+        d="M8 1.6v1.5M8 12.9v1.5M14.4 8h-1.5M3.1 8H1.6M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1M12.5 12.5l-1.1-1.1M4.6 4.6 3.5 3.5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 /** Mũi tên xuống khay — dấu "tải về" quen mắt, khỏi kéo thêm bộ icon. */
 function DownloadIcon() {
   return (
@@ -445,10 +631,16 @@ const header: React.CSSProperties = { display: "flex", alignItems: "flex-start",
 // 31/8/2026). `SANS` phải đứng SAU khi trải cardKicker, nếu không mono ghi đè lại.
 const SANS = { fontFamily: "var(--font-sans)" } as const;
 const eyebrow: React.CSSProperties = { ...cardKicker, ...SANS, height: "auto", color: "var(--success)", marginBottom: 5, fontWeight: 600 };
+// Thông báo hệ thống mang màu cảnh báo, khác hẳn màu xanh của bài đọc thường.
+const forcedEyebrow: React.CSSProperties = { ...eyebrow, color: "var(--warning)", fontWeight: 700 };
 const titleStyle: React.CSSProperties = { ...cardTitle, fontSize: 22, marginBottom: 0, lineHeight: 1.3 };
 const headerActions: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, flexShrink: 0 };
 const pdfBtn: React.CSSProperties = { ...secondaryBtn, padding: "6px 11px", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", flexShrink: 0 };
 const closeBtn: React.CSSProperties = { width: 30, height: 30, borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--ink-3)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
+// Nút vẫn ĐỨNG NGUYÊN CHỖ lúc còn khoá, chỉ mờ đi: giấu rồi hiện lại thì hàng nút
+// nhảy một cái đúng lúc người ta đang định bấm.
+const closeBtnLocked: React.CSSProperties = { ...closeBtn, opacity: 0.4, cursor: "not-allowed" };
+const gearBtn: React.CSSProperties = { ...closeBtn, color: "var(--ink-2)" };
 // PHẦN THÂN BÀI nằm ở `index.css` (`.guide-split`, `.guide-article`,
 // `.guide-measure`, `.guide-step*`, `.guide-table*`, `.guide-notes`) chứ không
 // phải style inline như khung popup: chỗ đó cần media query cho màn hẹp, cần
@@ -462,4 +654,6 @@ const noteHead: React.CSSProperties = { ...cardKicker, ...SANS, height: "auto", 
 const noteList: React.CSSProperties = { margin: 0, paddingLeft: 18, listStyleType: "disc", fontSize: 14.5, lineHeight: 1.65, color: "var(--ink-2)" };
 const footer: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "14px 22px", borderTop: "1px solid var(--border)", background: "var(--surface-2)", flexWrap: "wrap" };
 const muteLabel: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--ink-2)", cursor: "pointer", userSelect: "none" };
+const forcedNote: React.CSSProperties = { fontSize: 13, color: "var(--ink-2)", lineHeight: 1.5 };
 const primaryBtn: React.CSSProperties = sharedPrimaryBtn;
+const primaryBtnLocked: React.CSSProperties = { ...sharedPrimaryBtn, opacity: 0.45, cursor: "not-allowed" };

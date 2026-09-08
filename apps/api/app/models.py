@@ -1710,3 +1710,90 @@ class RateLimitSettings(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=_utcnow
     )
+
+
+class AnnouncementSettings(Base):
+    """THÔNG BÁO HỆ THỐNG ép đọc — cấu hình do super-admin chỉnh từ giao diện (id=1).
+
+    Bình thường popup hướng dẫn đầu ngày là thứ đọc-hay-không-tuỳ-người: đóng lúc
+    nào cũng được, tick một cái là im tới hết ngày. Khi vừa đổi cách tính tiền/hạn
+    thì kiểu đó không tới được người cần đọc — đại lý bấm tắt theo phản xạ rồi hôm
+    sau hỏi lại đúng thứ vừa thông báo.
+
+    Bảng này mở một ĐỢT ép đọc có hạn: trong `days` ngày kể từ `start_day`, mỗi
+    người vào web bị giữ ở bài `guide_id` `lock_seconds` giây (nút đóng mờ, Esc và
+    bấm ra ngoài không ăn) rồi mới đóng được, MỖI NGÀY ĐÚNG MỘT LẦN.
+
+    Vì sao là bảng chứ không phải hằng số trong code: đợt thông báo là chuyện của
+    ngày cụ thể, sửa code + deploy cho mỗi lần muốn nhắc một chuyện là không ai
+    làm. Cũng vì thế `enabled` mặc định TẮT — deploy xong không tự nhiên ép ai đọc
+    gì, phải có người vào bật đợt.
+
+    Ai đã đọc ngày nào nằm ở `announcement_views` (theo TÀI KHOẢN, không phải theo
+    trình duyệt): xoá cache hay đổi máy vẫn tính là đã đọc.
+    """
+
+    __tablename__ = "announcement_settings"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_announcement_settings_singleton"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    # Đợt ép đọc có đang chạy không. TẮT là mặc định — xem docstring.
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    # Bài bị ép đọc, khớp `Guide.id` bên web (vd "cycle-billing"). Backend KHÔNG
+    # kiểm tên bài: danh sách bài nằm trong bundle web, thêm bài mới mà backend
+    # phải deploy theo thì lại đúng cái vòng lặp bảng này sinh ra để cắt.
+    guide_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Ngày (giờ VN) đợt bắt đầu. NULL = chưa hẹn ngày ⇒ coi như chưa chạy.
+    start_day: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Số ngày đợt kéo dài, tính theo LỊCH từ `start_day`. Ai vào muộn thì gặp ít
+    # lần hơn — đợt là một khoảng thời gian chung, không phải hạn mức mỗi người.
+    days: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=5, server_default=text("5")
+    )
+    # Số giây giữ popup trước khi cho đóng.
+    lock_seconds: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=15, server_default=text("15")
+    )
+    updated_by_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=_utcnow
+    )
+
+
+class AnnouncementView(Base):
+    """Một người đã đọc xong thông báo hệ thống vào một NGÀY (giờ VN).
+
+    Ghi theo tài khoản chứ không theo trình duyệt: đợt ép đọc mà lưu ở localStorage
+    thì đổi máy, xoá cache hay mở cửa sổ ẩn danh là bị ép lại từ đầu — phiền đúng
+    người chịu đọc, còn người muốn né vẫn né được.
+
+    `campaign` = "<guide_id>:<start_day>": đổi bài hoặc dời ngày bắt đầu là sang
+    ĐỢT KHÁC, ai đọc đợt trước vẫn phải đọc đợt mới. Nhờ khoá này mà không cần dọn
+    bảng giữa hai đợt.
+
+    Dòng chỉ ghi khi người đọc đã ngồi hết `lock_seconds` — mở ra rồi F5 ngay thì
+    chưa tính, mở lại vẫn bị giữ.
+    """
+
+    __tablename__ = "announcement_views"
+    __table_args__ = (
+        UniqueConstraint("user_id", "campaign", "day", name="uq_announcement_view_day"),
+        Index("ix_announcement_views_campaign_day", "campaign", "day"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    campaign: Mapped[str] = mapped_column(String(96), nullable=False)
+    # "2026-09-08" theo giờ VN. Để chuỗi cho khớp đúng thứ web và backend cùng nói.
+    day: Mapped[str] = mapped_column(String(10), nullable=False)
+    seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

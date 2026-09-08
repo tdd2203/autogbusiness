@@ -3052,6 +3052,19 @@ body {
     background: var(--surface);
     color: var(--ink);
   }
+  /* Đang giữ ở bài thông báo hệ thống: mục lục mờ đi cho biết chưa bấm được, chứ
+     không biến mất — cột trái hụt đi rồi hiện lại là cả trang giật một cái. Bài
+     ĐANG ĐỌC không mờ theo: nó là thứ người ta cần nhìn rõ nhất lúc đó. */
+  .guide-index-item:disabled {
+    cursor: default;
+  }
+  .guide-index-item:disabled:not(.on) {
+    opacity: 0.45;
+  }
+  .guide-index-item:disabled:not(.on):hover {
+    background: transparent;
+    color: var(--ink-2);
+  }
   .guide-index-item.on {
     background: var(--surface);
     color: var(--ink);
