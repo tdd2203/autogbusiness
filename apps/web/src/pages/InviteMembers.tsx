@@ -2469,6 +2469,12 @@ type FeeDetailRow = {
  * nhất là ở chế độ neo theo mốc chốt, nơi giá đổi theo NGÀY nên hai email mua cách
  * nhau vài hôm ra hai con số khác nhau.
  *
+ * BỐ CỤC: trường nào GIỐNG NHAU ở mọi email thì nói MỘT LẦN ở đầu, trường nào khác
+ * nhau mới thành cột trong bảng. Mời một mẻ thường cùng không gian, cùng ngày, nên
+ * gần như mọi thứ trùng — lặp lại từng khối cho mỗi email là bắt người đọc dò xem
+ * có gì khác nhau không, trong khi câu trả lời là "không". Ngược lại, mời lẫn hai
+ * không gian khác chu kỳ thì bảng tự mọc thêm cột đúng chỗ khác nhau.
+ *
  * ⚠️ CỐ Ý KHÔNG tính lại tiền ở đây. Popup chỉ bày ra các THÀNH PHẦN (đơn giá, số
  * ngày lẻ, số chu kỳ trọn) rồi hiện `fee` do server chốt. Tự nhân chia lại ở client
  * là dựng thêm một nguồn sự thật thứ hai cho tiền — có ngày nó lệch với số thật sự
@@ -2485,14 +2491,95 @@ function FeeDetailModal({
   onClose: () => void;
 }) {
   const { t, lang } = useI18n();
-  const days = (halfDays: number) =>
+  const num = (halfDays: number) =>
     (halfDays / 2).toLocaleString(lang === "zh-CN" ? "zh-CN" : "vi-VN");
+
+  // Mỗi trường tự khai: nhãn, cách hiện, và (nếu có) dòng chú thích. `value` trả
+  // chuỗi để so trùng — trùng hết thì lên đầu, không thì thành cột.
+  const fields: {
+    key: string;
+    label: string;
+    value: (r: FeeDetailRow) => string;
+    hint?: string;
+  }[] = [
+    {
+      key: "cycle",
+      label: t("invite.feeDetailCycle"),
+      value: (r) =>
+        r.cycle_start && r.cycle_end
+          ? `${formatVnDate(lang, r.cycle_start)} → ${formatVnDate(
+              lang,
+              r.cycle_end,
+            )}${
+              r.cycle_days != null
+                ? ` · ${t("invite.feeDetailDays", { n: String(r.cycle_days) })}`
+                : ""
+            }`
+          : "",
+    },
+    {
+      key: "from",
+      label: t("invite.feeDetailFrom"),
+      value: (r) => formatVnMoment(lang, r.from),
+    },
+    {
+      key: "to",
+      label: t("invite.feeDetailUntil"),
+      value: (r) => formatVnMoment(lang, r.to),
+      hint: t("invite.feeDetailUntilHint"),
+    },
+    {
+      key: "days",
+      label: t("invite.feeDetailDuration"),
+      value: (r) => t("invite.feeDetailDays", { n: num(r.half_days) }),
+    },
+    {
+      key: "unit",
+      label: t("invite.feeDetailUnit"),
+      value: (r) =>
+        r.unit_price_vnd == null
+          ? ""
+          : t("invite.feeDetailUnitValue", {
+              price: formatVnd(r.unit_price_vnd),
+            }),
+    },
+    {
+      key: "whole",
+      label: t("invite.feeDetailWhole"),
+      value: (r) =>
+        (r.whole_months ?? 0) > 0
+          ? t("invite.feeDetailMonths", { n: String(r.whole_months) })
+          : "",
+    },
+    {
+      key: "prorated",
+      label: t("invite.feeDetailProrated"),
+      value: (r) =>
+        (r.prorated_half_days ?? 0) > 0
+          ? `${t("invite.feeDetailDays", {
+              n: num(r.prorated_half_days ?? 0),
+            })}${
+              r.cycle_days != null
+                ? ` ${t("invite.feeDetailOfCycle", {
+                    n: String(r.cycle_days),
+                  })}`
+                : ""
+            }`
+          : "",
+    },
+  ];
+
+  const used = fields.filter((f) => rows.some((r) => f.value(r) !== ""));
+  const shared = used.filter(
+    (f) => new Set(rows.map((f2) => f.value(f2))).size === 1,
+  );
+  const varying = used.filter((f) => !shared.includes(f));
 
   return (
     <div className="tg-modal-backdrop" onClick={onClose}>
       <div
         className="tg-modal"
-        style={{ maxWidth: 560 }}
+        style={{ maxWidth: 640 }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="tg-modal-head">
@@ -2506,108 +2593,47 @@ function FeeDetailModal({
           </div>
         </div>
         <div className="tg-modal-body">
-          {rows.map((r) => (
-            <div
-              key={r.email}
-              style={{
-                borderTop: "1px solid var(--line)",
-                paddingTop: 12,
-                marginTop: 12,
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  fontWeight: 600,
-                  marginBottom: 8,
-                }}
-              >
-                <span>{r.email}</span>
-                <span>{formatVnd(r.fee)}</span>
-              </div>
-
-              {r.cycle_start && r.cycle_end && (
-                <div className="info-row">
-                  <div className="key">{t("invite.feeDetailCycle")}</div>
-                  <div className="val">
-                    {formatVnDate(lang, r.cycle_start)} →{" "}
-                    {formatVnDate(lang, r.cycle_end)}
-                    {r.cycle_days != null && (
-                      <span style={{ color: "var(--ink-3)" }}>
-                        {" · "}
-                        {t("invite.feeDetailDays", { n: String(r.cycle_days) })}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <div className="info-row">
-                <div className="key">{t("invite.feeDetailFrom")}</div>
-                <div className="val">{formatVnMoment(lang, r.from)}</div>
-              </div>
-
-              <div className="info-row">
-                <div className="key">{t("invite.feeDetailUntil")}</div>
-                <div className="val">
-                  {formatVnMoment(lang, r.to)}
+          {/* DÙNG CHUNG cho mọi email — nói một lần. */}
+          {shared.map((f) => (
+            <div className="info-row" key={f.key}>
+              <div className="key">{f.label}</div>
+              <div className="val">
+                {f.value(rows[0])}
+                {f.hint && (
                   <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
-                    {t("invite.feeDetailUntilHint")}
+                    {f.hint}
                   </div>
-                </div>
+                )}
               </div>
-
-              <div className="info-row">
-                <div className="key">{t("invite.feeDetailDuration")}</div>
-                <div className="val">
-                  {t("invite.feeDetailDays", { n: days(r.half_days) })}
-                </div>
-              </div>
-
-              {r.unit_price_vnd != null && (
-                <div className="info-row">
-                  <div className="key">{t("invite.feeDetailUnit")}</div>
-                  <div className="val">
-                    {t("invite.feeDetailUnitValue", {
-                      price: formatVnd(r.unit_price_vnd),
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Phân rã: mấy chu kỳ trọn + bao nhiêu ngày lẻ. Đây là câu trả lời
-                  cho "sao email này rẻ hơn email kia". */}
-              {(r.whole_months ?? 0) > 0 && (
-                <div className="info-row">
-                  <div className="key">{t("invite.feeDetailWhole")}</div>
-                  <div className="val">
-                    {t("invite.feeDetailMonths", {
-                      n: String(r.whole_months),
-                    })}
-                  </div>
-                </div>
-              )}
-              {(r.prorated_half_days ?? 0) > 0 && (
-                <div className="info-row">
-                  <div className="key">{t("invite.feeDetailProrated")}</div>
-                  <div className="val">
-                    {t("invite.feeDetailDays", {
-                      n: days(r.prorated_half_days ?? 0),
-                    })}
-                    {r.cycle_days != null && (
-                      <span style={{ color: "var(--ink-3)" }}>
-                        {" "}
-                        {t("invite.feeDetailOfCycle", {
-                          n: String(r.cycle_days),
-                        })}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
           ))}
+
+          <table className="table" style={{ marginTop: 14 }}>
+            <thead>
+              <tr>
+                <th>{t("invite.feeDetailEmail")}</th>
+                {varying.map((f) => (
+                  <th key={f.key}>{f.label}</th>
+                ))}
+                <th style={{ textAlign: "right" }}>
+                  {t("invite.feeDetailFee")}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.email}>
+                  <td>{r.email}</td>
+                  {varying.map((f) => (
+                    <td key={f.key}>{f.value(r) || "—"}</td>
+                  ))}
+                  <td style={{ textAlign: "right", fontWeight: 600 }}>
+                    {formatVnd(r.fee)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
