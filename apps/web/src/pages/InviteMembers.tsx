@@ -2490,11 +2490,22 @@ function FeeDetailModal({
     key: string;
     label: string;
     value: (r: FeeDetailRow) => string;
+    /** Bản GỌN cho ô trong bảng — khối trên rộng rãi, cột thì không. */
+    short?: (r: FeeDetailRow) => string;
     hint?: string;
   }[] = [
     {
       key: "cycle",
       label: t("invite.feeDetailCycle"),
+      // Trong cột thì bỏ đuôi "· 31 ngày": đã có cột thời gian riêng, nhắc lại chỉ
+      // tổ làm bảng tràn ngang rồi cột tiền bị đẩy khuất.
+      short: (r) =>
+        r.cycle_start && r.cycle_end
+          ? `${formatVnDate(lang, r.cycle_start)} → ${formatVnDate(
+              lang,
+              r.cycle_end,
+            )}`
+          : "",
       value: (r) =>
         r.cycle_start && r.cycle_end
           ? `${formatVnDate(lang, r.cycle_start)} → ${formatVnDate(
@@ -2517,6 +2528,7 @@ function FeeDetailModal({
       label: t("invite.feeDetailUntil"),
       value: (r) => formatVnMoment(lang, r.to),
       hint: t("invite.feeDetailUntilHint"),
+      short: (r) => formatVnMoment(lang, r.to),
     },
     {
       key: "span",
@@ -2605,7 +2617,9 @@ function FeeDetailModal({
     <div className="tg-modal-backdrop" onClick={onClose}>
       <div
         className="tg-modal"
-        style={{ maxWidth: 640 }}
+        // Rộng thêm khi bảng có nhiều cột (mời lẫn nhiều không gian). Để cứng 640
+        // thì cột THÀNH TIỀN bị đẩy khuất và dòng Tổng trông như trống.
+        style={{ maxWidth: varying.length >= 2 ? 900 : 620 }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="tg-modal-head">
@@ -2623,8 +2637,20 @@ function FeeDetailModal({
           {shared.map((f) => (
             <div className="info-row" key={f.key}>
               <div className="key">{f.label}</div>
-              <div className="val">
-                {f.value(rows[0])}
+              <div className="val" style={{ lineHeight: 1.6 }}>
+                {/* Tách theo dấu · để mỗi mệnh đề tự xuống dòng nguyên vẹn, không
+                    bị bẻ giữa "làm tròn 700 đ / ngày". */}
+                {f
+                  .value(rows[0])
+                  .split(" · ")
+                  .map((part, i, all) => (
+                    <span key={part} style={{ whiteSpace: "nowrap" }}>
+                      {part}
+                      {i < all.length - 1 && (
+                        <span style={{ color: "var(--ink-4)" }}> · </span>
+                      )}
+                    </span>
+                  ))}
                 {f.hint && (
                   <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
                     {f.hint}
@@ -2651,7 +2677,9 @@ function FeeDetailModal({
               marginTop: 8,
               border: "1px solid var(--border)",
               borderRadius: 12,
-              overflow: "hidden",
+              // Cuộn ngang thay vì CẮT: màn hẹp mà cắt thì người ta không biết là
+              // còn cột phía sau.
+              overflowX: "auto",
             }}
           >
             <table className="data-table data-table-compact">
@@ -2671,7 +2699,9 @@ function FeeDetailModal({
                   <tr key={r.email}>
                     <td>{r.email}</td>
                     {varying.map((f) => (
-                      <td key={f.key}>{f.value(r) || "—"}</td>
+                      <td key={f.key} style={{ whiteSpace: "nowrap" }}>
+                        {(f.short ?? f.value)(r) || "—"}
+                      </td>
                     ))}
                     <td
                       style={{
