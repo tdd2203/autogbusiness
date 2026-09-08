@@ -58,6 +58,7 @@ from ._shared import (
     router,
     _apply_invite_paid_cycle,
     _end_from_purchase,
+    _extend_subscription_end,
     cycle_settings,
     is_cycle_aligned,
     quote_cycle,
@@ -598,6 +599,7 @@ def plan_invite_fees(
     default_fee: int,
     *,
     reinvite: bool = False,
+    now: datetime | None = None,
 ) -> list[tuple[str, int]]:
     """Dự tính (email, fee) SẼ bị trừ nếu mời — mirror quy tắc phí của
     perform_invite_core: email MỚI/hết-hạn = phí mời; email đang ACTIVE = phí GIA HẠN
@@ -607,8 +609,12 @@ def plan_invite_fees(
     Email CÒN HẠN (`removed` hay `pending`, đi qua form mời thường hay action "Mời
     lại") đều MIỄN PHÍ — mirror perform_invite_core. Không mirror thì mời-lại còn-hạn
     bị đòi QR/402 oan dù thực tế không trừ đồng nào. `reinvite` chỉ còn ảnh hưởng
-    TIỀN TỐ của extension (thu hồi lời mời cũ), không còn ảnh hưởng phí."""
-    now = datetime.now(timezone.utc)
+    TIỀN TỐ của extension (thu hồi lời mời cũ), không còn ảnh hưởng phí.
+
+    `now` = mốc báo giá. Truyền vào khi caller còn hỏi thêm thứ khác của CÙNG lượt bán
+    (vd `plan_invite_expiries`): tiền và hạn phải đo từ cùng một mốc, lệch nhau vài
+    mili giây là đủ để một bên vượt ngưỡng ép thêm tháng còn bên kia thì không."""
+    now = datetime.now(timezone.utc) if now is None else now
     emails = [e for e, _ in entries]
     # Nhánh đọc thẳng từ workspace đích: bảng giá Canva khác hẳn công thức của GPT,
     # truyền tay từ caller là sớm muộn cũng có chỗ quên.
@@ -725,6 +731,88 @@ def plan_invite_fees(
             )
         if fee > 0:
             out.append((email, fee))
+    return out
+
+
+def plan_invite_expiries(
+    db: Session,
+    workspace_id: UUID,
+    entries: list[tuple[str, int | None]],
+    user: User,
+    *,
+    now: datetime | None = None,
+) -> dict[str, datetime]:
+    """Hạn dùng SẼ RA nếu bấm Mời ngay bây giờ — cho ô xem trước, KHÔNG ghi gì.
+
+    Vì sao giao diện phải hỏi server: ở chế độ `cycle_aligned` hạn rơi đúng MỐC CHỐT
+    của không gian (EXPIRY_RULES §3.6.2), kèm ngưỡng ép thêm tháng và mốc tự cuộn theo
+    tháng dương lịch. Web tự cộng `months × 30` như chế độ cũ là hứa một ngày trong khi
+    hệ thống đặt một ngày khác — người bán báo sai hạn cho khách.
+
+    ⚠️ BỐN NHÁNH DƯỚI ĐÂY PHẢI KHỚP `plan_invite_fees` ở trên: email nào miễn phí thì
+    giữ nguyên cửa sổ đã trả, email nào bị tính tiền thì mua cửa sổ mới. Sửa nhánh ở
+    trên mà quên ở đây là màn hình hiện một hạn còn ví trừ theo một hạn khác.
+    """
+    now = datetime.now(timezone.utc) if now is None else now
+    emails = [e for e, _ in entries]
+    ws_row = db.get(Workspace, workspace_id)
+    platform = ws_row.platform if ws_row is not None else PLATFORM_GPT
+    existing = {
+        m.email: m
+        for m in db.execute(
+            select(Member).where(
+                Member.workspace_id == workspace_id, Member.email.in_(emails)
+            )
+        ).scalars().all()
+    }
+    movable_map = find_movable_paid_members(
+        db,
+        emails=emails,
+        exclude_workspace_id=workspace_id,
+        owner_id=user.id,
+        now=now,
+        platform=platform,
+    )
+    aligned = ws_row is not None and is_cycle_aligned(ws_row)
+    cycle_cfg = cycle_settings(db) if aligned else None
+
+    out: dict[str, datetime] = {}
+    for email, months in entries:
+        m = existing.get(email)
+        wanted = months if months is not None and months > 0 else None
+        if m is not None and m.status == "active":
+            # GIA HẠN — mirror `perform_renew_core`: đo từ ĐIỂM NỐI (hạn cũ nếu còn
+            # hạn), không phải từ lúc bấm nút. Không mua thêm tháng ⇒ hạn giữ nguyên.
+            if wanted is None:
+                end = m.subscription_end_at
+            elif aligned:
+                end = quote_cycle(
+                    ws_row,
+                    now,
+                    current_end=m.subscription_end_at,
+                    extra_months=wanted - 1,
+                    settings_row=cycle_cfg,
+                ).end_at
+            elif m.subscription_end_at is not None and m.subscription_end_at > now:
+                end = _extend_subscription_end(m.subscription_end_at, wanted)
+            else:
+                end = _end_from_purchase(now, wanted)
+        elif m is not None and _is_paid_period_active(m, now):
+            # Mời lại MIỄN PHÍ: giữ nguyên cửa sổ đã trả, `months` bị bỏ qua.
+            end = m.subscription_end_at
+        elif email in movable_map and (m is None or m.status == "removed"):
+            # Chuyển / hợp nhất workspace: cửa sổ hạn đi theo record cũ.
+            end = movable_map[email].subscription_end_at
+        elif wanted is None:
+            end = None  # vô thời hạn (EXPIRY_RULES §5) — không có ngày để hiện
+        elif aligned:
+            end = quote_cycle(
+                ws_row, now, extra_months=wanted - 1, settings_row=cycle_cfg
+            ).end_at
+        else:
+            end = _end_from_purchase(now, wanted)
+        if end is not None:
+            out[email] = end
     return out
 
 
@@ -1425,10 +1513,20 @@ def preview_invite_fees(
     _assert_invite_workspace_access(db, user, workspace_id, [e for e, _ in entries])
     settings_row = get_payment_settings(db)
     default_fee = int(settings_row.invite_fee_vnd or 0)
-    planned = plan_invite_fees(db, workspace_id, entries, user, default_fee)
+    # MỘT mốc cho cả tiền lẫn hạn — xem ghi chú `now` ở `plan_invite_fees`.
+    now = datetime.now(timezone.utc)
+    planned = plan_invite_fees(db, workspace_id, entries, user, default_fee, now=now)
     planned_map = dict(planned)
     return {
         "total_fee": sum(planned_map.values()),
         "chargeable": [{"email": e, "fee": f} for e, f in planned],
         "free_emails": [e for e, _ in entries if e not in planned_map],
+        # Hạn dùng dự kiến từng email — web không tự suy được ở chế độ neo theo mốc
+        # chốt, và tự cộng 30 ngày thì báo sai hạn cho khách.
+        "expiry": {
+            e: d.isoformat()
+            for e, d in plan_invite_expiries(
+                db, workspace_id, entries, user, now=now
+            ).items()
+        },
     }

@@ -4,7 +4,9 @@
  * UX:
  *   1. Admin paste 1 danh sách email vào textarea (1/dòng hoặc cách nhau comma).
  *   2. Mỗi email hợp lệ tự xuất hiện 1 row trong bảng bên dưới với input "Số tháng"
- *      (default 1, có +/-) và preview "Hết hạn DD/MM/YYYY".
+ *      (default 1, có +/-) và preview "Hết hạn DD/MM/YYYY" — ngày này LẤY TỪ SERVER
+ *      (`invite-preview`), không tự cộng 30 ngày: không gian chốt theo chu kỳ hoá đơn
+ *      thì hạn rơi đúng mốc chốt chứ không phải now + months×30.
  *   3. Admin có thể chỉnh `months` per-email, hoặc click "Áp cho tất cả: 1th/3th/...".
  *   4. Submit → POST bulk-invite với `invites: [{email, subscription_months}]`.
  *
@@ -19,7 +21,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useFormatDate, useT } from "../i18n";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useAuth } from "../hooks/useAuth";
@@ -156,7 +158,13 @@ export function InviteMemberModal({
   const { data: feePreview } = useQuery({
     queryKey: ["invite-fee-preview", workspaceId, previewKey],
     queryFn: () =>
-      api<{ total_fee: number; free_emails: string[] }>(
+      api<{
+        total_fee: number;
+        free_emails: string[];
+        /** Hạn dùng dự kiến từng email (ISO). Server tính vì chỉ nó biết mốc chốt
+         *  của không gian — xem `plan_invite_expiries` bên API. */
+        expiry?: Record<string, string>;
+      }>(
         `/api/v1/workspaces/${workspaceId}/members/invite-preview`,
         {
           method: "POST",
@@ -169,7 +177,13 @@ export function InviteMemberModal({
           }),
         },
       ),
-    enabled: chargeable && entries.length > 0,
+    // Hỏi cho MỌI người, không chỉ user bị tính phí: super-admin không mất tiền
+    // nhưng vẫn cần thấy đúng ngày hết hạn sẽ đặt cho khách.
+    enabled: entries.length > 0,
+    // Sửa số tháng là đổi khoá query ⇒ dữ liệu về `undefined` một nhịp, ô hạn nháy
+    // sang con số tính tạm theo 30 ngày. Giữ kết quả cũ trong lúc chờ: nó chỉ lệch
+    // đúng phần vừa gõ, còn số tạm thì sai hẳn ở không gian chốt theo chu kỳ.
+    placeholderData: keepPreviousData,
   });
   const previewFreeSet = useMemo(
     () => new Set((feePreview?.free_emails ?? []).map((e) => e.toLowerCase())),
@@ -191,6 +205,19 @@ export function InviteMemberModal({
       new Date(m.subscription_end_at).getTime() > nowMs
     );
   };
+  /** Hạn dự kiến do SERVER tính — nguồn đúng cho mọi chế độ tính hạn.
+   *
+   *  `null` khi preview chưa về (hoặc email không có hạn để hiện); lúc đó hai hàm
+   *  dưới đây tính tạm theo 30 ngày để ô không trống một nhịp. Số tạm đó chỉ đúng ở
+   *  chế độ 30-ngày, nên vừa có số của server là thay ngay. */
+  const serverExpiry = (email: string): string | null => {
+    const iso = feePreview?.expiry?.[email.toLowerCase()];
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+    return formatDate(d, { day: "numeric", month: "short", year: "numeric" });
+  };
+
   // Hạn sau khi GIA HẠN = cộng dồn N×30 ngày vào hạn hiện tại (hết hạn/vô hạn → từ nay).
   const formatRenewExpiry = (email: string, months: number) => {
     const m = membersByEmail.get(email.toLowerCase());
@@ -805,17 +832,23 @@ export function InviteMemberModal({
                         )}
                       </div>
                       {isRenewEmail(row.email) ? (
-                        // GIA HẠN: cộng dồn N×30 ngày vào hạn hiện tại (mua thêm tháng).
-                        // Hiện hạn MỚI sau gia hạn (không phải now+months) để đúng cộng dồn.
+                        // GIA HẠN: hiện hạn MỚI sau khi gia hạn (không phải now+months).
+                        // Ngày lấy từ server; chú thích "cộng dồn N×30" chỉ hiện khi
+                        // đang dùng số tính tạm, kẻo nó nói sai luật của không gian
+                        // đang chốt theo chu kỳ.
                         <div
                           style={{
                             fontSize: 11.5,
                             color: "var(--accent, var(--ink-2))",
                             fontFamily: "var(--font-mono)",
                           }}
-                          title={t("invite.renewTooltip", { months: row.months })}
+                          title={
+                            serverExpiry(row.email)
+                              ? undefined
+                              : t("invite.renewTooltip", { months: row.months })
+                          }
                         >
-                          ↻ {formatRenewExpiry(row.email, row.months)}
+                          ↻ {serverExpiry(row.email) ?? formatRenewExpiry(row.email, row.months)}
                         </div>
                       ) : chargeable && isFreeEmail(row.email) ? (
                         // Còn hạn → mời lại miễn phí: BE giữ nguyên cửa sổ hạn cũ, BỎ QUA
@@ -838,12 +871,16 @@ export function InviteMemberModal({
                             color: "var(--ink-2)",
                             fontFamily: "var(--font-mono)",
                           }}
-                          title={t("invite.expiresTooltip", {
-                            months: row.months,
-                            days: row.months * DAYS_PER_MONTH,
-                          })}
+                          title={
+                            serverExpiry(row.email)
+                              ? undefined
+                              : t("invite.expiresTooltip", {
+                                  months: row.months,
+                                  days: row.months * DAYS_PER_MONTH,
+                                })
+                          }
                         >
-                          {formatExpiresDate(row.months)}
+                          {serverExpiry(row.email) ?? formatExpiresDate(row.months)}
                         </div>
                       )}
                       <button
