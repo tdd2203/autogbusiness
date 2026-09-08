@@ -1538,7 +1538,6 @@
   "inviteMembers.seatsHint": "当前剩余 {left} 个空位，尚未扣除待邀请列表",
   "inviteMembers.seatFreeWord": "个空位",
   "inviteMembers.seatTotalUnknown": "尚未同步总席位",
-  "inviteMembers.seatBuyNote": "执行邀请后系统会加购 {n} 个席位 → 过程会比预计多花 1-2 分钟",
   "inviteMembers.seatsUnknownHint": "尚未获知总席位数（该工作区未同步账单）",
   "settings.sectionAppearance": "界面",
   "appearance.title": "界面字号",

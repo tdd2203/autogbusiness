@@ -618,7 +618,7 @@ export default function InviteMembers() {
         name: x.row?.name ?? "—",
         message: x.row?.invite_cap_message ?? "",
       }));
-  /** Suất của 1 không gian + phần thiếu so với danh sách đang dán.
+  /** Suất của 1 không gian so với danh sách đang dán.
    * `left = null` ⇒ chưa từng đồng bộ tổng suất → KHÔNG kết luận thiếu/đủ. */
   const seatInfo = (wsId: string | undefined) => {
     const row = wsId ? seatMap.get(wsId) : undefined;
@@ -626,11 +626,9 @@ export default function InviteMembers() {
     const need = wsId ? (seatPlan.get(wsId) ?? 0) : 0;
     return {
       left,
-      need,
-      short: left === null ? 0 : Math.max(need - left, 0),
       // Số suất còn lại SAU KHI mời hết danh sách đang dán — đây mới là con số
-      // người dùng cần: dán thêm 1 email là thấy nó tụt đi 1, dán quá tay thì về 0
-      // kèm phần thiếu. `left` thô chỉ dùng cho tooltip giải thích.
+      // người dùng cần: dán thêm 1 email là thấy nó tụt đi 1, dán quá tay thì về 0.
+      // `left` thô chỉ dùng cho tooltip giải thích.
       after: left === null ? null : Math.max(left - need, 0),
     };
   };
@@ -711,11 +709,6 @@ export default function InviteMembers() {
         return { text: "", alarm: false };
     }
   };
-
-  /** Tổng suất phải MUA THÊM trên ChatGPT nếu bấm mời ngay bây giờ (cộng mọi không
-   * gian trong danh sách đang dán). >0 nghĩa là lệnh mời sẽ kèm bước mua suất, chạy
-   * lâu hơn hẳn — footer phải nói trước. */
-  const seatToBuy = [...seatPlan.keys()].reduce((n, wsId) => n + seatInfo(wsId).short, 0);
 
   const canSubmit = !!workspaceId && entries.length > 0 && !bulkInvite.isPending;
 
@@ -1573,17 +1566,6 @@ export default function InviteMembers() {
                     ? "…"
                     : formatVnd(feePreview.data?.total ?? 0),
                 })}
-                {/* Thiếu suất: extension phải mua thêm trên ChatGPT bằng tiền thật rồi
-                    mới mời được, nên lệnh chạy lâu hơn — nói trước để người dùng khỏi
-                    tưởng treo mà bấm lại. */}
-                {seatToBuy > 0 && (
-                  <>
-                    {" · "}
-                    <span style={{ color: "var(--danger)", fontWeight: 600 }}>
-                      {t("inviteMembers.seatBuyNote", { n: seatToBuy })}
-                    </span>
-                  </>
-                )}
               </div>
               <div style={{ display: "flex", gap: 9 }}>
                 <button
