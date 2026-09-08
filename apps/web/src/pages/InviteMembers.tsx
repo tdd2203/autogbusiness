@@ -313,6 +313,9 @@ export default function InviteMembers() {
       }
       let total = 0;
       const free = new Set<string>();
+      // Hạn dùng SẼ đặt, do server chốt. Không gian chốt theo chu kỳ hoá đơn cho hạn
+      // rơi đúng mốc chốt, cộng `months × 30` ở client là ra một ngày khác hẳn.
+      const expiry = new Map<string, string>();
       // Chi tiết TỪNG email cho khối "Xem chi tiết": trả bao nhiêu, cho bao nhiêu
       // ngày, dùng tới khi nào. Ở chế độ neo theo mốc chốt, giá đổi theo NGÀY nên
       // hai email mua cách nhau vài hôm ra hai số khác nhau — không giải thích thì
@@ -322,6 +325,7 @@ export default function InviteMembers() {
         const r = await api<{
           total_fee: number;
           free_emails: string[];
+          expiry?: Record<string, string>;
           detail?: FeeDetailRow[];
         }>(`/api/v1/workspaces/${ws}/members/invite-preview`, {
           method: "POST",
@@ -330,8 +334,11 @@ export default function InviteMembers() {
         total += r.total_fee;
         for (const e of r.free_emails ?? []) free.add(e.toLowerCase());
         for (const d of r.detail ?? []) detail.push(d);
+        for (const [e, iso] of Object.entries(r.expiry ?? {})) {
+          expiry.set(e.toLowerCase(), iso);
+        }
       }
-      return { total, free, detail };
+      return { total, free, detail, expiry };
     },
   });
 
@@ -522,6 +529,30 @@ export default function InviteMembers() {
     d.setUTCDate(d.getUTCDate() + months * DAYS_PER_MONTH);
     return formatDate(d, { day: "numeric", month: "short", year: "numeric" });
   };
+  /** Cột "Hết hạn" — LẤY SỐ CỦA SERVER (`invite-preview`).
+   *
+   *  Ba hàm cộng 30 ngày ở trên chỉ còn là số tạm cho lúc preview chưa về: ở không
+   *  gian chốt theo chu kỳ hoá đơn, hạn rơi đúng mốc chốt nên phép cộng đó hiện một
+   *  ngày mà hệ thống không hề đặt — người bán báo sai hạn cho khách.
+   */
+  const expiryText = (
+    email: string,
+    months: number,
+    renew: boolean,
+    free: boolean,
+  ) => {
+    const iso = feePreview.data?.expiry.get(email.toLowerCase());
+    if (iso) {
+      const d = new Date(iso);
+      if (!Number.isNaN(d.getTime())) {
+        return formatDate(d, { day: "numeric", month: "short", year: "numeric" });
+      }
+    }
+    if (renew) return formatRenewExpiry(email, months);
+    if (free) return formatFreeExpiry(email);
+    return formatExpiresDate(months);
+  };
+
   // Email mời-lại còn hạn (miễn phí): cột Hết hạn chỉ hiện NGÀY còn hạn hiện tại.
   const formatFreeExpiry = (email: string) => {
     const end = membersByEmail.get(email.toLowerCase())?.subscription_end_at;
@@ -1383,13 +1414,7 @@ export default function InviteMembers() {
                             onDec={() => setMonthsFor(row.email, row.months - 1)}
                             onInc={() => setMonthsFor(row.email, row.months + 1)}
                             onRemove={() => removeEntry(row.email)}
-                            expiry={
-                              renew
-                                ? formatRenewExpiry(row.email, row.months)
-                                : free
-                                  ? formatFreeExpiry(row.email)
-                                  : formatExpiresDate(row.months)
-                            }
+                            expiry={expiryText(row.email, row.months, renew, free)}
                             expiryFree={free}
                             t={t}
                           />
@@ -1616,7 +1641,7 @@ export default function InviteMembers() {
                               }}
                             >
                               <Icon name="cal" size={13} />
-                              {formatRenewExpiry(row.email, row.months)}
+                              {expiryText(row.email, row.months, true, false)}
                             </div>
                           ) : free ? (
                             <div
@@ -1631,7 +1656,7 @@ export default function InviteMembers() {
                               }}
                             >
                               <Icon name="cal" size={13} />
-                              {formatFreeExpiry(row.email)}
+                              {expiryText(row.email, row.months, false, true)}
                             </div>
                           ) : (
                             <div
@@ -1645,7 +1670,7 @@ export default function InviteMembers() {
                               }}
                             >
                               <Icon name="cal" size={13} />
-                              {formatExpiresDate(row.months)}
+                              {expiryText(row.email, row.months, false, false)}
                             </div>
                           )}
 
