@@ -379,15 +379,20 @@ def purchase_allowance(db: Session, workspace: Workspace, emails: list[str]) -> 
     thấy ChatGPT hết chỗ là mua. ChatGPT không có bước xác nhận thanh toán — bấm
     Continue trong hộp "Quản lý suất" là tiền đi khỏi thẻ.
 
-    Hai điều kiện, user chốt 7/9/2026, phải ĐỦ CẢ HAI mới được mua:
+    CHỈ GÁC KHI ADMIN ĐÃ BẬT TRẦN (`invite_member_cap`, ô "Trần suất" trong hộp
+    Cấu hình mời). Trần để trống = công tắc "Bật tạm ngưng đến số suất đã mua" đang
+    TẮT ⇒ giấy phép luôn `allowed=True`, `max_total=None`: hệ thống trở lại lời hứa
+    mặc định "hết chỗ thì tự mua bù". Chốt user 9/9/2026 sau ca `7eb8a95b`.
+
+    Hai điều kiện dưới đây chỉ áp khi trần CÓ số, và phải ĐỦ CẢ HAI mới được mua:
 
     1. MỌI email của lệnh đều đã từng tham gia workspace này (khách cũ quay lại
        hoặc gia hạn — xem `returning_emails`) HOẶC đã trả tiền và còn hạn ở đây
        (`paid_seat_emails`). Suất cho người mới chưa trả đồng nào là quyết định
        tiêu tiền, phải do người bấm, không để lệnh tự làm.
     2. Tổng suất SAU khi mua không vượt TRẦN THÀNH VIÊN (`invite_member_cap`) —
-       con số super-admin tự gõ, đọc là "số suất tôi duyệt chi". Không đặt trần
-       (`None`) ⇒ điều kiện này không chặn gì. Trần gửi xuống được NỚI đúng bằng
+       con số super-admin tự gõ, đọc là "số suất tôi duyệt chi". Trần gửi xuống
+       được NỚI đúng bằng
        số suất của khách đã trả tiền trong chính lệnh này (`paid_new_seats`): tiền
        đã thu thì chỗ ngồi là nợ phải trả, không phải khoản chi mới xin duyệt.
 
@@ -407,6 +412,15 @@ def purchase_allowance(db: Session, workspace: Workspace, emails: list[str]) -> 
     """
     lowered = [e.strip().lower() for e in emails if e]
     cap = workspace.invite_member_cap
+    # KHÔNG ĐẶT TRẦN ⇒ MUA THOẢI MÁI (chốt user 9/9/2026). Ô "Trần suất" để trống
+    # nghĩa là admin CHƯA bật tạm ngưng, mà lời hứa mặc định của hệ thống là hết
+    # chỗ thì tự mua bù — kẹp thêm điều kiện "phải là khách cũ" ở đây là bẻ lời hứa
+    # đó ở đúng lúc cần nhất. Ca thật CHATGPT PRO 8/9/2026 (task `7eb8a95b`): không
+    # gian không đặt trần, khách mới vừa trả 208.400 qua QR, ChatGPT hết sạch chỗ
+    # (405/405 + 6 lời mời chờ) ⇒ lệnh chết sau 28 giây vì thiếu giấy phép. Cả hai
+    # điều kiện dưới CHỈ có nghĩa khi admin đã tự gõ một con số trần.
+    if cap is None:
+        return {"allowed": True, "max_total": None, "reason": None}
     # KHÁCH ĐÃ TRẢ TIỀN NỚI ĐƯỢC TRẦN, đúng bằng số suất họ cần (chốt user
     # 7/9/2026). Không nới thì hai điều kiện dưới mâu thuẫn nhau ở đúng ca hay gặp
     # nhất: backend cho lệnh chạy vì khách đã trả tiền (`cap_new_seats` bỏ họ ra),
@@ -414,7 +428,7 @@ def purchase_allowance(db: Session, workspace: Workspace, emails: list[str]) -> 
     # lệnh đi hết 5 phút để về tay không. Nới có giới hạn: chỉ lệnh này, chỉ ngần
     # ấy suất, và chỉ cho email có tiền nằm sẵn trong két (xem `paid_seat_emails`).
     paid_stretch = paid_new_seats(db, workspace.id, lowered)
-    max_total = None if cap is None else int(cap) + paid_stretch
+    max_total = int(cap) + paid_stretch
     # Khách đã trả tiền tính là "người của mình" kể cả khi CHƯA từng vào đội được:
     # `returning_emails` đòi mốc `joined_at`, mà đúng ca cần cứu nhất là lời mời đầu
     # tiên chết giữa chừng nên họ chưa có mốc nào (`mme.hebrahimi` 6/9/2026).

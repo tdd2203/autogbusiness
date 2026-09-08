@@ -1585,7 +1585,7 @@
   "inviteMembers.inviteBlockedCleared": "Đã cho phép mời lại {name}",
   "inviteMembers.capReachedTitle": "Tạm ngưng add",
   "inviteConfig.capTitle": "Bật tạm ngưng đến số suất đã mua",
-  "inviteConfig.capHint": "Nhập số suất đã mua",
+  "inviteConfig.capHint": "Nhập số suất đã mua. Để trống thì hết chỗ hệ thống tự mua thêm suất.",
   "inviteConfig.capUsed": "đang dùng {n}",
   "inviteConfig.capOff": "không chặn",
   "inviteConfig.capSavedCount": "Đã lưu trần cho {n} không gian",

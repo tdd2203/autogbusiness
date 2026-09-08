@@ -7,8 +7,13 @@ DB) nên nó cho qua — 386 người + 1 email mới = 387, đúng bằng trầ
 bên extension và không biết trần là gì.
 
 Luật user chốt cùng ngày: chỉ được mua khi ĐỦ CẢ HAI — mọi email của lệnh đã từng
-tham gia workspace này, VÀ tổng suất sau khi mua không vượt trần. File này khoá
-phần backend (`seats.purchase_allowance` + field `seat_purchase` trong payload);
+tham gia workspace này, VÀ tổng suất sau khi mua không vượt trần.
+
+Từ 9/9/2026 hai điều kiện đó CHỈ áp khi admin đã gõ một con số vào ô "Trần suất".
+Bỏ trống trần = chưa bật tạm ngưng ⇒ hệ thống giữ lời hứa mặc định "hết chỗ thì tự
+mua bù" (ca `7eb8a95b`), nên gần hết test dưới đây phải đặt trần trước thì mới đo
+được đúng thứ nó định đo. File này khoá phần backend
+(`seats.purchase_allowance` + field `seat_purchase` trong payload);
 phần bên kia — so trần với số suất ĐỌC TẬN NƠI trên ChatGPT — khoá ở
 `apps/extension/src/content/actions/invite/purchase-policy.test.ts`.
 """
@@ -89,8 +94,9 @@ def _set_cap(client: TestClient, auth_header: dict, ws_id: str, cap: int | None)
 
 
 def test_email_moi_toanh_thi_cam_mua(client: TestClient, auth_header: dict):
-    """Chưa từng tham gia ⇒ `allowed=False` kèm câu nói rõ email nào."""
+    """Đã đặt trần + chưa từng tham gia ⇒ `allowed=False` kèm câu nói rõ email nào."""
     ws = create_ws(client, auth_header, "Allow New WS", plan="business", seat_total=60)
+    _set_cap(client, auth_header, ws["id"], 60)
 
     got = _allowance(ws["id"], ["nguoi-la@example.com"])
 
@@ -103,6 +109,7 @@ def test_khach_cu_quay_lai_thi_duoc_mua(client: TestClient, auth_header: dict):
     ws = create_ws(client, auth_header, "Allow Old WS", plan="business", seat_total=60)
     _invite_payload(client, auth_header, ws["id"], "khach-cu@example.com")
     _mark_joined_then_removed(ws["id"], "khach-cu@example.com")
+    _set_cap(client, auth_header, ws["id"], 60)
 
     got = _allowance(ws["id"], ["khach-cu@example.com"])
 
@@ -120,6 +127,7 @@ def test_loi_moi_cho_chua_nhan_khong_tinh_la_khach_cu(
     """
     ws = create_ws(client, auth_header, "Allow Pending WS", plan="business", seat_total=60)
     _invite_payload(client, auth_header, ws["id"], "dang-cho@example.com")
+    _set_cap(client, auth_header, ws["id"], 60)
 
     assert _allowance(ws["id"], ["dang-cho@example.com"])["allowed"] is False
 
@@ -135,6 +143,7 @@ def test_mot_email_la_trong_me_lam_ca_me_khong_duoc_mua(
     ws = create_ws(client, auth_header, "Allow Mixed WS", plan="business", seat_total=60)
     _invite_payload(client, auth_header, ws["id"], "khach-cu@example.com")
     _mark_joined_then_removed(ws["id"], "khach-cu@example.com")
+    _set_cap(client, auth_header, ws["id"], 60)
 
     got = _allowance(ws["id"], ["khach-cu@example.com", "nguoi-la@example.com"])
 
@@ -156,16 +165,34 @@ def test_payload_lenh_moi_mang_theo_tran_thanh_vien(
     assert payload["seat_purchase"]["allowed"] is False
 
 
-def test_khong_dat_tran_thi_max_total_la_null(client: TestClient, auth_header: dict):
-    """Không đặt trần ⇒ điều kiện trần không chặn gì (nhưng vẫn phải là khách cũ)."""
+def test_khong_dat_tran_thi_email_moi_van_duoc_mua(
+    client: TestClient, auth_header: dict
+):
+    """Ô "Trần suất" bỏ trống ⇒ mua thoải mái, kể cả email mới toanh.
+
+    Ca `7eb8a95b` (CHATGPT PRO 8/9/2026): không gian KHÔNG đặt trần, khách mới vừa
+    trả tiền qua QR, ChatGPT hết sạch chỗ ⇒ lệnh chết vì điều kiện "phải là khách
+    cũ" vẫn gác dù công tắc tạm ngưng đang tắt. Không bật tạm ngưng thì hệ thống
+    phải giữ lời hứa mặc định: hết chỗ thì tự mua bù.
+    """
     ws = create_ws(client, auth_header, "Allow NoCap WS", plan="business", seat_total=60)
-    _invite_payload(client, auth_header, ws["id"], "khach-cu@example.com")
-    _mark_joined_then_removed(ws["id"], "khach-cu@example.com")
 
-    got = _allowance(ws["id"], ["khach-cu@example.com"])
+    got = _allowance(ws["id"], ["nguoi-la@example.com"])
 
-    assert got["max_total"] is None
     assert got["allowed"] is True
+    assert got["max_total"] is None
+    assert got["reason"] is None
+
+
+def test_go_tran_di_thi_mo_lai_duong_mua(client: TestClient, auth_header: dict):
+    """Đặt trần rồi xoá đi ⇒ giấy phép mở lại ngay, không cần đụng gì tới email."""
+    ws = create_ws(client, auth_header, "Allow Uncap WS", plan="business", seat_total=60)
+    _set_cap(client, auth_header, ws["id"], 60)
+    assert _allowance(ws["id"], ["nguoi-la@example.com"])["allowed"] is False
+
+    _set_cap(client, auth_header, ws["id"], None)
+
+    assert _allowance(ws["id"], ["nguoi-la@example.com"])["allowed"] is True
 
 
 def test_moi_lenh_moi_deu_co_giay_phep(client: TestClient, auth_header: dict):
@@ -208,6 +235,7 @@ def test_khach_da_tra_tien_mat_cho_thi_duoc_mua(client: TestClient, auth_header:
     ws = create_ws(client, auth_header, "Allow Paid WS", plan="business", seat_total=60)
     _invite_payload(client, auth_header, ws["id"], "da-tra@example.com")
     _mark_paid_removed(ws["id"], "da-tra@example.com")
+    _set_cap(client, auth_header, ws["id"], 60)
 
     got = _allowance(ws["id"], ["da-tra@example.com"])
 

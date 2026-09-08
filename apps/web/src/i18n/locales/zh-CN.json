@@ -1585,7 +1585,7 @@
   "inviteMembers.inviteBlockedCleared": "已允许重新邀请 {name}",
   "inviteMembers.capReachedTitle": "暂停添加",
   "inviteConfig.capTitle": "达到已购席位数即暂停",
-  "inviteConfig.capHint": "填写已购席位数",
+  "inviteConfig.capHint": "填写已购席位数。留空则席位用尽时系统自动加购。",
   "inviteConfig.capUsed": "已用 {n}",
   "inviteConfig.capOff": "不限制",
   "inviteConfig.capSavedCount": "已保存 {n} 个工作区的上限",
