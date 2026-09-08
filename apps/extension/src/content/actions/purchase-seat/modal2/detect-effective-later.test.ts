@@ -28,6 +28,24 @@ describe("detectEffectiveLater", () => {
     expect(detectEffectiveLater("更改将于 2026年9月25日 生效")).not.toBeNull();
   });
 
+  it("câu THẬT của hộp gỡ suất, bản tiếng Anh (ảnh user 8/9/2026)", () => {
+    // Workspace đã chuyển giao diện sang tiếng Anh. Câu này viết "take effect
+    // UNTIL", không phải "take effect on/at/from" — bộ mẫu cũ trượt cả hai vế và
+    // trả null, tức chốt chặn mua đúp hở im lặng.
+    const got = detectEffectiveLater(
+      "Changes won't take effect until your next renewal period on September 25, 2026. " +
+        "If a new member of the same seat type is added before then, the removal will be canceled.",
+    );
+    expect(got).not.toBeNull();
+    expect(got).toMatch(/next renewal period/);
+  });
+
+  it("bắt cả thể phủ định tiếng Việt", () => {
+    expect(
+      detectEffectiveLater("Thay đổi sẽ không có hiệu lực cho tới kỳ gia hạn tiếp theo."),
+    ).not.toBeNull();
+  });
+
   it("hộp mua TRỪ TIỀN NGAY → null (không được chặn đường mua lại)", () => {
     expect(
       detectEffectiveLater(

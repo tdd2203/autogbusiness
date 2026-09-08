@@ -18,10 +18,18 @@ const EFFECTIVE_LATER_PATTERNS = [
   //      "có hiệu lực vào lần gia hạn tiếp theo"
   /co\s*hieu\s*luc\s*(?:vao|tu|ke\s*tu)/,
   /hieu\s*luc\s*(?:tu|vao)\s*(?:ky|lan\s*gia\s*han|chu\s*ky)/,
+  // vi — thể phủ định: "thay đổi sẽ KHÔNG có hiệu lực cho tới kỳ gia hạn sau"
+  /khong\s*co\s*hieu\s*luc\s*(?:cho\s*)?(?:toi|den)/,
   // en
-  /(?:takes?|will\s*take)\s*effect\s*(?:on|at|from|starting)/,
+  // `until` PHẢI nằm trong nhóm này. Câu thật ChatGPT in ra (ảnh user 8/9/2026,
+  // workspace đã chuyển sang tiếng Anh) là "Changes won't take effect UNTIL your
+  // next renewal period on September 25, 2026" — thiếu `until` thì cả hai mẫu bên
+  // dưới đều trượt, hàm trả null, và vòng F5 kết luận "chưa mua" rồi mua lại bằng
+  // TIỀN THẬT. Đúng cái mà file này sinh ra để chặn.
+  /(?:takes?|will\s*take)\s*effect\s*(?:on|at|from|starting|until)/,
+  /(?:wo\s*n?'?t|will\s*not|does\s*n?'?t)\s*take\s*effect/,
   /effective\s*(?:on|from|starting|as\s*of)/,
-  /(?:at|on|from)\s*(?:your\s*)?next\s*(?:renewal|billing\s*(?:cycle|period))/,
+  /(?:at|on|from|until)\s*(?:the\s*|your\s*)?next\s*(?:renewal|billing\s*(?:cycle|period))/,
   // zh
   /(?:将于|自).{0,20}(?:起)?生效/,
   /下(?:一)?(?:个)?(?:续订|结算|账单)(?:周期)?(?:起)?生效/,
