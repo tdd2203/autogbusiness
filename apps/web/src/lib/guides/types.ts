@@ -21,9 +21,16 @@ export type GuideStep = {
   imageMaxWidth?: number;
 };
 
-/** Nhóm bước — dùng khi một bài có nhiều CÁCH làm (vd: trên web / trên app). */
+/** Nhóm bước — dùng khi một bài có nhiều CÁCH làm (vd: trên web / trên app).
+ *
+ *  Bài có từ HAI nhóm trở lên thì popup xếp chúng thành dải thẻ (bookmark) ở đầu
+ *  bài, mỗi lúc chỉ đọc một nhóm. Bản in vẫn in đủ mọi nhóm. */
 export type GuideSection = {
   heading?: string;
+  /** Nhãn NGẮN trên thẻ bookmark. Bỏ trống thì lấy `heading` — chỉ cần đặt khi
+   *  `heading` dài tới mức dải thẻ tràn ngang. Có `tab` thì `heading` vẫn hiện
+   *  lại làm dòng tiêu đề trong phần nội dung. */
+  tab?: string;
   steps: GuideStep[];
 };
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  GUIDES,
   guidePrintHtml,
   pickGuideId,
   shouldOpen,
@@ -66,6 +67,42 @@ describe("shouldOpen", () => {
     // Tab mở từ hôm qua, để qua đêm → hôm nay vẫn hiện.
     expect(shouldOpen("2026-08-31", {}, "2026-08-30", [A])).toBe(true);
   });
+});
+
+describe("nội dung các bài", () => {
+  const LANGS = ["vi", "zh-CN"] as const;
+
+  it("id không trùng nhau — bài ghim theo ngày tra bằng id", () => {
+    const ids = GUIDES.map((g) => g.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it.each(GUIDES.map((g) => [g.id, g] as const))(
+    "%s: mọi ngôn ngữ cùng số phần và cùng số bước",
+    (_id, guide) => {
+      const shape = (c: GuideContent) => c.sections.map((s) => s.steps.length);
+      // Dải thẻ vẽ theo `sections` của ĐÚNG ngôn ngữ đang xem: bản dịch thiếu một
+      // phần thì người xem tiếng đó mất hẳn một thẻ mà không có gì báo.
+      const first = shape(guide.content[LANGS[0]]);
+      for (const lang of LANGS) expect(shape(guide.content[lang])).toEqual(first);
+    },
+  );
+
+  it.each(GUIDES.map((g) => [g.id, g] as const))(
+    "%s: bài nhiều phần thì phần nào cũng có nhãn thẻ",
+    (_id, guide) => {
+      for (const lang of LANGS) {
+        const { sections } = guide.content[lang];
+        if (sections.length < 2) continue;
+        for (const section of sections) {
+          const label = section.tab ?? section.heading;
+          expect(label).toBeTruthy();
+          // Thẻ dài quá thì dải thẻ tràn ngang, phải cuộn mới thấy phần cuối.
+          expect(label!.length).toBeLessThanOrEqual(24);
+        }
+      }
+    },
+  );
 });
 
 describe("guidePrintHtml", () => {

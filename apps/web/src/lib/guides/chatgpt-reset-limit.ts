@@ -27,6 +27,7 @@ const chatgptResetLimit: Guide = {
       sections: [
         {
           heading: "Cách 1 — Trên web chatgpt.com",
+          tab: "Trên web",
           steps: [
             {
               title: "Mở menu tài khoản",
@@ -63,6 +64,7 @@ const chatgptResetLimit: Guide = {
         },
         {
           heading: "Cách 2 — Trên app Codex",
+          tab: "Trên app Codex",
           steps: [
             {
               title: "Mở menu tài khoản ở góc dưới trái",
@@ -120,6 +122,7 @@ const chatgptResetLimit: Guide = {
       sections: [
         {
           heading: "方法一 — 在网页版 chatgpt.com",
+          tab: "网页版",
           steps: [
             {
               title: "打开账号菜单",
@@ -156,6 +159,7 @@ const chatgptResetLimit: Guide = {
         },
         {
           heading: "方法二 — 在 Codex 应用",
+          tab: "Codex 应用",
           steps: [
             {
               title: "点开左下角的账号菜单",

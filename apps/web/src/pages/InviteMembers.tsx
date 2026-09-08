@@ -877,6 +877,28 @@ export default function InviteMembers() {
                 {t("inviteMembers.cardSubtitle")}
               </div>
 
+              {/* CHỈ hiện khi thật sự hết chỗ. Câu này là lời hứa "cứ dán tiếp đi,
+                  không phải dừng lại đi mua suất" — hiện thường trực thì nó thành
+                  một dòng chữ trang trí không ai đọc, đúng lúc cần thì không nổi
+                  lên. Tô đỏ theo cùng quy ước với ô suất bên dưới (`seatCell`) để
+                  người dùng nối được hai chỗ với nhau. */}
+              {seatBarWs.some((w) => seatInfo(w.id).after === 0) && (
+                <div
+                  style={{
+                    marginTop: 8,
+                    padding: "6px 10px",
+                    borderRadius: 8,
+                    background: "var(--danger-bg)",
+                    color: "var(--danger)",
+                    fontSize: 12.5,
+                    fontWeight: 500,
+                    lineHeight: 1.45,
+                    display: "inline-block",
+                  }}
+                >
+                  {t("inviteMembers.autoTopUpSeats")}
+                </div>
+              )}
             </div>
 
             {/* DẢI NGƯNG MỜI — ChatGPT hỏng công tắc "mời ngoài tên miền" nên

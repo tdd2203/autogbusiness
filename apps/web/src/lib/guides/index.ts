@@ -16,12 +16,13 @@
  */
 import type { Guide } from "./types";
 import chatgptResetLimit from "./chatgpt-reset-limit";
+import cycleBilling from "./cycle-billing";
 
 export type { Guide, GuideContent, GuideSection, GuideStep } from "./types";
 export { guidePrintHtml, openGuidePrint } from "./printable";
 
 /** Thêm bài mới: viết file nội dung rồi đẩy vào đây, không phải sửa gì thêm. */
-export const GUIDES: Guide[] = [chatgptResetLimit];
+export const GUIDES: Guide[] = [chatgptResetLimit, cycleBilling];
 
 const STORAGE_KEY = "autogpt.guidePopup.v1";
 const SESSION_KEY = "autogpt.guidePopup.session";

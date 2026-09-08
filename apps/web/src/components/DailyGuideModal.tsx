@@ -5,12 +5,16 @@
  * Telegram rồi trôi mất. Nội dung bài + luật "khi nào hiện" nằm ở `lib/guides`;
  * ở đây chỉ là phần vẽ.
  *
+ * Bài nhiều phần thì đầu bài có dải thẻ (bookmark) — mỗi lúc đọc một phần, khỏi
+ * cuộn qua phần không cần. Phần mở đầu và mục Lưu ý đứng yên ở mọi thẻ vì chúng
+ * nói cho cả bài; chỉ khối bước là đổi theo thẻ.
+ *
  * Popup này KHÔNG chặn việc gì cả: đóng lúc nào cũng được (nút ✕, nút "Đã hiểu",
  * phím Esc, bấm ra ngoài). Tick "Không hiện lại hôm nay" mới là tắt tới hết ngày.
  *
  * Xem DailyGuideModal.md.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { toast } from "./Toast";
 import {
@@ -68,6 +72,10 @@ export default function DailyGuideModal() {
   const { lang, t } = useI18n();
   const [guide, setGuide] = useState<Guide | null>(null);
   const [mute, setMute] = useState(false);
+  /** Thẻ đang đọc. Mở bài mới thì về thẻ đầu; chỉ số vượt quá số thẻ của bài
+   *  (đổi ngôn ngữ giữa chừng) được kẹp lại lúc vẽ, không để ra khung trắng. */
+  const [tab, setTab] = useState(0);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const day = useMemo(() => vnDayKey(), []);
 
   useEffect(() => {
@@ -80,6 +88,7 @@ export default function DailyGuideModal() {
     // Ghim bài theo ngày NGAY lúc chọn: mở tab thứ hai trong ngày phải ra đúng
     // bài này, không bốc lại bài khác.
     writeState({ ...state, day, guideId: id });
+    setTab(0);
     const timer = setTimeout(() => setGuide(picked), OPEN_DELAY_MS);
     return () => clearTimeout(timer);
   }, [day]);
@@ -92,6 +101,7 @@ export default function DailyGuideModal() {
     if (!picked) return;
     writeState({ ...state, day, guideId: id });
     setMute(false);
+    setTab(0);
     setGuide(picked);
   }, [day]);
 
@@ -101,6 +111,12 @@ export default function DailyGuideModal() {
       if (openHandler === openNow) openHandler = null;
     };
   }, [openNow]);
+
+  // Sang thẻ khác mà khung nội dung còn nằm ở chỗ cuộn cũ thì người đọc rơi vào
+  // giữa bước 4 của phần mới, tưởng mất phần đầu.
+  useEffect(() => {
+    bodyRef.current?.scrollTo({ top: 0 });
+  }, [tab]);
 
   function close() {
     markSeenThisSession(day);
@@ -132,6 +148,9 @@ export default function DailyGuideModal() {
 
   if (!guide) return null;
   const content = guide.content[lang] ?? guide.content.vi;
+  const sections = content.sections;
+  const active = Math.min(tab, sections.length - 1);
+  const section = sections[active];
 
   return (
     <div style={backdrop} onClick={close}>
@@ -156,22 +175,41 @@ export default function DailyGuideModal() {
           </div>
         </div>
 
-        <div style={body}>
+        {/* Dải bookmark: một thẻ cho mỗi phần. Bài một phần thì không vẽ gì —
+            thanh thẻ với đúng một thẻ chỉ tổ chiếm chỗ. */}
+        {sections.length > 1 && (
+          <div style={tabBar} role="tablist" aria-label={content.title}>
+            {sections.map((s, i) => (
+              <button
+                key={i}
+                type="button"
+                role="tab"
+                aria-selected={i === active}
+                onClick={() => setTab(i)}
+                style={i === active ? { ...tabBtn, ...tabBtnOn } : tabBtn}
+              >
+                {s.tab ?? s.heading ?? String(i + 1)}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div style={body} ref={bodyRef}>
           <p style={intro}>{renderMarkup(content.intro)}</p>
 
-          {content.sections.map((section, si) => (
-            <div key={si} style={{ marginTop: si === 0 ? 22 : 30 }}>
-              {section.heading && (
-                <div style={sectionHead}>
-                  <span style={sectionHeadText}>{section.heading}</span>
-                  <span style={sectionRule} />
-                </div>
-              )}
-              {section.steps.map((step, i) => (
-                <Step key={i} step={step} index={i + 1} zoomHint={t("guide.zoomHint")} />
-              ))}
-            </div>
-          ))}
+          <div style={{ marginTop: 22 }}>
+            {/* Có nhãn ngắn trên thẻ thì tiêu đề đầy đủ hiện lại ở đây; nhãn thẻ
+                CHÍNH LÀ heading thì in lại là đọc hai lần một dòng chữ. */}
+            {section.heading && (section.tab || sections.length === 1) && (
+              <div style={sectionHead}>
+                <span style={sectionHeadText}>{section.heading}</span>
+                <span style={sectionRule} />
+              </div>
+            )}
+            {section.steps.map((step, i) => (
+              <Step key={i} step={step} index={i + 1} zoomHint={t("guide.zoomHint")} />
+            ))}
+          </div>
 
           {content.notes && content.notes.length > 0 && (
             <div style={noteBox}>
@@ -283,6 +321,11 @@ const titleStyle: React.CSSProperties = { ...cardTitle, fontSize: 22, marginBott
 const headerActions: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, flexShrink: 0 };
 const pdfBtn: React.CSSProperties = { ...secondaryBtn, padding: "6px 11px", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", flexShrink: 0 };
 const closeBtn: React.CSSProperties = { width: 30, height: 30, borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--ink-3)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
+// Dải thẻ nằm NGOÀI khung cuộn: đọc tới cuối phần dài vẫn thấy thẻ để nhảy sang
+// phần khác. Cuộn ngang khi màn hẹp, không bao giờ xuống dòng thành hai tầng.
+const tabBar: React.CSSProperties = { display: "flex", gap: 4, padding: "0 22px", borderBottom: "1px solid var(--border)", background: "var(--surface-2)", overflowX: "auto", flexShrink: 0 };
+const tabBtn: React.CSSProperties = { ...SANS, appearance: "none", border: "none", background: "transparent", padding: "11px 12px 10px", margin: 0, fontSize: 13.5, fontWeight: 600, color: "var(--ink-3)", cursor: "pointer", whiteSpace: "nowrap", borderBottom: "2px solid transparent", marginBottom: -1 };
+const tabBtnOn: React.CSSProperties = { color: "var(--ink)", borderBottomColor: "var(--success)" };
 const body: React.CSSProperties = { padding: "16px 22px 22px", overflowY: "auto", flex: 1 };
 const intro: React.CSSProperties = { margin: 0, fontSize: 15, lineHeight: 1.65, color: "var(--ink-2)" };
 const sectionHead: React.CSSProperties = { display: "flex", alignItems: "center", gap: 12 };
