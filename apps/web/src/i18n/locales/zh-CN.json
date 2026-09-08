@@ -1660,7 +1660,7 @@
   "guide.exportPdfTitle": "把指南导出为 PDF",
   "guide.exportPdfBlocked": "无法打开打印对话框，请为本站允许弹出窗口后重试。",
   "guide.feeTry": "试算其他单价",
-  "guide.feeTryHint": "文中和 PDF 的金额按这个单价计算，不会保存。",
+  "guide.feeTryHint": "示例和 PDF 中的金额按这个单价计算，不会保存。",
   "guide.feeReset": "你的单价",
   "guide.gotIt": "我知道了",
   "guide.notes": "注意",

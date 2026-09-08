@@ -1660,7 +1660,7 @@
   "guide.exportPdfTitle": "Xuất hướng dẫn dạng PDF",
   "guide.exportPdfBlocked": "Không mở được hộp thoại in. Cho phép cửa sổ bật lên cho trang này rồi bấm lại.",
   "guide.feeTry": "Thử đơn giá khác",
-  "guide.feeTryHint": "Số trong bài và bản PDF tính theo giá này. Không lưu lại.",
+  "guide.feeTryHint": "Số trong ví dụ và bản PDF tính theo giá này. Không lưu lại.",
   "guide.feeReset": "Giá của bạn",
   "guide.gotIt": "Đã hiểu",
   "guide.notes": "Lưu ý",
