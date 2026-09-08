@@ -7,7 +7,7 @@ import { sleep, waitFor } from "../../human";
 import { findControlByKey } from "../../i18n-ui";
 import { reportProgress } from "../../progress";
 import { TEXT_FALLBACKS } from "../../selectors";
-import { navigateTo } from "../external-invites/navigate";
+import { goToUsersTab } from "./users-tab";
 import { setExternalInvites } from "../external-invites/set-toggle";
 import { locatePendingRow } from "../revoke/locate-pending-row";
 import { revokeInvite } from "../revoke";
@@ -86,14 +86,6 @@ async function runReinvitePreSteps(emails: string[]): Promise<void> {
 
 const MEMBERS_PATH = "/admin/members";
 
-/** Predicate: đã ở /admin/members VÀ page đã render (main + có button). */
-function membersPageReady(): boolean {
-  if (!location.pathname.includes(MEMBERS_PATH)) return false;
-  const main = document.querySelector("main, [role='main']");
-  const hasButtons = document.querySelectorAll("button").length > 2;
-  return !!main && hasButtons;
-}
-
 /**
  * FIX A (2026-07-15): CỔNG CHỜ SPA render XONG khu vực /admin/members TRƯỚC mọi
  * thao tác mời. Nền (ensureAdminTab) sau F5 CHỈ chờ sự kiện "load" của trình
@@ -104,7 +96,7 @@ function membersPageReady(): boolean {
  * (8s cũ), hoặc mất context content-script → CONTENT_TIMEOUT (user report
  * 2026-07-15: mời trước ổn giờ lỗi sau khi thêm tiền tố Mời lại + Phase 2b).
  *
- * `membersPageReady` cũ quá yếu (>2 button là true rất sớm). Ở đây chờ tới khi
+ * Cổng "trang đã render" kiểu đếm nút quá yếu (>2 button là true rất sớm). Ở đây chờ tới khi
  * thấy DẤU HIỆU nav THẬT SỰ đã render: nút Mời, HOẶC tab "Người dùng"/"Lời mời".
  * `waitFor` poll → trả NGAY khi sẵn sàng (case thường ~1 poll, không làm chậm),
  * chỉ chờ khi tab vừa F5 chưa rehydrate. Trả false nếu hết `timeoutMs` (không
@@ -342,8 +334,11 @@ export async function executeInvite(
     console.log(
       `[autogpt-invite] mọi email thuộc domain xác minh "${verifiedDomain}" → BỎ QUA toggle external invites`,
     );
-    // executeInviteInner yêu cầu đang ở /admin/members → điều hướng trước.
-    await navigateTo(MEMBERS_PATH, membersPageReady, 10_000);
+    // executeInviteInner yêu cầu đang ở tab "Người dùng" của /admin/members →
+    // đưa về trước. Bước chốt suất để trang lại ở tab "Lời mời đang chờ" (nó cố
+    // ý không quay về nữa), mà `?tab=invites` vẫn nằm trên pathname
+    // /admin/members nên `navigateTo` KHÔNG nhận ra là phải đổi tab.
+    await goToUsersTab();
     inviteResult = await executeInviteInner(taskId, emails, role, {
       pendingAtCheck: pendingCountAtSeatCheck(seatData, seatHint),
     });
@@ -366,6 +361,31 @@ export async function executeInvite(
     // qua `awaiting_external_reload` (giống cơ chế `awaiting_reload_verify` của
     // F5 verify Phase 2).
     const ensured = await setExternalInvites(true);
+    if (ensured.errorBanner) {
+      // ChatGPT in băng-rôn đỏ "Something went wrong..." ngay sau cú bấm (hiếm —
+      // ảnh user 3/9/2026). Công tắc trên DOM lúc này KHÔNG đáng tin: React vẫn
+      // vẽ sang ON dù ChatGPT không lưu. Chốt duy nhất là TẢI LẠI /admin/identity
+      // rồi đọc lại, mà F5 thì content không tự làm được (chết context) → trả
+      // quyền cho background, y hệt cơ chế `awaiting_external_reload`.
+      //
+      // KHÔNG bấm lại công tắc và KHÔNG mời gì ở đây: chưa email nào được gửi
+      // nên dừng lại là an toàn, backend hoàn phí đủ.
+      console.warn(
+        `[autogpt-invite] ChatGPT báo hỏng khi bật 'mời ngoài tên miền': "${ensured.errorBanner}" → ` +
+          "nhờ background tải lại trang rồi đọc lại công tắc.",
+      );
+      return {
+        ok: true,
+        data: {
+          awaiting_external_recheck: true,
+          external_toggle_error_banner: ensured.errorBanner,
+          emails,
+          count: emails.length,
+          role,
+          ...seatData,
+        },
+      };
+    }
     if (!ensured.confirmed) {
       console.warn(
         "[autogpt-invite] KHÔNG xác nhận được toggle external invites = ON → huỷ invite (tránh phantom).",
@@ -417,7 +437,7 @@ export async function executeInvite(
     // Bọc try/catch (thay cho try/finally cũ): lỗi văng ra vẫn phải trả về một
     // response CÓ CỜ, kẻo toggle nằm ON mà không ai biết mà tắt.
     try {
-      await navigateTo(MEMBERS_PATH, membersPageReady, 10_000);
+      await goToUsersTab();
       inviteResult = await executeInviteInner(taskId, emails, role, {
         pendingAtCheck: pendingCountAtSeatCheck(seatData, seatHint),
       });

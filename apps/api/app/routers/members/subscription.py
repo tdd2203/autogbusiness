@@ -38,6 +38,9 @@ from ._shared import (
     _ensure_cycles_materialized,
     _extend_subscription_end,
     _get_workspace_or_404,
+    cycle_settings,
+    is_cycle_aligned,
+    quote_cycle,
     _mark_member_paid,
     _member_or_404_visible,
     _months_between,
@@ -45,7 +48,47 @@ from ._shared import (
 )
 
 
-def _resolve_end_at(member: Member, body: MemberUpdateSubscriptionIn) -> datetime | None:
+def _cycle_quote_for(
+    db: Session | None, member: Member, body: MemberUpdateSubscriptionIn
+):
+    """Báo giá theo chu kỳ cho lần ĐỔI HẠN — `None` nếu không ở chế độ đó.
+
+    Chỉ dựng khi client gửi SỐ THÁNG. "Theo ngày cụ thể" (chỉ gửi `end_at`) là admin
+    tự chọn mốc, §4 quy định BE KHÔNG tính lại — kể cả ở chế độ này.
+
+    `months` là SỐ MỐC nên `extra_months = months − 1`, giống `renew.py::_renew_quote`.
+    Có `purchased_at` thì neo từ đó (admin đổi mốc); không thì điểm nối =
+    `max(hạn hiện tại, now)` — đúng luật chống thu trùng của §3.6.2.
+    """
+    ws = getattr(member, "workspace", None)
+    if ws is None or not is_cycle_aligned(ws):
+        return None
+    if body.subscription_months is None or body.subscription_end_at is not None:
+        return None
+    settings_row = cycle_settings(db) if db is not None else None
+    extra = max(0, int(body.subscription_months) - 1)
+    if body.subscription_purchased_at is not None:
+        return quote_cycle(
+            ws,
+            body.subscription_purchased_at,
+            extra_months=extra,
+            settings_row=settings_row,
+        )
+    return quote_cycle(
+        ws,
+        datetime.now(timezone.utc),
+        current_end=member.subscription_end_at,
+        extra_months=extra,
+        settings_row=settings_row,
+    )
+
+
+def _resolve_end_at(
+    member: Member,
+    body: MemberUpdateSubscriptionIn,
+    *,
+    db: Session | None = None,
+) -> datetime | None:
     """Tính ngày hết hạn mục tiêu.
 
     Ưu tiên:
@@ -62,6 +105,10 @@ def _resolve_end_at(member: Member, body: MemberUpdateSubscriptionIn) -> datetim
         return body.subscription_end_at
     if body.subscription_months is None:
         return None
+    quote = _cycle_quote_for(db, member, body)
+    if quote is not None:
+        # Chế độ `cycle_aligned`: hạn rơi đúng MỐC CHỐT, không phải neo + N×30.
+        return quote.end_at
     if body.subscription_purchased_at is not None:
         return _end_from_purchase(
             body.subscription_purchased_at, body.subscription_months
@@ -78,6 +125,8 @@ def _resolve_purchased_at(
     body: MemberUpdateSubscriptionIn,
     target_end: datetime | None,
     target_months: int | None,
+    *,
+    member: Member | None = None,
 ) -> datetime | None:
     """Ngày mua để LƯU lại (mốc neo, dùng làm mặc định khi mở lại modal).
 
@@ -88,24 +137,41 @@ def _resolve_purchased_at(
         return body.subscription_purchased_at
     if target_months is None or target_end is None:
         return None
+    ws = getattr(member, "workspace", None) if member is not None else None
+    if ws is not None and is_cycle_aligned(ws):
+        # Neo = ĐIỂM NỐI của cửa sổ vừa bán (§3.6.7). Suy ngược `hạn − months×30` ở
+        # chế độ này ra một ngày vô nghĩa vì hạn không còn cách neo đúng 30 ngày.
+        now = datetime.now(timezone.utc)
+        cur = member.subscription_end_at
+        return cur if cur is not None and cur > now else now
     return target_end - timedelta(days=target_months * SUBSCRIPTION_DAYS_PER_MONTH)
 
 
-def subscription_would_extend(member: Member, body: MemberUpdateSubscriptionIn) -> bool:
+def subscription_would_extend(
+    member: Member,
+    body: MemberUpdateSubscriptionIn,
+    *,
+    db: Session | None = None,
+) -> bool:
     """Đổi hạn này có KÉO DÀI hạn không (để quyết định tính phí — user 2026-07-13:
     "chỉ khi kéo dài hạn"). True khi hạn MỚI > hạn hiện tại (cả hai có giá trị). Vô
     thời hạn (hạn mới None) / hạn hiện tại None / rút ngắn / giữ nguyên → False."""
-    target_end = _resolve_end_at(member, body)
+    target_end = _resolve_end_at(member, body, db=db)
     cur = member.subscription_end_at
     return target_end is not None and cur is not None and target_end > cur
 
 
-def _billable_extension_months(member: Member, body: MemberUpdateSubscriptionIn) -> int:
+def _billable_extension_months(
+    member: Member,
+    body: MemberUpdateSubscriptionIn,
+    *,
+    db: Session | None = None,
+) -> int:
     """Số THÁNG tính phí cho lần kéo dài (đơn vị 30 ngày, làm tròn LÊN, tối thiểu 1).
     'Theo số tháng' = đúng số tháng cộng thêm; 'theo ngày' = (hạn mới − hạn cũ)/30."""
     if body.subscription_months is not None:
         return max(1, int(body.subscription_months))
-    target_end = _resolve_end_at(member, body)
+    target_end = _resolve_end_at(member, body, db=db)
     cur = member.subscription_end_at
     if target_end is not None and cur is not None and target_end > cur:
         days = (target_end - cur).total_seconds() / 86400.0
@@ -123,9 +189,23 @@ def subscription_fee(
     """Phí đổi hạn theo số tháng KÉO DÀI; 0 nếu không kéo dài (rút ngắn / vô thời hạn
     / giữ nguyên). Nhánh GPT nhân đơn giá/tháng, nhánh Canva tra bảng bậc. Dùng chung
     endpoint + webhook replay."""
-    if not subscription_would_extend(member, body):
+    if not subscription_would_extend(member, body, db=db):
         return 0
-    months = _billable_extension_months(member, body)
+    quote = _cycle_quote_for(db, member, body)
+    if quote is not None:
+        # Cùng lý do với `invite.fee_for_member`: ở chế độ này nhân đơn giá × số
+        # tháng sẽ thu trọn một tháng cho quãng chỉ tới mốc chốt.
+        return payment_flow.fee_for_window(
+            db,
+            user,
+            prorated_half_days=quote.prorated_half_days,
+            cycle_days=quote.cycle_days,
+            whole_months=quote.whole_months,
+            member_fee=member.fee_vnd,
+            default_fee=default_fee,
+            settings_row=cycle_settings(db),
+        )
+    months = _billable_extension_months(member, body, db=db)
     return payment_flow.fee_for_months(
         db,
         user,
@@ -143,7 +223,7 @@ def perform_subscription_core(
     duyệt). KHÔNG trừ phí, KHÔNG commit — caller lo. Dùng chung endpoint + webhook
     replay (sau thanh toán QR)."""
     now = datetime.now(timezone.utc)
-    target_end = _resolve_end_at(member, body)
+    target_end = _resolve_end_at(member, body, db=db)
     # "Theo ngày cụ thể" = chỉ gửi hạn, KHÔNG gửi số tháng → GIỮ NGUYÊN số tháng &
     # mốc neo cũ, chỉ đặt lại hạn (yêu cầu user 2026-07-08).
     date_only = body.subscription_end_at is not None and body.subscription_months is None
@@ -153,13 +233,13 @@ def perform_subscription_core(
 
     # Vật chất hoá các chu kỳ hiện có (nếu chưa có) TRƯỚC khi đổi hạn, để đồng bộ
     # dựa trên hạn cũ liền mạch. Xem _ensure_cycles_materialized.
-    _ensure_cycles_materialized(member, now=now, actor_id=user.id)
+    _ensure_cycles_materialized(member, now=now, actor_id=user.id, db=db)
 
     member.subscription_months = target_months
     member.subscription_end_at = target_end
     if not date_only:
         member.subscription_purchased_at = _resolve_purchased_at(
-            body, target_end, target_months
+            body, target_end, target_months, member=member
         )
 
     # ── Đồng bộ CHU KỲ theo hạn mới (mô hình: 1 LẦN MUA = 1 chu kỳ, đã thanh toán) ──

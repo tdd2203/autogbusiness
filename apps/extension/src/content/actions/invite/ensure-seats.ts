@@ -19,8 +19,11 @@
  *      Hai loại CỘNG GỘP (user chốt) — tổng = Σ, đã gán = Σ.
  *   3. Sang tab "Lời mời đang chờ xử lý", ĐẾM TỪNG DÒNG. LUÔN LUÔN, kể cả khi
  *      trông có vẻ còn thừa mênh mông.
- *   4. còn trống = tổng − (đã gán + lời mời chờ). Đủ → mời thẳng. Thiếu → mới
- *      mở hộp "Quản lý suất" để mua bù.
+ *   4. còn trống = tổng − (đã gán + lời mời chờ), tính NGAY tại tab "Lời mời"
+ *      bằng hai số đọc ở bước 1-2. Đủ → mời thẳng, KHÔNG quay lại tab "Người
+ *      dùng" (user chốt 8/9/2026: quay về là bắt ChatGPT truy vấn lại cả danh
+ *      sách thành viên, chỉ để đọc lại đúng hai số vừa đọc trước khi rời trang).
+ *      Chưa đủ → mới quay về đọc lại hàng thẻ, rồi mở hộp "Quản lý suất" mua bù.
  *
  * Ca mẫu để đối chiếu (GPT1, 28/8/2026): 270 suất, đã gán 253, 7 lời mời chờ ⇒
  * đang chiếm 260 ⇒ còn 10 chỗ ⇒ mời thêm, KHÔNG mua gì. Test khoá con số này
@@ -46,7 +49,6 @@ import {
   readSeatCardsFromPage,
   type SeatCardsReading,
 } from "../purchase-seat/read-seat-cards";
-import { navigateTo } from "../external-invites/navigate";
 import { countPendingInvites } from "./count-pending-invites";
 import {
   blockedPurchaseReason,
@@ -58,6 +60,7 @@ import {
   freeSeatsWithPendingDebt,
   seatsToBuy,
 } from "./seat-math";
+import { goToUsersTab } from "./users-tab";
 
 const LOG = "[autogpt-invite-seats]";
 
@@ -83,7 +86,6 @@ export type SeatHint = {
  * mở hộp đếm tận nơi.
  */
 const SEAT_HINT_SPARE = 1;
-const MEMBERS_PATH = "/admin/members";
 
 export type EnsureSeatsResult = {
   /** false = KHÔNG được mời tiếp. */
@@ -122,12 +124,6 @@ export type EnsureSeatsResult = {
 /** Số nguyên đọc từ payload result của luồng mua; mọi thứ khác → null. */
 function asInt(v: unknown): number | null {
   return typeof v === "number" && Number.isInteger(v) ? v : null;
-}
-
-/** Trang phải ở tab "Người dùng" — hàng nút "Quản lý số suất" nằm trong tab đó. */
-function membersListReady(): boolean {
-  if (!location.pathname.includes(MEMBERS_PATH)) return false;
-  return document.querySelectorAll("button").length > 2;
 }
 
 /**
@@ -200,7 +196,7 @@ const NO_SEAT_CARDS_TICKS = 20;
  * CHỜ tab "Người dùng" in xong hai con số của bước chốt suất, rồi ĐỌC KIỂM một
  * nhịp nữa.
  *
- * `membersListReady` chỉ đòi trang có vài cái nút — SPA vẽ khung trước, số sau,
+ * `goToUsersTab` chỉ đòi trang có vài cái nút — SPA vẽ khung trước, số sau,
  * nên đọc ngay sau nó là đọc vào lúc trang chưa có số (user 29/8/2026: "load
  * chưa xong đã làm việc khác rồi"). Đọc hụt ở đây không sai số mà mất đường:
  * `readSeatCardsFromPage` trả null ⇒ bước chốt suất tụt xuống lưới đỡ bằng số
@@ -508,13 +504,9 @@ export async function ensureSeatsForInvite(
   // Hàng nút "Quản lý số suất" thuộc tab "Người dùng". Tiền tố "Mời lại" trước
   // đó có thể đã chuyển sang tab "Lời mời đang chờ" (?tab=invites) — kiểm tra ở
   // đó sẽ KHÔNG thấy nút rồi kết luận nhầm là "workspace UI cũ" và bỏ qua chốt
-  // suất. Ép về URL sạch trước.
-  await navigateTo(MEMBERS_PATH, membersListReady, 10_000);
-  if (/[?&]tab=(invites|requests)/.test(location.search)) {
-    history.pushState({}, "", MEMBERS_PATH);
-    window.dispatchEvent(new PopStateEvent("popstate"));
-    await sleep(1200);
-  }
+  // suất. Ép về URL sạch trước. Lệnh mời thường mở tab sẵn ở đúng đây nên cú
+  // này không tốn gì.
+  await goToUsersTab();
 
   // Trần CHUNG cho cả phần đọc số phía dưới, và nhịp báo ra dashboard trong lúc
   // đọc — trước đây cả khúc này im lặng hàng trăm giây, mà im lặng là thứ backend
@@ -553,36 +545,18 @@ export async function ensureSeatsForInvite(
     budgetMs: seatStepDeadline - Date.now(),
     onNote: note,
   });
-  // Quay lại tab "Người dùng": thẻ suất và nút "Quản lý số suất" chỉ có ở đó.
-  await note("Đang quay lại tab Người dùng để đọc lại số suất...");
-  await navigateTo(MEMBERS_PATH, membersListReady, 10_000);
-  if (/[?&]tab=(invites|requests)/.test(location.search)) {
-    history.pushState({}, "", MEMBERS_PATH);
-    window.dispatchEvent(new PopStateEvent("popstate"));
-    await sleep(1200);
-  }
-  // Thẻ suất đọc lại sau khi về tab: lần đọc mới nhất mới là số của thời điểm
-  // quyết định. Vẫn phải CHỜ trang in xong rồi đọc kiểm như lần đầu — quay về
-  // tab là một lượt render mới, đọc ngay là đọc lúc số cũ vừa bị gỡ. Không đọc
-  // được (SPA chưa vẽ xong) thì giữ lần đọc đầu.
-  const secondRead = await readMembersPageNumbers(seatStepDeadline);
-  const cardsNow = secondRead.cards ?? pageCards;
-  await note(
-    `Đã chốt số suất${cardsNow ? ` (${describeSeatCards(cardsNow)})` : ""} — ` +
-      `cần ${need} suất mới. Bắt đầu mời...`,
-  );
+  const pendingScanned = scannedPending.authoritative
+    ? scannedPending.emails.length
+    : null;
 
-  // ── BƯỚC 3: ĐỦ CHỖ theo số ĐỌC TẬN NƠI → mời thẳng, KHÔNG mở hộp ────────
-  const onPage = headroomFromPage(
-    need,
-    cardsNow,
-    pageMembers,
-    scannedPending.authoritative ? scannedPending.emails.length : null,
-  );
-  if (onPage.enough) {
+  /** Kết quả "đủ chỗ, mời thẳng" dựng từ một lượt đọc hàng thẻ trên trang. */
+  const okFromPage = (
+    room: ReturnType<typeof headroomFromPage>,
+    cards: SeatCardsReading,
+  ): EnsureSeatsResult => {
     console.log(
-      `${LOG} đọc tận nơi: ${describeSeatCards(cardsNow!)}; ` +
-        `${onPage.pending} lời mời đang chờ trên ChatGPT → trống ${onPage.free}, ` +
+      `${LOG} đọc tận nơi: ${describeSeatCards(cards)}; ` +
+        `${room.pending} lời mời đang chờ trên ChatGPT → trống ${room.free}, ` +
         `cần ${need}. Mời thẳng, không mở hộp 'Quản lý suất'.`,
     );
     return {
@@ -591,25 +565,65 @@ export async function ensureSeatsForInvite(
       data: {
         // Số ĐỌC TẬN NƠI → backend được phép ghi về workspace.
         seat_check: "ok_page_cards",
-        seat_total: onPage.total,
-        seat_assigned: onPage.assigned,
-        seat_free: onPage.free,
-        seat_free_raw: cardsNow!.free,
+        seat_total: room.total,
+        seat_assigned: room.assigned,
+        seat_free: room.free,
+        seat_free_raw: cards.free,
         seat_needed: need,
-        seat_pending_debt: onPage.pending,
+        seat_pending_debt: room.pending,
         seat_pending_source: "chatgpt_tab",
-        seat_pending_scanned: onPage.pending,
+        seat_pending_scanned: room.pending,
         seat_pending_hint: seatHint?.pending ?? null,
         seat_page_members: pageMembers,
         seat_hint_occupied: seatHint?.occupied ?? null,
         seat_source: "page_cards",
-        seat_cards: cardsNow!.cards,
+        seat_cards: cards.cards,
         // Lượt ĐỌC KIỂM sau khi background tải lại trang: suất đã mua ở lượt
         // trước, phải ghi nhận để dashboard không tưởng lệnh này mua 0 suất.
         seat_purchased: opts.alreadyPurchased ?? 0,
       },
     };
+  };
+
+  // ── BƯỚC 3: ĐỦ CHỖ theo số ĐỌC TẬN NƠI → mời thẳng, KHÔNG quay lại tab ───
+  // Đối chiếu NGAY tại tab "Lời mời", bằng hàng thẻ đọc ở BƯỚC 1: khả dụng trừ
+  // đi số lời mời vừa đếm (user chốt 8/9/2026). Đủ chỗ thì việc kế tiếp là bật
+  // công tắc "mời ngoài tên miền" ở /admin/identity — đi thẳng sang đó.
+  //
+  // VÌ SAO BỎ lượt quay về tab "Người dùng" ở đây: quay về là ChatGPT truy vấn
+  // lại toàn bộ danh sách thành viên (workspace 400 người mất vài giây), rồi
+  // phải chờ trang in số + đọc kiểm thêm một lượt nữa — tất cả chỉ để đọc lại
+  // đúng hai con số vừa đọc cách đó vài chục giây, ngay trước khi rời trang.
+  // Hai số này đổi được chỉ khi có admin khác đang thao tác cùng lúc, mà ca đó
+  // đã có chốt chặn riêng ở `execute-invite-inner` (nút "Mua suất và gửi lời
+  // mời") — không đáng đánh đổi một lượt tải lại danh sách cho MỌI lệnh mời.
+  let cardsNow = pageCards;
+  let onPage = headroomFromPage(need, cardsNow, pageMembers, pendingScanned);
+  if (onPage.enough) {
+    await note(
+      `Đã chốt số suất (${describeSeatCards(cardsNow!)}, ${onPage.pending} lời mời đang chờ) — ` +
+        `cần ${need} suất mới, còn trống ${onPage.free}. Bắt đầu mời...`,
+    );
+    return okFromPage(onPage, cardsNow!);
   }
+
+  // Chưa kết luận được (thẻ đọc hụt, hoặc số nói THIẾU chỗ): từ đây mới phải
+  // đụng vào thứ chỉ tab "Người dùng" có — hàng thẻ và nút "Quản lý số suất".
+  // Đọc lại một lượt nữa ở đó trước khi tính chuyện tiêu tiền: lần đọc đầu có
+  // thể rơi vào lúc trang vẽ dở, mà quyết định mua thì không làm lại được.
+  await note("Đang quay lại tab Người dùng để đọc lại số suất...");
+  await goToUsersTab();
+  // Vẫn phải CHỜ trang in xong rồi đọc kiểm như lần đầu — quay về tab là một
+  // lượt render mới, đọc ngay là đọc lúc số cũ vừa bị gỡ. Không đọc được (SPA
+  // chưa vẽ xong) thì giữ lần đọc đầu.
+  const secondRead = await readMembersPageNumbers(seatStepDeadline);
+  cardsNow = secondRead.cards ?? pageCards;
+  await note(
+    `Đã chốt số suất${cardsNow ? ` (${describeSeatCards(cardsNow)})` : ""} — ` +
+      `cần ${need} suất mới. Bắt đầu mời...`,
+  );
+  onPage = headroomFromPage(need, cardsNow, pageMembers, pendingScanned);
+  if (onPage.enough) return okFromPage(onPage, cardsNow!);
 
   // ── LƯỚI ĐỠ: đếm tận nơi KHÔNG xong (không vào được tab / danh sách nhiều
   // trang) mà số dashboard nói còn dư hẳn → vẫn được mời thẳng như trước.

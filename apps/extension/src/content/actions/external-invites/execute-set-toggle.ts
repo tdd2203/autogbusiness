@@ -44,8 +44,18 @@ export async function executeSetExternalInvites(
   console.log(
     `[autogpt-external-invites] lệnh riêng: đặt toggle = ${enabled} → ` +
       `prev=${r.prev} changed=${r.changed} confirmed=${r.confirmed}` +
-      (r.toast ? ` — ChatGPT báo: "${r.toast}"` : ""),
+      (r.toast ? ` — ChatGPT báo: "${r.toast}"` : "") +
+      (r.errorBanner ? ` — ChatGPT BÁO HỎNG: "${r.errorBanner}"` : ""),
   );
+  if (r.errorBanner) {
+    // Bước DỌN gặp băng-rôn lỗi: KHÔNG bấm lại (bấm tiếp lúc ChatGPT đang hỏng là
+    // bị khoá thêm) và cũng KHÔNG làm hỏng lệnh mời đã có kết luận. Chỉ báo thật
+    // to, vì hệ quả là công tắc có thể còn nằm ON — trái spec bảo mật của user.
+    console.warn(
+      "[autogpt-external-invites] ChatGPT hỏng lúc TẮT công tắc — kiểm tra " +
+        "/admin/identity và tắt tay nếu cần.",
+    );
+  }
   // Về /admin/members để task kế tiếp không phải tự điều hướng từ
   // /admin/identity. Không xong cũng không sao — `ensureAdminTab` của background
   // đưa tab về URL sạch trước mỗi lệnh.
@@ -70,6 +80,9 @@ export async function executeSetExternalInvites(
       // khác với `confirmed` vốn là kết luận của ta từ `aria-checked`.
       toast: r.toast,
       confirmed_by: r.confirmedBy,
+      // Băng-rôn đỏ ChatGPT in ra sau cú bấm. Ở bước DỌN nó chỉ để soi lại —
+      // khác nhánh mời, nơi băng-rôn kéo theo cả vòng F5 + ngưng mời 1 tiếng.
+      error_banner: r.errorBanner,
     },
   };
 }

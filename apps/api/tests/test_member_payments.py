@@ -281,7 +281,14 @@ def test_order_allocations_show_who_the_money_invited(
     order_paid = _qr_paid_bulk_invite(
         client, sub, ws, [EMAIL, EMAIL_B], "ORD-CASH-ALLOC-1"
     )
-    # Task xong nhưng verify không thấy EMAIL_B → chỉ hoàn phí của riêng nó.
+    # EMAIL_B CHƯA GÕ ĐƯỢC vào ô mời → chốt hỏng + hoàn phí của riêng nó.
+    #
+    # ⚠️ Trước đây ca này dựng bằng `unverified_emails`. Không dùng được nữa kể từ
+    # luật "đi cả mẻ" (3/9/2026): mẻ nào có email đã xác minh thì email soi không ra
+    # được coi là CHƯA xác minh chứ không phải hỏng — nó bị hoãn để đồng bộ đi xem,
+    # không hoàn phí lẻ (xem `completion.py` ~2643 và `test_wallet_refund.py`).
+    # `skipped_emails` thì khác: chưa gõ được vào ô mời là bằng chứng DƯƠNG rằng lời
+    # mời chưa hề đi, nên vẫn chốt hỏng ngay dù anh em cùng mẻ đã vào.
     _backdate_members(ws["id"], [EMAIL, EMAIL_B])
     r = client.patch(
         f"/api/v1/queue/{order_paid['queue_item_id']}",
@@ -289,7 +296,7 @@ def test_order_allocations_show_who_the_money_invited(
             "status": "COMPLETED",
             "result": {
                 "verified_emails": [EMAIL],
-                "unverified_emails": [EMAIL_B],
+                "skipped_emails": [EMAIL_B],
                 "verify_scrape_failed": False,
             },
         },

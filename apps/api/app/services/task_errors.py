@@ -21,15 +21,31 @@ qua đó nên chỉ cần chặn một cửa.
 
 # Câu ngắn theo từng mã lỗi. Viết cho người bán hàng, không cho người sửa code:
 # nói HẬU QUẢ + VIỆC CẦN LÀM, không nói selector/DOM/số giây.
+#
+# ⚠️ TUYỆT ĐỐI KHÔNG hứa chuyện TIỀN ở đây — không "đã hoàn phí", không "chưa trừ
+# tiền" (chốt 7/9/2026). Hàm này chỉ biết MÃ LỖI, trong khi kết cục tiền của CÙNG
+# một mã lại khác nhau theo hai chiều:
+#   · theo workspace — `cycle_aligned` GIỮ tiền với MỌI lý do hỏng (khoản đã trả ở
+#     lại với email, mời lại email đó miễn phí), `legacy_30d` thì hoàn về ví trừ ca
+#     hết suất. Xem `EXPIRY_RULES.md` §3.6 và
+#     `queue/completion.py::_seat_credit_candidates`;
+#   · theo từng EMAIL trong cùng một lượt — email không có hạn còn sống thì vẫn
+#     hoàn tiền dù workspace đang ở chế độ giữ tiền.
+# Một câu chung không thể nói đúng cả hai chiều đó. Hứa "đã hoàn phí" cho lượt bị
+# giữ tiền là chỉ sai đường tiền: đại lý đi tìm khoản hoàn không có trong ví rồi
+# báo mất tiền, trong khi khoản đó đang nằm sẵn làm phiếu mời lại miễn phí. Đường
+# tiền THẬT đã có hai chỗ nói đúng tới từng email — banner kết quả lượt mời
+# (`invite_outcome.refunded` / `seat_credit`) và nhật ký ví — nên chỗ này chỉ nói
+# CHUYỆN GÌ HỎNG và LÀM GÌ TIẾP.
 _FRIENDLY: dict[str, str] = {
     # ── Suất / ghế ────────────────────────────────────────────────────────────
     "NOT_ENOUGH_SEATS": (
         "Không gian đã hết suất và hệ thống chưa mua bù được. Chưa gửi lời mời "
-        "nào, chưa trừ tiền. Vui lòng báo quản trị viên thay vì mời lại."
+        "nào. Vui lòng báo quản trị viên thay vì mời lại."
     ),
     "SEAT_CHECK_FAILED": (
-        "Chưa đọc được số suất còn trống của không gian. Chưa gửi lời mời nào, "
-        "chưa trừ tiền. Vui lòng báo quản trị viên."
+        "Chưa đọc được số suất còn trống của không gian. Chưa gửi lời mời nào. "
+        "Vui lòng báo quản trị viên."
     ),
     "SEAT_PURCHASE_FAILED": (
         "Mua thêm suất không thành công nên lệnh dừng lại. Chưa gửi lời mời nào. "
@@ -40,8 +56,8 @@ _FRIENDLY: dict[str, str] = {
     # Mời lại y hệt cũng sẽ dừng y hệt, nên câu phải nói thẳng là chờ quản trị viên.
     "SEAT_PURCHASE_NOT_ALLOWED": (
         "Không gian đã hết suất trống và lệnh này không được phép mua thêm suất. "
-        "Chưa gửi lời mời nào, đã hoàn phí. Vui lòng báo quản trị viên mở thêm suất "
-        "thay vì mời lại."
+        "Chưa gửi lời mời nào. Vui lòng báo quản trị viên mở thêm suất thay vì "
+        "mời lại."
     ),
     "SEAT_RELOAD_FAILED": (
         "Đã mua suất nhưng trang ChatGPT chưa tải lại được. Vui lòng thử lại sau "
@@ -56,8 +72,14 @@ _FRIENDLY: dict[str, str] = {
     # mời ngoài tên miền là việc hệ thống tự làm trong luồng mời, không phải chuyện
     # người bán hiểu hay xử được. Thiếu khai ⇒ rơi vào `FALLBACK` bên dưới, người
     # dùng thấy câu chung. Nhật ký kỹ thuật đầy đủ vẫn nguyên cho super-admin.
+    "EXTERNAL_TOGGLE_BLOCKED": (
+        "ChatGPT đang lỗi nên chưa mở được quyền mời email ngoài tên miền. Chưa "
+        "gửi lời mời nào. Hệ thống tạm ngưng mời không gian này khoảng 1 tiếng — "
+        "đừng mời lại ngay, mời lại chỉ khiến bị khoá thêm."
+    ),
     "INVITE_NOT_TYPED": (
-        "Không nhập được email vào ô mời nên chưa gửi. Đã hoàn phí."
+        "Không nhập được email vào ô mời nên chưa gửi. Vui lòng thử lại sau vài "
+        "phút."
     ),
     "VERIFY_FAILED": (
         "Đã bấm gửi nhưng chưa nhận được xác nhận từ ChatGPT. Hệ thống đang kiểm "
@@ -164,11 +186,11 @@ _SHORT: dict[str, tuple[str, bool]] = {
     "NOT_ENOUGH_SEATS": ("Mua suất thất bại", False),
     "SEAT_CHECK_FAILED": ("Mua suất thất bại", False),
     "SEAT_PURCHASE_FAILED": ("Mua suất thất bại", False),
-    "SEAT_RELOAD_FAILED": ("Mua suất thất bại", False),
     # KHÔNG gộp vào "Mua suất thất bại": ca này không hỏng, mà là luật chặn — gộp
     # thì bảng lý do ở trang Tổng quan sẽ báo hệ thống hỏng trong khi nó đang làm
     # đúng việc được giao.
     "SEAT_PURCHASE_NOT_ALLOWED": ("Không được phép mua thêm suất", False),
+    "SEAT_RELOAD_FAILED": ("Mua suất thất bại", False),
     "SEAT_LOCK_REQUIRED": ("Lệnh khác đang mua suất", False),
     # ── Gửi lời mời ───────────────────────────────────────────────────────────
     # EXTERNAL_TOGGLE_FAILED: xem chú thích ở `_FRIENDLY` — không đặt nhãn riêng.

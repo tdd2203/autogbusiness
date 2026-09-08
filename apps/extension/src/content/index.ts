@@ -9,6 +9,7 @@ import {
   executeCheckActiveAfterInvite,
 } from "./actions/invite";
 import { executeSetExternalInvites } from "./actions/external-invites/execute-set-toggle";
+import { executeVerifyExternalToggle } from "./actions/external-invites/execute-verify-toggle";
 import { executeRemove, executeRemoveBatch } from "./actions/remove";
 import { executeMemberData } from "./actions/member-data";
 import { executeSyncMember, executeSyncMembersBatch } from "./actions/sync-member";
@@ -114,6 +115,8 @@ async function dispatch(
       );
     case "SET_EXTERNAL_INVITES":
       return executeSetExternalInvites(msg.enabled);
+    case "VERIFY_EXTERNAL_TOGGLE":
+      return executeVerifyExternalToggle();
     case "VERIFY_PENDING_INVITE":
       return executeVerifyPendingInvite(
         msg.taskId,

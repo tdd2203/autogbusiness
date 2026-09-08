@@ -54,9 +54,25 @@ export type Workspace = {
   /** Ngày sẽ mở lại (YYYY-MM-DD), chỉ để ghép vào chỗ {ngay} của câu thông báo —
    *  không có gì tự gỡ trần khi tới ngày. null = chưa đặt. */
   invite_cap_reopen_at: string | null;
+  /** CHẾ ĐỘ TÍNH HẠN của cả không gian — CHỈ ĐỌC ở đây. Đổi phải đi qua
+   *  `POST /api/v1/workspaces/{id}/billing-mode` chứ không qua PATCH chung, vì đổi
+   *  nó là đổi cách tính hạn lẫn số tiền của mọi lần bán sau đó. */
+  billing_mode: BillingMode;
+  /** Ngày trong tháng mà chu kỳ hoá đơn chốt (1–31). Chỉ có nghĩa ở chế độ
+   *  "cycle_aligned"; null = hệ thống chưa biết mốc nào. */
+  cycle_anchor_day: number | null;
+  /** Hai trường ghi đè cấu hình chu kỳ cho riêng không gian, null = dùng cấu hình
+   *  chung. Giao diện hiện chưa sửa hai trường này, chỉ nhận về cho đủ kiểu dữ
+   *  liệu — bỏ hẳn thì nơi khác đọc vào lại tưởng API không trả. */
+  cycle_cutoff_utc: string | null;
+  cycle_force_extra_from_day: number | null;
   created_at: string;
   updated_at: string;
 };
+
+/** Hai chế độ tính hạn dùng. Chuỗi phải khớp TỪNG CHỮ với hằng `BILLING_MODE_*`
+ *  bên API: lệch một chữ là lần gạt cầu dao nào cũng bị API từ chối. */
+export type BillingMode = "legacy_30d" | "cycle_aligned";
 
 export const SEAT_TOTAL_MAX = 999;
 

@@ -107,6 +107,17 @@ export type ExecuteActionRequest =
    * hoàn 340.000đ oan). Xem `content/actions/external-invites/execute-set-toggle.ts`.
    */
   | { kind: "SET_EXTERNAL_INVITES"; taskId: string; enabled: boolean }
+  /**
+   * ĐỌC LẠI công tắc "Cho phép lời mời từ miền bên ngoài" sau khi background đã
+   * TẢI LẠI /admin/identity. Chỉ-đọc, không bấm gì.
+   *
+   * Dùng đúng một chỗ: cú bấm công tắc gặp băng-rôn đỏ "Something went wrong..."
+   * (ChatGPT lỗi, hiếm — ảnh user 3/9/2026). Lúc đó `aria-checked` vẫn khai ON dù
+   * PATCH hỏng, nên phải F5 rồi đọc lại; F5 phải do background làm vì content tự
+   * F5 là chết context. Còn OFF sau khi đọc lại ⇒ lệnh mời huỷ với
+   * EXTERNAL_TOGGLE_BLOCKED và backend ngưng mời workspace đó 1 tiếng.
+   */
+  | { kind: "VERIFY_EXTERNAL_TOGGLE"; taskId: string }
   | {
       kind: "REMOVE_MEMBER";
       taskId: string;
@@ -315,6 +326,14 @@ export type ExecuteActionResponse =
         | "CONTENT_TIMEOUT"
         | "STALE_BUILD"
         | "EXTERNAL_TOGGLE_FAILED"
+        // INVITE_MEMBER: bấm công tắc "mời ngoài tên miền" thì ChatGPT in băng-rôn
+        // đỏ "Something went wrong...", TẢI LẠI trang đọc lại thấy công tắc VẪN
+        // TẮT ⇒ chính ChatGPT đang lỗi, không phải ta bấm sai. KHÔNG bấm lại
+        // (bấm tiếp lúc nó đang hỏng là đúng cách để bị khoá thêm): chưa email
+        // nào được mời, backend hoàn phí VÀ ngưng mời workspace đó 1 tiếng —
+        // xem `services/invite_block.py`. Khác EXTERNAL_TOGGLE_FAILED (ta không
+        // đọc/không bấm được công tắc, thử lại là được).
+        | "EXTERNAL_TOGGLE_BLOCKED"
         // INVITE_MEMBER: workspace không còn đủ suất trống cho lượng email sắp
         // mời, và extension KHÔNG mua bù được (vượt hạn mức 20/lần, mua thất bại,
         // hoặc mua xong đọc lại vẫn chưa thấy suất). KHÔNG mời để tránh kích hoạt

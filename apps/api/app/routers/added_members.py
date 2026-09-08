@@ -18,15 +18,23 @@ from app.action_limit import enforce_action_cooldown
 from app.audit import log_event
 from app.deps import get_current_user, get_session
 from app.models import (
+    PLATFORM_CANVA,
     PLATFORM_GPT,
     PLATFORMS,
     Member,
     MemberSubscriptionCycle,
+    PaymentSettings,
     User,
     Workspace,
 )
 from app.routers.members._shared import current_stint_cycles
 from app.routers.wallet._shared import get_payment_settings
+# Thành tiền của MỘT dòng chu kỳ sống ở `wallet/report.py` để nút "Thanh toán" và báo
+# cáo tài chính đọc CÙNG một công thức — hai nơi tính khác nhau là đại lý trả một số,
+# sổ sách ghi một số khác. Chỗ đúng nhất cho nó là `services/payment_flow.py`; chưa
+# chuyển được vì file đó đang có phiên khác sửa. Chiều import này an toàn: package
+# `wallet` không import ngược `added_members`.
+from app.routers.wallet.report import cycle_units, workspace_anchor_day
 from app.schemas import (
     AddedMemberOut,
     MemberBulkSetExpiryIn,
@@ -616,6 +624,70 @@ class _PayTarget:
         self.fee = fee
 
 
+def _cycle_fee(
+    db: Session,
+    user: User,
+    member: Member,
+    cycle: MemberSubscriptionCycle,
+    default_fee: int,
+    settings_row: PaymentSettings | None = None,
+) -> int:
+    """Tiền phải trả cho MỘT kỳ còn nợ của `member`.
+
+    Kỳ của chế độ `cycle_aligned` (EXPIRY_RULES §3.6.5) gồm PHẦN LẺ tới mốc chốt cộng
+    các chu kỳ TRỌN, nên KHÔNG được đọc mỗi `months`: kỳ mua giữa chu kỳ có
+    `months = 0` sẽ bị thu TRỌN MỘT THÁNG, còn kỳ "phần lẻ + mua thêm 1 tháng" thì bị
+    thu THIẾU đúng phần lẻ. Đường này đi qua cả `replay_cycle_order` nên sai ở đây là
+    SỐ TIỀN TRÊN MÃ QR và SỐ TRỪ VÍ cùng sai.
+
+    Kỳ không có phần lẻ (`legacy_30d`, và cả kỳ trọn mốc của chế độ mới) đi đúng đường
+    cũ `fee_for_months` — kể cả nhánh Canva với bảng bậc thang. Không đồng nào lệch.
+
+    NHÁNH CANVA LUÔN đi đường cũ, kể cả khi dòng kỳ có phần lẻ: `fee_for_window` không
+    có tham số nhánh nào, nó luôn nhân đơn giá/tháng của GPT và KHÔNG bao giờ chạm tới
+    `services/canva_price.py`. Một team Canva bị gạt nhầm sang chế độ mới mà lọt vào
+    đó là bán sai bảng giá mà không có lỗi nào bật lên. Ràng buộc DB `ck_workspaces_
+    cycle_aligned_gpt_only` mới thêm ở migration 0067 chặn cùng chuyện này ở tầng dưới,
+    nhưng nó chưa chạy trên máy nào nên chỗ này vẫn phải tự chặn.
+
+    Dùng chung `cycle_units` với báo cáo tài chính: đại lý trả bao nhiêu thì sổ ghi
+    bấy nhiêu.
+    """
+    platform = payment_flow.member_platform(member)
+    # Chỉ chế độ `cycle_aligned` mới cần ngày neo. Đọc `member.workspace` vô điều kiện
+    # là thêm một lần nạp lười (và một điểm autoflush) lên đường `replay_cycle_order`,
+    # nơi ví vừa được credit và còn thay đổi đang treo.
+    units = cycle_units(cycle)
+    if platform != PLATFORM_CANVA and cycle.prorated_half_days:
+        ws = getattr(member, "workspace", None)
+        units = cycle_units(
+            cycle,
+            workspace_anchor_day(
+                getattr(ws, "cycle_anchor_day", None), getattr(ws, "renewal_date", None)
+            ),
+        )
+    if platform != PLATFORM_CANVA and units.half_days > 0:
+        return payment_flow.fee_for_window(
+            db,
+            user,
+            prorated_half_days=units.half_days,
+            cycle_days=units.cycle_days,
+            whole_months=units.whole_months,
+            member_fee=member.fee_vnd,
+            default_fee=default_fee,
+            settings_row=settings_row,
+        )
+    return payment_flow.fee_for_months(
+        db,
+        user,
+        months=units.whole_months,
+        platform=platform,
+        member_fee=member.fee_vnd,
+        default_fee=default_fee,
+        settings_row=settings_row,
+    )
+
+
 def _payable_targets(
     db: Session,
     user: User,
@@ -627,7 +699,7 @@ def _payable_targets(
 
     Nhận cả kỳ 'requested' (đã lỡ gửi yêu cầu duyệt) — bấm "Thanh toán" thay cho việc
     ngồi chờ, không bắt rút yêu cầu trước. Bỏ qua kỳ 'paid' và email không thuộc mình
-    → gửi id lạ chỉ là no-op, không phải lỗi. Phí = đơn giá/tháng × số tháng của kỳ.
+    → gửi id lạ chỉ là no-op, không phải lỗi. Phí của từng kỳ do `_cycle_fee` tính.
     """
     by_member: dict[UUID, list[MemberSubscriptionCycle]] = {}
     members: dict[UUID, Member] = {}
@@ -661,24 +733,22 @@ def _payable_targets(
             elif member.payment_status != "paid":
                 legacy[member.id] = member
 
+    # Bước làm tròn phần lẻ nằm trong cấu hình thanh toán (EXPIRY_RULES §3.6.6). Đọc
+    # MỘT lần ở đây: hàng singleton đã nằm sẵn trong session nên không tốn truy vấn,
+    # nhưng truyền xuống thì mọi kỳ trong lô chắc chắn cùng một bảng giá.
+    settings_row = get_payment_settings(db)
     targets: list[_PayTarget] = []
     for member_id, cycles in by_member.items():
         member = members[member_id]
         fee = sum(
-            payment_flow.fee_for_months(
-                db,
-                user,
-                months=c.months,
-                platform=payment_flow.member_platform(member),
-                member_fee=member.fee_vnd,
-                default_fee=default_fee,
-            )
-            for c in cycles
+            _cycle_fee(db, user, member, c, default_fee, settings_row) for c in cycles
         )
         targets.append(_PayTarget(member, cycles, int(fee)))
     for member_id, member in legacy.items():
         if member_id in by_member:
             continue
+        # Dữ liệu cũ không có dòng kỳ nào ⇒ cũng không có phần lẻ nào để đọc: thu
+        # đúng một tháng như trước.
         fee = payment_flow.fee_for_months(
             db,
             user,
@@ -686,6 +756,7 @@ def _payable_targets(
             platform=payment_flow.member_platform(member),
             member_fee=member.fee_vnd,
             default_fee=default_fee,
+            settings_row=settings_row,
         )
         targets.append(_PayTarget(member, [], int(fee)))
     return targets

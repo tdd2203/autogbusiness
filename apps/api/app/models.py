@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as dtime, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    Time,
     UniqueConstraint,
     func,
     text,
@@ -39,6 +40,39 @@ def _utcnow() -> datetime:
 PLATFORM_GPT = "gpt"
 PLATFORM_CANVA = "canva"
 PLATFORMS = (PLATFORM_GPT, PLATFORM_CANVA)
+
+# ── Chế độ tính HẠN DÙNG (`workspaces.billing_mode`) ─────────────────────────
+# Luật đầy đủ: `routers/members/EXPIRY_RULES.md` — NGUỒN CHÂN LÝ DUY NHẤT.
+#
+#   legacy_30d    hạn = neo + số tháng × 30 ngày. Mỗi email một đồng hồ riêng.
+#   cycle_aligned hạn = MỐC CHỐT chu kỳ hoá đơn của workspace. Mọi email hết hạn
+#                 cùng một thời điểm, để dọn sạch ghế chưa bán TRƯỚC khi hoá đơn
+#                 ChatGPT chạy rồi mới mua đúng số ghế đã bán.
+#
+# Mặc định `legacy_30d` là CẦU DAO: deploy xong không có gì đổi cho tới khi
+# super-admin gạt từng workspace một. Nhánh Canva không dùng `cycle_aligned` —
+# không có hoá đơn business để neo vào.
+BILLING_MODE_LEGACY_30D = "legacy_30d"
+BILLING_MODE_CYCLE_ALIGNED = "cycle_aligned"
+BILLING_MODES = (BILLING_MODE_LEGACY_30D, BILLING_MODE_CYCLE_ALIGNED)
+
+# Mặc định toàn hệ thống cho chế độ `cycle_aligned`. Đây chỉ là giá trị KHỞI TẠO
+# của `payment_settings` — mọi con số đều sửa được ở DB, KHÔNG hard-code chỗ khác
+# (EXPIRY_RULES §3.6.6).
+#
+# 03:00 UTC = 10h giờ VN. Phải sớm hơn giờ ChatGPT chốt hoá đơn (quan sát: khoảng
+# 09:00–10:00 UTC, tức 16h VN) đủ để gỡ xong người chưa gia hạn RỒI hạ seat_total.
+CYCLE_CUTOFF_UTC_DEFAULT = dtime(3, 0)
+# Mua từ ngày thứ 23 của chu kỳ trở đi thì bắt buộc cộng thêm 1 tháng — kỳ đầu quá
+# ngắn thì khách vừa mua đã hết hạn.
+CYCLE_FORCE_EXTRA_FROM_DAY_DEFAULT = 23
+# Giờ ChatGPT chốt hoá đơn kỳ mới (quan sát của user 2026-09-07: khoảng 09:00–10:00
+# UTC = 16h giờ VN). KHÔNG dùng để tính tiền — chỉ để biết đợt gỡ có kịp không:
+# gỡ xong sau mốc này thì hoá đơn đã tính đủ ghế cũ, kỳ đó không tiết kiệm được gì.
+CYCLE_INVOICE_UTC_DEFAULT = dtime(9, 0)
+# Tiền kỳ lẻ làm tròn LÊN bội số này. Tiền lẻ hàng trăm đồng chỉ tổ lệch khi đối
+# soát chuyển khoản (cùng lý do với `canva_price._ROUND_TO`).
+PRICE_ROUND_TO_VND_DEFAULT = 1000
 
 # Team Canva trả phí có sẵn 50 suất và KHÔNG mua thêm được (user 2026-09-01). Dùng
 # làm seat_total mặc định khi tạo team, và làm TRẦN CỨNG khi mời — nhánh GPT cho
@@ -249,6 +283,33 @@ class Workspace(Base):
     __table_args__ = (
         UniqueConstraint("chatgpt_id", name="uq_workspaces_chatgpt_id"),
         UniqueConstraint("extension_api_key", name="uq_workspaces_extension_api_key"),
+        CheckConstraint(
+            "billing_mode IN ('legacy_30d', 'cycle_aligned')",
+            name="ck_workspaces_billing_mode",
+        ),
+        CheckConstraint(
+            "cycle_anchor_day IS NULL OR cycle_anchor_day BETWEEN 1 AND 31",
+            name="ck_workspaces_cycle_anchor_day",
+        ),
+        CheckConstraint(
+            "cycle_force_extra_from_day IS NULL "
+            "OR cycle_force_extra_from_day BETWEEN 1 AND 31",
+            name="ck_workspaces_cycle_force_day",
+        ),
+        # Chỉ nhánh 'gpt' được gạt sang `cycle_aligned`. Chế độ này neo hạn vào chu
+        # kỳ hoá đơn ChatGPT Business, còn team Canva không có hoá đơn nào để neo —
+        # và `payment_flow.fee_for_window` luôn tính theo ĐƠN GIÁ THÁNG của GPT, bỏ
+        # qua hẳn bảng bậc thang Canva (`services/canva_price.py`). Gạt nhầm một
+        # team Canva là nó ÂM THẦM bán sai giá, không lỗi nào bật lên.
+        #
+        # Chặn ở tầng DỮ LIỆU chứ không chỉ ở code: đây là cờ super-admin gạt tay,
+        # nhiều đường vào (API, sửa SQL lúc chữa cháy) nên guard trong Python là
+        # loại bỏ sót được. Câu này phải KHỚP TỪNG CHỮ với `0067_workspace_cycle_
+        # billing.py`, lệch một chữ là `alembic check` báo schema trôi.
+        CheckConstraint(
+            "billing_mode <> 'cycle_aligned' OR platform = 'gpt'",
+            name="ck_workspaces_cycle_aligned_gpt_only",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -325,6 +386,22 @@ class Workspace(Base):
     chatgpt_locale: Mapped[str] = mapped_column(
         String(8), nullable=False, default="vi", server_default="vi"
     )
+    # NGƯNG MỜI tới mốc này (chốt user 3/9/2026). NULL = mời bình thường.
+    #
+    # Đặt khi ChatGPT hỏng ngay cú bấm công tắc "Cho phép lời mời từ miền bên
+    # ngoài": nó in băng-rôn đỏ, tải lại trang thì công tắc VẪN TẮT, và chính
+    # ChatGPT gửi thông báo về tài khoản admin của workspace. Bấm lại lúc đó là
+    # đúng cách để bị khoá thêm, nên hệ thống tự lùi 1 tiếng thay vì để đại lý
+    # bấm mời lại liên tục. Super-admin mở lại sớm được (`invite_block.py`).
+    #
+    # Chặn CẢ MỌI lời mời của workspace, không riêng email ngoài miền: khách hầu
+    # hết là gmail nên lệnh nào cũng phải qua công tắc đó.
+    invite_blocked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Vì sao đang bị ngưng — hiện nguyên văn lên dashboard để đại lý khỏi đoán
+    # (thường là băng-rôn ChatGPT in ra). NULL khi không bị ngưng.
+    invite_block_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # TRẦN THÀNH VIÊN do super-admin đặt (chốt user 3/9/2026). NULL = không chặn.
     #
     # Khác `seat_total`: `seat_total` là số SCRAPE từ ChatGPT (có thể cũ), còn cột
@@ -339,6 +416,26 @@ class Workspace(Base):
     # gỡ trần khi tới ngày. Cố ý: mở lại là quyết định mua thêm suất bằng tiền
     # thật, không để lịch tự bấm hộ. NULL ⇒ câu thông báo ghi "chưa thông báo".
     invite_cap_reopen_at: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # ── Chế độ tính hạn dùng (EXPIRY_RULES §3.6) ─────────────────────────────
+    # 'legacy_30d' | 'cycle_aligned'. Xem hằng BILLING_MODE_* ở đầu file.
+    billing_mode: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=BILLING_MODE_LEGACY_30D,
+        server_default=BILLING_MODE_LEGACY_30D,
+    )
+    # NGÀY trong tháng mà chu kỳ hoá đơn chốt (1–31), suy từ `period_end` của hoá
+    # đơn. Mốc TỰ CUỘN theo tháng dương lịch từ con số này, KHÔNG chờ ai dán hoá
+    # đơn: `renewal_date` chỉ đổi khi super-admin dán tay, để giá phụ thuộc thao
+    # tác đó thì một kỳ quên dán là cả kỳ bán sai giá mà không có gì báo.
+    # Ngày 29/30/31 rơi vào tháng ngắn → lùi về ngày cuối tháng.
+    cycle_anchor_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # GHI ĐÈ giờ chốt cho riêng workspace này. NULL = dùng `payment_settings`.
+    cycle_cutoff_utc: Mapped[dtime | None] = mapped_column(Time, nullable=True)
+    # GHI ĐÈ ngưỡng ép thêm tháng cho riêng workspace này. NULL = dùng chung.
+    cycle_force_extra_from_day: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
     created_by_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -559,6 +656,22 @@ class Member(Base):
     # dùng phí mặc định payment_settings.invite_fee_vnd. Phí trừ ví khi user beta
     # mời = COALESCE(fee_vnd, default). BigInteger đồng bộ migration + cột tiền khác.
     fee_vnd: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # TIỀN ĐANG GIỮ của email này — đã thu nhưng CHƯA đổi lấy dịch vụ (7/9/2026).
+    #
+    # Từ 7/9/2026 mời hỏng KHÔNG hoàn phí về ví nữa mà giữ khoản đã trả gắn với
+    # email, để lượt mời lại miễn phí (xem `_keep_seat_credit_members`). Lý do: giá
+    # nay tính theo NGÀY nên tiền hoàn về ví không khớp giá lượt sau, đại lý phải
+    # nạp lẻ mới mời lại được.
+    #
+    # VÌ SAO PHẢI CÓ CỘT NÀY: trước đây HOÀN PHÍ chính là cách đóng sổ — tiền về ví
+    # là hết chuyện. Bỏ hoàn phí đi mà không ghi lại thì mỗi lượt mời hỏng để lại
+    # một khoản đã thu không ai đếm, và báo cáo tài chính coi nó là doanh thu bình
+    # thường. Đúng loại thất thoát im lặng mà `flag_refunded_invite_debt` sinh ra để
+    # canh, chỉ ngược chiều. Cộng dồn qua nhiều lần hỏng; xoá khi email vào nhóm thật.
+    invite_credit_vnd: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    invite_credit_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     # "Ngày mua" — MỐC NEO tính hạn do admin đặt trong modal Đổi hạn dùng. NULL = chưa
     # đặt (modal mặc định về COALESCE(last_invited_at, created_at) = "ngày thêm" log).
     # Khi set theo gói tháng: subscription_end_at = subscription_purchased_at + months×30
@@ -689,6 +802,13 @@ class MemberSubscriptionCycle(Base):
     # (backfill), 2, 3… = các lần gia hạn tiếp theo.
     cycle_number: Mapped[int] = mapped_column(Integer, nullable=False)
     months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # PHẦN LẺ của kỳ ở chế độ `cycle_aligned`, đơn vị NỬA NGÀY (số nguyên — không
+    # dùng float cho tiền). NULL/0 = kỳ trọn mốc, không có phần lẻ.
+    #
+    # Vì sao tách khỏi `months`: kỳ đầu của chế độ neo-theo-chu-kỳ thường lẻ (vd 20,5
+    # ngày) nên không nhét vào số tháng nguyên được. `months` chỉ đếm số MỐC chu kỳ.
+    # Xem EXPIRY_RULES.md §3.6.4 và §3.6.7.
+    prorated_half_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Mốc bắt đầu/kết thúc chu kỳ (tới giây, UTC). start_at = hạn cũ (nếu còn hiệu
     # lực) hoặc thời điểm gia hạn; end_at = start_at + months×30.
     start_at: Mapped[datetime | None] = mapped_column(
@@ -1141,6 +1261,13 @@ class PaymentSettings(Base):
     __table_args__ = (
         CheckConstraint("id = 1", name="ck_payment_settings_singleton"),
         CheckConstraint("invite_fee_vnd >= 0", name="ck_payment_settings_fee_nonneg"),
+        CheckConstraint(
+            "cycle_force_extra_from_day BETWEEN 1 AND 31",
+            name="ck_payment_settings_cycle_force_day",
+        ),
+        CheckConstraint(
+            "price_round_to_vnd >= 1", name="ck_payment_settings_round_positive"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
@@ -1169,6 +1296,34 @@ class PaymentSettings(Base):
     # (SEPAY_APIKEY cho apikey; SEPAY_WEBHOOK_SECRET cho hmac). Bỏ OAuth 2.0.
     sepay_auth_method: Mapped[str] = mapped_column(
         String(16), nullable=False, default="apikey", server_default="apikey"
+    )
+    # ── Mặc định toàn hệ thống cho chế độ `cycle_aligned` (EXPIRY_RULES §3.6.6) ─
+    # Workspace để NULL ở cột tương ứng thì lấy giá trị ở đây. Sửa được qua màn
+    # hình cấu hình thanh toán — KHÔNG hard-code con số nào trong code.
+    cycle_cutoff_utc: Mapped[dtime] = mapped_column(
+        Time,
+        nullable=False,
+        default=CYCLE_CUTOFF_UTC_DEFAULT,
+        server_default=text("'03:00:00'"),
+    )
+    cycle_force_extra_from_day: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=CYCLE_FORCE_EXTRA_FROM_DAY_DEFAULT,
+        server_default="23",
+    )
+    # Giờ hoá đơn chạy — mốc để biết đợt gỡ có kịp không (xem hằng ở đầu file).
+    cycle_invoice_utc: Mapped[dtime] = mapped_column(
+        Time,
+        nullable=False,
+        default=CYCLE_INVOICE_UTC_DEFAULT,
+        server_default=text("'09:00:00'"),
+    )
+    price_round_to_vnd: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=PRICE_ROUND_TO_VND_DEFAULT,
+        server_default="1000",
     )
     updated_by_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True

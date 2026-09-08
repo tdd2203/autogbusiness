@@ -31,11 +31,17 @@ export type WorkspaceSeats = {
   seat_used: number;
   /** Còn trống. null = CHƯA BIẾT (chưa sync tổng) — khác hẳn 0 = hết suất. */
   seat_left: number | null;
+  /** Mốc hết NGƯNG MỜI (ISO). Backend đã lọc mốc quá hạn ⇒ có giá trị nghĩa là
+   *  ĐANG bị ngưng. Đặt khi ChatGPT hỏng công tắc "mời ngoài miền" và tự hết sau
+   *  1 tiếng; super-admin mở lại sớm được. */
+  invite_blocked_until?: string | null;
+  /** Vì sao đang ngưng — hiện nguyên văn cho đại lý khỏi đoán. */
+  invite_block_reason?: string | null;
   /** TRẦN THÀNH VIÊN do super-admin đặt. null = không chặn. */
   invite_member_cap?: number | null;
   /** Đã chạm trần (`seat_used >= invite_member_cap`) ⇒ backend chặn mọi lệnh mời
-   *  vào không gian này. Chỉ admin nới trần hoặc gỡ bớt thành viên mới mời tiếp
-   *  được — không có chuyện tự hết giờ. */
+   *  vào không gian này. Khác `invite_blocked_until` ở chỗ KHÔNG tự hết giờ —
+   *  chỉ admin nới trần hoặc gỡ bớt thành viên mới mời tiếp được. */
   invite_cap_reached?: boolean;
   /** Còn bao nhiêu suất nữa mới chạm trần. null/undefined = không đặt trần. */
   invite_cap_left?: number | null;

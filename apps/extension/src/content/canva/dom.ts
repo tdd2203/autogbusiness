@@ -93,10 +93,52 @@ export function openDialog(): HTMLElement | null {
   return dialogs.length ? dialogs[dialogs.length - 1] : null;
 }
 
-/** Email đầu tiên tìm thấy trong một đoạn chữ. */
+/**
+ * Cắt chữ của ô KẾ BÊN bị dính vào đuôi tên miền: "gmail.comTeam" → "gmail.com".
+ *
+ * Canva nối các ô trong một dòng không có khoảng trắng, nên tên miền hay bị dán
+ * thêm nhãn vai trò đứng sau. Chữ HOA ngay sau chữ thường là mở đầu một từ khác —
+ * tên miền không bao giờ viết kiểu đó. Chỉ soi phần SAU @: phần trước @ có người
+ * đặt camelCase thật ("ngocInoue@…"), cắt vào đó là hỏng email đúng.
+ */
+function cutGluedTail(email: string): string {
+  const at = email.indexOf("@");
+  if (at < 0) return email;
+  const domain = email.slice(at + 1).replace(/([a-z])(?=[A-Z])[\s\S]*$/, "$1");
+  return `${email.slice(0, at + 1)}${domain}`;
+}
+
+/**
+ * Email đầu tiên tìm thấy trong một đoạn chữ.
+ *
+ * CHỈ dùng cho đoạn chữ của MỘT ô (hoặc một câu, như dòng lời mời chờ). Đưa cả
+ * `row.textContent` vào đây thì nửa trước @ vẫn nuốt đuôi tên người — chuỗi đó
+ * không có chỗ nào để cắt. Đọc cả dòng thì dùng `emailsOf` / `parseMemberRow`.
+ */
 export function emailIn(text: string | null | undefined): string | null {
-  const m = /[\w.+-]+@[\w-]+\.[\w.-]+/.exec(text ?? "");
-  return m ? m[0].toLowerCase() : null;
+  const m = /[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,24}/.exec(text ?? "");
+  return m ? cutGluedTail(m[0]).toLowerCase() : null;
+}
+
+/** Chữ của TỪNG text node trong khối, đã gộp khoảng trắng và bỏ node rỗng. */
+export function textNodesOf(root: Node): string[] {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const out: string[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = (node.nodeValue ?? "").replace(/\s+/g, " ").trim();
+    if (text) out.push(text);
+  }
+  return out;
+}
+
+/** Mọi email đọc được trong khối — mỗi text node tối đa một cái, không trùng. */
+export function emailsOf(root: Node): string[] {
+  const out: string[] = [];
+  for (const text of textNodesOf(root)) {
+    const email = emailIn(text);
+    if (email && !out.includes(email)) out.push(email);
+  }
+  return out;
 }
 
 /** Số đầu tiên trong đoạn chữ (dùng đọc "Đội của bạn có 2 người"). */

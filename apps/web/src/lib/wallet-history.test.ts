@@ -95,6 +95,48 @@ describe("buildTxnRows — mời hỏng đã hoàn phí", () => {
     expect(voided.credit).toBeUndefined();
   });
 
+  /* Ca thật 3/9: mẻ 2 email trả qua QR 660k, 1 email hỏng. Phí lấy từ tiền QR nên
+     khoản hoàn là tiền Ở LẠI ví — trước đây dòng lỗi ghi "không mất tiền · số dư
+     không đổi", ví tăng 330k mà không dòng nào kể (user: "hoàn tiền về thì phải
+     tăng số dư"). */
+  it("hỏng MỘT PHẦN mẻ: dòng lỗi kể khoản QR đọng lại, không bị công tắc giấu", () => {
+    const at = "2026-09-03T07:44:45Z";
+    const rows = buildTxnRows([
+      refundOf("b@x.com", "2026-09-03T07:55:13Z"),
+      feeOf("b@x.com", at, true),
+      feeOf("a@x.com", at),
+      txn({ kind: "order_topup", amount: 2 * FEE, created_at: at, ref_type: "order" }),
+    ]);
+    const voided = rows.find((r) => r.type === "voided");
+    if (voided?.type !== "voided") throw new Error("thiếu dòng");
+    expect(voided.invoiceStranded).toBe(FEE);
+    expect(voided.ownsStranded).toBe(true);
+    expect(rowChannel(voided)).toBe("in");
+    expect(countVoidedInvites(rows)).toBe(0); // không hứa "hiện 1 lượt lỗi mời"
+    // Mặc định (chưa bật công tắc) vẫn phải thấy cả dòng mời lẫn dòng lỗi.
+    expect(groupRowsByDay(rows)[0].rows).toHaveLength(2);
+  });
+
+  /* Lô tiền đọng phải mở trên DÒNG LỖI: mở trên dòng mời thì lượt mời sau tiêu hết
+     khoản đó là dòng mời bị coi như đã triệt tiêu rồi giấu đi — giấu mất một lượt
+     TÍNH PHÍ thật. */
+  it("hỏng một phần: lượt mời sau tiêu hết khoản đọng thì chỉ dòng LỖI bị ẩn", () => {
+    const at = "2026-09-03T07:44:45Z";
+    const rows = buildTxnRows([
+      feeOf("c@x.com", "2026-09-03T09:00:00Z"),
+      refundOf("b@x.com", "2026-09-03T07:55:13Z"),
+      feeOf("b@x.com", at, true),
+      feeOf("a@x.com", at),
+      txn({ kind: "order_topup", amount: 2 * FEE, created_at: at, ref_type: "order" }),
+    ]);
+    const trace = traceRefundUsage(rows);
+    const voided = rows.find((r) => r.type === "voided");
+    const invite = rows.find((r) => r.type === "group" && r.key === at);
+    if (!voided || !invite) throw new Error("thiếu dòng");
+    expect(trace.usage.get(voided)).toMatchObject({ used: FEE, total: FEE });
+    expect(trace.usage.has(invite)).toBe(false);
+  });
+
   it("hoá đơn trả DƯ so với phí: không gộp, phần dôi không được biến mất", () => {
     const at = "2026-08-26T08:00:00Z";
     const rows = buildTxnRows([

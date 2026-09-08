@@ -18,7 +18,7 @@
  */
 
 import { humanClick } from "../human";
-import { emailIn, norm, visible, waitUntil } from "./dom";
+import { emailsOf, norm, visible, waitUntil } from "./dom";
 
 /** Nhãn người dùng nhìn thấy của một nút, gồm cả tooltip (`aria-label`/`title`). */
 export function labelOf(el: HTMLElement): string {
@@ -30,8 +30,11 @@ export function labelOf(el: HTMLElement): string {
 /** Dòng của email trong bảng thành viên (kể cả dòng lời mời đang chờ). */
 export function rowOf(email: string): HTMLElement | null {
   const want = email.toLowerCase();
+  // So theo email đọc từ TEXT NODE: `textContent` của Canva dính chữ ô bên cạnh
+  // ("…Scurryncub8927@outlook.comTeam owner") nên so kiểu đó là không dòng nào khớp,
+  // gỡ/đổi vai trò sẽ báo không tìm thấy người.
   const rows = [...document.querySelectorAll<HTMLElement>("tr, li, [role='row']")].filter(
-    (r) => visible(r) && emailIn(r.textContent) === want,
+    (r) => visible(r) && emailsOf(r).includes(want),
   );
   if (rows.length === 0) return null;
   // Dòng NHỎ NHẤT chứa email (tránh chọn cả bảng khi bảng dựng bằng div).

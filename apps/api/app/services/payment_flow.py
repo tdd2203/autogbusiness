@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.models import (
     PLATFORM_CANVA,
     PLATFORM_GPT,
+    PRICE_ROUND_TO_VND_DEFAULT,
     Member,
     PaymentOrder,
     PaymentSettings,
@@ -88,6 +89,69 @@ def effective_fee_for_months(
     per_month = effective_fee(member_fee, user, default_fee)
     n = months if months and months >= 1 else 1
     return per_month * n
+
+
+def prorated_fee(
+    per_month: int, prorated_half_days: int, cycle_days: int, round_to: int
+) -> int:
+    """Tiền của PHẦN LẺ ở chế độ `cycle_aligned` — EXPIRY_RULES §3.6.5.
+
+        đơn_giá_tháng × số_nửa_ngày / (2 × số_ngày_chu_kỳ),  làm tròn LÊN bội `round_to`
+
+    Đơn vị vào là NỬA NGÀY (số nguyên) nên không có phép chia số thực nào lọt vào
+    tiền. Làm tròn lên bội 1.000đ vì tiền lẻ hàng trăm đồng chỉ tổ lệch khi đối soát
+    chuyển khoản (cùng lý do với `canva_price._ROUND_TO`).
+
+    Hàm THUẦN — không đụng DB — để test khoá số gọi thẳng được.
+    """
+    if prorated_half_days <= 0 or cycle_days <= 0 or per_month <= 0:
+        return 0
+    step = max(1, int(round_to))
+    # Gộp phép chia theo chu kỳ VÀ phép làm tròn lên bội `step` vào MỘT phép chia lấy
+    # trần bằng số nguyên (`-(-a // b)`), để câu "không có phép chia số thực nào lọt
+    # vào tiền" ở trên là sự thật chứ không phải lời hứa. Đi qua `float` thì một cửa
+    # sổ đáng lẽ ra tròn bội `step` có thể ra 1000.0000000000001 rồi bị đội lên đúng
+    # MỘT bậc làm tròn — mã QR in số này, webhook đối chiếu tiền ngân hàng thực nhận
+    # thấy lệch và bỏ qua, khách trả tiền rồi mà lệnh không bao giờ chạy.
+    tu_so = per_month * prorated_half_days
+    mau_so = 2 * cycle_days * step
+    return -(-tu_so // mau_so) * step
+
+
+def fee_for_window(
+    db: Session,
+    user: User,
+    *,
+    prorated_half_days: int,
+    cycle_days: int,
+    whole_months: int,
+    member_fee: int | None = None,
+    default_fee: int = 0,
+    settings_row: PaymentSettings | None = None,
+) -> int:
+    """Phí MỘT lượt bán ở chế độ `cycle_aligned` = phần lẻ + các chu kỳ TRỌN.
+
+    Ba con số đầu lấy từ `CycleQuote` (`members/_shared.quote_cycle`) — nhận rời từng
+    số chứ KHÔNG nhận cả object, vì `import app.routers.members._shared` sẽ chạy
+    `members/__init__.py`, mà file đó import ngược lại chính module này ⇒ vòng import.
+
+    Một chu kỳ TRỌN = đúng MỘT đơn giá tháng, bất kể chu kỳ dài 28 hay 31 ngày —
+    giống hệt cách ChatGPT tính cho ta (`quantity × đơn_giá_tháng`).
+
+    Đơn giá tháng vẫn ba tầng như cũ: `members.fee_vnd` → `users.invite_fee_vnd` →
+    `payment_settings.invite_fee_vnd` (`effective_fee`). Nhánh Canva KHÔNG dùng hàm
+    này — Canva bán theo GÓI bậc thang, không có chu kỳ hoá đơn để neo vào.
+    """
+    row = settings_row if settings_row is not None else get_payment_settings(db)
+    per_month = effective_fee(member_fee, user, default_fee)
+    # Bước làm tròn là THAM SỐ (EXPIRY_RULES §3.6.6) — giá trị dự phòng phải là chính
+    # hằng của `models.py`, không phải một số 1000 gõ lại ở đây: hai nơi giữ cùng một
+    # con số thì sớm muộn cũng có nơi đổi mà nơi kia quên, và chênh lệch chỉ lộ ra ở
+    # số tiền trên mã QR. `getattr` giữ lại để hàng cấu hình giả trong test (không có
+    # cột này) vẫn chạy được.
+    round_to = int(getattr(row, "price_round_to_vnd", None) or PRICE_ROUND_TO_VND_DEFAULT)
+    lele = prorated_fee(per_month, prorated_half_days, cycle_days, round_to)
+    return lele + per_month * max(0, int(whole_months))
 
 
 def bank_configured(settings_row: PaymentSettings) -> bool:
@@ -163,9 +227,24 @@ def create_order(
     payload: dict,
     workspace_id: UUID | None = None,
     platform: str = PLATFORM_GPT,
+    priced_at: datetime | None = None,
 ) -> PaymentOrder:
     """Tạo hoá đơn `pending` mang intent (mời/gia hạn) khi ví không đủ. ref_code
-    ngẫu nhiên (khớp id_pattern luồng order). KHÔNG commit — caller lo."""
+    ngẫu nhiên (khớp id_pattern luồng order). KHÔNG commit — caller lo.
+
+    `priced_at` = ĐÓNG DẤU đồng hồ đã dùng để báo giá. Ở chế độ `cycle_aligned` giá và
+    hạn cùng đo từ ĐIỂM NỐI, nên nếu webhook lấy giờ lúc tiền về thì trong khoảng chờ
+    chuyển khoản điểm nối có thể vượt ngưỡng ép thêm tháng hoặc vượt luôn mốc chốt ⇒
+    hạn giao ra nhảy thêm nguyên một mốc trong khi tiền vẫn là số đã in trên mã QR.
+    Đọc dấu này lại bằng `priced_at_of`.
+
+    Mặc định `None` = KHÔNG đóng dấu, giữ nguyên payload cũ từng byte cho mọi luồng
+    chưa đổi.
+    """
+    if priced_at is not None:
+        # Dựng dict MỚI thay vì gắn khoá vào dict của caller: caller còn dùng chính
+        # payload đó để ghi nhật ký, thêm khoá vào tại chỗ là đổi luôn bản ghi đó.
+        payload = {**payload, "priced_at": priced_at.isoformat()}
     order = PaymentOrder(
         user_id=user.id,
         workspace_id=workspace_id,
@@ -179,6 +258,38 @@ def create_order(
     db.add(order)
     db.flush()
     return order
+
+
+def priced_at_of(order: PaymentOrder) -> datetime:
+    """Đồng hồ ĐÃ DÙNG ĐỂ BÁO GIÁ hoá đơn này (dấu do `create_order` đóng vào payload).
+
+    Webhook phải áp lại ĐÚNG cửa sổ đã bán chứ không phải cửa sổ của lúc tiền về —
+    xem `create_order`. Chiều lệch luôn là "giao nhiều hơn số đã bán", nên bỏ qua chỗ
+    này là mất tiền thật.
+
+    TUYỆT ĐỐI KHÔNG ĐƯỢC NÉM ngoại lệ: hàm nằm trên đường webhook, ném ở đây là
+    fulfillment hỏng trong khi tiền khách ĐÃ về ví. Dấu thiếu hoặc hỏng (hoá đơn tạo
+    từ trước khi có dấu này, hoặc payload bị sửa tay) rơi về `order.created_at` — báo
+    giá và tạo hoá đơn nằm trong CÙNG một request nên hai mốc cách nhau vài mili giây,
+    đủ chính xác cho mọi phép đo nửa ngày.
+
+    Mốc naive coi như đã là UTC (DB lưu UTC), giống `_shared._as_utc`.
+    """
+    payload = order.payload if isinstance(order.payload, dict) else {}
+    raw = payload.get("priced_at")
+    if isinstance(raw, str):
+        try:
+            at = datetime.fromisoformat(raw)
+        except ValueError:
+            at = None
+        if at is not None:
+            return at if at.tzinfo is not None else at.replace(tzinfo=timezone.utc)
+    created = order.created_at
+    if created is None:
+        # Hoá đơn chưa flush — không xảy ra trên đường webhook, nhưng thà lấy giờ hiện
+        # tại còn hơn ném lỗi ở nơi tiền đã vào ví rồi.
+        return datetime.now(timezone.utc)
+    return created if created.tzinfo is not None else created.replace(tzinfo=timezone.utc)
 
 
 def build_order_qr(settings_row: PaymentSettings, order: PaymentOrder) -> dict:

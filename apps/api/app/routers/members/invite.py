@@ -45,7 +45,7 @@ from app.models import (
 )
 from app.permissions import Permission
 from app.routers.wallet._shared import get_payment_settings
-from app.services import payment_flow, seats, wallet_service
+from app.services import invite_block, payment_flow, seats, wallet_service
 from app.sse import publish_task_event
 from app.schemas import (
     MemberBulkInviteIn,
@@ -58,6 +58,10 @@ from ._shared import (
     router,
     _apply_invite_paid_cycle,
     _end_from_purchase,
+    cycle_settings,
+    is_cycle_aligned,
+    quote_cycle,
+    sold_window,
     _get_workspace_or_404,
     _is_paid_period_active,
     _member_or_404_visible,
@@ -248,8 +252,21 @@ def perform_invite_core(
         db.flush()
 
         audit_entries: list[dict] = []
+        aligned = is_cycle_aligned(workspace)
+        cycle_cfg = cycle_settings(db) if aligned else None
         for email, months in invite_entries:
-            sub_end = _end_from_purchase(now, months)
+            if aligned:
+                # Chế độ neo-theo-chu-kỳ: hạn rơi đúng MỐC CHỐT, không phải
+                # now + months×30. `months` của giao diện là SỐ MỐC nên tháng cộng
+                # thêm = months − 1 (EXPIRY_RULES §3.6.2).
+                sub_end = quote_cycle(
+                    workspace,
+                    now,
+                    extra_months=max(0, (months or 1) - 1),
+                    settings_row=cycle_cfg,
+                ).end_at
+            else:
+                sub_end = _end_from_purchase(now, months)
             existing = existing_map.get(email)  # active đã lọc ở trên → chỉ removed/pending
             movable = movable_map.get(email)  # gói còn hạn cùng chủ ở ws KHÁC (nếu có)
             if existing:
@@ -432,37 +449,75 @@ def _member_fees(
 
     Nhánh GPT: đơn giá/tháng × `subscription_months`. Nhánh Canva: tra bảng bậc theo
     `subscription_months`. Nhánh đọc từ workspace của CHÍNH member (không truyền từ
-    ngoài vào) để không bao giờ lệch với nơi member thực sự nằm."""
+    ngoài vào) để không bao giờ lệch với nơi member thực sự nằm.
+
+    Workspace `cycle_aligned` tính theo CỬA SỔ đã bán, suy ngược từ chính hai mốc vừa
+    ghi lên member (`sold_window`) — tiền và hạn ra từ cùng một cửa sổ theo định
+    nghĩa, không có đường nào cho chúng lệch nhau."""
     out: list[tuple[str, int]] = []
     for m in members:
-        fee = payment_flow.fee_for_months(
-            db,
-            user,
-            months=m.subscription_months,
-            platform=payment_flow.member_platform(m),
-            member_fee=m.fee_vnd,
-            default_fee=default_fee,
-        )
+        fee = fee_for_member(db, user, m, default_fee)
         if fee > 0:
             out.append((m.email.lower(), fee))
     return out
+
+
+def fee_for_member(db: Session, user: User, m: Member, default_fee: int) -> int:
+    """Phí của MỘT member, tính từ cửa sổ ĐÃ GHI trên chính bản ghi đó.
+
+    Dùng chung cho lượt MỜI (`_member_fees`) lẫn lượt GIA HẠN qua luồng mời
+    (`_charge_renewals`) — hai nơi đó từng có hai bản tính riêng, và ở chế độ
+    `cycle_aligned` chúng ra hai con số khác nhau: hạn kéo tới mốc chốt (vd 13 ngày)
+    mà ví trừ trọn một tháng. Gộp về một hàm để không lệch lại được.
+
+    `cycle_aligned` đọc cửa sổ thật (`sold_window`: điểm nối → hạn) nên tiền luôn
+    khớp quãng vừa bán. `legacy_30d` giữ nguyên đơn giá × số tháng.
+    """
+    ws = m.workspace
+    if (
+        ws is not None
+        and is_cycle_aligned(ws)
+        and m.subscription_purchased_at is not None
+        and m.subscription_end_at is not None
+    ):
+        settings_row = cycle_settings(db)
+        half_days, cycle_days, whole_months = sold_window(
+            ws,
+            join_at=m.subscription_purchased_at,
+            end_at=m.subscription_end_at,
+            settings_row=settings_row,
+        )
+        return payment_flow.fee_for_window(
+            db,
+            user,
+            prorated_half_days=half_days,
+            cycle_days=cycle_days,
+            whole_months=whole_months,
+            member_fee=m.fee_vnd,
+            default_fee=default_fee,
+            settings_row=settings_row,
+        )
+    return payment_flow.fee_for_months(
+        db,
+        user,
+        months=m.subscription_months,
+        platform=payment_flow.member_platform(m),
+        member_fee=m.fee_vnd,
+        default_fee=default_fee,
+    )
 
 
 def _charge_renewals(
     db: Session, user: User, renew_members: list[Member], default_fee: int
 ) -> None:
     """Trừ phí GIA HẠN cho email đang active được gia hạn qua luồng mời (mỗi member 1
-    giao dịch `renew_fee`). Phí = đơn giá/tháng × số tháng vừa gia hạn
-    (`subscription_months` do perform_renew_core set). Bỏ phí ≤ 0."""
+    giao dịch `renew_fee`). Bỏ phí ≤ 0.
+
+    Chạy SAU `perform_renew_core` nên bản ghi đã mang cửa sổ mới — `fee_for_member`
+    đọc thẳng cửa sổ đó, không tự nhân lại đơn giá × số tháng. Ở `cycle_aligned` hai
+    cách ấy ra hai con số khác nhau (hạn tới mốc chốt vs trọn một tháng)."""
     for m in renew_members:
-        fee = payment_flow.fee_for_months(
-            db,
-            user,
-            months=m.subscription_months,
-            platform=payment_flow.member_platform(m),
-            member_fee=m.fee_vnd,
-            default_fee=default_fee,
-        )
+        fee = fee_for_member(db, user, m, default_fee)
         if fee > 0:
             wallet_service.charge_renew(db, user, m.id, fee, email=m.email)
 
@@ -586,14 +641,37 @@ def plan_invite_fees(
             # (mirror perform_invite_core → perform_renew_core). BỎ QUA nếu months
             # None/≤0 (không gia hạn). Xem [[subscription-cycle-model]].
             if months is not None and months > 0:
-                fee = payment_flow.fee_for_months(
-                    db,
-                    user,
-                    months=months,
-                    platform=platform,
-                    member_fee=m.fee_vnd,
-                    default_fee=default_fee,
-                )
+                if ws_row is not None and is_cycle_aligned(ws_row):
+                    # Dựng ĐÚNG báo giá mà `perform_renew_core` sẽ dùng: điểm nối =
+                    # max(hạn hiện tại, now), `extra_months = months − 1`. Lệch chỗ
+                    # này là mã QR in một số tiền còn ví trừ một số khác.
+                    settings_row = cycle_settings(db)
+                    q = quote_cycle(
+                        ws_row,
+                        now,
+                        current_end=m.subscription_end_at,
+                        extra_months=max(0, months - 1),
+                        settings_row=settings_row,
+                    )
+                    fee = payment_flow.fee_for_window(
+                        db,
+                        user,
+                        prorated_half_days=q.prorated_half_days,
+                        cycle_days=q.cycle_days,
+                        whole_months=q.whole_months,
+                        member_fee=m.fee_vnd,
+                        default_fee=default_fee,
+                        settings_row=settings_row,
+                    )
+                else:
+                    fee = payment_flow.fee_for_months(
+                        db,
+                        user,
+                        months=months,
+                        platform=platform,
+                        member_fee=m.fee_vnd,
+                        default_fee=default_fee,
+                    )
                 if fee > 0:
                     out.append((email, fee))
             continue
@@ -613,14 +691,38 @@ def plan_invite_fees(
         member_fee = m.fee_vnd if m is not None else None
         # Phí của lời mời này (mirror _member_fees): GPT nhân đơn giá/tháng, Canva
         # tra bảng bậc.
-        fee = payment_flow.fee_for_months(
-            db,
-            user,
-            months=months,
-            platform=platform,
-            member_fee=member_fee,
-            default_fee=default_fee,
-        )
+        #
+        # Workspace `cycle_aligned` dựng ĐÚNG báo giá mà `perform_invite_core` sẽ
+        # dùng: cùng `now`, cùng `extra_months = months − 1`, chưa có hạn cũ nên
+        # điểm nối = now. Lệch chỗ này là mã QR in ra một số tiền, ví trừ một số
+        # khác — xem `sold_window`.
+        if ws_row is not None and is_cycle_aligned(ws_row):
+            settings_row = cycle_settings(db)
+            q = quote_cycle(
+                ws_row,
+                now,
+                extra_months=max(0, (months or 1) - 1),
+                settings_row=settings_row,
+            )
+            fee = payment_flow.fee_for_window(
+                db,
+                user,
+                prorated_half_days=q.prorated_half_days,
+                cycle_days=q.cycle_days,
+                whole_months=q.whole_months,
+                member_fee=member_fee,
+                default_fee=default_fee,
+                settings_row=settings_row,
+            )
+        else:
+            fee = payment_flow.fee_for_months(
+                db,
+                user,
+                months=months,
+                platform=platform,
+                member_fee=member_fee,
+                default_fee=default_fee,
+            )
         if fee > 0:
             out.append((email, fee))
     return out
@@ -917,6 +1019,9 @@ def invite_member(
     user: User = Depends(require_permission(Permission.MEMBER_INVITE)),
 ) -> Member:
     ws = _get_workspace_or_404(db, workspace_id)
+    # ChatGPT đang hỏng công tắc "mời ngoài miền" → workspace bị ngưng mời tạm
+    # thời. Chặn ở đây thay vì để lệnh chạy rồi hỏng: xem `invite_block.py`.
+    invite_block.assert_not_blocked(ws)
     email = body.email.lower()
     # Quyền workspace — nới cho email cũ user tự sở hữu (xem _assert_invite_workspace_access).
     _assert_invite_workspace_access(db, user, workspace_id, [email])
@@ -1023,6 +1128,7 @@ def reinvite_member(
     sở hữu / super-admin (visibility filter). Xem [[reinvite-action-failed-invite]].
     """
     ws = _get_workspace_or_404(db, workspace_id)
+    invite_block.assert_not_blocked(ws)
     member = _member_or_404_visible(db, workspace_id, member_id, user)
     # Mời hộ email CÒN HẠN của đại lý khác thì được (miễn phí, chủ giữ nguyên); email
     # đã hết hạn thì không — lần mời đó là chu kỳ mới có phí.
@@ -1119,6 +1225,7 @@ def reinvite_members_batch(
     INVITE_MEMBER (`payload.reinvite=true`, extension thu hồi lời mời cũ rồi mời lại).
     """
     ws = _get_workspace_or_404(db, workspace_id)
+    invite_block.assert_not_blocked(ws)
     now = datetime.now(timezone.utc)
 
     # Visibility filter y hệt re-invite lẻ: sub-admin chỉ thấy member họ mời.
@@ -1220,6 +1327,7 @@ def bulk_invite_members(
     Ví thiếu → tạo hoá đơn QR cho TỔNG phí + 402 (không tạo gì).
     """
     ws = _get_workspace_or_404(db, workspace_id)
+    invite_block.assert_not_blocked(ws)
     # Resolve entries (per-email subscription) — dedupe theo email lowercase.
     resolved = body.resolved_entries()
     if not resolved:

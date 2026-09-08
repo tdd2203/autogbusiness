@@ -19,8 +19,11 @@ const REASON_BADGE: Record<string, string> = {
   sync_missing: "badge badge-neutral badge-plain",
   email_changed: "badge badge-neutral badge-plain",
   subscription_transferred: "badge badge-neutral badge-plain",
-  // Mời hỏng vì hết suất: tiền KHÔNG hoàn mà ở lại với email, mời lại miễn phí →
-  // đây là tin tốt cho người dùng, không phải mất mát ⇒ màu thông tin.
+  // Mời hỏng nhưng tiền KHÔNG hoàn mà ở lại với email, mời lại miễn phí → đây là
+  // tin tốt cho người dùng, không phải mất mát ⇒ màu thông tin. Từ 7/9/2026 mã này
+  // không còn riêng ca hết suất: workspace tính tiền theo chu kỳ hoá đơn giữ tiền
+  // với MỌI lý do mời hỏng, nên nhãn phải nói "mời hỏng" chứ không nói "hết suất" —
+  // nói hết suất là đẩy đại lý đi mua thêm suất cho một sự cố không liên quan.
   invite_seat_credit: "badge badge-info badge-plain",
 };
 

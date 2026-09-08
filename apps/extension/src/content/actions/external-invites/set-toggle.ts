@@ -1,4 +1,5 @@
 import { humanClick, sleep } from "../../human";
+import { findIdentityErrorBanner } from "./detect-error-banner";
 import { findExternalToggleToast } from "./detect-toggle-toast";
 import { findExternalInvitesToggle } from "./finders/find-toggle";
 import { navigateTo } from "./navigate";
@@ -29,7 +30,7 @@ function getToggleState(el: HTMLElement): boolean | null {
 }
 
 /** Tìm lại toggle trên DOM hiện tại + đọc state. null nếu mất toggle hoặc không rõ. */
-function readStateFresh(): boolean | null {
+export function readStateFresh(): boolean | null {
   const el = findExternalInvitesToggle();
   if (!el) return null;
   return getToggleState(el);
@@ -71,6 +72,11 @@ async function pollUntilState(
  *   - confirmedBy: `"dom"` khi cờ confirmed dựng từ công tắc, `"toast"` khi
  *     dựng từ câu trên (chỉ xảy ra ở chiều TẮT — xem dưới), null khi chưa xác
  *     nhận được.
+ *   - errorBanner: băng-rôn ĐỎ ChatGPT in ra sau cú bấm ("Something went wrong
+ *     ..." — ảnh user 3/9/2026), null nếu không thấy. CÓ băng-rôn thì `confirmed`
+ *     KHÔNG còn đáng tin: React vẫn vẽ công tắc sang ON dù PATCH hỏng. Caller
+ *     phải nhờ background TẢI LẠI TRANG rồi đọc lại công tắc (`readStateFresh`)
+ *     trước khi mời — xem `detect-error-banner.ts`.
  *
  * Độ tin cậy (v0.8.10): thay vì click 1 lần + sleep cứng + đọc 1 lần, hàm:
  *   1. Nếu tưởng đã ở `target` → đọc lại lần 2 (double-check) để loại trừ
@@ -85,6 +91,7 @@ export async function setExternalInvites(target: boolean): Promise<{
   confirmed: boolean;
   toast: string | null;
   confirmedBy: "dom" | "toast" | null;
+  errorBanner: string | null;
 }> {
   const ok = await navigateTo(IDENTITY_PATH, () => !!findExternalInvitesToggle());
   if (!ok) {
@@ -94,6 +101,7 @@ export async function setExternalInvites(target: boolean): Promise<{
       confirmed: false,
       toast: null,
       confirmedBy: null,
+      errorBanner: null,
     };
   }
   const toggle = findExternalInvitesToggle();
@@ -104,6 +112,7 @@ export async function setExternalInvites(target: boolean): Promise<{
       confirmed: false,
       toast: null,
       confirmedBy: null,
+      errorBanner: null,
     };
   }
 
@@ -126,6 +135,27 @@ export async function setExternalInvites(target: boolean): Promise<{
   };
   captureToast();
 
+  /**
+   * Băng-rôn ĐỎ ChatGPT in ra khi cú bấm KHÔNG lưu được. Chỉ bắt SAU cú bấm:
+   * trang đang treo băng-rôn từ trước thì đó không phải phán quyết cho cú bấm
+   * của ta, mà nhánh dưới lại lấy nó làm cớ để huỷ lệnh mời.
+   */
+  let errorBanner: string | null = null;
+  const captureBanner = (): void => {
+    if (errorBanner !== null) return;
+    const seen = findIdentityErrorBanner();
+    if (!seen) return;
+    errorBanner = seen;
+    console.warn(
+      `[autogpt-external-invites] ChatGPT báo hỏng sau cú bấm: "${seen}" → ` +
+        "công tắc trên DOM KHÔNG còn đáng tin, phải tải lại trang đọc lại.",
+    );
+  };
+  const onTick = (): void => {
+    captureToast();
+    captureBanner();
+  };
+
   // Đã có vẻ ở đúng trạng thái → double-check 1 nhịp trước khi SKIP. Quan trọng
   // với target=ON: nếu thật ra OFF mà ta bỏ qua → mời email ngoài khi toggle tắt
   // → ChatGPT từ chối silently → phantom "đang chờ" trên dashboard.
@@ -141,7 +171,16 @@ export async function setExternalInvites(target: boolean): Promise<{
       // refetch org-config (xem settleServerCommit bên dưới).
       await settleServerCommit(target);
       captureToast();
-      return { prev, changed: false, confirmed: true, toast, confirmedBy: "dom" };
+      // KHÔNG soi băng-rôn ở nhánh này: không có cú bấm nào ⇒ không có PATCH nào
+      // để hỏng. Băng-rôn (nếu đang treo) là tàn dư của việc khác trên trang.
+      return {
+        prev,
+        changed: false,
+        confirmed: true,
+        toast,
+        confirmedBy: "dom",
+        errorBanner: null,
+      };
     }
     console.warn(
       `[autogpt-external-invites] đọc lại lệch (lần1=${prev}, lần2=${recheck}) → click cho chắc`,
@@ -150,8 +189,12 @@ export async function setExternalInvites(target: boolean): Promise<{
 
   // Click + poll xác nhận, retry tối đa 3 lần (v0.8.x "làm chậm mà chắc": tăng
   // 2→3 + poll 4s→6s để mạng/PATCH chậm không rơi confirmed=false oan).
+  // ⚠️ Điều kiện `errorBanner === null`: thấy ChatGPT báo hỏng thì DỪNG vòng thử
+  // lại ngay, đừng bấm thêm. Bấm tiếp lúc nó đang hỏng là đúng cách để bị khoá
+  // thêm (chốt user 3/9/2026) — và cú bấm sau cũng không chứng minh được gì, vì
+  // trạng thái thật chỉ đọc được sau khi tải lại trang.
   let confirmed = false;
-  for (let attempt = 0; attempt < 3 && !confirmed; attempt++) {
+  for (let attempt = 0; attempt < 3 && !confirmed && errorBanner === null; attempt++) {
     const el = findExternalInvitesToggle();
     if (!el) break;
     const cur = getToggleState(el);
@@ -164,10 +207,22 @@ export async function setExternalInvites(target: boolean): Promise<{
     );
     await humanClick(el);
     // Chờ ChatGPT fire PATCH /api/... + DOM phản ánh. Poll tới 6s thay vì sleep cứng.
-    confirmed = await pollUntilState(target, 6_000, captureToast);
+    confirmed = await pollUntilState(target, 6_000, onTick);
   }
 
   let confirmedBy: "dom" | "toast" | null = confirmed ? "dom" : null;
+
+  if (errorBanner !== null) {
+    // ChatGPT vừa nói thẳng là hỏng. Lời của nó chắc hơn `aria-checked` (state
+    // client đổi trước, PATCH hỏng sau) và chắc hơn cả câu xác nhận cũ còn treo
+    // trên trang. KHÔNG settle, KHÔNG kết luận — trả nguyên băng-rôn để caller
+    // đi đường tải-lại-rồi-đọc-lại.
+    console.warn(
+      `[autogpt-external-invites] có băng-rôn lỗi → KHÔNG chốt confirmed cho ` +
+        `toggle = ${target} dù DOM đọc ra ${readStateFresh()}`,
+    );
+    return { prev, changed: true, confirmed: false, toast, confirmedBy: null, errorBanner };
+  }
 
   if (confirmed) {
     console.log(`[autogpt-external-invites] OK, toggle = ${target} (confirmed)`);
@@ -193,7 +248,7 @@ export async function setExternalInvites(target: boolean): Promise<{
     );
   }
 
-  return { prev, changed: true, confirmed, toast, confirmedBy };
+  return { prev, changed: true, confirmed, toast, confirmedBy, errorBanner };
 }
 
 /**

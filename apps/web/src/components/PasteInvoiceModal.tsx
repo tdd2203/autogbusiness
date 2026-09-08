@@ -2,6 +2,11 @@
  * Modal DÁN chi tiết hoá đơn (thay cho scrape). Mở khi bấm "Cập nhật giá & ngày
  * renew". Người dùng dán toàn bộ text chi tiết hoá đơn Stripe → parse phía web
  * (invoice-parse.ts) → xem trước → Lưu (POST /billing-paste) → panel cập nhật.
+ *
+ * HOÁ ĐƠN QUYẾT ĐỊNH NGÀY CHỐT (chốt user 2026-09-08): với không gian neo hạn theo
+ * chu kỳ hoá đơn, bản dán của kỳ đang chạy/sắp tới tự đặt lại ngày chốt, hoá đơn cũ
+ * thì chỉ lưu vào danh sách. API không còn từ chối bản dán lệch ngày nữa nên modal
+ * cũng không còn ô tích xác nhận — chỉ dán và lưu.
  */
 
 import { useMemo, useState } from "react";
@@ -40,7 +45,7 @@ export function PasteInvoiceModal({
     mutationFn: () =>
       api(`/api/v1/workspaces/${workspaceId}/billing-paste`, {
         method: "POST",
-        body: JSON.stringify(parsed),
+        body: JSON.stringify(parsed ?? {}),
       }),
     onSuccess: () => {
       toast.success(t("billing.pasteSaved"));
@@ -48,7 +53,9 @@ export function PasteInvoiceModal({
       qc.invalidateQueries({ queryKey: ["workspaces"] });
       onClose();
     },
-    onError: (e) => toast.error(e instanceof Error ? e.message : String(e)),
+    onError: (e) => {
+      toast.error(e instanceof Error ? e.message : String(e));
+    },
   });
 
   return (

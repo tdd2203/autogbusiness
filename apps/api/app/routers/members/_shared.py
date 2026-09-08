@@ -11,9 +11,15 @@ năng có module + file docs (.md) riêng.
 ⚠️ 3 HÀM CÔNG THỨC HẠN DÙNG (`_end_from_purchase`, `_extend_subscription_end`,
 `_months_between`) + hằng số 30-ngày/ân-hạn-0 sống ở file này. Quy tắc đầy đủ:
 `EXPIRY_RULES.md` (cùng thư mục) — NGUỒN CHÂN LÝ DUY NHẤT, KHÔNG tự chế công thức.
+
+⚠️ Chế độ `cycle_aligned` (neo hạn vào mốc chu kỳ hoá đơn) có bộ hàm RIÊNG ở cuối
+file — `workspace_cycle` / `half_days_between` / `quote_cycle`. Ba hàm 30-ngày ở
+trên KHÔNG áp cho chế độ đó. Xem `EXPIRY_RULES.md` §3.6.
 """
 
-from datetime import datetime, timedelta
+import calendar
+from dataclasses import dataclass
+from datetime import datetime, time as dtime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -21,9 +27,13 @@ from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import (
+    BILLING_MODE_CYCLE_ALIGNED,
+    CYCLE_CUTOFF_UTC_DEFAULT,
+    CYCLE_FORCE_EXTRA_FROM_DAY_DEFAULT,
     PLATFORM_GPT,
     Member,
     MemberSubscriptionCycle,
+    PaymentSettings,
     QueueItem,
     User,
     WalletTransaction,
@@ -264,6 +274,7 @@ def _append_paid_cycle(
     months: int | None,
     actor_id: UUID | None,
     now: datetime,
+    prorated_half_days: int | None = None,
 ) -> None:
     """Nối MỘT chu kỳ ĐÃ THANH TOÁN phủ [start_at → end_at].
 
@@ -271,7 +282,10 @@ def _append_paid_cycle(
     thì gộp cả N vào 1 kỳ (`months=N`), KHÔNG tách thành N kỳ 1-tháng. Phí (ví/QR) luôn
     thu TRƯỚC nên kỳ sinh ra là 'paid' NGAY (không còn 'chưa thanh toán'/duyệt thủ công).
     `months` = số tháng lần mua (biết trước) hoặc suy từ cửa sổ. `cycle_number` nối tiếp
-    max hiện có. No-op nếu khoảng rỗng. Xem [[subscription-cycle-model]]."""
+    max hiện có. No-op nếu khoảng rỗng. Xem [[subscription-cycle-model]].
+
+    `prorated_half_days` chỉ có ở chế độ `cycle_aligned`: kỳ đầu thường lẻ ngày nên
+    không nhét vào `months` nguyên được (EXPIRY_RULES §3.6.7). Chế độ cũ để None."""
     if start_at is None or end_at is None or end_at <= start_at:
         return
     next_number = (
@@ -281,6 +295,7 @@ def _append_paid_cycle(
         MemberSubscriptionCycle(
             cycle_number=next_number,
             months=months if months is not None else _months_between(start_at, end_at),
+            prorated_half_days=prorated_half_days,
             start_at=start_at,
             end_at=end_at,
             payment_status="paid",
@@ -312,18 +327,44 @@ def _first_cycle_anchor(member: Member, now: datetime) -> datetime | None:
 
 
 def _ensure_cycles_materialized(
-    member: Member, *, now: datetime, actor_id: UUID | None
+    member: Member,
+    *,
+    now: datetime,
+    actor_id: UUID | None,
+    db: Session | None = None,
 ) -> None:
     """Member CÓ hạn nhưng CHƯA có chu kỳ nào (mời trước khi có bảng cycles / vô thời
     hạn cũ) → vật chất hoá 1 chu kỳ ĐÃ THANH TOÁN phủ [ngày tham gia → hạn] (months suy
-    từ cửa sổ). Gọi TRƯỚC khi nối kỳ mới để lịch sử liền mạch. No-op nếu đã có chu kỳ."""
+    từ cửa sổ). Gọi TRƯỚC khi nối kỳ mới để lịch sử liền mạch. No-op nếu đã có chu kỳ.
+
+    ⚠️ Ở chế độ `cycle_aligned` KHÔNG được để `months=None`: khi đó `_append_paid_cycle`
+    suy bằng `_months_between`, mà kỳ đầu của chế độ này thường lẻ (vd 20,5 ngày) nên
+    `round(20,5/30)` ra 1 — lịch sử kỳ nói khách đã mua TRỌN MỘT THÁNG cho quãng chưa
+    tới ba tuần. `sold_window` đọc lại đúng cửa sổ đã bán từ hai mốc trên bản ghi.
+    """
     if member.subscription_cycles or member.subscription_end_at is None:
         return
+    start_at = _first_cycle_anchor(member, now)
+    months: int | None = None
+    prorated: int | None = None
+    ws = getattr(member, "workspace", None)
+    if ws is not None and is_cycle_aligned(ws) and start_at is not None:
+        try:
+            prorated, _cycle_days, months = sold_window(
+                ws,
+                join_at=start_at,
+                end_at=member.subscription_end_at,
+                settings_row=cycle_settings(db) if db is not None else None,
+            )
+        except HTTPException:
+            # Chưa có mốc chu kỳ → để nguyên đường cũ, đừng chặn lượt gia hạn.
+            months, prorated = None, None
     _append_paid_cycle(
         member,
-        start_at=_first_cycle_anchor(member, now),
+        start_at=start_at,
         end_at=member.subscription_end_at,
-        months=None,  # suy từ cửa sổ (không biết ranh giới từng lần mua cũ)
+        months=months,  # None ⇒ suy từ cửa sổ (chế độ 30-ngày)
+        prorated_half_days=prorated,
         actor_id=actor_id,
         now=now,
     )
@@ -417,11 +458,34 @@ def _apply_invite_paid_cycle(
     'paid'. Xem [[subscription-cycle-model]]."""
     start_at = _clamp_future(member.subscription_purchased_at, now)
     _drop_open_cycles(db, member, boundary=start_at or now)
+    # Chế độ `cycle_aligned`: `months` truyền vào là SỐ MỐC khách yêu cầu, không phải
+    # phân rã thật của lần bán. Kỳ đầu thường lẻ (vd 20,5 ngày) nên phải ghi cả phần
+    # lẻ, không thì lịch sử kỳ nói khách mua trọn một tháng cho quãng chưa tới ba
+    # tuần — và đó chính là con số người ta mở ra đối soát. Xem EXPIRY_RULES §3.6.7.
+    cycle_months, prorated = months, None
+    ws = getattr(member, "workspace", None)
+    if (
+        ws is not None
+        and is_cycle_aligned(ws)
+        and start_at is not None
+        and member.subscription_end_at is not None
+    ):
+        try:
+            prorated, _days, cycle_months = sold_window(
+                ws,
+                join_at=start_at,
+                end_at=member.subscription_end_at,
+                settings_row=cycle_settings(db),
+            )
+        except HTTPException:
+            # Chưa có mốc chu kỳ → giữ đường cũ, đừng chặn lượt mời.
+            cycle_months, prorated = months, None
     _append_paid_cycle(
         member,
         start_at=start_at,
         end_at=member.subscription_end_at,
-        months=months,
+        months=cycle_months,
+        prorated_half_days=prorated,
         actor_id=actor_id,
         now=now,
     )
@@ -699,3 +763,331 @@ def _member_or_404_visible(
             detail="Member không tồn tại hoặc bạn không có quyền truy cập",
         )
     return member
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CHẾ ĐỘ `cycle_aligned` — NEO HẠN VÀO MỐC CHU KỲ HOÁ ĐƠN (EXPIRY_RULES §3.6)
+# ═════════════════════════════════════════════════════════════════════════════
+# Đây là chỗ DUY NHẤT biết cách suy ra mốc chu kỳ và cách đếm ngày tính tiền.
+# Router/service tuyệt đối KHÔNG tự trừ hai datetime rồi chia 86400 — sai một chỗ
+# là sai tiền hàng loạt mà không có gì báo.
+
+_DAY = timedelta(days=1)
+_HALF_DAY = timedelta(hours=12)
+
+
+def is_cycle_aligned(ws: Workspace) -> bool:
+    """Workspace này có neo hạn theo chu kỳ hoá đơn không?
+
+    Mặc định `legacy_30d` là CẦU DAO: mọi thứ chạy như cũ tới khi super-admin gạt
+    từng workspace một. Giá trị lạ (dữ liệu hỏng) rơi về nhánh cũ — hướng an toàn.
+    """
+    return ws.billing_mode == BILLING_MODE_CYCLE_ALIGNED
+
+
+def _as_utc(at: datetime) -> datetime:
+    """Ép về UTC. Naive coi như đã là UTC (DB lưu UTC).
+
+    Mọi phép đo thời gian của chế độ này phải đi qua đây: đọc `.day` của giờ máy là
+    lệch 7 tiếng so với ngày UTC, khách được thừa hoặc thiếu mà không ai thấy.
+    """
+    if at.tzinfo is None:
+        return at.replace(tzinfo=timezone.utc)
+    return at.astimezone(timezone.utc)
+
+
+def cycle_settings(db: Session) -> PaymentSettings | None:
+    """Hàng cấu hình thanh toán (singleton id=1) — nơi giữ mặc định hệ thống."""
+    return db.get(PaymentSettings, 1)
+
+
+def cycle_params(
+    ws: Workspace, settings_row: PaymentSettings | None = None
+) -> tuple[int | None, dtime, int]:
+    """`(ngày neo, giờ chốt UTC, ngưỡng ép thêm tháng)` có hiệu lực cho workspace.
+
+    Ba tầng: cột riêng của workspace → `payment_settings` → hằng trong `models.py`.
+    KHÔNG hard-code con số nào ở chỗ khác (EXPIRY_RULES §3.6.6).
+
+    `cycle_anchor_day` chưa có thì MỒI từ `renewal_date` để workspace vừa gạt sang
+    chế độ mới không phải gõ tay. Chỉ là giá trị khởi đầu: mốc tự cuộn theo tháng từ
+    con số đó, không đọc lại `renewal_date` ở mỗi lần tính (§3.6.3).
+    """
+    anchor_day = ws.cycle_anchor_day
+    if anchor_day is None and ws.renewal_date is not None:
+        anchor_day = _as_utc(ws.renewal_date).day
+    cutoff = (
+        ws.cycle_cutoff_utc
+        or (settings_row.cycle_cutoff_utc if settings_row is not None else None)
+        or CYCLE_CUTOFF_UTC_DEFAULT
+    )
+    force_from = (
+        ws.cycle_force_extra_from_day
+        or (
+            settings_row.cycle_force_extra_from_day
+            if settings_row is not None
+            else None
+        )
+        or CYCLE_FORCE_EXTRA_FROM_DAY_DEFAULT
+    )
+    return anchor_day, cutoff, force_from
+
+
+def _shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
+    idx = year * 12 + (month - 1) + delta
+    return idx // 12, idx % 12 + 1
+
+
+def _boundary_on(anchor_day: int, cutoff: dtime, year: int, month: int) -> datetime:
+    """Mốc chốt của tháng `(year, month)`.
+
+    Ngày neo 29/30/31 rơi vào tháng ngắn thì LÙI về ngày cuối tháng — không thì
+    tháng 2 sẽ không có mốc nào và cả chu kỳ biến mất.
+    """
+    last_day = calendar.monthrange(year, month)[1]
+    return datetime(
+        year,
+        month,
+        min(anchor_day, last_day),
+        cutoff.hour,
+        cutoff.minute,
+        cutoff.second,
+        tzinfo=timezone.utc,
+    )
+
+
+def _require_anchor_day(ws: Workspace, settings_row: PaymentSettings | None) -> tuple:
+    anchor_day, cutoff, force_from = cycle_params(ws, settings_row)
+    if anchor_day is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Workspace đang ở chế độ neo theo chu kỳ nhưng chưa biết ngày chốt "
+                "chu kỳ. Dán một hoá đơn hoặc đặt 'ngày chốt chu kỳ' cho workspace "
+                "trước khi bán."
+            ),
+        )
+    return anchor_day, cutoff, force_from
+
+
+def workspace_cycle(
+    ws: Workspace, at: datetime, *, settings_row: PaymentSettings | None = None
+) -> tuple[datetime, datetime]:
+    """Chu kỳ hoá đơn CHỨA `at`, trả `(mốc mở, mốc chốt)` — nửa mở `[start, end)`.
+
+    Mốc TỰ CUỘN theo tháng dương lịch từ `cycle_anchor_day`, KHÔNG chờ ai dán hoá
+    đơn: `renewal_date` chỉ đổi khi super-admin dán tay, để chu kỳ phụ thuộc thao
+    tác đó thì một kỳ quên dán là cả kỳ bán sai giá mà không có gì báo (§3.6.3).
+    """
+    anchor_day, cutoff, _ = _require_anchor_day(ws, settings_row)
+    at = _as_utc(at)
+    here = _boundary_on(anchor_day, cutoff, at.year, at.month)
+    if at < here:
+        y, m = _shift_month(at.year, at.month, -1)
+        return _boundary_on(anchor_day, cutoff, y, m), here
+    y, m = _shift_month(at.year, at.month, 1)
+    return here, _boundary_on(anchor_day, cutoff, y, m)
+
+
+def next_boundary(
+    ws: Workspace, boundary: datetime, *, settings_row: PaymentSettings | None = None
+) -> datetime:
+    """Mốc chốt kế tiếp sau `boundary` — đúng MỘT tháng dương lịch, không phải 30 ngày."""
+    anchor_day, cutoff, _ = _require_anchor_day(ws, settings_row)
+    y, m = _shift_month(boundary.year, boundary.month, 1)
+    return _boundary_on(anchor_day, cutoff, y, m)
+
+
+def half_days_between(start: datetime, end: datetime) -> int:
+    """Số NỬA NGÀY tính tiền giữa hai mốc (EXPIRY_RULES §3.6.4).
+
+        dư = 0       → không cộng thừa
+        dư ≤ 12 giờ  → nửa ngày
+        dư > 12 giờ  → trọn ngày
+
+    Ví dụ chốt với user: mua ngày 20 lúc 23:00, mốc chốt ngày 30 lúc 10:00 ⇒ span
+    9 ngày 11 tiếng ⇒ dư 11 tiếng ≤ 12 ⇒ **9,5 ngày** = 19 nửa ngày. Cùng ngày đó
+    mà mua lúc 10:00 thì tròn 10 ngày = 20 nửa ngày.
+
+    Trả về đơn vị nửa-ngày (số nguyên) chứ KHÔNG trả float: tiền không được dính
+    số thực, và không có phần lẻ nào nhỏ hơn nửa ngày.
+    """
+    span = _as_utc(end) - _as_utc(start)
+    if span <= timedelta(0):
+        return 0
+    whole_days = span // _DAY
+    remainder = span - whole_days * _DAY
+    if remainder == timedelta(0):
+        extra = 0
+    elif remainder <= _HALF_DAY:
+        extra = 1
+    else:
+        extra = 2
+    return int(whole_days) * 2 + extra
+
+
+@dataclass(frozen=True)
+class CycleQuote:
+    """Kết quả áp luật §3.6.2 cho MỘT lượt bán (mời mới hoặc gia hạn).
+
+    Mọi nơi cần "bán tới bao giờ, thu bao nhiêu" phải đi qua `quote_cycle` và đọc
+    dataclass này — không nơi nào được tự suy lại, kẻo hạn và tiền lệch nhau.
+    """
+
+    join_at: datetime  # ĐIỂM NỐI = max(hạn hiện tại, now)
+    cycle_start: datetime
+    cycle_end: datetime
+    cycle_days: int  # độ dài LỊCH của chu kỳ chứa điểm nối (28–31)
+    day_of_cycle: int  # điểm nối là ngày thứ mấy của chu kỳ (1-based)
+    prorated_half_days: int  # phần lẻ, đơn vị NỬA NGÀY
+    whole_months: int  # số chu kỳ TRỌN phải trả (gồm cả tháng bị ép)
+    forced_extra_month: bool  # có bị ngưỡng ép cộng thêm 1 tháng không
+    end_at: datetime  # HẠN DÙNG — luôn rơi đúng một mốc chốt
+
+
+def quote_cycle(
+    ws: Workspace,
+    now: datetime,
+    *,
+    current_end: datetime | None = None,
+    extra_months: int = 0,
+    settings_row: PaymentSettings | None = None,
+) -> CycleQuote:
+    """Áp luật §3.6.2 — dùng CHUNG cho mời mới, gia hạn, và khách cũ chuyển sang.
+
+    `current_end` = hạn hiện tại của member (None nếu chưa có). ĐIỂM NỐI =
+    `max(current_end, now)`: khách gia hạn SỚM mà đếm từ lúc bấm nút là thu trùng
+    phần họ đã trả, còn khách gia hạn MUỘN mà đếm từ hạn cũ là tính lùi về quá khứ.
+
+    KHÔNG có nhánh riêng cho từng nhóm khách — thêm nhánh là phá mất tính chất
+    "không ai thiệt ở bất kỳ ca nào" vốn là điều kiện để giữ một luật duy nhất.
+    """
+    now = _as_utc(now)
+    join_at = now
+    if current_end is not None:
+        current_end = _as_utc(current_end)
+        if current_end > now:
+            join_at = current_end
+
+    _, _, force_from = _require_anchor_day(ws, settings_row)
+    start, end = workspace_cycle(ws, join_at, settings_row=settings_row)
+    cycle_days = int((end - start) // _DAY)
+    day_of_cycle = int((join_at - start) // _DAY) + 1
+
+    prorated = half_days_between(join_at, end)
+    base_months = 0
+    # Điểm nối trùng đúng mốc mở (khách đã hội tụ, gia hạn đúng kỳ) ⇒ phần "lẻ" phủ
+    # trọn một chu kỳ. Cùng số tiền, nhưng gọi thẳng là MỘT THÁNG thì hoá đơn và
+    # giao diện đọc ra "1 tháng" thay vì "62 nửa ngày".
+    if prorated == cycle_days * 2:
+        prorated = 0
+        base_months = 1
+
+    forced = day_of_cycle >= force_from
+    end_at = end
+    for _ in range(int(forced) + max(0, extra_months)):
+        end_at = next_boundary(ws, end_at, settings_row=settings_row)
+
+    return CycleQuote(
+        join_at=join_at,
+        cycle_start=start,
+        cycle_end=end,
+        cycle_days=cycle_days,
+        day_of_cycle=day_of_cycle,
+        prorated_half_days=prorated,
+        whole_months=base_months + int(forced) + max(0, extra_months),
+        forced_extra_month=forced,
+        end_at=end_at,
+    )
+
+
+def settle_invite_credit(member: Member) -> None:
+    """Email đã vào nhóm thật ⇒ khoản đang giữ coi như đã đổi lấy dịch vụ, thôi treo.
+
+    Không đụng ví và không sinh giao dịch nào: tiền vốn đã trừ từ lượt mời hỏng, đây
+    chỉ là thôi đánh dấu "đã thu mà chưa giao" (xem `Member.invite_credit_vnd`).
+
+    Sống ở đây chứ không ở `queue/completion.py` vì có BỐN đường đưa member lên
+    `active` — ba đường trong completion (verify, đồng bộ lẻ, đồng bộ mẻ) và một
+    đường trong `reconcile.bulk_upsert_members`. Sót một đường là khoản treo không
+    bao giờ tắt, và con số đối soát phình mãi.
+    """
+    if member.invite_credit_vnd:
+        member.invite_credit_vnd = None
+        member.invite_credit_at = None
+
+
+def snap_to_boundary(
+    ws: Workspace,
+    at: datetime,
+    extra_months: int = 0,
+    *,
+    settings_row: PaymentSettings | None = None,
+) -> datetime:
+    """Mốc chốt kết thúc chu kỳ CHỨA `at`, cộng thêm `extra_months` mốc nữa.
+
+    Khác `boundary_for` ở đúng một điểm, và điểm đó quan trọng: hàm này **KHÔNG áp
+    ngưỡng `cycle_force_extra_from_day`**.
+
+    Ngưỡng ép thêm tháng sinh ra cho việc BÁN — đừng bán kỳ quá ngắn. Nhưng khi
+    SỬA một bản ghi đã có (vd super-admin sửa "Ngày gia hạn"), ép thêm một tháng là
+    tự tay tặng khách 30 ngày mà không ai bấm mua. Sửa dữ liệu thì chỉ nắn cho hạn
+    rơi đúng mốc, không được đổi số lượng đã bán.
+    """
+    _, boundary = workspace_cycle(ws, at, settings_row=settings_row)
+    for _ in range(max(0, extra_months)):
+        boundary = next_boundary(ws, boundary, settings_row=settings_row)
+    return boundary
+
+
+def sold_window(
+    ws: Workspace,
+    *,
+    join_at: datetime,
+    end_at: datetime,
+    settings_row: PaymentSettings | None = None,
+) -> tuple[int, int, int]:
+    """Suy NGƯỢC cửa sổ đã bán ra `(nửa ngày lẻ, số ngày chu kỳ, số chu kỳ trọn)`.
+
+    Dùng khi member ĐÃ được tạo và ta cần tính tiền của đúng quãng vừa bán: đọc lại
+    từ hai mốc đã lưu (`subscription_purchased_at` = điểm nối, `subscription_end_at`)
+    thay vì mang theo `CycleQuote` qua nhiều tầng hàm.
+
+    VÌ SAO SUY NGƯỢC THAY VÌ TRUYỀN QUOTE: hạn và tiền phải ra từ CÙNG một cửa sổ.
+    Truyền quote qua ba tầng gọi thì chỉ cần một nhánh quên truyền là tiền tính theo
+    một cửa sổ, hạn ghi theo cửa sổ khác — lệch mà không ai thấy. Suy từ mốc đã lưu
+    thì hai thứ đó khớp nhau theo định nghĩa.
+
+    Kết quả trùng khít `quote_cycle` của chính lượt bán đó (có test khoá).
+    """
+    start, cycle_end = workspace_cycle(ws, join_at, settings_row=settings_row)
+    cycle_days = int((cycle_end - start) // _DAY)
+    prorated = half_days_between(join_at, cycle_end)
+    months = 0
+    # Phần lẻ phủ trọn một chu kỳ ⇒ gọi thẳng là MỘT THÁNG (khớp `quote_cycle`).
+    if cycle_days > 0 and prorated == cycle_days * 2:
+        prorated, months = 0, 1
+    boundary = cycle_end
+    end_at = _as_utc(end_at)
+    while boundary < end_at:
+        boundary = next_boundary(ws, boundary, settings_row=settings_row)
+        months += 1
+    return prorated, cycle_days, months
+
+
+def boundary_for(
+    ws: Workspace,
+    now: datetime,
+    extra_months: int = 0,
+    *,
+    current_end: datetime | None = None,
+    settings_row: PaymentSettings | None = None,
+) -> datetime:
+    """HẠN DÙNG theo §3.6.2 — vỏ mỏng của `quote_cycle` cho nơi chỉ cần cái hạn."""
+    return quote_cycle(
+        ws,
+        now,
+        current_end=current_end,
+        extra_months=extra_months,
+        settings_row=settings_row,
+    ).end_at

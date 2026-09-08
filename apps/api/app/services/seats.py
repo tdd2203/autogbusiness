@@ -47,6 +47,7 @@ from app.models import (
     MemberSubscriptionCycle,
     Workspace,
 )
+from app.services import invite_block
 
 # Trần overcommit khi mời: cho phép vượt `seat_total` tới +50% rồi mới chặn, vì
 # `seat_total` là số scrape có thể cũ — chặn đúng bằng nó sẽ khoá oan lúc admin vừa
@@ -471,6 +472,71 @@ def owner_reserve(db: Session, workspace: Workspace) -> int:
     return owner_reserve_map(db, [workspace]).get(workspace.id, 0)
 
 
+def seats_needed_at(db: Session, workspace_id: UUID, boundary) -> int:
+    """Số ghế PHẢI CÓ để phục vụ tiếp sau mốc `boundary` (chế độ `cycle_aligned`).
+
+    Đúng MỘT điều kiện, và nó phủ cả hai nhóm khách cùng lúc:
+
+        chưa bị gỡ  VÀ  (vô thời hạn  HOẶC  hạn > mốc)
+
+    · người đã hội tụ và đã gia hạn → hạn = mốc KẾ TIẾP ⇒ tính;
+    · khách cũ chưa hội tụ, hạn còn vượt qua mốc ⇒ **vẫn tính** — đây là chỗ dễ
+      giết người nhất của cả tính năng: hạ `seat_total` xuống bằng riêng nhóm đã
+      hội tụ là kick oan khách đang còn hạn ĐÃ TRẢ TIỀN (EXPIRY_RULES §3.6.8);
+    · người chưa gia hạn có hạn ĐÚNG BẰNG mốc ⇒ KHÔNG tính, vì đúng khoảnh khắc
+      đó họ bị đợt gỡ dọn đi;
+    · owner vô thời hạn ⇒ luôn tính, họ không bao giờ hết hạn.
+
+    So sánh `>` chứ không phải `>=`: hạn bằng mốc nghĩa là hết hạn TẠI mốc.
+    """
+    return int(
+        db.execute(
+            select(func.count(Member.id)).where(
+                Member.workspace_id == workspace_id,
+                Member.status != "removed",
+                or_(
+                    Member.subscription_end_at.is_(None),
+                    Member.subscription_end_at > boundary,
+                ),
+            )
+        ).scalar_one()
+        or 0
+    )
+
+
+def seat_plan_next_cycle(db: Session, workspace: Workspace) -> dict | None:
+    """Kế hoạch ghế cho kỳ tới: cần bao nhiêu, đang có bao nhiêu, thừa bao nhiêu.
+
+    `None` nếu workspace chưa ở chế độ `cycle_aligned` (chế độ cũ hạn rải rác nên
+    không có "kỳ tới" để chốt) hoặc chưa biết mốc chu kỳ.
+
+    `surplus` > 0 là số ghế ĐANG TRẢ TIỀN mà kỳ tới không ai dùng — con số để quyết
+    định hạ suất. Cố ý KHÔNG tự hạ: hạ suất là thao tác tiền thật trên ChatGPT, và
+    `seat_total` vốn là số SCRAPE có thể cũ (xem đầu file), nên chỉ đề xuất.
+    """
+    from app.routers.members._shared import (
+        cycle_settings,
+        is_cycle_aligned,
+        workspace_cycle,
+    )
+
+    if not is_cycle_aligned(workspace):
+        return None
+    now = datetime.now(timezone.utc)
+    try:
+        _, boundary = workspace_cycle(workspace, now, settings_row=cycle_settings(db))
+    except HTTPException:
+        return None  # chưa có mốc chu kỳ → chưa chốt được gì
+    needed = seats_needed_at(db, workspace.id, boundary)
+    total = workspace.seat_total
+    return {
+        "boundary": boundary,
+        "needed": needed,
+        "seat_total": total,
+        "surplus": max(0, int(total) - needed) if total is not None else None,
+    }
+
+
 def seat_left(seat_total: int | None, used: int) -> int | None:
     """Suất còn TRỐNG để hiển thị. `None` khi workspace chưa từng sync `seat_total`
     (chưa biết tổng thì không được đoán bừa là 0 — người dùng sẽ tưởng hết suất).
@@ -486,6 +552,10 @@ def seat_snapshot(db: Session, workspaces: list[Workspace]) -> list[dict]:
     `seat_used` trả về ĐÃ CỘNG suất giữ chỗ của chủ đội Canva, nên có thể lớn hơn số
     dòng trong bảng thành viên đúng 1 — chủ đội là người chiếm suất thật nhưng chưa
     chắc đã nằm trong danh sách quét về.
+
+    Kèm luôn mốc NGƯNG MỜI (`invite_blocked_until`): trang Mời vốn đã poll endpoint
+    này nhịp ngắn, nên gắn vào đây thì trạng thái ngưng tự tươi mà không thêm một
+    lượt gọi nào. Xem `services/invite_block.py`.
     """
     used = seat_used_map(db, [ws.id for ws in workspaces])
     reserve = owner_reserve_map(db, workspaces)
@@ -499,6 +569,8 @@ def seat_snapshot(db: Session, workspaces: list[Workspace]) -> list[dict]:
     out: list[dict] = []
     for ws in workspaces:
         u = used.get(ws.id, 0) + reserve.get(ws.id, 0)
+        # Mốc đã qua ⇒ trả None (mời được), khớp `invite_block.blocked_until`.
+        blocked_until = invite_block.blocked_until(ws)
         cap = ws.invite_member_cap
         left = None if cap is None else max(int(cap) - u, 0)
         out.append(
@@ -509,6 +581,8 @@ def seat_snapshot(db: Session, workspaces: list[Workspace]) -> list[dict]:
                 "seat_total": ws.seat_total,
                 "seat_used": u,
                 "seat_left": seat_left(ws.seat_total, u),
+                "invite_blocked_until": blocked_until,
+                "invite_block_reason": ws.invite_block_reason if blocked_until else None,
                 # `u` ở trên ĐÃ là `cap_used` (đã cộng suất giữ chỗ chủ đội) nên so
                 # thẳng, khỏi thêm truy vấn cho một endpoint bị poll 15 giây/lần.
                 "invite_member_cap": cap,

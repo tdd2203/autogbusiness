@@ -38,10 +38,11 @@ from app.models import (
     Invite,
     Member,
     QueueItem,
+    WalletTransaction,
     Workspace,
 )
 from app.schemas import QueueOut, QueueUpdate
-from app.services import wallet_service
+from app.services import invite_block, wallet_service
 from app.services.task_errors import friendly_error_message
 from app.sse import publish_task_event
 
@@ -229,31 +230,24 @@ def reconcile_failed_invite(
     # từ 14/7, xem `perform_invite_core`) tự lo phần còn lại — không phát sinh khái
     # niệm mới, không có đường tính phí nào phải sửa.
     #
-    # CHỈ áp cho `NOT_ENOUGH_SEATS` — lời mời hỏng vì lý do khác (UI đổi, timeout,
-    # ChatGPT từ chối) vẫn hoàn tiền như cũ.
+    # Workspace `cycle_aligned` giữ tiền với MỌI lý do hỏng; workspace `legacy_30d`
+    # vẫn chỉ giữ khi `NOT_ENOUGH_SEATS` như luật gốc 28/8. Vì sao rào theo chế độ
+    # tính giá: xem `_seat_credit_candidates`.
     #
     # BẤT BIẾN: giữ tiền ⇔ giữ được PHIẾU gắn với email. Phiếu chính là
     # `subscription_end_at` còn ở tương lai trên bản ghi — không có nó thì lần mời
     # sau vẫn bị tính phí, tiền giữ lại thành tiền nuốt không. Nên email nào không
     # có hạn còn sống (mời "vô thời hạn": `months=None` ⇒ `subscription_end_at`
-    # NULL mà phí vẫn thu tối thiểu 1 tháng) thì HOÀN TIỀN như cũ.
-    seat_credit_emails: set[str] = set()
-    if error_code == "NOT_ENOUGH_SEATS" and task_emails:
-        seat_credit_emails = {
-            row.lower()
-            for row in db.execute(
-                select(Member.email).where(
-                    Member.workspace_id == workspace_id,
-                    Member.email.in_(sorted(task_emails)),
-                    Member.status == "pending",
-                    Member.joined_at.is_(None),
-                    Member.subscription_end_at.isnot(None),
-                    Member.subscription_end_at > now_terminal,
-                )
-            )
-            .scalars()
-            .all()
-        }
+    # NULL mà phí vẫn thu tối thiểu 1 tháng) thì HOÀN TIỀN như cũ. Đo trên
+    # production 7/9/2026: 3/1099 member không có hạn, cả ba đều là owner ⇒ nhánh
+    # hoàn tiền này gần như không bao giờ chạy, nhưng giữ lại vì nó rẻ.
+    seat_credit_emails = _seat_credit_candidates(
+        db,
+        workspace_id=workspace_id,
+        emails=sorted(task_emails),
+        now=now_terminal,
+        error_code=error_code,
+    )
     refund_emails = sorted(task_emails - seat_credit_emails)
 
     # 1. Timeline: chấm thất bại cho MỌI member còn sống của task (TRƯỚC khi xoá).
@@ -650,6 +644,68 @@ def _transfer_removal_reason(member: Member) -> str:
     return REMOVED_REASON_EMAIL_CHANGED
 
 
+def _seat_credit_candidates(
+    db: Session,
+    *,
+    workspace_id: UUID,
+    emails: list[str],
+    now: datetime,
+    error_code: str | None = None,
+) -> set[str]:
+    """Email nào của lượt mời hỏng được GIỮ TIỀN (thay vì hoàn về ví).
+
+    ⚠️ HAI LUẬT SỐNG SONG SONG, chọn theo `Workspace.billing_mode`:
+
+    · `legacy_30d` — giữ tiền CHỈ khi `NOT_ENOUGH_SEATS` (luật gốc 28/8/2026). Giá
+      ở chế độ này cố định theo tháng nên tiền hoàn về ví khớp đúng giá lượt sau,
+      hoàn phí vẫn êm như xưa. Không có lý do đổi.
+    · `cycle_aligned` — giữ tiền với MỌI lý do hỏng (7/9/2026). Ở đây giá tính theo
+      NGÀY nên mỗi ngày một con số, tiền hoàn về ví gần như không bao giờ khớp giá
+      lượt mời kế tiếp và đại lý phải nạp thêm mấy chục nghìn lẻ mới mời lại được
+      đúng email vừa hỏng. Xem `EXPIRY_RULES.md` §3.6.
+
+    Rào theo `billing_mode` chứ không phải cờ riêng vì vấn đề SINH RA từ giá theo
+    ngày — sửa ở đúng chỗ gây ra nó, và cầu dao thì đã có sẵn. Workspace nào chưa
+    gạt sang chế độ mới thì không thấy gì đổi.
+
+    Bốn điều kiện, thiếu một là hoàn tiền như cũ:
+      · bản ghi còn ở `pending` — chưa ai gỡ, chưa thành `active`;
+      · `joined_at` NULL — chưa từng vào nhóm thật (đúng phạm vi "bản ghi ma");
+      · CÓ hạn cụ thể, và hạn còn ở tương lai.
+
+    Hai điều kiện cuối chính là PHIẾU: luật "mời lại email còn hạn thì miễn phí"
+    nhận biết bằng đúng chúng (`_is_paid_period_active`). Không có phiếu mà vẫn giữ
+    tiền là thu hai lần cho một suất.
+
+    Dùng chung cho CẢ hai đường mời hỏng — task FAILED (`reconcile_failed_invite`)
+    và COMPLETED-có-email-không-verify — để hai nơi không lệch luật.
+    """
+    if not emails:
+        return set()
+    from app.routers.members._shared import is_cycle_aligned
+
+    ws = db.get(Workspace, workspace_id)
+    if ws is None:
+        return set()
+    if not is_cycle_aligned(ws) and error_code != "NOT_ENOUGH_SEATS":
+        return set()
+    return {
+        row.lower()
+        for row in db.execute(
+            select(Member.email).where(
+                Member.workspace_id == workspace_id,
+                Member.email.in_(sorted({e.lower() for e in emails})),
+                Member.status == "pending",
+                Member.joined_at.is_(None),
+                Member.subscription_end_at.isnot(None),
+                Member.subscription_end_at > now,
+            )
+        )
+        .scalars()
+        .all()
+    }
+
+
 def _keep_seat_credit_members(
     db: Session,
     *,
@@ -657,9 +713,9 @@ def _keep_seat_credit_members(
     workspace_name: str,
     emails: list[str],
     now: datetime,
-    item_id: UUID,
+    item_id: UUID | None,
 ) -> list[str]:
-    """Mời hỏng vì THIẾU SUẤT: giữ bản ghi lại làm "phiếu đã trả tiền" của email đó.
+    """Mời hỏng: giữ bản ghi lại làm "phiếu đã trả tiền" của email đó.
 
     Bản ghi chuyển `removed` + `removed_reason='invite_seat_credit'` nhưng GIỮ
     NGUYÊN `subscription_end_at` và các chu kỳ đã thanh toán. Hai hệ quả, cả hai
@@ -688,11 +744,41 @@ def _keep_seat_credit_members(
         .scalars()
         .all()
     )
+    # TIỀN ĐANG GIỮ của lượt mời này, gộp theo email. Chỉ đếm dòng phí CHƯA hoàn
+    # (`reversed=False`) — dòng đã hoàn thì tiền về ví rồi, không còn giữ gì.
+    #
+    # `item_id` None ⇒ lời mời này không gắn với task nào nên KHÔNG có dòng phí nào
+    # quy được về nó. Để trống thay vì dò theo email: dò theo email sẽ vơ cả phí của
+    # những kỳ TRƯỚC đã giao dịch vụ đàng hoàng, thổi phồng con số đối soát.
+    held: dict[str, int] = {}
+    for tx in (
+        db.execute(
+            select(WalletTransaction).where(
+                WalletTransaction.kind == "invite_fee",
+                WalletTransaction.ref_id == str(item_id),
+                WalletTransaction.reversed.is_(False),
+            )
+        )
+        .scalars()
+        .all()
+        if item_id is not None
+        else []
+    ):
+        tx_email = str((tx.meta or {}).get("email") or "").lower()
+        if tx_email:
+            held[tx_email] = held.get(tx_email, 0) + abs(int(tx.amount or 0))
+
     kept: list[str] = []
     for m in rows:
         m.status = "removed"
         m.removed_at = now
         m.removed_reason = REMOVED_REASON_SEAT_CREDIT
+        # Cộng dồn: email hỏng nhiều lượt thì khoản giữ cộng lại, không ghi đè —
+        # ghi đè là mất dấu những lần trước, mà đây là con số dùng để đối soát.
+        credit = held.get(m.email.lower(), 0)
+        if credit:
+            m.invite_credit_vnd = int(m.invite_credit_vnd or 0) + credit
+            m.invite_credit_at = now
         db.add(m)
         kept.append(m.email)
         log_event(
@@ -712,10 +798,10 @@ def _keep_seat_credit_members(
                     if m.subscription_end_at
                     else None
                 ),
+                "invite_credit_vnd": m.invite_credit_vnd,
                 "note": (
-                    "Mời hỏng vì workspace hết suất và mua bù không được. KHÔNG hoàn "
-                    "tiền — khoản đã trả ở lại với email này, mời lại email này sẽ "
-                    "miễn phí trong thời hạn đã trả."
+                    "Mời hỏng. KHÔNG hoàn tiền — khoản đã trả ở lại với email này, "
+                    "mời lại email này sẽ miễn phí trong thời hạn đã trả."
                 ),
             },
             commit=False,
@@ -796,8 +882,14 @@ def fail_deferred_invite(
     """CHỐT HỎNG một lời mời đang treo "chờ xác minh", theo ĐÚNG một email.
 
     Ba việc, đúng thứ tự (thứ tự có ý nghĩa — xem chú thích từng bước): ghi
-    `MEMBER_INVITE_FAILED` (timeline lật "Thất bại"), hoàn phí + void kỳ đã trả,
-    rồi xoá phantom member/invite. KHÔNG commit — caller commit.
+    `MEMBER_INVITE_FAILED` (timeline lật "Thất bại"), quyết TIỀN, rồi dọn bản ghi.
+    KHÔNG commit — caller commit.
+
+    ⚠️ Đường thứ BA của "mời hỏng", cùng luật tiền với hai đường kia từ 7/9/2026:
+    email nào còn dựng được PHIẾU thì GIỮ TIỀN (không hoàn, không void, không xoá)
+    để lượt mời lại miễn phí; chỉ email không có phiếu mới hoàn về ví. Ba đường
+    dùng chung `_seat_credit_candidates` — lệch nhau là cùng một chuyện "mời hỏng"
+    mà tiền đi hai hướng tuỳ hỏng theo kiểu nào.
 
     Dùng chung cho hai người gọi để đường tiền chỉ có MỘT bản: resolver 20′
     (`main.py::_resolve_stale_pending_invites_once`) và nhánh đồng bộ báo
@@ -829,6 +921,36 @@ def fail_deferred_invite(
     # 2. Hoàn phí (idempotent) + void kỳ đã trả — CHỈ void khi lượt hoàn này thực
     #    sự trả tiền lại cho chính email đó (bất biến "hoàn phí ⇒ void kỳ"; void mà
     #    không hoàn = cắt kỳ khách đã trả bằng task khác — ca thật 23/8/2026).
+    # Dòng INVITE đi trong MỌI ca — lời mời đã chốt hỏng, để lại là treo mãi "đang
+    # chờ" và bị nhặt lên xử lý lần nữa. Đặt TRƯỚC nhánh tiền để nhánh giữ-tiền
+    # thoát sớm cũng không bỏ sót nó.
+    db.execute(
+        delete(Invite).where(
+            Invite.workspace_id == ws_id,
+            func.lower(Invite.email) == email,
+        )
+    )
+    keep_credit = bool(
+        _seat_credit_candidates(
+            db, workspace_id=ws_id, emails=[email], now=now
+        )
+    )
+    if keep_credit:
+        # GIỮ TIỀN: khoản đã trả ở lại với email, bản ghi thành phiếu. Không hoàn ⇒
+        # KHÔNG void kỳ (bất biến hai chiều của file này) ⇒ mời lại miễn phí.
+        # Tên workspace THẬT cho nhật ký — `actor_label` là nhãn của NGƯỜI GỌI
+        # (resolver nền / đồng bộ), lọc nhật ký theo workspace sẽ sót đúng những
+        # dòng nói về tiền đang giữ.
+        ws_row = db.get(Workspace, ws_id)
+        _keep_seat_credit_members(
+            db,
+            workspace_id=ws_id,
+            workspace_name=ws_row.name if ws_row is not None else str(ws_id),
+            emails=[email],
+            now=now,
+            item_id=UUID(queue_item_id) if queue_item_id else None,
+        )
+        return
     refunded = (
         wallet_service.refund_invite(db, UUID(queue_item_id), emails=[email])
         if queue_item_id
@@ -838,15 +960,10 @@ def fail_deferred_invite(
         void_refunded_invite_periods(
             db, workspace_id=ws_id, emails=refunded.emails, now=now
         )
-    # 3. Xoá phantom member + invite (email này CHƯA từng tham gia). Bước 2 đã hoàn
-    #    phí + void kỳ, nên kỳ nào CÒN LẠI là tiền chưa được hoàn ⇒ giữ bản ghi lại
-    #    thay vì xoá (ca đổi email — xem `_delete_phantom_members`).
-    db.execute(
-        delete(Invite).where(
-            Invite.workspace_id == ws_id,
-            func.lower(Invite.email) == email,
-        )
-    )
+    # 3. Xoá phantom member (email này CHƯA từng tham gia). Bước 2 đã hoàn phí +
+    #    void kỳ, nên kỳ nào CÒN LẠI là tiền chưa được hoàn ⇒ giữ bản ghi lại thay
+    #    vì xoá (ca đổi email — xem `_delete_phantom_members`). Dòng Invite đã xoá
+    #    ở trên, trước nhánh tiền.
     #    (Ở ĐÂY xoá KHÔNG lọc `pending`/`joined_at IS NULL` như hai đường kia — giữ
     #    nguyên hành vi cũ, chỉ thêm đúng một ngoại lệ: còn chu kỳ thì không xoá.)
     if (
@@ -2181,7 +2298,15 @@ def update_task(
     # SYNC_MEMBERS_BATCH) — đính vào audit QUEUE_UPDATED cuối để tab "Chính" tóm tắt
     # "Đồng bộ · N đã tham gia" mà không phải gom lại các sự kiện promote rời rạc
     # (mỗi promote vẫn nằm trong vòng đời lời mời của member — xem join-transition).
+    from app.routers.members._shared import settle_invite_credit
+
     promoted_active_emails: list[str] = []
+    # Bản đối chiếu của MẺ ĐỒNG BỘ (SYNC_MEMBERS_BATCH): quét bao nhiêu email, ra
+    # kết quả thế nào. Trước đây nhật ký chỉ ghi số email vừa được nâng lên active
+    # nên mẻ 24 email báo "18 đã vào nhóm" mà không nói 6 email kia ra sao — user
+    # 2026-08-31 hỏi đúng chỗ này: xong rồi thì phải biết đúng hay lệch.
+    batch_tally = {"active": 0, "pending": 0, "none": 0}
+    batch_checked = 0
 
     # SYNC_MEMBER COMPLETED → "đồng bộ 1 tài khoản lẻ" reconcile theo `found_in`.
     # Extension trả {ok, data:{email, found_in}}; runner gói thành result={data:{...}}.
@@ -2212,6 +2337,8 @@ def update_task(
                 member.sync_missing_at = now if found_in == "none" else None
                 if found_in == "active" and member.status != "active":
                     member.status = "active"
+                    # Vào nhóm thật ⇒ khoản đang giữ đã đổi được lấy dịch vụ.
+                    settle_invite_credit(member)
                     if member.joined_at is None:
                         member.joined_at = now
                     # Hồi sinh từ 'removed' → xoá stale removed_at (kẻo dính job
@@ -2284,11 +2411,14 @@ def update_task(
             ).scalar_one_or_none()
             if not member:
                 continue
+            batch_tally[found_in] += 1
+            batch_checked += 1
             member.last_synced_at = now
             # Thấy lại → xoá cờ "sync không thấy"; không thấy → đóng dấu now.
             member.sync_missing_at = now if found_in == "none" else None
             if found_in == "active" and member.status != "active":
                 member.status = "active"
+                settle_invite_credit(member)
                 if member.joined_at is None:
                     member.joined_at = now
                 # Hồi sinh từ 'removed' → xoá stale removed_at (kẻo dính job
@@ -2335,6 +2465,24 @@ def update_task(
                 found_in=found_in,
             )
             db.add(member)
+
+    # ChatGPT LỖI CÔNG TẮC "mời ngoài miền" → NGƯNG MỜI workspace 1 TIẾNG.
+    #
+    # Extension đã bấm công tắc, gặp băng-rôn đỏ, TẢI LẠI trang đọc lại vẫn thấy
+    # tắt (xem `runner.ts` nhánh `awaiting_external_recheck`). Lỗi thuộc phía
+    # ChatGPT và chính nó gửi thông báo về tài khoản admin của workspace. Không
+    # chặn thì đại lý bấm mời lại ngay, mà bấm lại công tắc lúc nó đang hỏng là
+    # đúng cách để bị khoá thêm. Xem `services/invite_block.py`.
+    #
+    # Đặt TRƯỚC khối hoàn phí bên dưới là cố ý: hoàn phí có thể văng ngoại lệ, mà
+    # mốc ngưng thì phải nằm trong cùng transaction để không mất.
+    if effective_status == "FAILED" and body.error_code == "EXTERNAL_TOGGLE_BLOCKED":
+        invite_block.block_after_toggle_error(
+            db,
+            workspace,
+            detail=body.error_message,
+            task_id=str(item.id),
+        )
 
     # PHANTOM CLEANUP cho INVITE_MEMBER: xoá Member + Invite records mà ChatGPT
     # KHÔNG thực sự nhận → dashboard chỉ hiển thị email đã được mời thật.
@@ -2568,6 +2716,8 @@ def update_task(
                 # (mời lại / sync trước đó đã ghi nhận) → giữ mốc thành công đầu.
                 member.joined_at = now_terminal
                 db.add(member)
+            # Vào nhóm thật ⇒ khoản đang giữ đã đổi được lấy dịch vụ, thôi treo.
+            settle_invite_credit(member)
             log_event(
                 db,
                 actor_type="EXTENSION",
@@ -2592,6 +2742,7 @@ def update_task(
         # (unverified). verify_scrape_failed → không xoá/không hoàn. Idempotent qua
         # cột `reversed`. No-op nếu task không có giao dịch invite_fee (non-beta).
         refunded_emails: list[str] = []
+        seat_credit_now: list[str] = []
         if emails_to_delete:
             # ── TIMELINE: CHẤM HỎNG TỪNG EMAIL, TRƯỚC KHI XOÁ BẢN GHI ────────
             # Lệnh kết thúc COMPLETED nhưng email này không soi thấy ở đâu ⇒ chốt
@@ -2643,8 +2794,23 @@ def update_task(
                     },
                     commit=False,
                 )
+            # GIỮ TIỀN thay vì hoàn về ví — cùng luật với nhánh task FAILED
+            # (`reconcile_failed_invite`, mở rộng 7/9/2026). Email nào có phiếu thì
+            # khoản đã trả ở lại với nó và lượt mời lại miễn phí; email nào không có
+            # phiếu mới hoàn tiền. Hai nhánh dùng CHUNG `_seat_credit_candidates` để
+            # không lệch luật.
+            credit_emails = _seat_credit_candidates(
+                db,
+                workspace_id=workspace.id,
+                emails=emails_to_delete,
+                now=now_terminal,
+            )
+            seat_credit_now = sorted(credit_emails)
+            refund_targets = [
+                e for e in emails_to_delete if e.lower() not in credit_emails
+            ]
             refunded = wallet_service.refund_invite(
-                db, item.id, emails=emails_to_delete
+                db, item.id, emails=refund_targets
             )
             refunded_emails = sorted({e.lower() for e in refunded.emails})
             # Hoàn phí ⇒ void kỳ đã trả (phantom joined_at != NULL sống sót bộ lọc
@@ -2673,14 +2839,31 @@ def update_task(
                     item_id=item.id,
                     now=now_terminal,
                 )
+            # Email GIỮ TIỀN: không xoá mà chuyển thành phiếu đã-trả-tiền (giữ
+            # nguyên hạn + chu kỳ đã thanh toán) để lượt mời lại miễn phí.
+            if seat_credit_now:
+                _keep_seat_credit_members(
+                    db,
+                    workspace_id=workspace.id,
+                    workspace_name=workspace.name,
+                    emails=seat_credit_now,
+                    now=now_terminal,
+                    item_id=item.id,
+                )
             # GIỜ mới xoá: kỳ sống sót void = tiền chưa được hoàn ⇒ giữ bản ghi.
-            _delete_phantom_members(
-                db,
-                workspace_id=workspace.id,
-                emails=emails_to_delete,
-                now=now_terminal,
-                queue_item_id=item.id,
-            )
+            # CHỈ xoá MEMBER của nhóm đã hoàn tiền — xoá cả nhóm giữ tiền là mất
+            # luôn phiếu, mà chính phiếu làm nên lần mời lại miễn phí.
+            if refund_targets:
+                _delete_phantom_members(
+                    db,
+                    workspace_id=workspace.id,
+                    emails=refund_targets,
+                    now=now_terminal,
+                    queue_item_id=item.id,
+                )
+            # Dòng INVITE thì đi trong CẢ HAI ca (khớp `reconcile_failed_invite`):
+            # lời mời này đã chốt hỏng, để lại là nó treo mãi "đang chờ" và resolver
+            # 20 phút sẽ nhặt lên xử lý lần nữa.
             db.execute(
                 delete(Invite).where(
                     Invite.queue_item_id == item.id,
@@ -2699,6 +2882,7 @@ def update_task(
                 (task_emails - skipped_set) if verify_failed else deferred_set
             ),
             refunded=refunded_emails,
+            seat_credit=seat_credit_now,
             # Lệnh COMPLETED không mang mã lỗi nào; nhóm hỏng ở đây (nếu có) là các
             # email chưa nhập được, nên nói đúng nguyên nhân thay vì câu chung.
             reason_code="INVITE_NOT_TYPED" if skipped_set else None,
@@ -2733,6 +2917,23 @@ def update_task(
                     "promoted_emails": promoted_active_emails,
                 }
                 if promoted_active_emails
+                else {}
+            ),
+            # Bản đối chiếu của mẻ đồng bộ: quét N email → bao nhiêu đang ở trong
+            # nhóm, bao nhiêu còn treo lời mời, bao nhiêu ChatGPT không thấy, và
+            # bao nhiêu email gửi đi mà không nhận được kết quả (lệch = quét sót).
+            **(
+                {
+                    "sync_requested": len(
+                        [e for e in ((item.payload or {}).get("emails") or []) if e]
+                    ),
+                    "sync_checked": batch_checked,
+                    "sync_active": batch_tally["active"],
+                    "sync_pending": batch_tally["pending"],
+                    "sync_not_found": batch_tally["none"],
+                }
+                if item.type == "SYNC_MEMBERS_BATCH"
+                and effective_status == "COMPLETED"
                 else {}
             ),
         },

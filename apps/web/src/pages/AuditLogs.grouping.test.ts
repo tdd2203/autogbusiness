@@ -146,7 +146,8 @@ describe("gom nhóm nhật ký kiểm tra", () => {
     const g = buildGroups(decorate([promptSync, ...EVENTS.slice(1)])).find((x) =>
       x.events.some((e) => e.id === "e7"),
     );
-    expect(g?.title).toBe("Mời thành viên hàng loạt");
+    // Đúng 1 email thì không gọi là "hàng loạt" (user 2026-08-31).
+    expect(g?.title).toBe("Mời thành viên");
     expect(g?.events.map((e) => e.id).sort()).toEqual(["e3", "e4", "e7"]);
   });
 });

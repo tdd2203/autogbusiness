@@ -347,17 +347,25 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
             raise ValueError("order member missing")
         months = int(payload["months"])
         # Phí phải KHỚP amount đã tạo ở _create_renew_order (nếu chỉ trừ phí phẳng,
-        # phần tiền QR dư months−1 sẽ kẹt lại trong ví). Nhánh lấy từ CHÍNH hoá đơn:
-        # workspace của member có thể đã đổi giữa lúc tạo QR và lúc tiền về.
-        fee = payment_flow.fee_for_months(
-            db,
-            user,
-            months=months,
-            platform=order.platform,
-            member_fee=member.fee_vnd,
-            default_fee=default_fee,
+        # phần tiền QR dư months−1 sẽ kẹt lại trong ví). Lấy THẲNG con số đã in trên
+        # hoá đơn thay vì tính lại: `amount_vnd` là con số khách đã NHÌN THẤY trên mã
+        # QR và đã chuyển tiền theo, còn mọi cách tính lại lúc tiền về chỉ là một giả
+        # thuyết về thế giới ở thời điểm khác. (`handle_order` có đối chiếu với tiền
+        # ngân hàng thực nhận nhưng dung sai `amount_tolerance_vnd` — khách trả thiếu
+        # trong dung sai vẫn qua, nên đây KHÔNG phải một con số đã được chứng minh
+        # bằng đồng bạc cuối cùng.) Ở chế độ `cycle_aligned` giá đo theo nửa ngày từ ĐIỂM NỐI nên tính lại
+        # gần như không bao giờ ra đúng số cũ: trừ NHIỀU hơn thì `charge_renew` ném
+        # InsufficientBalance, webhook vẫn commit ⇒ member được gia hạn mà ví không bị
+        # trừ đồng nào; trừ ÍT hơn thì phần dư kẹt trong ví, phải đối soát tay.
+        fee = int(order.amount_vnd)
+        # Trừ đúng tiền thôi CHƯA ĐỦ: cửa sổ bán đo từ điểm nối = max(hạn cũ, now).
+        # Trong khoảng chờ chuyển khoản, điểm nối có thể vượt ngưỡng ép thêm tháng
+        # hoặc vượt luôn mốc chốt ⇒ hạn giao ra nhảy thêm nguyên một mốc trong khi
+        # tiền vẫn là số cũ. Chiều lệch luôn là "giao nhiều hơn số đã bán", nên phải
+        # áp lại bằng ĐÚNG đồng hồ đã báo giá, đóng dấu sẵn trong hoá đơn.
+        perform_renew_core(
+            db, user, member, months, now=payment_flow.priced_at_of(order)
         )
-        perform_renew_core(db, user, member, months)
         if fee > 0:
             wallet_service.charge_renew(db, user, member.id, fee, email=member.email)
         order.member_id = member.id

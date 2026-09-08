@@ -793,6 +793,12 @@ function fundingNote(funding: RefundSource[]): string {
  * hai dòng thì cùng một giây hiện hai lần cùng một số tiền, còn nói ngược nhau về số
  * dư (user 2026-09-01). Khoản đó còn hay đã tiêu hết chỉ nói bằng MÀU của số tiền —
  * user chốt bỏ hết câu giải thích, dòng chỉ giữ số.
+ *
+ * Mẻ hỏng MỘT PHẦN cũng dôi ra đúng như vậy: phí lấy từ tiền QR chứ không lấy từ số
+ * dư có sẵn, nên khoản hoàn là tiền Ở LẠI ví. Dòng hoá đơn cùng mốc còn phí của email
+ * chạy được nên không gộp vào đây được (`mergeStrandedInvoice`) — trước đây dòng lỗi
+ * rơi về câu "không mất tiền · số dư không đổi", thành ra ví tăng 330.000 mà không
+ * dòng nào kể (user 2026-09-03). Ca này lấy số dư ở bút toán HOÀN, đúng lúc tiền về.
  */
 function VoidedRow({
   row,
@@ -804,24 +810,31 @@ function VoidedRow({
   const [open, setOpen] = useState(false);
   const { pairs } = row;
   const fee = pairs.reduce((s, p) => s - p.fee.amount, 0); // tổng phí đã trừ (dương)
-  // Số dư ghi bên phải lấy ở bút toán hoá đơn: cả mẻ hỏng thì phí trừ rồi hoàn về
-  // đúng chỗ cũ, nên đó cũng là số dư sau khi cả lượt này xong.
-  const credit = row.credit && usage ? { ...usage, balanceAfter: row.credit[0].balance_after } : null;
-  const left = credit ? credit.total - credit.used : 0;
-  const per = credit ? credit.total / pairs.length : 0;
+  const stranded = row.ownsStranded ? row.invoiceStranded : 0; // tiền QR ở lại trong ví
+  // Số dư ghi bên phải: cả mẻ hỏng thì lấy ở bút toán hoá đơn (phí trừ rồi hoàn về
+  // đúng chỗ cũ, nên đó cũng là số dư sau khi cả lượt này xong). Mẻ hỏng một phần thì
+  // lấy ở bút toán hoàn MUỘN NHẤT — mốc tiền thật sự dôi ra trong ví.
+  const balanceAfter = row.credit
+    ? row.credit[0].balance_after
+    : pairs.reduce((a, p) => (p.refund.created_at > a.created_at ? p.refund : a), pairs[0].refund)
+        .balance_after;
+  const left = stranded - (usage?.used ?? 0);
+  const per = stranded / pairs.length;
   return (
     <RowShell
       face={FACE.voided}
       title={`Lỗi mời · ${pairs.length} email`}
       meta={
-        credit
-          ? `Đã trả ${formatVnd(credit.total)}`
-          : `Đã trừ ${formatVnd(fee)} rồi hoàn lại đủ · không mất tiền`
+        stranded <= 0
+          ? `Đã trừ ${formatVnd(fee)} rồi hoàn lại đủ · không mất tiền`
+          : row.credit
+            ? `Đã trả ${formatVnd(stranded)}`
+            : `Đã trả ${formatVnd(stranded)} qua QR · tiền ở lại ví`
       }
       at={stamp(pairs[0].fee.created_at)}
-      amount={credit ? `+${formatVnd(credit.total)}` : "0 ₫"}
-      amountFg={credit && left > 0 ? "var(--success)" : "var(--ink-3)"}
-      balance={credit ? `Số dư còn ${formatVnd(credit.balanceAfter)}` : "Số dư không đổi"}
+      amount={stranded > 0 ? `+${formatVnd(stranded)}` : "0 ₫"}
+      amountFg={left > 0 ? "var(--success)" : "var(--ink-3)"}
+      balance={stranded > 0 ? `Số dư còn ${formatVnd(balanceAfter)}` : "Số dư không đổi"}
       open={open}
       onToggle={() => setOpen((v) => !v)}
       txns={[...(row.credit ?? []), ...pairs.flatMap((p) => [p.fee, p.refund])]}
@@ -830,7 +843,7 @@ function VoidedRow({
           items={pairs.map((p) => ({
             key: p.fee.id,
             email: p.fee.meta?.email ? String(p.fee.meta.email) : "(không rõ email)",
-            amount: credit ? `tiền QR ${formatVnd(per)} ở lại ví` : `hoàn ${stamp(p.refund.created_at)}`,
+            amount: stranded > 0 ? `tiền QR ${formatVnd(per)} ở lại ví` : `hoàn ${stamp(p.refund.created_at)}`,
             tone: "var(--ink-3)",
           }))}
         />

@@ -101,11 +101,10 @@ describe("tab Chính chỉ gồm 3 nhóm", () => {
     expect(g.payRefs).toEqual([QID]);
   });
 
-  /* Nút "Đồng bộ lời mời" chốt xem email đã vào nhóm chưa — là bước cuối của lệnh
-     mời chứ không phải việc hàng đợi. Trước 31/8/2026 cả mẻ bị xếp theo action
-     KHỞI TẠO nên nằm tab "Khác" nhánh "Hàng đợi": chạy xong 42 email mà tab mặc
-     định trống trơn. */
-  it("mẻ đồng bộ lời mời nằm tab Chính chip Thành viên, không mang mã hoá đơn", () => {
+  /* Đồng bộ lời mời là một trong 3 rẽ nhánh của chip "Thành viên" (user
+     2026-09-07). Nó không được rơi vào nhánh "Hàng đợi": ở đó chạy xong 42 email
+     mà không ai tìm ra. */
+  it("mẻ đồng bộ lời mời vào chip Thành viên, rẽ nhánh Đồng bộ", () => {
     const g = only([
       ev({
         id: "done",
@@ -135,12 +134,14 @@ describe("tab Chính chỉ gồm 3 nhóm", () => {
     expect(g.buckets).toEqual(["member"]);
     expect(g.memberSub).toBe("sync");
     expect(g.otherBucket).toBeNull();
+    // 42 email trong một lượt quét thì đúng là hàng loạt.
     expect(g.title).toBe("Đồng bộ lời mời hàng loạt");
   });
 
-  /* Lệnh đồng bộ chưa đổi được email nào vẫn phải thấy ở tab Chính — nếu chỉ xét
-     dòng kết quả thì mẻ "không có gì thay đổi" lại biến mất. */
-  it("mẻ đồng bộ không nâng được email nào vẫn ở tab Chính", () => {
+  /* "Hàng loạt" phải từ 2 email trở lên (user 2026-08-31): đồng bộ đúng 1 email mà
+     ghi "hàng loạt" là đọc sai việc vừa làm. Mẻ đồng bộ không ghi danh sách email
+     vào nhật ký nên số email đọc từ `count`. */
+  it("đồng bộ đúng 1 email thì bỏ chữ hàng loạt", () => {
     const g = only([
       ev({
         id: "queued",
@@ -148,11 +149,26 @@ describe("tab Chính chỉ gồm 3 nhóm", () => {
         result: "PENDING",
         target_type: "WORKSPACE",
         target_id: null,
-        data: { count: 3, queue_item_id: QID },
+        data: { count: 1, queue_item_id: QID },
       }),
     ]);
+    expect(g.title).toBe("Đồng bộ lời mời");
     expect(g.buckets).toEqual(["member"]);
     expect(g.memberSub).toBe("sync");
+  });
+
+  it("mời đúng 1 email qua thanh hàng loạt cũng không gọi là hàng loạt", () => {
+    const g = only([
+      ev({
+        id: "queued",
+        action: "MEMBER_BULK_INVITE_QUEUED",
+        result: "PENDING",
+        target_type: "QUEUE_ITEM",
+        target_id: QID,
+        data: { emails: [EMAIL] },
+      }),
+    ]);
+    expect(g.title).toBe("Mời thành viên");
   });
 
   it("lệnh gia hạn và khoản trừ phí của nó dùng CHUNG mã hoá đơn (member_id)", () => {
@@ -419,11 +435,22 @@ describe("phần còn lại tự phân nhóm ở tab Khác", () => {
     }
   });
 
-  it("đồng bộ / hàng đợi / nhãn giao diện gom vào nhóm Hàng đợi", () => {
+  it("đồng bộ CẢ WORKSPACE / hàng đợi / nhãn giao diện gom vào nhóm Hàng đợi", () => {
     expect(otherBucketOf("WORKSPACE_SYNC_QUEUED")).toBe("queue");
-    expect(otherBucketOf("SYNC_MEMBERS_BATCH_QUEUED")).toBe("queue");
     expect(otherBucketOf("QUEUE_TIMEOUT:SYNC_DATA")).toBe("queue");
     expect(otherBucketOf("UI_LABELS_CALIBRATED")).toBe("queue");
+  });
+
+  /* Đồng bộ LỜI MỜI là chuyện của email, không phải việc hàng đợi — kể cả khi nhóm
+     chỉ còn dòng QUEUE_* của task (user 2026-08-31). */
+  it("lệnh đồng bộ lời mời về nhánh Thành viên", () => {
+    for (const action of [
+      "SYNC_MEMBERS_BATCH_QUEUED",
+      "SYNC_MEMBER_QUEUED",
+      "QUEUE_UPDATED:SYNC_MEMBERS_BATCH",
+      "QUEUE_TIMEOUT:SYNC_MEMBER",
+    ])
+      expect(otherBucketOf(action)).toBe("member");
   });
 
   it("cấu hình workspace / API key / telegram / tài khoản gom vào nhóm Cấu hình", () => {

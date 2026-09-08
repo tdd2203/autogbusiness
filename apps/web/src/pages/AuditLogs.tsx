@@ -356,15 +356,20 @@ const OTHER_CONFIG_RE =
    SYNCED) — user 2026-08-30: ngoài mời và gia hạn thì cái gì dính tới email đều
    vào nhánh này. Lệnh đồng bộ của cả workspace vẫn ở nhánh "Hàng đợi" vì nhóm phụ
    đọc theo action KHỞI TẠO (WORKSPACE_SYNC_QUEUED). */
-const OTHER_MEMBER_RE = /^(MEMBER_(?!NOTIFY_)|REVOKE_INVITES)/;
+const OTHER_MEMBER_RE = /^(MEMBER_(?!NOTIFY_)|REVOKE_INVITES|SYNC_MEMBER)/;
 
 /** Nhóm phụ trong tab "Khác" cho một action (đã chắc chắn không thuộc tab Chính). */
 export function otherBucketOf(action: string): OtherBucket {
-  const op = opOf(action);
+  const [op, sub] = action.split(":");
   if (OTHER_WALLET_RE.test(op)) return "wallet";
   // Lệnh xoá/mời đi qua hàng đợi (QUEUE_PICKED:REMOVE_MEMBER…) vẫn là chuyện của
-  // email → nhánh "Thành viên", không rơi vào nhánh "Hàng đợi".
-  if (OTHER_MEMBER_RE.test(op) || importantGroup(action) !== null) return "member";
+  // email → nhánh "Thành viên", không rơi vào nhánh "Hàng đợi". Đồng bộ lời mời
+  // (SYNC_MEMBER*, kể cả QUEUE_UPDATED:SYNC_MEMBERS_BATCH) cũng là chuyện của
+  // email — user 2026-08-31: xem ở "Khác → Thành viên", không lẫn vào "Hàng đợi".
+  // Đồng bộ CẢ WORKSPACE (WORKSPACE_SYNC_QUEUED / SYNC_DATA) thì vẫn là hàng đợi.
+  if (OTHER_MEMBER_RE.test(op) || (!!sub && OTHER_MEMBER_RE.test(sub)))
+    return "member";
+  if (importantGroup(action) !== null) return "member";
   if (OTHER_QUEUE_RE.test(op)) return "queue";
   if (OTHER_CONFIG_RE.test(op)) return "config";
   return "misc";
@@ -558,6 +563,24 @@ const SUB_TITLE: Record<string, string> = {
   SYNC_MEMBER: "Đồng bộ thành viên",
 };
 
+/* "Hàng loạt" chỉ đúng khi lệnh chạm TỪ 2 EMAIL TRỞ LÊN (user 2026-08-31): bấm
+   "Đồng bộ lời mời" cho đúng 1 email mà nhật ký ghi "Đồng bộ lời mời hàng loạt"
+   thì đọc sai việc vừa làm. Không biết số email (0) thì giữ nguyên tên lệnh —
+   thà thừa chữ còn hơn khẳng định sai. */
+function singularizeBulk(title: string, emailCount: number): string {
+  return emailCount === 1 ? title.replace(/ hàng loạt$/, "") : title;
+}
+
+/** Số email của MỘT sự kiện lệnh. Mẻ đồng bộ chỉ ghi `count` (danh sách email nằm
+ *  trong payload hàng đợi, không vào nhật ký); lệnh mời/gỡ hàng loạt gắn thẳng
+ *  `emails`. 0 = không biết. */
+function eventEmailCount(data?: Record<string, unknown> | null): number {
+  const n = Number(data?.count);
+  if (Number.isFinite(n) && n > 0) return n;
+  const emails = data?.emails;
+  return Array.isArray(emails) ? emails.length : 0;
+}
+
 function prettify(code: string): string {
   return code
     .toLowerCase()
@@ -574,7 +597,7 @@ function actionTitle(action: string, data?: Record<string, unknown> | null): str
   ) {
     return "Xoá do hết hạn";
   }
-  let title = ACT_TITLE[op] ?? prettify(op);
+  let title = singularizeBulk(ACT_TITLE[op] ?? prettify(op), eventEmailCount(data));
   if (sub) title += " · " + (SUB_TITLE[sub] ?? prettify(sub));
   return title;
 }
@@ -1052,7 +1075,13 @@ function makeGroup(key: string, evs: Decorated[]): Group {
   let code: string;
   const mappedTitle = lifecycle ? lifecycleTitleForGroup(evs, initOp) : null;
   if (lifecycle && mappedTitle) {
-    title = mappedTitle;
+    // Số email của lệnh: mẻ đồng bộ chỉ ghi `count`, các lệnh khác gắn danh sách —
+    // lấy số lớn hơn để một mẻ 42 email vẫn là "hàng loạt" dù chỉ 1 email đổi trạng
+    // thái, còn mẻ 1 email thì bỏ chữ "hàng loạt".
+    title = singularizeBulk(
+      mappedTitle,
+      Math.max(eventEmailCount(initiator.data), emails.length),
+    );
     code = initOp;
   } else if (lifecycle) {
     const qEvent = evs.find(
@@ -1669,6 +1698,14 @@ const DETAIL_LABEL: Record<string, string> = {
   limit_credits: "Giới hạn credit",
   found_in: "Tìm thấy ở",
   batch: "Hàng loạt",
+  // Đối chiếu của mẻ đồng bộ lời mời.
+  promoted_active: "Vừa vào nhóm",
+  promoted_emails: "Email vừa vào nhóm",
+  sync_requested: "Email đã quét",
+  sync_checked: "Email có kết quả",
+  sync_active: "Đang ở trong nhóm",
+  sync_pending: "Vẫn chờ tham gia",
+  sync_not_found: "ChatGPT không thấy",
   dry_run: "Chạy thử",
   reason: "Lý do",
   expected_total: "ChatGPT header (active)",
@@ -1930,6 +1967,9 @@ function syncSummary(g: Group): string | null {
   });
   if (!isSync) return null;
 
+  const batch = syncBatchSummary(g);
+  if (batch) return batch;
+
   const parts: string[] = [];
   const joined = firstEmailList(g.events, "promoted_emails");
   const promoted = firstNum(g.events, "promoted_active") ?? joined.length;
@@ -1955,6 +1995,47 @@ function syncSummary(g: Group): string | null {
   if (!parts.length && !warns.length) return null;
   const head = parts.length ? parts.join(" · ") : "không có thay đổi";
   return warns.length ? `${head} — ${warns.join(" · ")}` : head;
+}
+
+/**
+ * Bản ĐỐI CHIẾU của mẻ đồng bộ lời mời (SYNC_MEMBERS_BATCH).
+ *
+ * User 2026-08-31: chạy xong mà chỉ khoe "18 email đã vào nhóm" thì không ai biết
+ * 18 đó so với bao nhiêu email được quét, và 6 email còn lại ra sao. Câu này nói
+ * đủ: quét bao nhiêu / khớp bao nhiêu, ai đã vào nhóm, ai còn treo lời mời, ai
+ * ChatGPT không thấy, và có email nào gửi đi mà không nhận được kết quả không.
+ *
+ * Trả `null` khi nhóm không phải mẻ đồng bộ hoặc là mẻ chạy trước 31/8/2026 (nhật
+ * ký cũ không có các số này) — khi đó dùng lại câu tóm tắt chung.
+ */
+function syncBatchSummary(g: Group): string | null {
+  const requested = firstNum(g.events, "sync_requested");
+  const checked = firstNum(g.events, "sync_checked");
+  if (requested == null || checked == null) return null;
+
+  const active = firstNum(g.events, "sync_active") ?? 0;
+  const pending = firstNum(g.events, "sync_pending") ?? 0;
+  const notFound = firstNum(g.events, "sync_not_found") ?? 0;
+  const joined = firstEmailList(g.events, "promoted_emails");
+  const promoted = firstNum(g.events, "promoted_active") ?? joined.length;
+
+  const parts: string[] = [];
+  if (active > 0) {
+    // "Mới" = email lần này mới đổi từ chờ sang đã tham gia; số còn lại vốn đã ở
+    // trong nhóm từ trước, đồng bộ chỉ xác nhận lại.
+    const fresh = promoted > 0 && promoted < active ? ` (${promoted} mới)` : "";
+    const list = promoted > 0 && joined.length ? `: ${listEmails(joined)}` : "";
+    parts.push(`${active} đã vào nhóm${fresh}${list}`);
+  }
+  if (pending > 0) parts.push(`${pending} vẫn chờ tham gia`);
+  if (notFound > 0) parts.push(`${notFound} ChatGPT không thấy`);
+
+  // Câu này đứng sau "Đồng bộ lời mời · CHATGPT PRO — " nên các vế nối bằng "·";
+  // dấu gạch dài để dành cho phần SAI SỐ, cho mắt bắt được ngay.
+  const head = [`Đối chiếu ${checked}/${requested} email`, ...parts].join(" · ");
+  // Gửi đi N email mà chỉ đọc về M kết quả là lệch, phải nói thẳng ra.
+  const gap = requested - checked;
+  return gap > 0 ? `${head} — lệch ${gap} email không có kết quả` : head;
 }
 
 /** Gộp email thành chuỗi ngắn, quá `max` thì cắt và ghi "+n". */
@@ -2533,13 +2614,9 @@ function groupView(g: Group, t: TFn) {
       ? t("audit.targetEmailCount", { n: g.emails.length })
       : t("audit.targetEmail");
   // Mã hoá đơn chỉ hiện trên LỆNH (mời/xoá/gia hạn) và các dòng TIỀN của lệnh —
-  // không rắc mã lên mọi việc hàng đợi/đồng bộ. Mẻ đồng bộ lời mời nay đứng ở tab
-  // "Chính" chip "Thành viên" nhưng KHÔNG có đồng tiền nào của riêng nó (phí đã
-  // trừ ở lệnh mời) nên vẫn không mang mã.
+  // không rắc mã lên mọi việc hàng đợi/đồng bộ.
   const payRef =
-    (g.buckets.includes("member") || g.buckets.includes("billing")) &&
-    !g.code.startsWith("SYNC_MEMBERS_BATCH") &&
-    g.code !== "MEMBER_SYNC_PROMOTED_ACTIVE"
+    g.buckets.includes("member") || g.buckets.includes("billing")
       ? (g.payRefs[0] ?? null)
       : null;
   // Chip hiện MÃ HOÁ ĐƠN (tra được ở sao kê + panel thành viên); lệnh trả bằng ví
@@ -3372,7 +3449,6 @@ export default function AuditLogs() {
     activeBucket === "member" && memberSub && memberCounts[memberSub] > 0
       ? memberSub
       : null;
-
 
   const filtered = useMemo(() => {
     // Đang tìm trên server: trả gì hiện nấy. Lọc lại theo tab/chip ở đây là đúng lỗi

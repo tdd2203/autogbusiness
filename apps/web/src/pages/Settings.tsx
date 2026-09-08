@@ -8,6 +8,7 @@ import { SystemLanguageManager } from "../components/SystemLanguageManager";
 import { TelegramSettings } from "../components/TelegramSettings";
 import { AppearanceSettings } from "../components/AppearanceSettings";
 import { RateLimitSettings } from "../components/RateLimitSettings";
+import { UtcClock } from "../components/UtcClock";
 
 type SettingsTab =
   | "account"
@@ -161,6 +162,9 @@ export default function Settings() {
                 <div className="key">{t("settings.joinedAt")}</div>
                 <div className="val">{joinedAt}</div>
               </div>
+              {/* Đồng hồ UTC — mốc chu kỳ và hạn dùng tính bằng ngày lịch UTC,
+                  lệch 7 tiếng với giờ máy. Xem `lib/cycle-time.ts`. */}
+              <UtcClock />
             </div>
           )}
 

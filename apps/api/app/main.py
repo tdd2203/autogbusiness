@@ -2,7 +2,7 @@ import hashlib
 import logging
 import threading
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -28,6 +28,9 @@ from app.ratelimit import RateLimitMiddleware
 from app.routers.members._shared import (
     SUBSCRIPTION_GRACE_AFTER_EXPIRY,
     _has_open_remove_task,
+    cycle_settings,
+    is_cycle_aligned,
+    workspace_cycle,
 )
 from app.routers.queue.completion import (
     batch_verified_siblings,
@@ -65,6 +68,9 @@ SUBSCRIPTION_CLEANUP_INTERVAL_SEC = 60 * 60  # 1 giờ
 _cleanup_timer: threading.Timer | None = None
 _cleanup_lock = threading.Lock()
 _expire_lock = threading.Lock()
+# Lock RIÊNG cho cảnh báo gỡ-trễ: dùng chung `_expire_lock` thì hai job giành nhau
+# và cảnh báo gần như không bao giờ chạy (tick gỡ chạy dày hơn nhiều).
+_cycle_warn_lock = threading.Lock()
 
 # AUTO-REMOVE hết hạn phải "NGAY LẬP TỨC" (user 2026-07-27): trước đây gộp chung tick
 # hằng-giờ nên email hết hạn phải chờ tới ~1 tiếng mới bị enqueue gỡ → cảm giác "không
@@ -274,6 +280,88 @@ def _purge_ephemeral_audit_logs_once() -> None:
         logger.warning("[audit-retention] tick failed: %s", e)
     finally:
         _audit_purge_lock.release()
+
+
+def _warn_late_cycle_sweep_once() -> None:
+    """Cảnh báo khi ĐỢT GỠ tại mốc chưa xong trước lúc ChatGPT chốt hoá đơn.
+
+    Chế độ `cycle_aligned` chỉ tiết kiệm được tiền nếu người chưa gia hạn đã bị gỡ
+    TRƯỚC khi hoá đơn kỳ mới chạy (`cycle_invoice_utc`, quan sát ~09:00 UTC). Gỡ trễ
+    hơn mốc đó thì hoá đơn đã tính đủ ghế cũ và cả kỳ không tiết kiệm được gì.
+
+    Cố ý CHỈ cảnh báo, không cắt và không tự làm gì: mẻ gỡ KHÔNG có hạn chót (chốt
+    user 2026-09-07) — nó chạy theo nhịp hệ thống, cắt giữa chừng là bỏ dở người đã
+    xếp hàng. Việc của hàm này là không để chuyện đó trôi qua im lặng, vì đây là kiểu
+    mất tiền không ai kêu: đại lý không thấy gì bất thường, chỉ hoá đơn dày lên.
+
+    Một cảnh báo cho MỖI kỳ mỗi workspace (dò audit từ mốc mở kỳ trở đi).
+    """
+    if not _cycle_warn_lock.acquire(blocking=False):
+        return
+    try:
+        with SessionLocal() as db:
+            now = datetime.now(timezone.utc)
+            settings_row = cycle_settings(db)
+            invoice_at = getattr(settings_row, "cycle_invoice_utc", None) or time(9, 0)
+            for ws in db.execute(select(Workspace)).scalars().all():
+                if not is_cycle_aligned(ws):
+                    continue
+                try:
+                    cycle_start, _ = workspace_cycle(ws, now, settings_row=settings_row)
+                except Exception:  # noqa: BLE001 — chưa có mốc chu kỳ thì bỏ qua
+                    continue
+                # Hoá đơn của kỳ VỪA MỞ chạy vào chính ngày mốc, giờ `invoice_at`.
+                invoice_moment = datetime.combine(
+                    cycle_start.date(), invoice_at, tzinfo=timezone.utc
+                )
+                if now < invoice_moment:
+                    continue
+                stuck = db.execute(
+                    select(func.count(Member.id)).where(
+                        Member.workspace_id == ws.id,
+                        Member.status.in_(("active", "pending")),
+                        Member.subscription_end_at.isnot(None),
+                        Member.subscription_end_at <= cycle_start,
+                    )
+                ).scalar_one()
+                if not stuck:
+                    continue
+                already = db.execute(
+                    select(AuditLog.id)
+                    .where(
+                        AuditLog.action == "WORKSPACE_CYCLE_SWEEP_LATE",
+                        AuditLog.target_id == str(ws.id),
+                        AuditLog.timestamp >= cycle_start,
+                    )
+                    .limit(1)
+                ).first()
+                if already is not None:
+                    continue
+                log_event(
+                    db,
+                    actor_type="SYSTEM",
+                    action="WORKSPACE_CYCLE_SWEEP_LATE",
+                    result="ERROR",
+                    target_type="WORKSPACE",
+                    target_id=str(ws.id),
+                    data={
+                        "workspace_name": ws.name,
+                        "cycle_start": cycle_start.isoformat(),
+                        "invoice_at": invoice_moment.isoformat(),
+                        "con_ton": int(stuck),
+                        "note": (
+                            "Đợt gỡ tại mốc chưa xong trước giờ hoá đơn — kỳ này vẫn "
+                            "trả tiền cho những ghế lẽ ra đã bỏ. Kiểm tra extension "
+                            "có online lúc chốt kỳ không."
+                        ),
+                    },
+                    commit=False,
+                )
+            db.commit()
+    except Exception as e:  # noqa: BLE001 — job nền, không được chặn lifecycle
+        logger.warning("[cycle-sweep] tick failed: %s", e)
+    finally:
+        _cycle_warn_lock.release()
 
 
 def _purge_expired_otps_once() -> None:
@@ -1036,6 +1124,7 @@ def _schedule_cleanup_tick() -> None:
     global _cleanup_timer
     try:
         _resolve_stale_pending_invites_once()
+        _warn_late_cycle_sweep_once()
         _purge_old_removed_members_once()
         _purge_ephemeral_audit_logs_once()
         _purge_expired_otps_once()

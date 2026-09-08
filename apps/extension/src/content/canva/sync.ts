@@ -10,6 +10,9 @@
  * Nên phân loại theo CHỮ trong dòng chứ không theo cột: cấu trúc cột của Canva đổi
  * theo bề ngang màn hình, còn chữ "Đã mời"/"Lời mời của" thì không.
  *
+ * Đọc từng dòng thì đi qua TEXT NODE, không đọc `row.textContent` — lý do dài nằm ở
+ * `parse-row.ts` (sự cố 2/9/2026: email vào dashboard thành "…@gmail.comteam").
+ *
  * Tiêu đề trang "Thành viên (2)" KHÔNG kể lời mời chờ — đừng dùng nó làm số suất đã
  * dùng; suất thật do dashboard tự đếm (active + pending).
  */
@@ -17,57 +20,25 @@
 import type { CanvaActionResponse, CanvaScrapedMember } from "../../shared/messages";
 import { sleep, waitForCountStable } from "../human";
 import { reportProgress } from "../progress";
-import { emailIn, norm, numberIn, onPeoplePage, visible } from "./dom";
+import { emailIn, norm, numberIn, onPeoplePage, textNodesOf, visible } from "./dom";
+import { parseMemberRow } from "./parse-row";
 
-// Dấu hiệu một dòng là LỜI MỜI ĐANG CHỜ chứ không phải thành viên đã tham gia.
-// Bản tiếng Anh (ảnh user 2026-09-01): cột trạng thái ghi "Invited", dòng mô tả là
-// "<email>'s invite is valid for 29 more days.", nút "Resend invite".
-// Bản tiếng Việt: "Đã mời", "Lời mời của <email> còn hiệu lực…", "Gửi lại lời mời".
-const PENDING_MARKS = [
-  "da moi",
-  "loi moi cua",
-  "gui lai loi moi",
-  "invited",
-  "invite is valid",
-  "resend invite",
-];
-
-/** Chữ trong cột vai trò → vai trò chuẩn hoá (Việt + Anh). */
-function roleOf(rowText: string): CanvaScrapedMember["role"] {
-  const t = norm(rowText);
-  if (t.includes("chu so huu") || t.includes("team owner")) return "owner";
-  if (t.includes("quan tri vien") || t.includes("team admin")) return "admin";
-  if (t.includes("thiet ke thuong hieu") || t.includes("brand designer")) {
-    return "brand_designer";
-  }
-  if (t.includes("thanh vien doi") || t.includes("team member")) return "member";
-  return null;
-}
-
-/** Tên hiển thị của dòng: bỏ email, bỏ các nhãn trạng thái/vai trò. */
-function nameOf(rowText: string, email: string): string | null {
-  const cleaned = rowText
-    .replace(email, " ")
-    // Nhãn trạng thái / nút thao tác — tiếng Việt rồi tiếng Anh.
-    .replace(/Lời mời của|còn hiệu lực trong.*|Đã mời|Gửi lại lời mời|Sao chép liên kết.*/gi, " ")
-    .replace(/'s invite is valid.*|Invited|Resend invite|Copy unique link|Copy link/gi, " ")
-    // Nhãn vai trò.
-    .replace(/Chủ sở hữu đội|Quản trị viên đội|Thành viên đội|Nhà thiết kế thương hiệu của đội/gi, " ")
-    .replace(/Team owner|Team admin|Team member|Team brand designer|Brand designer/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return cleaned || null;
+/** Khối này có chứa email không — lọc thô trước khi đọc kỹ từng text node.
+ *  `textContent` ở đây chỉ để LỌC nên dính chữ ô bên cạnh cũng không sao. */
+function hasEmail(el: HTMLElement): boolean {
+  const text = el.textContent ?? "";
+  return text.includes("@") && emailIn(text) !== null;
 }
 
 /** Các hàng dữ liệu đang hiện (ưu tiên <tr>, không có thì tìm khối có email). */
 function memberRows(): HTMLElement[] {
   const trs = [...document.querySelectorAll<HTMLElement>("tr")].filter(
-    (r) => visible(r) && emailIn(r.textContent) !== null,
+    (r) => visible(r) && hasEmail(r),
   );
   if (trs.length) return trs;
   // Canva đôi khi render bảng bằng div: lấy khối NHỎ NHẤT còn chứa trọn 1 email.
   const blocks = [...document.querySelectorAll<HTMLElement>("li, [role='row'], div")].filter(
-    (el) => visible(el) && emailIn(el.textContent) !== null,
+    (el) => visible(el) && hasEmail(el),
   );
   const picked: HTMLElement[] = [];
   for (const el of blocks) {
@@ -86,17 +57,9 @@ function memberRows(): HTMLElement[] {
 export function scrapePeopleTable(): CanvaScrapedMember[] {
   const byEmail = new Map<string, CanvaScrapedMember>();
   for (const row of memberRows()) {
-    const text = row.textContent ?? "";
-    const email = emailIn(text);
-    if (!email) continue;
-    const t = norm(text);
-    const pending = PENDING_MARKS.some((m) => t.includes(m));
-    const entry: CanvaScrapedMember = {
-      email,
-      name: nameOf(text, email),
-      status: pending ? "pending" : "active",
-      role: roleOf(text),
-    };
+    const entry = parseMemberRow(textNodesOf(row));
+    if (!entry) continue;
+    const email = entry.email;
     const prev = byEmail.get(email);
     // Đã tham gia thắng lời mời chờ: cùng một email hiện ở hai dòng thì trạng thái
     // thật là "đã vào đội".

@@ -36,7 +36,14 @@ from app.models import (
 from app.schemas import InviteVerifyReconcileIn, MemberBulkUpsert
 from app.sse import publish_task_event
 
-from ._shared import router, _end_from_purchase
+from ._shared import (
+    router,
+    _end_from_purchase,
+    boundary_for,
+    cycle_settings,
+    is_cycle_aligned,
+    settle_invite_credit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -539,6 +546,27 @@ def bulk_upsert_members(
     # Chỉ THIẾT LẬP khi CHƯA có hạn (subscription_end_at IS NULL) — KHÔNG bao giờ đè
     # hạn đã set (gia hạn/bulk-set-expiry đã set end_at dù months có thể = None).
     default_sub_months = 1
+    # Chế độ neo-theo-chu-kỳ: gói mặc định chạy tới MỐC CHỐT thay vì +30 ngày.
+    aligned = is_cycle_aligned(workspace)
+    cycle_cfg = cycle_settings(db) if aligned else None
+
+    def _default_end(anchor):
+        """Hạn của gói mặc định do ĐỒNG BỘ cấp.
+
+        ⚠️ Ở `cycle_aligned` mốc tính từ `now`, KHÔNG từ `anchor`. Anchor là ngày
+        tham gia, thường nằm trong quá khứ — lấy mốc chốt sau nó thì hạn rơi vào quá
+        khứ và job tự-gỡ xoá member ngay trong tick kế tiếp (cạm bẫy EXPIRY_RULES §6).
+        Gói này vốn là ước lệ cho email hệ thống chưa từng thu tiền, nên cho tới mốc
+        chốt kế tiếp là đúng nghĩa nhất.
+        """
+        if aligned:
+            return boundary_for(
+                workspace,
+                now,
+                max(0, default_sub_months - 1),
+                settings_row=cycle_cfg,
+            )
+        return _end_from_purchase(anchor, default_sub_months)
 
     for m in body.members:
         email = m.email.lower()
@@ -573,6 +601,11 @@ def bulk_upsert_members(
             # 'both' (quét tab active, active-wins) hoặc REMOVE/REVOKE.
             if not (existing.status == "active" and m.status == "pending"):
                 existing.status = m.status
+                # Vào nhóm thật ⇒ khoản tiền đang giữ đã đổi được lấy dịch vụ.
+                # Đây là đường THỨ TƯ đưa member lên `active` (ba đường kia ở
+                # `queue/completion.py`); sót nó là khoản treo không bao giờ tắt.
+                if existing.status == "active":
+                    settle_invite_credit(existing)
             # TÁI KÍCH HOẠT: member từng bị 'removed' (kể cả removed OAN do verify
             # lời mời cũ mark nhầm) nay scrape lại thấy active/pending → clear mốc
             # retention 30 ngày (giống invite.py / change_email.py). Tránh member
@@ -637,10 +670,10 @@ def bulk_upsert_members(
                     or now
                 )
                 existing.subscription_months = default_sub_months
-                existing.subscription_purchased_at = anchor
-                existing.subscription_end_at = _end_from_purchase(
-                    anchor, default_sub_months
-                )
+                # `cycle_aligned` neo mốc = ĐIỂM NỐI của cửa sổ vừa cấp (§3.6.7), để
+                # `sold_window` đọc ra đúng quãng; chế độ cũ giữ neo = ngày tham gia.
+                existing.subscription_purchased_at = now if aligned else anchor
+                existing.subscription_end_at = _default_end(anchor)
             updated += 1
         else:
             # Owner mới scrape lần đầu → vô hạn (không gói). Member thường → gói mặc định.
@@ -661,10 +694,12 @@ def bulk_upsert_members(
                     joined_at=new_joined,
                     last_synced_at=now,
                     subscription_months=None if is_owner else default_sub_months,
-                    subscription_purchased_at=new_anchor,
+                    subscription_purchased_at=(
+                        None if is_owner else (now if aligned else new_anchor)
+                    ),
                     subscription_end_at=None
                     if is_owner
-                    else _end_from_purchase(new_anchor, default_sub_months),
+                    else _default_end(new_anchor),
                 )
             )
             created += 1

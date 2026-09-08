@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useT } from "../i18n";
 import { usePlatform } from "../hooks/usePlatform";
+import { BillingModeSection } from "../components/BillingModeSection";
 import type { Workspace, WorkspaceSettings as WSettings } from "../types";
 
 export default function WorkspaceSettings() {
@@ -169,6 +170,11 @@ export default function WorkspaceSettings() {
           {save.isPending ? t("common.saving") : t("common.save")}
         </button>
       </form>
+
+      {/* Chế độ tính hạn dùng — CHỈ nhánh ChatGPT. Không gian Canva tính tiền theo
+          gói bậc thang, không có chu kỳ hoá đơn để neo vào nên bày khối này ở đó chỉ
+          tổ dụ người ta bấm một nút luôn bị từ chối. */}
+      {!isCanva && workspace && <BillingModeSection workspace={workspace} />}
 
       {!isCanva && (
       <form

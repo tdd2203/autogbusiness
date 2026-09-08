@@ -111,6 +111,108 @@ function syncEvents(): RawEvent[] {
   ];
 }
 
+/* Mẻ đồng bộ LỜI MỜI (nút "Đồng bộ lời mời") — user 2026-08-31: chạy xong phải
+   báo cáo đối chiếu, đúng hay lệch chỗ nào, chứ không chỉ khoe số email vào nhóm. */
+function batchEvents(tally: Record<string, unknown>, promoted: string[]): RawEvent[] {
+  return [
+    {
+      id: "done",
+      timestamp: "2026-08-31T14:56:00.000Z",
+      actor_type: "EXTENSION",
+      action: "QUEUE_UPDATED:SYNC_MEMBERS_BATCH",
+      result: "COMPLETED",
+      target_type: "QUEUE_ITEM",
+      target_id: SYNC_QID,
+      data: {
+        status: "COMPLETED",
+        ...(promoted.length
+          ? { promoted_active: promoted.length, promoted_emails: promoted }
+          : {}),
+        ...tally,
+      },
+    },
+    {
+      id: "queued",
+      timestamp: "2026-08-31T14:54:00.000Z",
+      actor_type: "ADMIN",
+      action: "SYNC_MEMBERS_BATCH_QUEUED",
+      result: "PENDING",
+      target_type: "WORKSPACE",
+      target_id: "ee3597dc-581a-4e2d-ac22-de44b71e6509",
+      data: { queue_item_id: SYNC_QID, count: 24 },
+    },
+  ];
+}
+
+describe("đối chiếu sau khi đồng bộ lời mời", () => {
+  it("nói rõ quét bao nhiêu, vào nhóm bao nhiêu, còn chờ bao nhiêu", () => {
+    const line = summarize(
+      buildGroups(
+        decorate(
+          batchEvents(
+            {
+              sync_requested: 24,
+              sync_checked: 24,
+              sync_active: 18,
+              sync_pending: 6,
+              sync_not_found: 0,
+            },
+            PROMOTED.slice(0, 4),
+          ),
+        ),
+      )[0],
+    );
+    expect(line).toContain("Đối chiếu 24/24 email");
+    expect(line).toContain("18 đã vào nhóm");
+    // 18 đang trong nhóm nhưng chỉ 4 email là MỚI đổi trạng thái lần này.
+    expect(line).toContain("(4 mới)");
+    expect(line).toContain("6 vẫn chờ tham gia");
+    expect(line).not.toContain("lệch");
+  });
+
+  it("email không nhận được kết quả và email ChatGPT không thấy đều phải nói ra", () => {
+    const line = summarize(
+      buildGroups(
+        decorate(
+          batchEvents(
+            {
+              sync_requested: 24,
+              sync_checked: 22,
+              sync_active: 18,
+              sync_pending: 3,
+              sync_not_found: 1,
+            },
+            [],
+          ),
+        ),
+      )[0],
+    );
+    expect(line).toContain("1 ChatGPT không thấy");
+    expect(line).toContain("lệch 2 email không có kết quả");
+  });
+
+  it("không email nào vào nhóm thì vẫn báo cáo, không im lặng", () => {
+    const line = summarize(
+      buildGroups(
+        decorate(
+          batchEvents(
+            {
+              sync_requested: 3,
+              sync_checked: 3,
+              sync_active: 0,
+              sync_pending: 3,
+              sync_not_found: 0,
+            },
+            [],
+          ),
+        ),
+      )[0],
+    );
+    expect(line).toContain("Đối chiếu 3/3 email");
+    expect(line).toContain("3 vẫn chờ tham gia");
+  });
+});
+
 describe("nhật ký lệnh đồng bộ", () => {
   it("cả mẻ 12 email về MỘT dòng, không phải 12 dòng", () => {
     const groups = buildGroups(decorate(syncEvents()));

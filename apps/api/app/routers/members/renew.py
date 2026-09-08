@@ -37,6 +37,9 @@ from ._shared import (
     router,
     SUBSCRIPTION_DAYS_PER_MONTH,
     _append_paid_cycle,
+    cycle_settings,
+    is_cycle_aligned,
+    quote_cycle,
     _end_from_purchase,
     _ensure_cycles_materialized,
     _extend_subscription_end,
@@ -46,29 +49,67 @@ from ._shared import (
 )
 
 
-def perform_renew_core(db: Session, user: User, member: Member, months: int) -> Member:
+def _renew_quote(db: Session, member: Member, months: int, *, old_end, now):
+    """Báo giá theo chu kỳ hoá đơn — `None` nếu workspace vẫn ở chế độ 30-ngày.
+
+    `months` của giao diện = SỐ MỐC muốn mua, nên `extra_months = months − 1`: gia hạn
+    "1 tháng" nghĩa là đi tới mốc chốt kế tiếp. Khách đã hội tụ thì đó đúng là một chu
+    kỳ trọn; khách cũ còn lệch thì đó là quãng ngắn hơn và họ CHỈ trả đúng quãng đó —
+    chính là cơ chế kéo mọi người về mốc chung sau một vòng gia hạn (EXPIRY_RULES §3.6.8).
+    """
+    ws = member.workspace
+    if ws is None or not is_cycle_aligned(ws):
+        return None
+    return quote_cycle(
+        ws,
+        now,
+        current_end=old_end,
+        extra_months=max(0, months - 1),
+        settings_row=cycle_settings(db),
+    )
+
+
+def perform_renew_core(
+    db: Session, user: User, member: Member, months: int, *, now: datetime | None = None
+) -> Member:
     """Áp dụng gia hạn N tháng cho member (cộng dồn hạn + nối N CHU KỲ 1-tháng đã
     thanh toán + audit). KHÔNG trừ phí ví, KHÔNG commit — caller lo. Dùng chung cho
     endpoint (ví đủ / miễn phí) và webhook replay (sau thanh toán QR).
 
     Mô hình chu kỳ (chốt user 2026-07-13): 1 tháng = 1 chu kỳ; phí thu TRƯỚC nên chu
     kỳ mới là 'paid' NGAY — KHÔNG còn reset member về 'chưa thanh toán'. Xem
-    [[subscription-cycle-model]]."""
-    now = datetime.now(timezone.utc)
+    [[subscription-cycle-model]].
+
+    `now` = mốc BÁO GIÁ của lượt bán này. Caller nào đã báo giá bằng một mốc thì phải
+    truyền LẠI đúng mốc đó vào đây, vì tiền và hạn đo từ CÙNG một cửa sổ: webhook QR
+    chạy lại lệnh hàng phút sau lúc báo giá, tự lấy giờ mới là bán một cửa sổ mà hoá
+    đơn không hề tính tiền (§3.6.2 — điểm nối có thể đã vượt ngưỡng ép thêm tháng hoặc
+    vượt luôn mốc chốt). Mặc định `None` = tự lấy giờ hiện tại, giữ nguyên hành vi cũ
+    cho call site chưa đổi."""
+    now = datetime.now(timezone.utc) if now is None else now
     old_end = member.subscription_end_at
 
     # Vật chất hoá các chu kỳ hiện có nếu member chưa có kỳ nào (mời sau migration,
     # hoặc member cũ trước bảng cycles) → lịch sử liền mạch trước khi nối kỳ mới.
-    _ensure_cycles_materialized(member, now=now, actor_id=user.id)
+    _ensure_cycles_materialized(member, now=now, actor_id=user.id, db=db)
 
-    # Cộng dồn: còn hạn → nối tiếp hạn cũ; hết hạn/chưa có → tính từ bây giờ.
-    if old_end is not None and old_end > now:
+    quote = _renew_quote(db, member, months, old_end=old_end, now=now)
+    if quote is not None:
+        # Chế độ `cycle_aligned`: hạn rơi đúng MỐC CHỐT, cửa sổ tính từ ĐIỂM NỐI.
+        start_at = quote.join_at
+        new_end = quote.end_at
+    elif old_end is not None and old_end > now:
+        # Cộng dồn: còn hạn → nối tiếp hạn cũ; hết hạn/chưa có → tính từ bây giờ.
         start_at = old_end
         new_end = _extend_subscription_end(old_end, months)
     else:
         start_at = now
         new_end = _end_from_purchase(now, months)
 
+    # `subscription_months` giữ SỐ MỐC KHÁCH YÊU CẦU (luôn ≥ 1), KHÔNG phải
+    # `quote.whole_months` — kỳ lẻ có `whole_months=0`, mà `months ≤ 0` trên member
+    # nghĩa là VÔ THỜI HẠN (EXPIRY_RULES §5), tức biến khách thành dùng vĩnh viễn.
+    # Phân rã đúng của lần bán nằm ở chu kỳ vừa nối. Xem §3.6.7.
     member.subscription_months = months
     member.subscription_end_at = new_end
     # GIA HẠN cho dòng đang mang cờ "đổi email chưa xong" = quyết định giữ nó lại như
@@ -78,11 +119,17 @@ def perform_renew_core(db: Session, user: User, member: Member, months: int) -> 
     member.email_change_stuck_to = None
     # Mốc neo "Ngày gia hạn" = hạn mới − months×30 (khớp _resolve_purchased_at của
     # subscription.py: mở lại modal hiển thị đúng chu kỳ vừa gia hạn).
-    member.subscription_purchased_at = (
-        new_end - timedelta(days=months * SUBSCRIPTION_DAYS_PER_MONTH)
-        if new_end is not None
-        else None
-    )
+    # Chế độ `cycle_aligned` KHÔNG suy hạn từ mốc neo (EXPIRY_RULES §3.6.7) nên neo =
+    # ĐIỂM NỐI, tức đầu cửa sổ vừa bán. Lấy `new_end − months×30` ở chế độ đó ra một
+    # ngày vô nghĩa vì hạn không còn cách neo đúng 30 ngày một tháng.
+    if quote is not None:
+        member.subscription_purchased_at = quote.join_at
+    else:
+        member.subscription_purchased_at = (
+            new_end - timedelta(days=months * SUBSCRIPTION_DAYS_PER_MONTH)
+            if new_end is not None
+            else None
+        )
 
     # Nối 1 CHU KỲ (gộp N tháng, months=months) ĐÃ THANH TOÁN từ start_at → hạn mới
     # (mua gộp = 1 kỳ, không tách; phí đã thu trước).
@@ -90,7 +137,8 @@ def perform_renew_core(db: Session, user: User, member: Member, months: int) -> 
         member,
         start_at=start_at,
         end_at=new_end,
-        months=months,
+        months=quote.whole_months if quote is not None else months,
+        prorated_half_days=quote.prorated_half_days if quote is not None else None,
         actor_id=user.id,
         now=now,
     )
@@ -125,8 +173,12 @@ def _create_renew_order_and_raise(
     months: int,
     amount: int,
     settings_row,
+    priced_at,
 ) -> None:
-    """Ví thiếu → tạo hoá đơn QR gia hạn + HTTP 402. KHÔNG áp gia hạn (chờ trả tiền)."""
+    """Ví thiếu → tạo hoá đơn QR gia hạn + HTTP 402. KHÔNG áp gia hạn (chờ trả tiền).
+
+    `priced_at` = mốc đã dùng để ra `amount`; đóng vào hoá đơn để webhook áp lại đúng
+    cửa sổ đó thay vì cửa sổ của lúc tiền về (xem `payment_flow.priced_at_of`)."""
     if not payment_flow.bank_configured(settings_row):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
@@ -144,6 +196,7 @@ def _create_renew_order_and_raise(
         payload={"member_id": str(member.id), "months": months},
         workspace_id=workspace_id,
         platform=payment_flow.member_platform(member),
+        priced_at=priced_at,
     )
     log_event(
         db,
@@ -186,27 +239,54 @@ def renew_member_subscription(
     # thao tác được member mình mời) nên không rò rỉ. Xem activity.py (cùng lý do).
     member = _member_or_404_visible(db, workspace_id, member_id, user)
     months = body.months
+    # MỘT mốc giờ cho cả lượt: báo giá, hoá đơn QR và lúc áp hạn phải cùng đọc một
+    # đồng hồ. Trước đây báo giá lấy một `datetime.now()` còn `perform_renew_core` lấy
+    # một cái khác, mà giữa hai chỗ đó `decide_payment` còn KHOÁ dòng ví và có thể chờ
+    # lâu khi giao dịch khác đang giữ khoá. Hai mốc rơi hai bên ngưỡng làm tròn nửa
+    # ngày (hoặc hai bên mốc chốt) là tiền một đằng, hạn một nẻo — không có gì báo.
+    now = datetime.now(timezone.utc)
 
     settings_row = get_payment_settings(db)
     default_fee = int(settings_row.invite_fee_vnd or 0)
-    # Phí gia hạn = đơn giá/tháng (2 tầng) × số tháng gia hạn (user 2026-07-13).
-    # GPT nhân đơn giá/tháng; Canva tra bảng bậc (mua dài rẻ hơn) — cùng một điểm vào.
-    fee = payment_flow.fee_for_months(
-        db,
-        user,
-        months=months,
-        platform=payment_flow.member_platform(member),
-        member_fee=member.fee_vnd,
-        default_fee=default_fee,
-        settings_row=settings_row,
-    )
+    # Báo giá bằng ĐÚNG `now` mà `perform_renew_core` sẽ dùng để áp hạn ngay dưới —
+    # hai chỗ tính lại cùng một cửa sổ nên không thể lệch nhau. Cố ý KHÔNG chuyền
+    # `quote` xuống: `perform_renew_core` còn phục vụ webhook và luồng mời, mà một
+    # nhánh quên chuyền là tiền theo cửa sổ này, hạn ghi theo cửa sổ khác — cùng lý do
+    # đã ghi ở `_shared.sold_window`.
+    quote = _renew_quote(db, member, months, old_end=member.subscription_end_at, now=now)
+    if quote is not None:
+        # Chế độ `cycle_aligned`: phần lẻ tới mốc + các chu kỳ trọn (§3.6.5).
+        fee = payment_flow.fee_for_window(
+            db,
+            user,
+            prorated_half_days=quote.prorated_half_days,
+            cycle_days=quote.cycle_days,
+            whole_months=quote.whole_months,
+            member_fee=member.fee_vnd,
+            default_fee=default_fee,
+            settings_row=settings_row,
+        )
+    else:
+        # Chế độ 30-ngày: đơn giá/tháng (2 tầng) × số tháng (user 2026-07-13). GPT nhân
+        # đơn giá/tháng; Canva tra bảng bậc (mua dài rẻ hơn) — cùng một điểm vào.
+        fee = payment_flow.fee_for_months(
+            db,
+            user,
+            months=months,
+            platform=payment_flow.member_platform(member),
+            member_fee=member.fee_vnd,
+            default_fee=default_fee,
+            settings_row=settings_row,
+        )
 
     # Ví trước, QR sau (chỉ user bị tính phí; decide_payment tự bỏ qua super/non-beta).
     mode = payment_flow.decide_payment(db, user, fee)
     if mode == payment_flow.DEFER:
-        _create_renew_order_and_raise(db, user, workspace_id, member, months, fee, settings_row)
+        _create_renew_order_and_raise(
+            db, user, workspace_id, member, months, fee, settings_row, priced_at=now
+        )
 
-    perform_renew_core(db, user, member, months)
+    perform_renew_core(db, user, member, months, now=now)
     if mode == payment_flow.WALLET:
         wallet_service.charge_renew(db, user, member.id, fee, email=member.email)
 

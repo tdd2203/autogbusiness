@@ -256,8 +256,8 @@ export default function InviteMembers() {
     // Email mới nhưng user đã tự chọn không gian ở cột "Không gian" → tôn trọng.
     if (picked && eligibleIds.includes(picked)) return picked;
     const prev = randomWsRef.current[key];
-    // Đích đã bốc mà nay chạm trần thì bốc lại: giữ nguyên là đẩy cả mẻ email vào
-    // chỗ chắc chắn bị backend từ chối.
+    // Đích đã bốc mà nay chạm trần thì bốc lại: trần không tự hết giờ như dải ngưng
+    // mời, giữ nguyên là đẩy cả mẻ email vào chỗ chắc chắn bị backend từ chối.
     if (!prev || !invitableIds.includes(prev)) {
       randomWsRef.current[key] =
         invitableIds[Math.floor(Math.random() * invitableIds.length)];
@@ -529,6 +529,31 @@ export default function InviteMembers() {
       : t("inviteMembers.wsUsedDays", { n: days });
   };
   /**
+   * Không gian ĐANG BỊ NGƯNG MỜI: ChatGPT hỏng cú bấm công tắc "mời ngoài tên
+   * miền", hệ thống tự lùi 1 tiếng (backend `services/invite_block.py`). Backend
+   * đã lọc mốc quá hạn nên có giá trị nghĩa là đang bị ngưng thật; nhịp poll 15s
+   * của `useWorkspaceSeats` cũng là nhịp tự mở lại khi hết giờ.
+   */
+  const blockedWs = (ids: string[]) =>
+    ids
+      .map((id) => ({ id, row: seatMap.get(id) }))
+      .filter((x) => !!x.row?.invite_blocked_until)
+      .map((x) => ({
+        id: x.id,
+        name: x.row?.name ?? "—",
+        until: String(x.row?.invite_blocked_until),
+        reason: x.row?.invite_block_reason ?? null,
+      }));
+  /** Super-admin bấm "Cho phép mời lại" — bỏ mốc ngưng ngay, không chờ hết giờ. */
+  const clearInviteBlock = useMutation({
+    mutationFn: (wsId: string) =>
+      api<{ blocked: boolean }>(
+        `/api/v1/workspaces/${wsId}/invite-block/clear`,
+        { method: "POST" },
+      ),
+    onSuccess: () => invalidateWorkspaceSeats(qc),
+  });
+  /**
    * Danh sách đang dán CẦN bao nhiêu suất MỚI ở mỗi không gian, và còn bao nhiêu.
    *
    * "Suất mới" = email chưa giữ suất nào ở ĐÚNG không gian đích đó. Email đang là
@@ -593,7 +618,7 @@ export default function InviteMembers() {
    *
    * Hiện khi hết sạch chỗ tới trần, HOẶC khi danh sách đang dán cần nhiều hơn số
    * chỗ còn lại — đúng lúc người dùng cần biết, chứ không đợi bấm Mời rồi mới ăn
-   * 409. Khác dải ngưng mời: trần KHÔNG tự hết giờ.
+   * 409. Khác dải ngưng mời phía trên: trần KHÔNG tự hết giờ.
    *
    * Đang dán vào không gian nào thì XÉT THEO DANH SÁCH ĐÓ, không xét theo mỗi con
    * số "còn 0 chỗ": khách đã trả tiền được miễn trần nên lệnh vẫn chạy, mà băng-rôn
@@ -854,11 +879,89 @@ export default function InviteMembers() {
 
             </div>
 
+            {/* DẢI NGƯNG MỜI — ChatGPT hỏng công tắc "mời ngoài tên miền" nên
+                backend đã lùi lệnh mời của không gian đó khoảng 1 tiếng
+                (`services/invite_block.py`). Đặt TRÊN dải suất vì nó chặn hẳn việc
+                mời: đọc số suất còn trống rồi mới thấy dòng này là đọc ngược.
+                Tự biến mất khi hết giờ — cùng nhịp poll 15s với dải suất. */}
+            {(() => {
+              const rows = blockedWs(seatBarWs.map((w) => w.id));
+              if (rows.length === 0) return null;
+              return (
+                <div
+                  style={{
+                    padding: "12px 20px 13px",
+                    borderBottom: "1px solid var(--border)",
+                    background: "var(--danger-bg)",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      fontSize: 12.5,
+                      fontWeight: 700,
+                      color: "var(--danger)",
+                    }}
+                  >
+                    <span>⛔</span>
+                    <span>{t("inviteMembers.inviteBlockedTitle")}</span>
+                  </div>
+                  {rows.map((r) => (
+                    <div
+                      key={r.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        gap: 10,
+                        marginTop: 7,
+                        fontSize: 12.5,
+                        color: "var(--ink)",
+                      }}
+                    >
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 11.5 }}>
+                        {t("inviteMembers.inviteBlockedRow", {
+                          name: r.name,
+                          time: new Date(r.until).toLocaleTimeString(undefined, {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          }),
+                        })}
+                      </span>
+                      {user?.is_super_admin && (
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          style={{ fontSize: 11.5, padding: "3px 9px" }}
+                          disabled={clearInviteBlock.isPending}
+                          onClick={() => clearInviteBlock.mutate(r.id)}
+                        >
+                          {t("inviteMembers.inviteBlockedClear")}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <div
+                    style={{
+                      marginTop: 7,
+                      fontSize: 12,
+                      lineHeight: 1.45,
+                      color: "var(--ink-3)",
+                    }}
+                  >
+                    {t("inviteMembers.inviteBlockedHint")}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* DẢI CHẠM TRẦN THÀNH VIÊN — super-admin đặt trần ở nút ⚙️, chạm là
                 backend từ chối mọi lệnh mời vào không gian đó (`services/seats.py`).
-                Đặt TRÊN dải suất vì nó chặn hẳn việc mời: đọc số suất còn trống rồi
-                mới thấy dòng này là đọc ngược. KHÔNG tự hết giờ — chỉ mất đi khi
-                admin nới trần hoặc gỡ bớt người. */}
+                Nằm dưới dải ngưng mời nhưng vẫn TRÊN dải suất: cả hai đều chặn hẳn
+                việc mời, đọc số suất còn trống trước rồi mới thấy là đọc ngược.
+                KHÔNG tự hết giờ — chỉ mất đi khi admin nới trần hoặc gỡ bớt người. */}
             {(() => {
               const rows = cappedWs(seatBarWs.map((w) => w.id));
               if (rows.length === 0) return null;

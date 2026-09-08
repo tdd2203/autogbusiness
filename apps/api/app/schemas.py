@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Literal
 from uuid import UUID
 
@@ -204,6 +204,41 @@ class WorkspaceUpdate(BaseModel):
     invite_cap_reopen_at: date | None = None
 
 
+# Chế độ tính hạn dùng của workspace — luật đầy đủ ở `routers/members/EXPIRY_RULES.md`
+# §3.6. Khớp hằng `BILLING_MODE_*` trong `models.py`; đổi ở một nơi thì phải đổi cả hai,
+# lệch một chữ là ràng buộc `ck_workspaces_billing_mode` đá thẳng vào mặt người dùng.
+BillingMode = Literal["legacy_30d", "cycle_aligned"]
+
+
+class WorkspaceBillingModeIn(BaseModel):
+    """CẦU DAO: gạt chế độ tính hạn/tính tiền của MỘT workspace (super-admin).
+
+    Cố ý KHÔNG gộp vào `WorkspaceUpdate`: đổi `billing_mode` là đổi CÁCH TÍNH TIỀN
+    của cả workspace, không phải một trường cấu hình bình thường như tên hay tên
+    miền. Trộn chung thì một ngày nào đó sẽ có người gạt nhầm trong lúc đang sửa
+    tên workspace — xem docstring endpoint `set_billing_mode`.
+
+    Ba trường `cycle_*` đều tuỳ chọn: bỏ trống thì giữ giá trị đang có, còn ngày
+    neo thì tự mồi từ `renewal_date` khi workspace chưa có.
+
+    ⚠️ `cycle_anchor_day` / `cycle_force_extra_from_day` CỐ Ý không đặt `ge/le` ở
+    đây: sai khoảng thì pydantic trả 422 kèm cấu trúc lỗi máy đọc, còn người gạt
+    cầu dao cần một câu tiếng Việt nói rõ sai chỗ nào. Khoảng 1..31 được kiểm ở
+    `plan_billing_mode_switch` (settings.py) để lỗi ra cùng một giọng với ba chốt
+    chặn kia.
+    """
+
+    mode: BillingMode
+    # NGÀY trong tháng mà chu kỳ hoá đơn chốt (1–31). Ngày 29/30/31 rơi vào tháng
+    # ngắn thì mốc lùi về ngày cuối tháng (`_boundary_on`).
+    cycle_anchor_day: int | None = None
+    # GHI ĐÈ giờ chốt (UTC) cho riêng workspace. Bỏ trống = giữ nguyên; gửi null
+    # tường minh = xoá, quay về giá trị chung của `payment_settings`.
+    cycle_cutoff_utc: time | None = None
+    # GHI ĐÈ ngưỡng ép thêm tháng cho riêng workspace. Cùng quy ước bỏ trống/null.
+    cycle_force_extra_from_day: int | None = None
+
+
 class WorkspaceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -225,10 +260,25 @@ class WorkspaceOut(BaseModel):
     verified_domain: str | None = None
     chatgpt_locale: str = "vi"
     bank_fee_percent: float | None = None
+    # NGƯNG MỜI tới mốc này (ChatGPT hỏng công tắc mời ngoài miền). Trả nguyên cột
+    # nên có thể là mốc ĐÃ QUA — nơi hiển thị phải so với hiện tại. Endpoint
+    # /workspaces/seats thì đã lọc sẵn (xem `services/seats.py`).
+    invite_blocked_until: datetime | None = None
+    invite_block_reason: str | None = None
     # TRẦN THÀNH VIÊN do super-admin đặt. None = không chặn. Modal ⚙️ trang Mời đọc
     # cột này để điền sẵn ô nhập.
     invite_member_cap: int | None = None
     invite_cap_reopen_at: date | None = None
+    # ── Chế độ tính hạn dùng (EXPIRY_RULES §3.6) — CHỈ ĐỌC ───────────────────
+    # Đổi bốn trường này phải đi qua `POST /{workspace_id}/billing-mode`, không
+    # qua `PATCH /{workspace_id}`. Trả ra đây để giao diện luôn hiện được
+    # workspace nào đang ở chế độ nào: gạt cầu dao mà màn hình không phân biệt
+    # được hai chế độ thì gạt nhầm một workspace cũng không ai thấy, tới lúc lộ
+    # là đã bán sai giá cả một chu kỳ.
+    billing_mode: str = "legacy_30d"
+    cycle_anchor_day: int | None = None
+    cycle_cutoff_utc: time | None = None
+    cycle_force_extra_from_day: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -252,6 +302,11 @@ class WorkspaceSeatsOut(BaseModel):
     seat_total: int | None
     seat_used: int
     seat_left: int | None
+    # Mốc hết NGƯNG MỜI, đã lọc mốc quá hạn ⇒ có giá trị nghĩa là ĐANG bị ngưng.
+    # Trang Mời poll endpoint này nên trạng thái ngưng tự tươi theo (xem
+    # `services/invite_block.py`).
+    invite_blocked_until: datetime | None = None
+    invite_block_reason: str | None = None
     # TRẦN THÀNH VIÊN + đã chạm trần chưa (`seat_used >= invite_member_cap`). Đi kèm
     # ở đây để trang Mời biết ngay không gian nào đang ngưng mà không thêm lượt gọi.
     invite_member_cap: int | None = None
@@ -326,6 +381,10 @@ class BillingPasteIn(BaseModel):
     Thay cho việc để extension scrape trang chi tiết hoá đơn Stripe (mong manh).
     Web parse text dán ra các field này rồi POST lên. Endpoint lưu hoá đơn vào
     `billing_invoices` + set `renewal_date` = period_end + `seat_total` = quantity.
+
+    KHÔNG có cờ xác nhận nào ở đây (bỏ `confirm_cycle_change` ngày 2026-09-08):
+    hoá đơn của kỳ đang chạy/sắp tới tự dời mốc chu kỳ, hoá đơn cũ thì vẫn lưu mà
+    không đụng mốc. Luật ở `routers/workspaces/billing.py::decide_cycle_anchor`.
     """
 
     quantity: int | None = Field(default=None, ge=0, le=SEAT_TOTAL_MAX)

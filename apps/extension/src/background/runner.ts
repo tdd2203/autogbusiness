@@ -96,6 +96,10 @@ type SyncMismatch = {
 };
 
 const CHATGPT_ADMIN_URL = "https://chatgpt.com/admin/members";
+/** Trang có công tắc "Cho phép lời mời từ miền bên ngoài" — chỉ dùng để TẢI LẠI
+ * mà đọc lại công tắc sau khi ChatGPT in băng-rôn đỏ (xem nhánh
+ * `awaiting_external_recheck`). Mọi lệnh khác vẫn chạy trên CHATGPT_ADMIN_URL. */
+const CHATGPT_IDENTITY_URL = "https://chatgpt.com/admin/identity";
 // Trang "Ghi đè mỗi người dùng" — SET_USAGE_LIMIT thao tác ở đây (KHÁC /admin/members).
 const CHATGPT_USAGE_LIMIT_URL =
   "https://chatgpt.com/admin/billing/manage_member_usage_limit";
@@ -1092,7 +1096,12 @@ async function restoreExternalInvites(
     );
     const data = resp.ok
       ? (resp.data as
-          | { confirmed?: boolean; toast?: string | null; confirmed_by?: string }
+          | {
+              confirmed?: boolean;
+              toast?: string | null;
+              confirmed_by?: string;
+              error_banner?: string | null;
+            }
           | undefined)
       : undefined;
     const confirmed = resp.ok && data?.confirmed;
@@ -1111,6 +1120,9 @@ async function restoreExternalInvites(
       console.warn(
         "[autogpt-runner] KHÔNG xác nhận được toggle 'mời ngoài tên miền' đã tắt — " +
           "kiểm tra trên ChatGPT /admin/identity và tắt tay nếu cần. " +
+          (data?.error_banner
+            ? `ChatGPT báo hỏng: "${data.error_banner}". `
+            : "") +
           (resp.ok ? "" : `Lỗi: ${resp.error_code} ${resp.error_message}`),
       );
     }
@@ -1395,7 +1407,15 @@ function parsePlanRenewalMs(
   let guard = 0;
   while (ms <= todayMs && guard < 3) {
     const dd = new Date(ms);
-    ms = Date.UTC(dd.getUTCFullYear(), dd.getUTCMonth() + 1, dd.getUTCDate());
+    const y = dd.getUTCFullYear();
+    const m = dd.getUTCMonth() + 1;
+    // LÙI về ngày cuối tháng, KHÔNG để Date.UTC tự tràn sang tháng sau. `Date.UTC(
+    // 2026, 1, 31)` ra 3/3 chứ không phải 28/2, nên ngày chốt 31 bị đẩy thành ngày
+    // 3 — và từ 8/9/2026 con số này quyết định MỐC CHU KỲ của cả không gian
+    // (`workspaces/billing.py::decide_cycle_anchor`), tức lệch hạn và lệch giá cho
+    // mọi email. Backend lùi về cuối tháng (`_boundary_on`); hai bên phải khớp.
+    const cuoiThang = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    ms = Date.UTC(y, m, Math.min(dd.getUTCDate(), cuoiThang));
     guard++;
   }
   return ms;
@@ -2011,10 +2031,14 @@ async function reportToBackend(
     // INVITE_MEMBER fail vì KHÔNG bật được toggle external invites → extension đã
     // KHÔNG submit invite (xem execute-invite.ts). Backend đã pre-create Member
     // pending lúc bấm mời → phải DỌN để không hiện phantom "đang chờ".
+    //
+    // EXTERNAL_TOGGLE_BLOCKED (ChatGPT lỗi công tắc, đọc lại sau F5 vẫn tắt) đi
+    // chung nhánh này: cũng là "chưa bấm Gửi lời mời lần nào".
     if (
       task.type === "INVITE_MEMBER" &&
       task.workspace_id &&
-      response.error_code === "EXTERNAL_TOGGLE_FAILED"
+      (response.error_code === "EXTERNAL_TOGGLE_FAILED" ||
+        response.error_code === "EXTERNAL_TOGGLE_BLOCKED")
     ) {
       const p = (task.payload ?? {}) as Record<string, unknown>;
       const payloadEmails: string[] = Array.isArray(p.emails)
@@ -2030,11 +2054,11 @@ async function reportToBackend(
             verifyScrapeFailed: false,
           });
           console.log(
-            `[autogpt-invite] EXTERNAL_TOGGLE_FAILED → dọn ${r.removed} phantom pending member(s)`,
+            `[autogpt-invite] ${response.error_code} → dọn ${r.removed} phantom pending member(s)`,
           );
         } catch (e) {
           console.warn(
-            "[autogpt-invite] reconcile sau EXTERNAL_TOGGLE_FAILED thất bại:",
+            `[autogpt-invite] reconcile sau ${response.error_code} thất bại:`,
             e,
           );
         }
@@ -3370,6 +3394,139 @@ async function runOnceOnSlot(
           SESSION_RECOVERY_HINT +
           ` Lỗi gốc: ${msg}`,
         data: buyData,
+      };
+    }
+  }
+
+  // ─── ChatGPT LỖI ngay cú bấm công tắc → F5 ĐỌC LẠI (chốt user 3/9/2026) ───
+  // Phase A bấm công tắc 'mời ngoài tên miền' thì ChatGPT in băng-rôn đỏ
+  // "Something went wrong. If this issue persists please contact us...". Ca này
+  // HIẾM và là lỗi của ChatGPT, nhưng độc: React vẫn vẽ công tắc sang ON nên
+  // `aria-checked` khai ON dù PATCH không lưu. Tin theo nó là mời email ngoài
+  // miền vào một workspace vẫn đang chặn → ChatGPT từ chối im lặng → dashboard
+  // treo "đang chờ" cho lời mời chưa từng tồn tại.
+  //
+  // Chốt duy nhất đáng tin là TẢI LẠI /admin/identity rồi đọc lại công tắc
+  // ("lập tức f5" — user). Content không tự F5 được (chết context), nên vòng này
+  // do background làm, y hệt `awaiting_external_reload` ngay dưới.
+  //
+  //   • đọc lại ra ON  → ChatGPT lưu được, băng-rôn chỉ là tiếng ồn → đi tiếp
+  //     đường cũ (hard-reload /admin/members rồi mời).
+  //   • đọc lại ra OFF → ChatGPT đang lỗi thật → HUỶ lệnh với
+  //     EXTERNAL_TOGGLE_BLOCKED. Chưa email nào được mời nên backend hoàn phí
+  //     đủ, VÀ ngưng mời workspace đó 1 tiếng (`services/invite_block.py`) —
+  //     bấm lại công tắc lúc ChatGPT đang hỏng là đúng cách để bị khoá thêm.
+  if (
+    response.ok &&
+    task.type === "INVITE_MEMBER" &&
+    request.kind === "INVITE_MEMBER" &&
+    (response.data as { awaiting_external_recheck?: boolean } | undefined)
+      ?.awaiting_external_recheck === true
+  ) {
+    const recheckData = { ...((response.data as Record<string, unknown>) ?? {}) };
+    delete recheckData.awaiting_external_recheck;
+    const banner = String(recheckData.external_toggle_error_banner ?? "");
+    const seatFieldsFromRecheck = pickSeatFields(recheckData);
+    console.warn(
+      `[autogpt-runner] INVITE external: ChatGPT báo hỏng khi bật công tắc ` +
+        `("${banner}") — HARD-RELOAD ${CHATGPT_IDENTITY_URL} (tab ${tab.id}) để đọc lại công tắc.`,
+    );
+    await reportRunnerProgress(config, task.id, {
+      phase: "external-recheck",
+      message:
+        "ChatGPT báo lỗi khi bật 'mời ngoài tên miền' — tải lại trang để đọc lại công tắc...",
+    });
+    try {
+      const prevLoadId = await readContentLoadId(tab.id);
+      await chrome.tabs.update(tab.id, {
+        url: CHATGPT_IDENTITY_URL,
+        active: ADMIN_TAB_ACTIVE,
+      });
+      const reloaded = await waitForTabComplete(tab.id, 20_000);
+      if (!reloaded?.url?.includes("/admin")) {
+        response = {
+          ok: false,
+          error_code: "EXTERNAL_TOGGLE_FAILED",
+          error_message:
+            `ChatGPT báo lỗi khi bật 'mời ngoài tên miền' ("${banner}"), tải lại trang để kiểm tra ` +
+            `thì tab bị đưa khỏi /admin (url=${reloaded?.url ?? "?"}) — có thể đã logout ChatGPT. ` +
+            "Chưa email nào được mời.",
+          data: seatFieldsFromRecheck,
+        };
+      } else if (!(await ensureFreshContentAfterNav(tab.id, prevLoadId))) {
+        response = {
+          ok: false,
+          error_code: "EXTERNAL_TOGGLE_FAILED",
+          error_message:
+            `ChatGPT báo lỗi khi bật 'mời ngoài tên miền' ("${banner}") và sau khi tải lại trang, ` +
+            "extension không xác nhận được trang MỚI đã tiếp quản. Đã dừng trước khi mời — " +
+            "chưa email nào được mời. Chạy lại lệnh sau vài phút.",
+          data: seatFieldsFromRecheck,
+        };
+      } else {
+        const verify = await withTimeout(
+          sendToContent(tab.id, {
+            kind: "VERIFY_EXTERNAL_TOGGLE",
+            taskId: task.id,
+          }),
+          60_000,
+          "content-VERIFY_EXTERNAL_TOGGLE",
+        );
+        const verifyData = verify.ok
+          ? (verify.data as
+              | {
+                  external_invites_enabled?: boolean | null;
+                  error_banner?: string | null;
+                }
+              | undefined)
+          : undefined;
+        const state = verifyData?.external_invites_enabled ?? null;
+        if (state === true) {
+          console.log(
+            "[autogpt-runner] INVITE external: đọc lại sau F5 thấy công tắc VẪN ON — " +
+              "ChatGPT lưu được, băng-rôn chỉ là tiếng ồn → mời tiếp.",
+          );
+          // Đi tiếp đúng đường cũ: nhánh ngay dưới sẽ hard-reload
+          // /admin/members (đang ở /admin/identity) rồi gọi Phase A'.
+          recheckData.awaiting_external_reload = true;
+          response = { ok: true, data: recheckData };
+        } else {
+          const stillBanner = verifyData?.error_banner ?? null;
+          console.warn(
+            `[autogpt-runner] INVITE external: đọc lại sau F5 ra ${state} → ChatGPT đang lỗi thật, HUỶ lệnh.`,
+          );
+          // `state === false` ⇒ ChatGPT chưa lưu gì, công tắc vẫn tắt, không có gì
+          // để dọn. `state === null` ⇒ không đọc được công tắc, mà nó CÓ THỂ đang
+          // ON — spec bảo mật của user đòi về OFF sau mỗi lần mời, nên vẫn thử dọn
+          // (lệnh dọn đọc trước, chỉ bấm khi thật sự thấy đang ON).
+          if (state !== false) {
+            await restoreExternalInvites(tab.id, task.id);
+          }
+          response = {
+            ok: false,
+            error_code: "EXTERNAL_TOGGLE_BLOCKED",
+            error_message:
+              `ChatGPT báo lỗi khi bật 'mời ngoài tên miền' ("${banner}"). Đã tải lại trang đọc lại: ` +
+              (state === false
+                ? "công tắc VẪN TẮT"
+                : "không đọc được công tắc") +
+              (stillBanner ? ` và trang vẫn treo lỗi ("${stillBanner}")` : "") +
+              ". Đây là lỗi phía ChatGPT — KHÔNG bấm lại để không bị khoá thêm. " +
+              "Chưa email nào được mời. Chờ khoảng 1 tiếng rồi mời lại, hoặc nhờ quản trị viên mở lại sớm.",
+            data: seatFieldsFromRecheck,
+          };
+        }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[autogpt-runner] INVITE external recheck TIMEOUT/throw: ${msg}`);
+      response = {
+        ok: false,
+        error_code: "EXTERNAL_TOGGLE_FAILED",
+        error_message:
+          `ChatGPT báo lỗi khi bật 'mời ngoài tên miền' ("${banner}") và vòng tải lại trang để đọc lại ` +
+          `công tắc cũng không xong. Chưa email nào được mời. Lỗi gốc: ${msg}`,
+        data: seatFieldsFromRecheck,
       };
     }
   }

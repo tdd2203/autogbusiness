@@ -26,16 +26,7 @@
  * bằng chứng cho một cú bấm chưa hề xảy ra.
  */
 
-/** Bỏ dấu + gộp khoảng trắng + thường hoá, để khớp chữ bất kể locale gõ kiểu gì. */
-function normalize(text: string): string {
-  return text
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[đĐ]/g, "d")
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-}
+import { normalizeIdentityText } from "./normalize-text";
 
 /** Vế 1 — câu đang nói về LỜI MỜI NGOÀI MIỀN chứ không phải setting khác. */
 const SUBJECT_PATTERNS = [
@@ -84,7 +75,7 @@ const TOAST_SELECTORS = [
  * `null` = không phải (hoặc mập mờ: nói cả tắt lẫn bật thì không dám chọn).
  */
 export function readToggleToastText(raw: string): boolean | null {
-  const norm = normalize(raw);
+  const norm = normalizeIdentityText(raw);
   if (!SUBJECT_PATTERNS.some((re) => re.test(norm))) return null;
   const off = OFF_PATTERNS.some((re) => re.test(norm));
   const on = ON_PATTERNS.some((re) => re.test(norm));

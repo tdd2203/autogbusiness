@@ -27,7 +27,7 @@ import { humanClick, humanType, sleep } from "../human";
 import { reportProgress } from "../progress";
 import {
   clickableByAnyText,
-  emailIn,
+  emailsOf,
   emptyEmailInputs,
   norm,
   numberIn,
@@ -167,11 +167,17 @@ async function collectInviteLinks(
   );
   for (const btn of buttons) {
     // Email của DÒNG chứa nút này — không lấy email đầu hộp, mỗi dòng một người.
+    // Trèo lên tới khối chứa ĐÚNG MỘT email: thấy hai email trở lên là đã trèo quá
+    // tay sang khối bọc cả danh sách, gán link lúc đó là gán cho nhầm người.
     let row: HTMLElement | null = btn;
     let email: string | null = null;
     for (let up = 0; up < 6 && row; up += 1) {
-      email = emailIn(row.textContent);
-      if (email) break;
+      const found = emailsOf(row);
+      if (found.length > 1) break;
+      if (found.length === 1) {
+        [email] = found;
+        break;
+      }
       row = row.parentElement;
     }
     if (!email) continue;

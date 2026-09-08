@@ -29,6 +29,9 @@ from app.schemas import MemberCorrectAddDateIn, MemberOut
 from ._shared import (
     router,
     _end_from_purchase,
+    cycle_settings,
+    is_cycle_aligned,
+    snap_to_boundary,
     _get_workspace_or_404,
     _mark_member_paid,
     _member_or_404_visible,
@@ -69,6 +72,28 @@ def correct_member_add_date(
     old_purchased = member.subscription_purchased_at
     old_end = member.subscription_end_at
 
+    # Chế độ neo-theo-chu-kỳ: hạn phải rơi đúng MỐC CHỐT, không phải neo + tháng×30.
+    ws = member.workspace
+    aligned = ws is not None and is_cycle_aligned(ws)
+    cycle_cfg = cycle_settings(db) if aligned else None
+
+    def _end_from(anchor, months: int):
+        """Hạn mới từ (mốc neo, số tháng), theo chế độ của workspace.
+
+        ⚠️ Ở chế độ chu kỳ dùng `snap_to_boundary` chứ KHÔNG dùng `boundary_for`:
+        đây là SỬA dữ liệu, không phải bán. `boundary_for` áp ngưỡng ép thêm tháng
+        (luật của việc bán) nên sẽ tặng khách thêm một chu kỳ mà không ai mua.
+
+        Kèm chốt chặn của EXPIRY_RULES §6: nắn xong mà hạn rơi vào QUÁ KHỨ thì giữ
+        hạn cũ — đẩy hạn về quá khứ là job tự-gỡ xoá member ngay tick kế tiếp.
+        """
+        if not aligned:
+            return _end_from_purchase(anchor, months)
+        snapped = snap_to_boundary(
+            ws, anchor, max(0, (months or 1) - 1), settings_row=cycle_cfg
+        )
+        return snapped if snapped > now else (old_end or snapped)
+
     old_months = member.subscription_months
     member.subscription_purchased_at = body.add_date
     if body.clear_end:
@@ -85,10 +110,10 @@ def correct_member_add_date(
         # NEO LẠI cả số tháng (modal Đổi hạn dùng): lưu months mới + hạn = ngày mới +
         # months×30 (KHÔNG cộng dồn). "Số tháng" trên modal tính thẳng từ ngày thêm.
         member.subscription_months = body.months
-        member.subscription_end_at = _end_from_purchase(body.add_date, body.months)
+        member.subscription_end_at = _end_from(body.add_date, body.months)
     elif member.subscription_months is not None:
         # Gói tháng → hết hạn = ngày gia hạn mới + tháng×30.
-        member.subscription_end_at = _end_from_purchase(
+        member.subscription_end_at = _end_from(
             body.add_date, member.subscription_months
         )
     elif old_end is not None:
