@@ -74,6 +74,51 @@ export function formatCycleMoment(
  * Dùng dấu trừ thật (U+2212) chứ không phải gạch nối: đứng cạnh số giờ thì gạch
  * nối dễ đọc nhầm thành khoảng.
  */
+/** Múi giờ Việt Nam — ép cứng, KHÔNG lấy giờ máy. */
+const VN_TZ = "Asia/Ho_Chi_Minh";
+
+const VN_MOMENT: Intl.DateTimeFormatOptions = {
+  timeZone: VN_TZ,
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+};
+
+/**
+ * MỘT MỐC hiện cho NGƯỜI DÙNG: `08/10/2026 10:00` theo giờ Việt Nam.
+ *
+ * Chốt user 8/9/2026: đại lý và khách đọc giờ VN, không đọc UTC. Giờ UTC chỉ còn ở
+ * đồng hồ trang Cài đặt để chủ cửa hàng tra khi cần đối chiếu.
+ *
+ * Ép cứng `Asia/Ho_Chi_Minh` chứ KHÔNG dùng giờ máy: máy đặt sai múi (hoặc người
+ * bán đang ở nước ngoài) mà hiện theo máy thì hai người nhìn cùng một hạn ra hai
+ * con số, không ai biết ai đúng.
+ */
+export function formatVnMoment(
+  lang: Lang,
+  value: string | Date | null,
+): string {
+  const d = value == null ? null : toDate(value);
+  if (!d) return "—";
+  const parts = d.toLocaleString(localeTag(lang), VN_MOMENT);
+  return parts;
+}
+
+/** Chỉ NGÀY theo giờ VN: `08/10/2026`. */
+export function formatVnDate(lang: Lang, value: string | Date | null): string {
+  const d = value == null ? null : toDate(value);
+  if (!d) return "—";
+  return d.toLocaleDateString(localeTag(lang), {
+    timeZone: VN_TZ,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
 export function localUtcOffsetLabel(at: Date = new Date()): string {
   // `getTimezoneOffset` trả về số phút phải CỘNG vào giờ máy để ra UTC, nên nó
   // ngược dấu với cách người ta nói "UTC+7". Đảo dấu ngay để khỏi nhầm về sau.

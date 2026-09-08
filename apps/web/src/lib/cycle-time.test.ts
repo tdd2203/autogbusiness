@@ -4,6 +4,8 @@ import {
   formatCycleMoment,
   formatUtcDate,
   formatUtcTime,
+  formatVnDate,
+  formatVnMoment,
   isMachineOnUtc,
   localUtcOffsetLabel,
 } from "./cycle-time";
@@ -60,5 +62,24 @@ describe("chênh lệch giờ máy", () => {
     utc.getTimezoneOffset = () => 0;
     expect(isMachineOnUtc(utc)).toBe(true);
     expect(localUtcOffsetLabel(utc)).toBe("+0");
+  });
+});
+
+describe("mốc hiện cho người dùng — giờ Việt Nam", () => {
+  it("đổi 03:00 UTC thành 10:00 giờ VN", () => {
+    // Cùng một khoảnh khắc, hai cách viết. Người bán đọc 10:00 chứ không trừ nhẩm.
+    expect(formatVnMoment("vi", BOUNDARY)).toContain("10:00");
+    expect(formatVnMoment("vi", BOUNDARY)).toContain("25/09/2026");
+  });
+
+  it("ép múi VN, KHÔNG lấy giờ máy", () => {
+    // 2026-09-25T20:00Z là 03:00 ngày 26 giờ VN — nếu lấy giờ máy (CI chạy UTC)
+    // sẽ ra ngày 25, tức hai người nhìn cùng một hạn ra hai ngày khác nhau.
+    expect(formatVnDate("vi", "2026-09-25T20:00:00Z")).toBe("26/09/2026");
+  });
+
+  it("mốc rỗng ra dấu gạch", () => {
+    expect(formatVnMoment("vi", null)).toBe("—");
+    expect(formatVnDate("vi", "hong")).toBe("—");
   });
 });

@@ -26,7 +26,7 @@ import InviteWorkspaceConfigModal from "../components/InviteWorkspaceConfigModal
 import { useExtensionStatus } from "../hooks/useExtensionTrigger";
 import { queuePollInterval } from "../lib/queuePolling";
 import { formatVnd, getQrOrder, type OrderQr } from "../lib/wallet";
-import { formatCycleMoment } from "../lib/cycle-time";
+import { formatVnDate, formatVnMoment } from "../lib/cycle-time";
 import { toast } from "../components/Toast";
 import type { Member, QueueItem } from "../types";
 import OrderQrModal from "../components/OrderQrModal";
@@ -1759,10 +1759,13 @@ export default function InviteMembers() {
                     </button>
                   </>
                 )}
-                {feeDetailOpen && (
-                  <FeeDetailTable rows={feePreview.data?.detail ?? []} />
-                )}
               </div>
+              {feeDetailOpen && (
+                <FeeDetailModal
+                  rows={feePreview.data?.detail ?? []}
+                  onClose={() => setFeeDetailOpen(false)}
+                />
+              )}
               <div style={{ display: "flex", gap: 9 }}>
                 <button
                   onClick={() => {
@@ -2450,44 +2453,163 @@ type FeeDetailRow = {
   half_days: number;
   from: string;
   to: string | null;
+  unit_price_vnd?: number;
+  /** Chỉ có ở chế độ neo theo mốc chốt. */
+  prorated_half_days?: number;
+  whole_months?: number;
+  cycle_days?: number;
+  cycle_start?: string;
+  cycle_end?: string;
 };
 
 /**
- * Bảng "trả bấy nhiêu cho bao nhiêu ngày, dùng tới khi nào".
+ * POPUP "vì sao ra con số này".
  *
- * Mốc hiện theo giờ UTC kèm nhãn (`formatCycleMoment`) vì hạn dùng được tính bằng
- * ngày lịch UTC — hiện theo giờ máy là lệch 7 tiếng so với con số luật nói.
+ * Người bán nhìn "Tổng phí 20.000đ" thì không biết giải thích với khách thế nào —
+ * nhất là ở chế độ neo theo mốc chốt, nơi giá đổi theo NGÀY nên hai email mua cách
+ * nhau vài hôm ra hai con số khác nhau.
+ *
+ * ⚠️ CỐ Ý KHÔNG tính lại tiền ở đây. Popup chỉ bày ra các THÀNH PHẦN (đơn giá, số
+ * ngày lẻ, số chu kỳ trọn) rồi hiện `fee` do server chốt. Tự nhân chia lại ở client
+ * là dựng thêm một nguồn sự thật thứ hai cho tiền — có ngày nó lệch với số thật sự
+ * bị trừ, mà lệch kiểu đó thì không ai tin màn hình nữa.
+ *
+ * Mốc hiện theo GIỜ VIỆT NAM (chốt user 8/9/2026): đại lý và khách đọc giờ VN. Giờ
+ * UTC chỉ còn ở đồng hồ trang Cài đặt để chủ cửa hàng tra khi cần.
  */
-function FeeDetailTable({ rows }: { rows: FeeDetailRow[] }) {
+function FeeDetailModal({
+  rows,
+  onClose,
+}: {
+  rows: FeeDetailRow[];
+  onClose: () => void;
+}) {
   const { t, lang } = useI18n();
+  const days = (halfDays: number) =>
+    (halfDays / 2).toLocaleString(lang === "zh-CN" ? "zh-CN" : "vi-VN");
+
   return (
-    <div style={{ marginTop: 8 }}>
-      <table className="table" style={{ fontSize: 12 }}>
-        <thead>
-          <tr>
-            <th>{t("invite.feeDetailEmail")}</th>
-            <th>{t("invite.feeDetailDuration")}</th>
-            <th>{t("invite.feeDetailUntil")}</th>
-            <th style={{ textAlign: "right" }}>{t("invite.feeDetailFee")}</th>
-          </tr>
-        </thead>
-        <tbody>
+    <div className="tg-modal-backdrop" onClick={onClose}>
+      <div
+        className="tg-modal"
+        style={{ maxWidth: 560 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="tg-modal-head">
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+            <h3 className="tg-h" style={{ flex: 1 }}>
+              {t("invite.feeDetailTitle")}
+            </h3>
+            <button onClick={onClose} aria-label={t("common.close")}>
+              ×
+            </button>
+          </div>
+        </div>
+        <div className="tg-modal-body">
           {rows.map((r) => (
-            <tr key={r.email}>
-              <td>{r.email}</td>
-              <td>
-                {t("invite.feeDetailDays", {
-                  n: (r.half_days / 2).toLocaleString(
-                    lang === "zh-CN" ? "zh-CN" : "vi-VN",
-                  ),
-                })}
-              </td>
-              <td>{formatCycleMoment(lang, r.to)}</td>
-              <td style={{ textAlign: "right" }}>{formatVnd(r.fee)}</td>
-            </tr>
+            <div
+              key={r.email}
+              style={{
+                borderTop: "1px solid var(--line)",
+                paddingTop: 12,
+                marginTop: 12,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  fontWeight: 600,
+                  marginBottom: 8,
+                }}
+              >
+                <span>{r.email}</span>
+                <span>{formatVnd(r.fee)}</span>
+              </div>
+
+              {r.cycle_start && r.cycle_end && (
+                <div className="info-row">
+                  <div className="key">{t("invite.feeDetailCycle")}</div>
+                  <div className="val">
+                    {formatVnDate(lang, r.cycle_start)} →{" "}
+                    {formatVnDate(lang, r.cycle_end)}
+                    {r.cycle_days != null && (
+                      <span style={{ color: "var(--ink-3)" }}>
+                        {" · "}
+                        {t("invite.feeDetailDays", { n: String(r.cycle_days) })}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="info-row">
+                <div className="key">{t("invite.feeDetailFrom")}</div>
+                <div className="val">{formatVnMoment(lang, r.from)}</div>
+              </div>
+
+              <div className="info-row">
+                <div className="key">{t("invite.feeDetailUntil")}</div>
+                <div className="val">
+                  {formatVnMoment(lang, r.to)}
+                  <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
+                    {t("invite.feeDetailUntilHint")}
+                  </div>
+                </div>
+              </div>
+
+              <div className="info-row">
+                <div className="key">{t("invite.feeDetailDuration")}</div>
+                <div className="val">
+                  {t("invite.feeDetailDays", { n: days(r.half_days) })}
+                </div>
+              </div>
+
+              {r.unit_price_vnd != null && (
+                <div className="info-row">
+                  <div className="key">{t("invite.feeDetailUnit")}</div>
+                  <div className="val">
+                    {t("invite.feeDetailUnitValue", {
+                      price: formatVnd(r.unit_price_vnd),
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Phân rã: mấy chu kỳ trọn + bao nhiêu ngày lẻ. Đây là câu trả lời
+                  cho "sao email này rẻ hơn email kia". */}
+              {(r.whole_months ?? 0) > 0 && (
+                <div className="info-row">
+                  <div className="key">{t("invite.feeDetailWhole")}</div>
+                  <div className="val">
+                    {t("invite.feeDetailMonths", {
+                      n: String(r.whole_months),
+                    })}
+                  </div>
+                </div>
+              )}
+              {(r.prorated_half_days ?? 0) > 0 && (
+                <div className="info-row">
+                  <div className="key">{t("invite.feeDetailProrated")}</div>
+                  <div className="val">
+                    {t("invite.feeDetailDays", {
+                      n: days(r.prorated_half_days ?? 0),
+                    })}
+                    {r.cycle_days != null && (
+                      <span style={{ color: "var(--ink-3)" }}>
+                        {" "}
+                        {t("invite.feeDetailOfCycle", {
+                          n: String(r.cycle_days),
+                        })}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           ))}
-        </tbody>
-      </table>
+        </div>
+      </div>
     </div>
   );
 }

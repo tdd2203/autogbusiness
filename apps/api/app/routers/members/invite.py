@@ -64,6 +64,7 @@ from ._shared import (
     is_cycle_aligned,
     quote_cycle,
     sold_window,
+    workspace_cycle,
     _get_workspace_or_404,
     _is_paid_period_active,
     _member_or_404_visible,
@@ -1527,7 +1528,7 @@ def preview_invite_fees(
         # chốt, và tự cộng 30 ngày thì báo sai hạn cho khách.
         "expiry": {e: d.isoformat() for e, d in expiries.items()},
         "detail": _preview_price_detail(
-            db, workspace_id, planned, expiries, now=now
+            db, workspace_id, planned, expiries, user, default_fee, now=now
         ),
     }
 
@@ -1537,6 +1538,8 @@ def _preview_price_detail(
     workspace_id: UUID,
     planned: list[tuple[str, int]],
     expiries: dict[str, datetime],
+    user: User,
+    default_fee: int,
     *,
     now: datetime,
 ) -> list[dict]:
@@ -1568,6 +1571,9 @@ def _preview_price_detail(
         .scalars()
         .all()
     }
+    ws_row = db.get(Workspace, workspace_id)
+    aligned = ws_row is not None and is_cycle_aligned(ws_row)
+    cycle_cfg = cycle_settings(db) if aligned else None
     out: list[dict] = []
     for email, fee in planned:
         end = expiries.get(email)
@@ -1575,15 +1581,39 @@ def _preview_price_detail(
         cur_end = m.subscription_end_at if m is not None else None
         start = cur_end if cur_end is not None and cur_end > now else now
         half_days = half_days_between(start, end) if end is not None else 0
-        out.append(
-            {
-                "email": email,
-                "fee": fee,
-                # Nửa ngày là đơn vị THẬT của phần lẻ (EXPIRY_RULES §3.6.4) — trả số
-                # nguyên nửa-ngày để web tự hiện "20,5 ngày", đừng làm tròn ở đây.
-                "half_days": half_days,
-                "from": start.isoformat(),
-                "to": end.isoformat() if end is not None else None,
-            }
-        )
+        row = {
+            "email": email,
+            "fee": fee,
+            # Nửa ngày là đơn vị THẬT của phần lẻ (EXPIRY_RULES §3.6.4) — trả số
+            # nguyên nửa-ngày để web tự hiện "20,5 ngày", đừng làm tròn ở đây.
+            "half_days": half_days,
+            "from": start.isoformat(),
+            "to": end.isoformat() if end is not None else None,
+            "unit_price_vnd": payment_flow.effective_fee(
+                m.fee_vnd if m is not None else None, user, default_fee
+            ),
+        }
+        # PHÉP TÍNH cho khối giải thích: phần lẻ bao nhiêu, mấy chu kỳ trọn, chu kỳ
+        # dài bao nhiêu ngày. Không có mấy số này thì popup chỉ nhắc lại kết quả,
+        # mà thứ người bán cần là "vì sao ra con số đó".
+        if aligned and end is not None:
+            try:
+                prorated, cycle_days, whole_months = sold_window(
+                    ws_row, join_at=start, end_at=end, settings_row=cycle_cfg
+                )
+                cycle_start, cycle_end = workspace_cycle(
+                    ws_row, start, settings_row=cycle_cfg
+                )
+                row.update(
+                    {
+                        "prorated_half_days": prorated,
+                        "whole_months": whole_months,
+                        "cycle_days": cycle_days,
+                        "cycle_start": cycle_start.isoformat(),
+                        "cycle_end": cycle_end.isoformat(),
+                    }
+                )
+            except HTTPException:
+                pass  # chưa có mốc chu kỳ → chỉ hiện phần cơ bản
+        out.append(row)
     return out
