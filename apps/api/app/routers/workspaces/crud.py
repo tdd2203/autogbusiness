@@ -13,6 +13,7 @@ Endpoints (đăng ký lên router dùng chung từ `_shared`):
   - PATCH /{workspace_id}  → update_workspace
 """
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Query, status
@@ -44,6 +45,11 @@ from app.schemas import (
     WorkspaceSeatsOut,
     WorkspaceUpdate,
     WorkspaceWithKey,
+)
+from app.routers.members._shared import (
+    cycle_settings,
+    is_cycle_aligned,
+    quote_cycle,
 )
 from app.services import seats
 
@@ -246,6 +252,47 @@ def get_workspace(
     assert_workspace_access(db, user, workspace_id)
     _apply_effective_seat_used(db, [ws])
     return ws
+
+
+@router.get("/{workspace_id}/cycle", response_model=dict)
+def get_workspace_cycle(
+    workspace_id: UUID,
+    db: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+) -> dict:
+    """Chu kỳ thanh toán ĐANG chạy của không gian + hôm nay là ngày thứ mấy.
+
+    Cho ô mời: giá tính theo số ngày từ lúc mua tới mốc chốt, và từ ngày thứ
+    `cycle_force_extra_from_day` của chu kỳ trở đi thì lượt bán gồm luôn một tháng
+    nữa (EXPIRY_RULES §3.6.2). Người bán phải THẤY mình đang đứng ở đoạn nào của chu
+    kỳ trước khi bấm gửi, chứ đếm tay theo lịch là sai — mốc cuộn theo tháng dương
+    lịch và ngày thứ mấy đếm từ mốc mở chứ không từ mùng 1.
+
+    `forced_extra_month` = mua NGAY BÂY GIỜ có bị gộp thêm một tháng không; tính sẵn
+    ở đây để web khỏi phải mang theo ngưỡng và tự so.
+
+    Không gian ở chế độ 30-ngày không có chu kỳ nào để trả — mỗi `billing_mode` là đủ
+    cho giao diện biết mà im lặng.
+    """
+    ws = _get_workspace_or_404(db, workspace_id)
+    assert_workspace_access(db, user, workspace_id)
+    if not is_cycle_aligned(ws):
+        return {"billing_mode": ws.billing_mode}
+    settings_row = cycle_settings(db)
+    quote = quote_cycle(ws, datetime.now(timezone.utc), settings_row=settings_row)
+    return {
+        "billing_mode": ws.billing_mode,
+        "start": quote.cycle_start.isoformat(),
+        "end": quote.cycle_end.isoformat(),
+        "days": quote.cycle_days,
+        "day_of_cycle": quote.day_of_cycle,
+        "forced_extra_month": quote.forced_extra_month,
+        "force_extra_from_day": int(
+            ws.cycle_force_extra_from_day
+            or settings_row.cycle_force_extra_from_day
+            or 0
+        ),
+    }
 
 
 @router.patch("/{workspace_id}", response_model=WorkspaceOut)

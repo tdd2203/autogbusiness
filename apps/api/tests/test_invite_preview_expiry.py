@@ -115,6 +115,44 @@ def test_gia_han_do_tu_han_cu_khong_tu_luc_bam(
     assert end > old_end, "gia hạn phải nối TIẾP hạn cũ, không cắt ngắn"
 
 
+def test_chu_ky_tra_ve_dung_ngay_thu_may(client: TestClient, auth_header: dict) -> None:
+    """Ô mời hỏi `GET /workspaces/{id}/cycle` để hiện "chu kỳ 11/9 → 11/10, hôm nay là
+    ngày thứ 5". Sai chỗ này thì người bán tưởng còn nhiều ngày, bán xong mới biết
+    lượt đó bị gộp thêm một tháng."""
+    ws = create_ws(client, auth_header, "PREV-CYCLE-INFO")
+    _switch_to_cycle(client, auth_header, ws["id"])
+
+    resp = client.get(f"/api/v1/workspaces/{ws['id']}/cycle", headers=auth_header)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["billing_mode"] == "cycle_aligned"
+    start = datetime.fromisoformat(body["start"]).astimezone(UTC)
+    end = datetime.fromisoformat(body["end"]).astimezone(UTC)
+    now = datetime.now(UTC)
+    # Mốc mở và mốc chốt đều rơi đúng ngày chốt, đúng giờ chốt.
+    assert start.day == ANCHOR_DAY and end.day == ANCHOR_DAY
+    assert (start.hour, start.minute) == (CUTOFF.hour, CUTOFF.minute)
+    # Chu kỳ phải CHỨA hôm nay, nửa mở [start, end).
+    assert start <= now < end
+    assert 28 <= body["days"] <= 31
+    assert 1 <= body["day_of_cycle"] <= body["days"]
+    # Ngưỡng ép thêm tháng và trạng thái "mua bây giờ có bị gộp không" phải khớp nhau.
+    assert body["force_extra_from_day"] == 23
+    assert body["forced_extra_month"] == (body["day_of_cycle"] >= 23)
+
+
+def test_chu_ky_im_lang_o_khong_gian_ba_muoi_ngay(
+    client: TestClient, auth_header: dict
+) -> None:
+    """Chế độ 30-ngày không có chu kỳ nào để nói tới — trả mỗi `billing_mode` để giao
+    diện biết mà không vẽ gì."""
+    ws = create_ws(client, auth_header, "PREV-CYCLE-LEGACY")
+    resp = client.get(f"/api/v1/workspaces/{ws['id']}/cycle", headers=auth_header)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"billing_mode": "legacy_30d"}
+
+
 def test_khong_gian_ba_muoi_ngay_van_ra_so_cu(
     client: TestClient, auth_header: dict
 ) -> None:

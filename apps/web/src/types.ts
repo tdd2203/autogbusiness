@@ -74,6 +74,23 @@ export type Workspace = {
  *  bên API: lệch một chữ là lần gạt cầu dao nào cũng bị API từ chối. */
 export type BillingMode = "legacy_30d" | "cycle_aligned";
 
+/** Chu kỳ thanh toán ĐANG chạy của một không gian — `GET /workspaces/{id}/cycle`.
+ *
+ *  Chỉ có mốc khi `billing_mode = "cycle_aligned"`; chế độ 30-ngày trả về đúng
+ *  `billing_mode` vì không có chu kỳ nào để nói tới. Server tính hộ cả
+ *  `forced_extra_month` (mua NGAY BÂY GIỜ có bị gộp thêm một tháng không) để web
+ *  không phải mang theo ngưỡng rồi tự so. */
+export type WorkspaceCycle = {
+  billing_mode: BillingMode;
+  start?: string;
+  end?: string;
+  days?: number;
+  /** Hôm nay là ngày thứ mấy của chu kỳ, đếm từ mốc mở (1-based). */
+  day_of_cycle?: number;
+  forced_extra_month?: boolean;
+  force_extra_from_day?: number;
+};
+
 export const SEAT_TOTAL_MAX = 999;
 
 export type WorkspaceWithKey = Workspace & { extension_api_key: string };

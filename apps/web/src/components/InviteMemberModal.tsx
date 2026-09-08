@@ -28,7 +28,7 @@ import { useAuth } from "../hooks/useAuth";
 import { useWallet } from "../hooks/useWallet";
 import { useBulkInvite } from "../hooks/useBulkInvite";
 import { api } from "../lib/api";
-import type { Member } from "../types";
+import type { Member, WorkspaceCycle } from "../types";
 import OrderQrModal from "./OrderQrModal";
 import { formatVnd, type OrderQr } from "../lib/wallet";
 import { parseEmailsFromText } from "../lib/emailParser";
@@ -154,6 +154,14 @@ export function InviteMemberModal({
   // không có trong `members` của ws này). Trả `free_emails` → OR vào isFreeEmail để
   // totalFee/badge tự đúng. Chỉ fetch khi user bị tính phí + có email. Xem
   // [[cross-workspace-move-keeps-paid]].
+  // Chu kỳ thanh toán của không gian + hôm nay là ngày thứ mấy. Hỏi NGAY khi mở ô
+  // mời (không chờ dán email) vì đây là thứ quyết định người bán có nên bán lúc này
+  // hay đợi sang chu kỳ mới. Chế độ 30-ngày trả về không có mốc → không vẽ gì.
+  const { data: cycle } = useQuery({
+    queryKey: ["workspace-cycle", workspaceId],
+    queryFn: () => api<WorkspaceCycle>(`/api/v1/workspaces/${workspaceId}/cycle`),
+  });
+
   const previewKey = entries.map((e) => `${e.email}:${e.months}`).join(",");
   const { data: feePreview } = useQuery({
     queryKey: ["invite-fee-preview", workspaceId, previewKey],
@@ -361,7 +369,13 @@ export function InviteMemberModal({
                 lineHeight: 1.5,
               }}
             >
-              {t("invite.modalSubtitlePasteV3")}
+              {t(
+                  // Không gian chốt theo chu kỳ thì câu "1 tháng = 30 ngày" nói sai
+                  // ngay phía trên khối chu kỳ — đổi hẳn câu, đừng để hai chỗ đá nhau.
+                  cycle?.start
+                    ? "invite.modalSubtitlePasteCycle"
+                    : "invite.modalSubtitlePasteV3",
+                )}
             </div>
           </div>
           <button
@@ -517,6 +531,36 @@ export function InviteMemberModal({
                     {t("invite.monthsShort")}
                   </button>
                 ))}
+              </div>
+            )}
+
+            {/* Chu kỳ thanh toán của không gian: bán tới ngày nào, và hôm nay đã đi
+                được bao xa trong chu kỳ. Đứng trước mọi khối khác vì nó là bối cảnh
+                của cả lượt mua — giá và hạn bên dưới đều đo từ đây. */}
+            {cycle?.start && cycle.end && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: "10px 12px",
+                  background: "var(--surface)",
+                  border: `1px solid var(--${cycle.forced_extra_month ? "warning" : "border"}-border, var(--border))`,
+                  borderRadius: 10,
+                  fontSize: 11.5,
+                  lineHeight: 1.55,
+                  color: "var(--ink-2)",
+                }}
+              >
+                {t("invite.cycleWindow", {
+                  start: formatDate(new Date(cycle.start), { day: "numeric", month: "numeric" }),
+                  end: formatDate(new Date(cycle.end), { day: "numeric", month: "numeric" }),
+                  day: cycle.day_of_cycle ?? 0,
+                  days: cycle.days ?? 0,
+                })}
+                {cycle.forced_extra_month && (
+                  <div style={{ marginTop: 4, color: "var(--warning, var(--ink-2))", fontWeight: 600 }}>
+                    {t("invite.cycleForced", { from: cycle.force_extra_from_day ?? 0 })}
+                  </div>
+                )}
               </div>
             )}
 
