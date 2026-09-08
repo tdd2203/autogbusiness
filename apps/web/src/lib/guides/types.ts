@@ -36,6 +36,14 @@ export type GuideContent = {
   notes?: string[];
 };
 
+/** Dữ liệu của NGƯỜI ĐANG ĐỌC để bài hướng dẫn điền vào chỗ trống.
+ *
+ *  `feeVnd` = đơn giá tháng hiệu lực của chính họ (ví trả về), `null` khi chưa
+ *  biết. Bài nào cần số này thì tự lo phần tính; popup chỉ đưa dữ liệu vào. */
+export type GuideVarContext = {
+  feeVnd: number | null;
+};
+
 /** Một bài hướng dẫn, có bản dịch cho MỌI ngôn ngữ dashboard đang hỗ trợ.
  *
  *  `Record<Lang, ...>` là cố ý: thêm ngôn ngữ mới cho dashboard mà quên dịch bài
@@ -43,5 +51,10 @@ export type GuideContent = {
  *  giữa giao diện tiếng Trung. */
 export type Guide = {
   id: string;
+  /** Giá trị cho các chỗ `{tên}` trong nội dung (vd đơn giá của người đang đọc).
+   *
+   *  Trả về thiếu key nào thì CÂU chứa key đó bị bỏ khỏi bài — xem
+   *  `fillGuideVars`. Thà mất một câu còn hơn hiện một con số sai về tiền. */
+  vars?: (ctx: GuideVarContext) => Record<string, string>;
   content: Record<Lang, GuideContent>;
 };

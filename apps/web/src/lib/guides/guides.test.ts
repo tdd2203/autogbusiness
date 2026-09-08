@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   GUIDES,
+  fillGuideVars,
   guidePrintHtml,
   pickGuideId,
   shouldOpen,
@@ -100,6 +101,79 @@ describe("nội dung các bài", () => {
       }
     },
   );
+});
+
+describe("fillGuideVars", () => {
+  const withSlots = (): GuideContent => ({
+    eyebrow: "Hướng dẫn",
+    title: "Bài có chỗ trống",
+    intro: "Đơn giá của bạn {donGia}",
+    sections: [
+      {
+        steps: [
+          { title: "Không cần số", body: "Câu này luôn hiện" },
+          { title: "Ví dụ", body: "Trả {tien} cho 22 ngày" },
+        ],
+      },
+      { heading: "Chỉ có số", steps: [{ title: "Giá ngày", body: "{giaNgay} mỗi ngày" }] },
+    ],
+    notes: ["Ghi chú thường", "Tính theo {donGia}"],
+  });
+
+  it("điền đủ thì giữ nguyên mọi câu", () => {
+    const out = fillGuideVars(withSlots(), {
+      donGia: "330.000 ₫",
+      tien: "234.000 ₫",
+      giaNgay: "11.000 ₫",
+    });
+    expect(out.intro).toBe("Đơn giá của bạn 330.000 ₫");
+    expect(out.sections).toHaveLength(2);
+    expect(out.sections[0].steps[1].body).toBe("Trả 234.000 ₫ cho 22 ngày");
+    expect(out.notes).toEqual(["Ghi chú thường", "Tính theo 330.000 ₫"]);
+  });
+
+  it("thiếu số thì BỎ câu đó, không hiện chỗ trống cũng không hiện số sai", () => {
+    const out = fillGuideVars(withSlots(), {});
+    // Bước không cần số vẫn còn; bước cần số biến mất cùng cả phần rỗng theo nó.
+    expect(out.sections).toHaveLength(1);
+    expect(out.sections[0].steps.map((s) => s.title)).toEqual(["Không cần số"]);
+    expect(out.notes).toEqual(["Ghi chú thường"]);
+  });
+
+  it("bài không có chỗ trống nào thì không đụng tới", () => {
+    const plain: GuideContent = {
+      eyebrow: "e",
+      title: "t",
+      intro: "i",
+      sections: [{ steps: [{ title: "a", body: "b" }] }],
+      notes: ["n"],
+    };
+    expect(fillGuideVars(plain, {})).toEqual(plain);
+  });
+});
+
+describe("bài ngày chốt — số tiền theo đơn giá của người đọc", () => {
+  const guide = GUIDES.find((g) => g.id === "cycle-billing")!;
+
+  it.each([
+    // đơn giá, tiền 22 ngày lẻ, tiền 7 ngày lẻ + 1 tháng — làm tròn LÊN nghìn,
+    // chu kỳ 31 ngày (đúng ví dụ 1/8 → 1/9 trong bài).
+    [380_000, "270.000 ₫", "466.000 ₫"],
+    [330_000, "235.000 ₫", "405.000 ₫"],
+  ])("đơn giá %i ra đúng hai con số ví dụ", (fee, som, sat) => {
+    const vars = guide.vars!({ feeVnd: fee });
+    expect(vars.vdSom).toBe(som);
+    expect(vars.vdSat).toBe(sat);
+  });
+
+  it("chưa biết đơn giá thì hai câu cần số biến mất", () => {
+    const full = fillGuideVars(guide.content.vi, guide.vars!({ feeVnd: 380_000 }));
+    const blank = fillGuideVars(guide.content.vi, guide.vars!({ feeVnd: null }));
+    const steps = (c: GuideContent) => c.sections.flatMap((s) => s.steps).length;
+    expect(steps(blank)).toBe(steps(full) - 1);
+    // Không còn chỗ trống nào lọt ra màn hình dưới dạng "{donGia}".
+    expect(JSON.stringify(blank)).not.toMatch(/\{[A-Za-z0-9_]+\}/);
+  });
 });
 
 describe("guidePrintHtml", () => {

@@ -5,6 +5,9 @@
  * Telegram rồi trôi mất. Nội dung bài + luật "khi nào hiện" nằm ở `lib/guides`;
  * ở đây chỉ là phần vẽ.
  *
+ * Bài có thể chèn số liệu của CHÍNH người đang đọc (đơn giá tháng của họ) qua
+ * `guide.vars`; câu nào cần số mà chưa có thì bị bỏ khỏi bài, không hiện số sai.
+ *
  * Popup là một TRANG MỤC LỤC: cột trái liệt kê mọi bài đang có, cột phải là bài
  * đang đọc. Mỗi ngày hệ thống mở sẵn một bài (luật bốc bài ở `lib/guides`), còn
  * lại người đọc tự bấm sang bài khác — bấm sang bài khác KHÔNG đổi bài đã ghim
@@ -16,7 +19,11 @@
  * Xem DailyGuideModal.md.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useI18n } from "../i18n";
+import { useAuth } from "../hooks/useAuth";
+import { api } from "../lib/api";
+import type { Wallet } from "../lib/wallet";
 import { toast } from "./Toast";
 import {
   cardKicker,
@@ -26,6 +33,7 @@ import {
 } from "./walletUi";
 import {
   GUIDES,
+  fillGuideVars,
   findGuide,
   openGuidePrint,
   markSeenThisSession,
@@ -76,6 +84,15 @@ export default function DailyGuideModal() {
   const [mute, setMute] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const day = useMemo(() => vnDayKey(), []);
+  // Đơn giá tháng của chính người đang đọc, cho bài nào cần tới. CÙNG khoá cache
+  // với `useWallet` nên không tốn thêm lượt gọi nếu trang đã hỏi ví; `enabled`
+  // buộc chỉ hỏi khi popup mở, khỏi để mọi trang phải gánh một lượt gọi ví.
+  const { user } = useAuth();
+  const { data: wallet } = useQuery({
+    queryKey: ["wallet", "balance"],
+    queryFn: () => api<Wallet>("/api/v1/wallet"),
+    enabled: !!guide && (!!user?.wallet_beta || !!user?.is_super_admin),
+  });
 
   useEffect(() => {
     const state = readState();
@@ -125,11 +142,19 @@ export default function DailyGuideModal() {
   // in thẳng popup thì ra bản cụt: popup cuộn trong khung, ảnh còn lazy-load.
   function exportPdf() {
     if (!guide) return;
-    const printed = openGuidePrint(guide.content[lang] ?? guide.content.vi, {
-      lang,
-      notesLabel: t("guide.notes"),
-      baseUrl: window.location.href,
-    });
+    // In ra phải là bài NGƯỜI ĐỌC đang thấy, kể cả phần số đã điền theo đơn giá
+    // của họ — in bản thô là ra giấy đầy chỗ trống "{donGia}".
+    const printed = openGuidePrint(
+      fillGuideVars(
+        guide.content[lang] ?? guide.content.vi,
+        guide.vars?.({ feeVnd: wallet?.invite_fee_vnd ?? null }) ?? {},
+      ),
+      {
+        lang,
+        notesLabel: t("guide.notes"),
+        baseUrl: window.location.href,
+      },
+    );
     if (!printed) toast.warning(t("guide.exportPdfBlocked"));
   }
 
@@ -144,7 +169,10 @@ export default function DailyGuideModal() {
   }, [guide, mute]);
 
   if (!guide) return null;
-  const content = guide.content[lang] ?? guide.content.vi;
+  const content = fillGuideVars(
+    guide.content[lang] ?? guide.content.vi,
+    guide.vars?.({ feeVnd: wallet?.invite_fee_vnd ?? null }) ?? {},
+  );
 
   return (
     <div style={backdrop} onClick={close}>
