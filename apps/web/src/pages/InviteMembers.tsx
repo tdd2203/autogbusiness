@@ -922,7 +922,12 @@ export default function InviteMembers() {
                 thấy nó tụt), không kể đã dùng bao nhiêu. Đơn sắc cho đỡ rối, chỉ đỏ
                 khi hết sạch suất. Nguồn
                 `useWorkspaceSeats` (poll 15s) nên số tự nhảy khi extension mời/xoá
-                hay admin khác thao tác ở tab kia. */}
+                hay admin khác thao tác ở tab kia.
+
+                CỐ Ý chỉ một con số: đừng thêm lại dòng "cần N / thiếu N suất" — con
+                số lớn đã trừ sẵn danh sách đang dán nên nói thêm là lặp. Hai người
+                dán cùng lúc thì số ở đây có thể lệch một nhịp, kệ: lúc chạy lệnh
+                backend đếm lại cả lời mời đang chờ, mà lệnh thì chạy tuần tự. */}
             {seatBarWs.length > 0 && (
               <div
                 style={{
@@ -934,7 +939,7 @@ export default function InviteMembers() {
                 }}
               >
                 {seatBarWs.map((w, i) => {
-                  const { left, need, short, after } = seatInfo(w.id);
+                  const { left, after } = seatInfo(w.id);
                   const alarm = seatAlarm(w.id);
                   return (
                     <div
@@ -942,7 +947,7 @@ export default function InviteMembers() {
                       title={
                         left === null
                           ? t("inviteMembers.seatsUnknownHint")
-                          : t("inviteMembers.seatsHint", { left, need })
+                          : t("inviteMembers.seatsHint", { left })
                       }
                       style={{
                         minWidth: 118,
@@ -990,30 +995,20 @@ export default function InviteMembers() {
                           {t("inviteMembers.seatFreeWord")}
                         </span>
                       </div>
-                      {/* Chỉ dòng phụ khi CẦN nói thêm: danh sách đang dán cần bao
-                          nhiêu suất, hoặc lý do con số trống rỗng. Không kể "đã dùng
-                          x/y" — người dùng chỉ cần biết còn lại mấy suất. */}
-                      {(need > 0 || left === null) && (
+                      {/* Dòng phụ CHỈ còn ở ca chưa biết tổng suất — nó giải thích
+                          dấu "—". Không kể "danh sách này cần mấy suất" nữa: con số
+                          lớn đã tự tụt theo từng email dán vào, nói thêm là lặp. */}
+                      {left === null && (
                         <div
                           style={{
                             marginTop: 7,
                             fontFamily: "var(--font-mono)",
                             fontSize: 10.5,
                             whiteSpace: "nowrap",
-                            fontWeight: need > 0 ? 600 : 400,
-                            color:
-                              short > 0
-                                ? "var(--danger)"
-                                : need > 0
-                                  ? "var(--ink-2)"
-                                  : "var(--ink-3)",
+                            color: "var(--ink-3)",
                           }}
                         >
-                          {left === null
-                            ? t("inviteMembers.seatTotalUnknown")
-                            : short > 0
-                              ? t("inviteMembers.seatShortN", { n: short })
-                              : t("inviteMembers.seatNeedN", { n: need })}
+                          {t("inviteMembers.seatTotalUnknown")}
                         </div>
                       )}
                     </div>
@@ -1324,10 +1319,7 @@ export default function InviteMembers() {
                               const seatTitle =
                                 info.left === null
                                   ? t("inviteMembers.seatsUnknownHint")
-                                  : t("inviteMembers.seatsHint", {
-                                      left: info.left,
-                                      need: info.need,
-                                    });
+                                  : t("inviteMembers.seatsHint", { left: info.left });
                               const selTitle =
                                 (sel === undefined
                                   ? t("inviteMembers.colWorkspace")
