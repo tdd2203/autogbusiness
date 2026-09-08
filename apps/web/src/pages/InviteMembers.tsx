@@ -2603,9 +2603,15 @@ function FeeDetailModal({
     <div className="tg-modal-backdrop" onClick={onClose}>
       <div
         className="tg-modal"
-        // Rộng thêm khi bảng có nhiều cột (mời lẫn nhiều không gian). Để cứng 640
-        // thì cột THÀNH TIỀN bị đẩy khuất và dòng Tổng trông như trống.
-        style={{ maxWidth: varying.length >= 2 ? 900 : 620 }}
+        // TỰ CO GIÃN theo nội dung: `fit-content` cho modal rộng đúng bằng thứ nó
+        // phải chứa, `min()` chặn hai đầu — không tràn khỏi màn hình, cũng không
+        // hẹp đến mức bảng phải cuộn khi thừa chỗ. Để cứng một con số thì mời một
+        // không gian sẽ thừa mênh mông, còn mời lẫn nhiều không gian lại bị cắt.
+        style={{
+          width: "fit-content",
+          minWidth: "min(94vw, 560px)",
+          maxWidth: "min(94vw, 1080px)",
+        }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="tg-modal-head">
@@ -2626,6 +2632,7 @@ function FeeDetailModal({
           {/* DÙNG CHUNG cho mọi email — nói một lần, gom trong MỘT thẻ để mắt thấy
               ngay đây là phần chung, còn bảng bên dưới mới là phần riêng. */}
           <div
+            className="fee-detail-shared"
             style={{
               background: "var(--bg)",
               border: "1px solid var(--border)",
@@ -2685,12 +2692,12 @@ function FeeDetailModal({
               marginTop: 8,
               border: "1px solid var(--border)",
               borderRadius: 12,
-              // Cuộn ngang thay vì CẮT: màn hẹp mà cắt thì người ta không biết là
-              // còn cột phía sau.
+              // Cuộn ngang thay vì CẮT khi bảng rộng hơn modal. Trên màn hẹp bảng
+              // đã XẾP CHỒNG (xem `.fee-detail-table`) nên không còn gì để cuộn.
               overflowX: "auto",
             }}
           >
-            <table className="data-table data-table-compact">
+            <table className="data-table data-table-compact fee-detail-table">
               <thead>
                 <tr>
                   <th>{t("invite.feeDetailEmail")}</th>
@@ -2705,13 +2712,21 @@ function FeeDetailModal({
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.email}>
-                    <td>{r.email}</td>
+                    {/* `data-label` là nhãn cột dùng lại khi bảng XẾP CHỒNG trên
+                        màn hẹp — thead bị ẩn nên không còn gì nói cột nào là cột
+                        nào (xem `.fee-detail-table` trong index.css). */}
+                    <td data-label="">{r.email}</td>
                     {varying.map((f) => (
-                      <td key={f.key} style={{ whiteSpace: "nowrap" }}>
+                      <td
+                        key={f.key}
+                        data-label={f.label}
+                        style={{ whiteSpace: "nowrap" }}
+                      >
                         {(f.short ?? f.value)(r) || "—"}
                       </td>
                     ))}
                     <td
+                      data-label={t("invite.feeDetailFee")}
                       style={{
                         textAlign: "right",
                         fontFamily: "var(--font-mono)",

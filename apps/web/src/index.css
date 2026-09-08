@@ -3235,4 +3235,71 @@ body {
       padding: 20px 16px;
     }
   }
+
+  /* ---------- Popup "Chi tiết cách tính phí" (trang Mời) ----------
+     Modal này rộng hẹp tuỳ nội dung: mời một không gian thì bảng chỉ 2 cột, mời lẫn
+     nhiều không gian khác chu kỳ thì mọc thêm cột. Để cứng bề rộng thì một trong hai
+     ca luôn xấu — hoặc thừa mênh mông, hoặc cột tiền bị đẩy khuất. */
+  .fee-detail-shared .info-row {
+    grid-template-columns: 152px 1fr;
+  }
+  @media (max-width: 640px) {
+    /* Màn hẹp: nhãn nằm TRÊN giá trị. Giữ 2 cột thì cột giá trị còn ~150px, số tiền
+       và ngày giờ bị bẻ vụn giữa chừng. */
+    .fee-detail-shared .info-row {
+      grid-template-columns: 1fr;
+      gap: 2px;
+      padding: 10px 0;
+    }
+    .fee-detail-shared .info-row .key {
+      font-size: 12px;
+    }
+  }
+
+  @media (max-width: 640px) {
+    /* Bảng "từng email" XẾP CHỒNG trên màn hẹp: mỗi email một khối, nhãn cột đứng
+       cạnh giá trị. Giữ dạng bảng thì phải cuộn ngang mới thấy cột Thành tiền —
+       đúng cột quan trọng nhất lại là cột khuất. */
+    .fee-detail-table,
+    .fee-detail-table tbody,
+    .fee-detail-table tr {
+      display: block;
+      width: 100%;
+    }
+    .fee-detail-table thead {
+      display: none;
+    }
+    .fee-detail-table tr + tr {
+      border-top: 1px solid var(--border);
+    }
+    .fee-detail-table td {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      padding: 5px 12px;
+      border: none;
+      white-space: normal;
+      text-align: left;
+    }
+    .fee-detail-table td:first-child {
+      padding-top: 10px;
+      font-weight: 600;
+      /* Dòng EMAIL là tiêu đề của khối, không phải cặp nhãn–giá trị: bỏ nhãn rỗng
+         và cho nó bám lề trái, không thì `space-between` đẩy email sang phải. */
+      justify-content: flex-start;
+    }
+    .fee-detail-table td:first-child::before {
+      display: none;
+    }
+    .fee-detail-table td:last-child {
+      padding-bottom: 10px;
+    }
+    .fee-detail-table td::before {
+      content: attr(data-label);
+      color: var(--ink-3);
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+  }
 }
