@@ -14,7 +14,7 @@ import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
-import { useFormatDate, useT, useTranslateEnum } from "../i18n";
+import { useFormatDate, useI18n, useT, useTranslateEnum } from "../i18n";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { buildSeatRun } from "../lib/seatRun";
 import { useAuth } from "../hooks/useAuth";
@@ -26,6 +26,7 @@ import InviteWorkspaceConfigModal from "../components/InviteWorkspaceConfigModal
 import { useExtensionStatus } from "../hooks/useExtensionTrigger";
 import { queuePollInterval } from "../lib/queuePolling";
 import { formatVnd, getQrOrder, type OrderQr } from "../lib/wallet";
+import { formatCycleMoment } from "../lib/cycle-time";
 import { toast } from "../components/Toast";
 import type { Member, QueueItem } from "../types";
 import OrderQrModal from "../components/OrderQrModal";
@@ -179,6 +180,9 @@ export default function InviteMembers() {
   const [configOpen, setConfigOpen] = useState(false);
 
   const [emailsText, setEmailsText] = useState("");
+  // Khối giải thích giá — mặc định ĐÓNG. Người bán quen tay chỉ cần con số tổng;
+  // chi tiết là thứ mở ra khi có ai hỏi "sao email này rẻ hơn email kia".
+  const [feeDetailOpen, setFeeDetailOpen] = useState(false);
   const [monthsByEmail, setMonthsByEmail] = useState<Record<string, number>>({});
   // Workspace ĐÍCH do user tự chọn ở cột "Không gian" (key = email lowercase) — áp cho
   // CẢ email cũ lẫn email mới. Vắng mặt → default lịch sử (email cũ) / đích cố định
@@ -309,15 +313,25 @@ export default function InviteMembers() {
       }
       let total = 0;
       const free = new Set<string>();
+      // Chi tiết TỪNG email cho khối "Xem chi tiết": trả bao nhiêu, cho bao nhiêu
+      // ngày, dùng tới khi nào. Ở chế độ neo theo mốc chốt, giá đổi theo NGÀY nên
+      // hai email mua cách nhau vài hôm ra hai số khác nhau — không giải thích thì
+      // người bán không biết báo giá thế nào cho khách.
+      const detail: FeeDetailRow[] = [];
       for (const [ws, invites] of groups) {
-        const r = await api<{ total_fee: number; free_emails: string[] }>(
-          `/api/v1/workspaces/${ws}/members/invite-preview`,
-          { method: "POST", body: JSON.stringify({ invites, role: "member" }) },
-        );
+        const r = await api<{
+          total_fee: number;
+          free_emails: string[];
+          detail?: FeeDetailRow[];
+        }>(`/api/v1/workspaces/${ws}/members/invite-preview`, {
+          method: "POST",
+          body: JSON.stringify({ invites, role: "member" }),
+        });
         total += r.total_fee;
         for (const e of r.free_emails ?? []) free.add(e.toLowerCase());
+        for (const d of r.detail ?? []) detail.push(d);
       }
-      return { total, free };
+      return { total, free, detail };
     },
   });
 
@@ -881,8 +895,15 @@ export default function InviteMembers() {
                   không phải dừng lại đi mua suất" — hiện thường trực thì nó thành
                   một dòng chữ trang trí không ai đọc, đúng lúc cần thì không nổi
                   lên. Tô đỏ theo cùng quy ước với ô suất bên dưới (`seatCell`) để
-                  người dùng nối được hai chỗ với nhau. */}
-              {seatBarWs.some((w) => seatInfo(w.id).after === 0) && (
+                  người dùng nối được hai chỗ với nhau.
+
+                  TẮT KHI CÓ BĂNG-RÔN NGƯNG. Hai câu đá nhau: băng-rôn nói không gian
+                  đang bị chặn không add được, còn câu này hứa hệ thống tự mua thêm
+                  suất — mà đúng lúc bị chặn thì nó KHÔNG mua. Để cả hai là dạy người
+                  dùng thôi tin cả hai. */}
+              {seatBarWs.some((w) => seatInfo(w.id).after === 0) &&
+                blockedWs(seatBarWs.map((w) => w.id)).length === 0 &&
+                cappedWs(seatBarWs.map((w) => w.id)).length === 0 && (
                 <div
                   style={{
                     marginTop: 8,
@@ -1691,6 +1712,31 @@ export default function InviteMembers() {
                     ? "…"
                     : formatVnd(feePreview.data?.total ?? 0),
                 })}
+                {(feePreview.data?.detail?.length ?? 0) > 0 && (
+                  <>
+                    {" · "}
+                    <button
+                      type="button"
+                      onClick={() => setFeeDetailOpen((v) => !v)}
+                      className="btn-link"
+                      style={{
+                        background: "none",
+                        border: 0,
+                        padding: 0,
+                        cursor: "pointer",
+                        color: "var(--brand)",
+                        font: "inherit",
+                      }}
+                    >
+                      {feeDetailOpen
+                        ? t("invite.feeDetailHide")
+                        : t("invite.feeDetailShow")}
+                    </button>
+                  </>
+                )}
+                {feeDetailOpen && (
+                  <FeeDetailTable rows={feePreview.data?.detail ?? []} />
+                )}
               </div>
               <div style={{ display: "flex", gap: 9 }}>
                 <button
@@ -2366,6 +2412,57 @@ function RunningRow({ task, label }: { task: QueueItem; label: string }) {
         </span>
         <span>{pct}%</span>
       </div>
+    </div>
+  );
+}
+
+
+/** Một dòng giải thích giá do server trả về (`invite-preview` → `detail`). */
+type FeeDetailRow = {
+  email: string;
+  fee: number;
+  /** Đơn vị NỬA NGÀY (số nguyên) — phần lẻ có thật, đừng làm tròn khi hiện. */
+  half_days: number;
+  from: string;
+  to: string | null;
+};
+
+/**
+ * Bảng "trả bấy nhiêu cho bao nhiêu ngày, dùng tới khi nào".
+ *
+ * Mốc hiện theo giờ UTC kèm nhãn (`formatCycleMoment`) vì hạn dùng được tính bằng
+ * ngày lịch UTC — hiện theo giờ máy là lệch 7 tiếng so với con số luật nói.
+ */
+function FeeDetailTable({ rows }: { rows: FeeDetailRow[] }) {
+  const { t, lang } = useI18n();
+  return (
+    <div style={{ marginTop: 8 }}>
+      <table className="table" style={{ fontSize: 12 }}>
+        <thead>
+          <tr>
+            <th>{t("invite.feeDetailEmail")}</th>
+            <th>{t("invite.feeDetailDuration")}</th>
+            <th>{t("invite.feeDetailUntil")}</th>
+            <th style={{ textAlign: "right" }}>{t("invite.feeDetailFee")}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.email}>
+              <td>{r.email}</td>
+              <td>
+                {t("invite.feeDetailDays", {
+                  n: (r.half_days / 2).toLocaleString(
+                    lang === "zh-CN" ? "zh-CN" : "vi-VN",
+                  ),
+                })}
+              </td>
+              <td>{formatCycleMoment(lang, r.to)}</td>
+              <td style={{ textAlign: "right" }}>{formatVnd(r.fee)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

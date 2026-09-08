@@ -60,6 +60,7 @@ from ._shared import (
     _end_from_purchase,
     _extend_subscription_end,
     cycle_settings,
+    half_days_between,
     is_cycle_aligned,
     quote_cycle,
     sold_window,
@@ -1517,16 +1518,72 @@ def preview_invite_fees(
     now = datetime.now(timezone.utc)
     planned = plan_invite_fees(db, workspace_id, entries, user, default_fee, now=now)
     planned_map = dict(planned)
+    expiries = plan_invite_expiries(db, workspace_id, entries, user, now=now)
     return {
         "total_fee": sum(planned_map.values()),
         "chargeable": [{"email": e, "fee": f} for e, f in planned],
         "free_emails": [e for e, _ in entries if e not in planned_map],
         # Hạn dùng dự kiến từng email — web không tự suy được ở chế độ neo theo mốc
         # chốt, và tự cộng 30 ngày thì báo sai hạn cho khách.
-        "expiry": {
-            e: d.isoformat()
-            for e, d in plan_invite_expiries(
-                db, workspace_id, entries, user, now=now
-            ).items()
-        },
+        "expiry": {e: d.isoformat() for e, d in expiries.items()},
+        "detail": _preview_price_detail(
+            db, workspace_id, planned, expiries, now=now
+        ),
     }
+
+
+def _preview_price_detail(
+    db: Session,
+    workspace_id: UUID,
+    planned: list[tuple[str, int]],
+    expiries: dict[str, datetime],
+    *,
+    now: datetime,
+) -> list[dict]:
+    """Giải thích TỪNG con số tiền cho khối "Xem chi tiết" của ô mời.
+
+    Người bán nhìn "Tổng phí 20.000đ" thì không biết vì sao — nhất là ở chế độ
+    `cycle_aligned`, nơi giá đổi theo NGÀY nên hai email mua cách nhau vài hôm ra hai
+    con số khác nhau. Khối này trả lời đúng câu họ cần: *trả bấy nhiêu cho bao nhiêu
+    ngày, dùng tới khi nào*.
+
+    CỐ Ý suy từ `planned` + `expiries` đã có chứ KHÔNG viết thêm một hàm đi lại bốn
+    nhánh phân loại email. Hai hàm kia đã phải khớp nhau từng nhánh (xem cảnh báo ở
+    `plan_invite_expiries`); thêm bản sao thứ ba là thêm một chỗ để lệch.
+
+    `từ` = ĐIỂM NỐI: email đang còn hạn thì quãng mới bắt đầu từ hạn cũ, không phải
+    từ lúc bấm nút — nếu không sẽ hiện "30 ngày" cho một lượt gia hạn thật ra chỉ
+    kéo dài thêm 13 ngày.
+    """
+    if not planned:
+        return []
+    emails = [e for e, _ in planned]
+    existing = {
+        m.email: m
+        for m in db.execute(
+            select(Member).where(
+                Member.workspace_id == workspace_id, Member.email.in_(emails)
+            )
+        )
+        .scalars()
+        .all()
+    }
+    out: list[dict] = []
+    for email, fee in planned:
+        end = expiries.get(email)
+        m = existing.get(email)
+        cur_end = m.subscription_end_at if m is not None else None
+        start = cur_end if cur_end is not None and cur_end > now else now
+        half_days = half_days_between(start, end) if end is not None else 0
+        out.append(
+            {
+                "email": email,
+                "fee": fee,
+                # Nửa ngày là đơn vị THẬT của phần lẻ (EXPIRY_RULES §3.6.4) — trả số
+                # nguyên nửa-ngày để web tự hiện "20,5 ngày", đừng làm tròn ở đây.
+                "half_days": half_days,
+                "from": start.isoformat(),
+                "to": end.isoformat() if end is not None else None,
+            }
+        )
+    return out
