@@ -7,7 +7,8 @@
  *   1. Giá 1 slot hôm nay   = fullMonthPerSlot × daysRemaining/30
  *   2. Giá full month/slot  = unit_price_vnd hoá đơn gốc chu kỳ
  *   3. Ngày renew           = period_end hoá đơn gốc chu kỳ (fallback renewal_date)
- *   4. Tổng seat chu kỳ     = Σ quantity hoá đơn Paid có chi tiết trong chu kỳ
+ *   4. Tổng seat chu kỳ     = tổng ghế của gói (tab Kế hoạch), fallback quantity
+ *                             hoá đơn mới nhất trong chu kỳ
  *   5. Số hoá đơn chu kỳ
  *
  * Hoá đơn chưa đọc được chi tiết (detail_scraped=false) → hiển thị "—", KHÔNG
@@ -53,7 +54,11 @@ export function WorkspaceBillingPanel({ workspace }: { workspace: Workspace }) {
     invoices,
     workspace.renewal_date,
     undefined,
-    workspace.seat_used ?? workspace.seat_total ?? null,
+    // TỔNG ghế của gói (tab Kế hoạch), KHÔNG phải số người đang dùng: hoá đơn
+    // ChatGPT tính tiền theo ghế đã mua. Ca 8/9/2026 workspace 404/405 hiện
+    // "tổng seat chu kỳ 404" và dự kiến kỳ sau thiếu một ghế, vì `seat_used` là
+    // số thành viên đếm lại trong DB.
+    workspace.seat_total ?? workspace.seat_used ?? null,
     feePercent,
   );
   const {

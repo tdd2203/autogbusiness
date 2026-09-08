@@ -231,8 +231,9 @@ export function computeBillingCycle(
   invoices: BillingInvoice[] | null | undefined,
   workspaceRenewalIso: string | null,
   today: Date = new Date(),
-  /** Số seat HIỆN TẠI (từ tab Kế hoạch) — dùng cho dự kiến/ước tính khi chu kỳ
-   * mới chưa có hoá đơn. Bỏ trống → suy từ quantity hoá đơn. */
+  /** TỔNG ghế của gói (tab Kế hoạch) — số ghế ĐANG TRẢ TIỀN, không phải số người
+   * đang dùng. Dùng cho dự kiến/ước tính khi chu kỳ mới chưa có hoá đơn. Bỏ
+   * trống → suy từ quantity hoá đơn. */
   seatCount: number | null = null,
   /** Phí ngân hàng theo % của workspace (vd 1.1). Bỏ trống → dùng phí nhập tay
    * từng hoá đơn như trước. */
@@ -466,9 +467,10 @@ export function computeBillingCycle(
   const todayPriceWithVat = Math.round(
     (fullMonthPerSlotWithVat * proRataDays) / CYCLE_DAYS,
   );
-  // Tổng seat chu kỳ = SỐ SEAT HIỆN TẠI. Ưu tiên số seat tab Kế hoạch (seatCount,
-  // "46/46" — chuẩn nhất, KHÔNG lệch bởi proration), fallback quantity hoá đơn mới
-  // nhất trong chu kỳ. KHÔNG cộng dồn (proration ghi tổng mới, không phải delta).
+  // Tổng seat chu kỳ = SỐ GHẾ ĐANG TRẢ TIỀN. Ưu tiên tổng ghế tab Kế hoạch
+  // (seatCount, "404/405" → 405 — chuẩn nhất, KHÔNG lệch bởi proration), fallback
+  // quantity hoá đơn mới nhất trong chu kỳ. KHÔNG cộng dồn (proration ghi tổng
+  // mới, không phải delta).
   const totalSeats =
     (seatCount != null && seatCount > 0 ? seatCount : null) ??
     latestCycleSeat(detailInCycle);

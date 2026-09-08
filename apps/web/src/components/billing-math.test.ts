@@ -181,9 +181,9 @@ describe("computeBillingCycle", () => {
       [baseInvoice({ quantity: 183, service_fee_vnd: 578045 })],
       null,
       TODAY,
-      163, // seatCount hiện tại (tab Kế hoạch)
+      163, // tổng ghế tab Kế hoạch (đã giảm sau khi hoá đơn 183 ghế đã trả)
     );
-    expect(c.totalSeats).toBe(163); // seat đang dùng giữ nguyên
+    expect(c.totalSeats).toBe(163); // tổng ghế giữ nguyên
     expect(c.feeSeats).toBe(183); // mẫu số phí = seat đã trả phí
     expect(c.feePerSeat).toBe(Math.round(578045 / 183));
     // Khớp đúng giá dòng hoá đơn (invoiceSeatPricing) cho cùng hoá đơn đó.
