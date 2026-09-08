@@ -11,6 +11,14 @@ export default function WorkspaceExtension() {
   const { workspaceId } = useParams<{ workspaceId: string }>();
   const [revealedKey, setRevealedKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+
+  // Popup extension cần ĐỦ CẶP "Backend URL" + "Extension API Key" mới kết nối
+  // được. Trang này trước chỉ đưa key, còn URL thì phải tự nhớ — nay hiện luôn.
+  // Mặc định dashboard và API cùng origin (VITE_API_BASE rỗng).
+  const backendUrl = (
+    import.meta.env.VITE_API_BASE || window.location.origin
+  ).replace(/\/+$/, "");
 
   const regen = useMutation({
     mutationFn: () =>
@@ -36,6 +44,12 @@ export default function WorkspaceExtension() {
     },
   });
 
+  function onCopyUrl() {
+    navigator.clipboard.writeText(backendUrl);
+    setCopiedUrl(true);
+    setTimeout(() => setCopiedUrl(false), 2000);
+  }
+
   function onCopy() {
     if (!revealedKey) return;
     navigator.clipboard.writeText(revealedKey);
@@ -57,6 +71,45 @@ export default function WorkspaceExtension() {
         >
           {t("extension.description")}
         </p>
+
+        <div style={{ marginBottom: 20 }}>
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--ink-2)",
+              marginBottom: 6,
+              fontWeight: 500,
+            }}
+          >
+            {t("extension.backendUrlLabel")}
+          </div>
+          <div className="flex items-center gap-2">
+            <code
+              style={{
+                flex: 1,
+                background: "var(--surface)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                padding: "8px 10px",
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                wordBreak: "break-all",
+              }}
+            >
+              {backendUrl}
+            </code>
+            <button
+              onClick={onCopyUrl}
+              className="btn btn-ghost btn-sm"
+              style={{ whiteSpace: "nowrap" }}
+            >
+              {copiedUrl ? t("common.copied") : t("common.copy")}
+            </button>
+          </div>
+          <p style={{ fontSize: 11.5, color: "var(--ink-3)", marginTop: 6 }}>
+            {t("extension.backendUrlHint")}
+          </p>
+        </div>
 
         {revealedKey && (
           <div className="notice warn" style={{ marginBottom: 16, alignItems: "flex-start" }}>

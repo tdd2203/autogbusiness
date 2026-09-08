@@ -987,6 +987,8 @@
   "member.revokeToastOk": "Đã queue task thu hồi {n} lời mời",
   "member.revokeToastError": "Thu hồi thất bại: {error}",
   "extension.title": "Extension API Key",
+  "extension.backendUrlLabel": "Backend URL",
+  "extension.backendUrlHint": "Dán vào ô Backend URL trong popup extension, cùng cặp với Extension API Key bên dưới.",
   "extension.description": "Mỗi workspace có 1 API key dùng cho Chrome Extension xác thực với backend (gửi qua header X-API-KEY).",
   "extension.revealButton": "Hiển thị key hiện tại",
   "extension.revealBusy": "Đang lấy...",

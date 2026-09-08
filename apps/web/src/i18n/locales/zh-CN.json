@@ -987,6 +987,8 @@
   "member.revokeToastOk": "已为 {n} 个邀请加入撤回队列",
   "member.revokeToastError": "撤回失败: {error}",
   "extension.title": "Extension API Key",
+  "extension.backendUrlLabel": "后端 URL",
+  "extension.backendUrlHint": "粘贴到扩展弹窗的「后端 URL」栏，与下方的 Extension API Key 配套使用。",
   "extension.description": "每个工作区有 1 个 API key,用于 Chrome 扩展与后端的身份验证 (通过 X-API-KEY 请求头发送)。",
   "extension.revealButton": "显示当前 Key",
   "extension.revealBusy": "获取中...",
