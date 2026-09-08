@@ -116,6 +116,16 @@ describe("fillGuideVars", () => {
         ],
       },
       { heading: "Chỉ có số", steps: [{ title: "Giá ngày", body: "{giaNgay} mỗi ngày" }] },
+      {
+        heading: "Bảng",
+        steps: [
+          {
+            title: "Hai ca mua",
+            body: "Xem bảng",
+            table: { head: ["Ngày mua", "Trả"], rows: [["10/8", "{tien}"]] },
+          },
+        ],
+      },
     ],
     notes: ["Ghi chú thường", "Tính theo {donGia}"],
   });
@@ -127,14 +137,19 @@ describe("fillGuideVars", () => {
       giaNgay: "11.000 ₫",
     });
     expect(out.intro).toBe("Đơn giá của bạn 330.000 ₫");
-    expect(out.sections).toHaveLength(2);
+    expect(out.sections).toHaveLength(3);
     expect(out.sections[0].steps[1].body).toBe("Trả 234.000 ₫ cho 22 ngày");
+    expect(out.sections[2].steps[0].table).toEqual({
+      head: ["Ngày mua", "Trả"],
+      rows: [["10/8", "234.000 ₫"]],
+    });
     expect(out.notes).toEqual(["Ghi chú thường", "Tính theo 330.000 ₫"]);
   });
 
   it("thiếu số thì BỎ câu đó, không hiện chỗ trống cũng không hiện số sai", () => {
     const out = fillGuideVars(withSlots(), {});
-    // Bước không cần số vẫn còn; bước cần số biến mất cùng cả phần rỗng theo nó.
+    // Bước không cần số vẫn còn; bước cần số biến mất cùng cả phần rỗng theo nó —
+    // kể cả bước mà chỗ trống chỉ nằm trong một Ô BẢNG.
     expect(out.sections).toHaveLength(1);
     expect(out.sections[0].steps.map((s) => s.title)).toEqual(["Không cần số"]);
     expect(out.notes).toEqual(["Ghi chú thường"]);
@@ -156,17 +171,28 @@ describe("bài ngày chốt — số tiền theo đơn giá của người đọ
   const guide = GUIDES.find((g) => g.id === "cycle-billing")!;
 
   it.each([
-    // đơn giá, tiền 22 ngày lẻ, tiền 7 ngày lẻ + 1 tháng — làm tròn LÊN nghìn,
-    // chu kỳ 31 ngày (đúng ví dụ 1/8 → 1/9 trong bài).
-    [380_000, "270.000 ₫", "466.000 ₫"],
-    [330_000, "235.000 ₫", "405.000 ₫"],
-  ])("đơn giá %i ra đúng hai con số ví dụ", (fee, som, sat) => {
+    // đơn giá, giá 1 ngày, tiền 22 ngày lẻ, tiền 7 ngày lẻ + 1 tháng — làm tròn
+    // LÊN bội TRĂM (`price_round_to_vnd`), chu kỳ 31 ngày (đúng ví dụ 1/8 → 1/9
+    // trong bài). Bội nghìn là con số cũ: bài sẽ lệch với tổng ở bảng mời.
+    [380_000, "12.300 ₫", "269.700 ₫", "465.900 ₫"],
+    [330_000, "10.700 ₫", "234.200 ₫", "404.600 ₫"],
+  ])("đơn giá %i ra đúng ba con số ví dụ", (fee, ngay, som, sat) => {
     const vars = guide.vars!({ feeVnd: fee });
+    expect(vars.giaNgay).toBe(ngay);
     expect(vars.vdSom).toBe(som);
     expect(vars.vdSat).toBe(sat);
   });
 
-  it("chưa biết đơn giá thì hai câu cần số biến mất", () => {
+  it("số tiền trong BẢNG cũng theo đơn giá người đọc", () => {
+    const filled = fillGuideVars(guide.content.vi, guide.vars!({ feeVnd: 380_000 }));
+    const rows = filled.sections
+      .flatMap((s) => s.steps)
+      .flatMap((step) => step.table?.rows ?? []);
+    expect(rows.flat().join(" ")).toContain("269.700 ₫");
+    expect(rows.flat().join(" ")).toContain("465.900 ₫");
+  });
+
+  it("chưa biết đơn giá thì bước cần số biến mất, kéo theo cả bảng", () => {
     const full = fillGuideVars(guide.content.vi, guide.vars!({ feeVnd: 380_000 }));
     const blank = fillGuideVars(guide.content.vi, guide.vars!({ feeVnd: null }));
     const steps = (c: GuideContent) => c.sections.flatMap((s) => s.steps).length;
@@ -186,7 +212,11 @@ describe("guidePrintHtml", () => {
         heading: "Cách 1",
         steps: [
           { title: "Bước một", body: "Bấm **Use reset**", image: "/assets/a.png", caption: "A" },
-          { title: "Bước hai", body: "Xong" },
+          {
+            title: "Bước hai",
+            body: "Xong",
+            table: { head: ["Ngày mua", "Trả"], rows: [["10/8", "**270.000 ₫**"]] },
+          },
         ],
       },
     ],
@@ -204,6 +234,11 @@ describe("guidePrintHtml", () => {
     expect(html).toContain(">01<");
     expect(html).toContain(">02<");
     expect(html).toContain("Chỉ <strong>1 lần</strong> mỗi tháng");
+  });
+
+  it("bảng của bước ra đủ đầu cột và các ô, có cả phần in đậm", () => {
+    expect(html).toContain("<th>Ngày mua</th>");
+    expect(html).toContain("<td><strong>270.000 ₫</strong></td>");
   });
 
   it("ảnh đổi sang URL tuyệt đối — cửa sổ in là about:blank", () => {
