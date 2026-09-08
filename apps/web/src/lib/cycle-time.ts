@@ -119,6 +119,26 @@ export function formatVnDate(lang: Lang, value: string | Date | null): string {
   });
 }
 
+/**
+ * NGÀY + THÁNG theo giờ VN, bỏ năm: `08/10`.
+ *
+ * Chỉ dùng ở chỗ CHẬT khi mốc đang nói tới là chu kỳ ĐANG chạy — năm lúc đó hiển
+ * nhiên. Mốc trong lịch sử (hoá đơn, kỳ đã qua) vẫn phải gọi `formatVnDate`, thiếu
+ * năm là không tra ngược được.
+ */
+export function formatVnDayMonth(
+  lang: Lang,
+  value: string | Date | null,
+): string {
+  const d = value == null ? null : toDate(value);
+  if (!d) return "—";
+  return d.toLocaleDateString(localeTag(lang), {
+    timeZone: VN_TZ,
+    day: "2-digit",
+    month: "2-digit",
+  });
+}
+
 export function localUtcOffsetLabel(at: Date = new Date()): string {
   // `getTimezoneOffset` trả về số phút phải CỘNG vào giờ máy để ra UTC, nên nó
   // ngược dấu với cách người ta nói "UTC+7". Đảo dấu ngay để khỏi nhầm về sau.

@@ -1606,6 +1606,8 @@
   "inviteMembers.seatFreeWord": "个空位",
   "inviteMembers.seatTotalUnknown": "尚未同步总席位",
   "inviteMembers.seatsUnknownHint": "尚未获知总席位数（该工作区未同步账单）",
+  "inviteMembers.cycleShort": "周期 {start} → {end}",
+  "inviteMembers.cycleDayShort": "第 {day}/{days} 天",
   "settings.sectionAppearance": "界面",
   "appearance.title": "界面字号",
   "appearance.desc": "选择在当前屏幕上最易读的字号。点击即时生效，无需保存。",

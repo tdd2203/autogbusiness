@@ -1606,6 +1606,8 @@
   "inviteMembers.seatFreeWord": "suất trống",
   "inviteMembers.seatTotalUnknown": "chưa đồng bộ tổng suất",
   "inviteMembers.seatsUnknownHint": "Chưa biết tổng suất (không gian chưa đồng bộ thanh toán)",
+  "inviteMembers.cycleShort": "Chu kỳ {start} → {end}",
+  "inviteMembers.cycleDayShort": "ngày {day}/{days}",
   "settings.sectionAppearance": "Giao diện",
   "appearance.title": "Cỡ chữ giao diện",
   "appearance.desc": "Chọn cỡ dễ nhìn nhất với màn hình bạn đang dùng. Bấm là đổi ngay, không cần lưu.",

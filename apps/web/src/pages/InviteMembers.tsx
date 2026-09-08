@@ -12,7 +12,12 @@
  */
 import { Fragment, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { useFormatDate, useI18n, useT, useTranslateEnum } from "../i18n";
 import { useIsMobile } from "../hooks/useIsMobile";
@@ -26,9 +31,9 @@ import InviteWorkspaceConfigModal from "../components/InviteWorkspaceConfigModal
 import { useExtensionStatus } from "../hooks/useExtensionTrigger";
 import { queuePollInterval } from "../lib/queuePolling";
 import { formatVnd, getQrOrder, type OrderQr } from "../lib/wallet";
-import { formatVnDate, formatVnMoment } from "../lib/cycle-time";
+import { formatVnDate, formatVnDayMonth, formatVnMoment } from "../lib/cycle-time";
 import { toast } from "../components/Toast";
-import type { Member, QueueItem } from "../types";
+import type { Member, QueueItem, WorkspaceCycle } from "../types";
 import OrderQrModal from "../components/OrderQrModal";
 
 const DEFAULT_MONTHS = 1;
@@ -119,6 +124,7 @@ const wsDot: React.CSSProperties = {
 
 export default function InviteMembers() {
   const t = useT();
+  const { lang } = useI18n();
   const formatDate = useFormatDate();
   const isMobile = useIsMobile();
   // Màn hình hẹp (desktop ≤1200, khớp lúc sidebar tự thu): ẩn nhãn trạng thái + ẩn
@@ -724,6 +730,29 @@ export default function InviteMembers() {
         "—",
     }));
   })();
+  /**
+   * CHU KỲ THANH TOÁN đang chạy của từng không gian trên dải suất.
+   *
+   * Đứng cạnh số suất vì hai con số này luôn được đọc cùng nhau: còn suất nhưng
+   * sát mốc chốt thì khách mua xong dùng được vài ngày là hết. Không gian tính hạn
+   * theo 30 ngày không có mốc nào — API trả mỗi `billing_mode` và dòng này im.
+   *
+   * Dùng chung khoá cache với ô mời (`workspace-cycle`) nên mở modal không gọi lại.
+   */
+  const cycleQueries = useQueries({
+    queries: seatBarWs.map((w) => ({
+      queryKey: ["workspace-cycle", w.id],
+      queryFn: () => api<WorkspaceCycle>(`/api/v1/workspaces/${w.id}/cycle`),
+      // Mốc chỉ dời khi hoá đơn mới về, không cần tươi từng nhịp như số suất.
+      staleTime: 5 * 60_000,
+      // Chưa có mốc thì API ném 409 — thử lại cũng vẫn 409.
+      retry: false,
+    })),
+  });
+  const cycleOf = (wsId: string): WorkspaceCycle | undefined => {
+    const i = seatBarWs.findIndex((w) => w.id === wsId);
+    return i < 0 ? undefined : cycleQueries[i]?.data;
+  };
   /** Không gian ĐANG có vấn đề: hết suất, hoặc danh sách đang dán cần nhiều hơn số
    * suất còn trống (mời tiếp là extension đi mua thêm suất bằng tiền thật). Chỉ chỗ
    * này mới được tô đỏ — còn lại giữ đơn sắc cho đỡ rối. */
@@ -1165,6 +1194,37 @@ export default function InviteMembers() {
                           {t("inviteMembers.seatFreeWord")}
                         </span>
                       </div>
+                      {/* Chu kỳ ĐANG chạy của không gian: mốc mở → mốc chốt và hôm
+                          nay là ngày thứ mấy. Tô đỏ vì đây là mốc người bán phải
+                          nhìn trước khi bấm gửi, không phải chú thích nền. */}
+                      {(() => {
+                        const c = cycleOf(w.id);
+                        if (!c?.start || !c.end) return null;
+                        const day =
+                          c.day_of_cycle && c.days
+                            ? ` \u00b7 ${t("inviteMembers.cycleDayShort", {
+                                day: c.day_of_cycle,
+                                days: c.days,
+                              })}`
+                            : "";
+                        return (
+                          <div
+                            style={{
+                              marginTop: 6,
+                              fontFamily: "var(--font-mono)",
+                              fontSize: 10.5,
+                              whiteSpace: "nowrap",
+                              color: "var(--danger)",
+                            }}
+                          >
+                            {t("inviteMembers.cycleShort", {
+                              start: formatVnDayMonth(lang, c.start),
+                              end: formatVnDayMonth(lang, c.end),
+                            })}
+                            {day}
+                          </div>
+                        );
+                      })()}
                       {/* Dòng phụ CHỈ còn ở ca chưa biết tổng suất — nó giải thích
                           dấu "—". Không kể "danh sách này cần mấy suất" nữa: con số
                           lớn đã tự tụt theo từng email dán vào, nói thêm là lặp. */}
