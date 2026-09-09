@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.audit import log_event
 from app.deps import get_session, require_permission
-from app.models import Member, User
+from app.models import PLATFORM_CANVA, Member, User
 from app.permissions import Permission
 from app.routers.wallet._shared import get_payment_settings
 from app.services import payment_flow, wallet_service
@@ -389,8 +389,14 @@ def _preview_item(
         # Nửa ngày là đơn vị THẬT của phần lẻ (§3.6.4) — trả số nguyên nửa-ngày để
         # web tự hiện "20,5 ngày", đừng làm tròn ở đây.
         "half_days": half_days_between(start_at, end_at) if end_at is not None else 0,
-        "unit_price_vnd": payment_flow.effective_fee(
-            member.fee_vnd, user, default_fee
+        # Nhánh BẢNG GIÁ BẬC (Canva) KHÔNG có "đơn giá tháng" nào nhân ra được tổng:
+        # mua 3 tháng rẻ hơn 3 lần giá 1 tháng. Gửi con số của GPT sang đó là bày ra
+        # một phép nhân không khớp chính dòng tổng ngay bên cạnh, người bán đọc xong
+        # lại đi hỏi vì sao lệch. Thiếu trường này thì màn hình tự bỏ dòng đơn giá.
+        "unit_price_vnd": (
+            None
+            if payment_flow.member_platform(member) == PLATFORM_CANVA
+            else payment_flow.effective_fee(member.fee_vnd, user, default_fee)
         ),
     }
     if quote is not None:

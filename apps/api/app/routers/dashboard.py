@@ -44,6 +44,7 @@ from sqlalchemy.orm import Session
 
 from app.deps import get_current_user, get_session
 from app.models import (
+    PLATFORM_GPT,
     PLATFORMS,
     AuditLog,
     Member,
@@ -54,6 +55,7 @@ from app.models import (
 )
 from app.routers.wallet._shared import get_payment_settings
 from app.routers.wallet.daily import _summary_for
+from app.services import payment_flow
 from app.services.payment_flow import is_chargeable_user
 from app.schemas import (
     DashboardCompare,
@@ -570,14 +572,36 @@ def _seats_curve(
     return out
 
 
-def _member_fee(member_fee: int | None, user_fee: int | None, default_fee: int) -> int:
-    """Phí thực thu 1 kỳ: phí riêng của email → phí riêng của đại lý → phí hệ thống
-    (đúng thứ tự đang dùng ở luồng mời/gia hạn)."""
-    if member_fee is not None:
-        return int(member_fee)
-    if user_fee is not None:
-        return int(user_fee)
-    return default_fee
+def _next_cycle_fee(
+    db: Session,
+    user: User,
+    *,
+    member_fee: int | None,
+    platform: str | None,
+    default_fee: int,
+    settings_row,
+) -> int:
+    """Tiền của MỘT kỳ tới cho một email — con số các thẻ "sắp tới hạn" đang khoe.
+
+    Đi qua `payment_flow.fee_for_months` thay vì tự xếp ba tầng phí: bản cũ chỉ biết
+    công thức của GPT (phí riêng email → phí riêng đại lý → phí hệ thống) nên email
+    Canva bị gán luôn đơn giá tháng của GPT — hàng triệu đồng cho một ghế giá hơn
+    trăm nghìn. Nhánh Canva tra BẢNG BẬC và cố ý bỏ qua phí riêng của email
+    (services/canva_price.py), `fee_for_months` đã lo đúng chuyện đó.
+
+    Vẫn là ƯỚC LƯỢNG một kỳ: ở chế độ `cycle_aligned` email đã hội tụ mốc chốt thì
+    kỳ tới đúng bằng một tháng tròn, còn email chưa hội tụ sẽ lệch phần lẻ. Số chốt
+    luôn do lệnh gia hạn hỏi lại máy chủ (`/renew-preview`).
+    """
+    return payment_flow.fee_for_months(
+        db,
+        user,
+        months=1,
+        platform=platform or PLATFORM_GPT,
+        member_fee=member_fee,
+        default_fee=default_fee,
+        settings_row=settings_row,
+    )
 
 
 @router.get("/overview", response_model=DashboardOverviewOut)
@@ -754,17 +778,20 @@ def overview(
             Member.email_change_stuck_at,
             Member.notify_telegram_chat_id,
             Member.fee_vnd,
-        ).where(
+            # Nhánh của không gian đi kèm luôn: giá Canva tra BẢNG BẬC, không nhân
+            # được từ đơn giá tháng của GPT (xem `_next_cycle_fee`).
+            Workspace.platform,
+        )
+        .join(Workspace, Member.workspace_id == Workspace.id, isouter=True)
+        .where(
             Member.invited_by_user_id == user.id,
             Member.status.in_(("active", "pending")),
         )
     )
     if platform is not None:
-        member_stmt = member_stmt.join(
-            Workspace, Member.workspace_id == Workspace.id
-        ).where(Workspace.platform == platform)
+        member_stmt = member_stmt.where(Workspace.platform == platform)
     member_rows = db.execute(member_stmt).all()
-    for email, status, pay, end_at, _stuck_at, chat_id, fee_vnd in member_rows:
+    for email, status, pay, end_at, _stuck_at, chat_id, fee_vnd, ws_platform in member_rows:
         in_team.add(email.strip().lower())
         if status == "active":
             active += 1
@@ -778,7 +805,14 @@ def overview(
         if end_at is None or end_at <= now_utc:
             # Hết hạn là hệ thống gỡ luôn, không có trạng thái "chờ gỡ" để hiện.
             continue
-        fee = _member_fee(fee_vnd, user.invite_fee_vnd, default_fee)
+        fee = _next_cycle_fee(
+            db,
+            user,
+            member_fee=fee_vnd,
+            platform=ws_platform,
+            default_fee=default_fee,
+            settings_row=settings,
+        )
         if end_at < soon_limit:
             due_soon += 1
             due_soon_money += fee
@@ -941,7 +975,8 @@ def due_members(
         from_date, to_date = to_date, from_date
     start = datetime.combine(from_date, time.min, tzinfo=VN_TZ)
     end = datetime.combine(to_date + timedelta(days=1), time.min, tzinfo=VN_TZ)
-    default_fee = int(get_payment_settings(db).invite_fee_vnd or 0)
+    settings_row = get_payment_settings(db)
+    default_fee = int(settings_row.invite_fee_vnd or 0)
 
     if platform is not None and platform not in PLATFORMS:
         # 400 viết thẳng số: trong file này `status` bị dùng làm tên biến vòng lặp
@@ -949,7 +984,7 @@ def due_members(
         raise HTTPException(status_code=400, detail="platform không hợp lệ")
 
     due_stmt = (
-        select(Member, Workspace.name)
+        select(Member, Workspace.name, Workspace.platform)
         .join(Workspace, Workspace.id == Member.workspace_id, isouter=True)
         .where(
             Member.invited_by_user_id == user.id,
@@ -969,8 +1004,15 @@ def due_members(
             workspace_name=ws_name,
             email=m.email,
             end_at=_aware(m.subscription_end_at).isoformat(),  # type: ignore[union-attr]
-            fee=_member_fee(m.fee_vnd, user.invite_fee_vnd, default_fee),
+            fee=_next_cycle_fee(
+                db,
+                user,
+                member_fee=m.fee_vnd,
+                platform=ws_platform,
+                default_fee=default_fee,
+                settings_row=settings_row,
+            ),
             payment_status=m.payment_status,
         )
-        for m, ws_name in rows
+        for m, ws_name, ws_platform in rows
     ]

@@ -1600,6 +1600,7 @@ def _preview_price_detail(
     }
     ws_row = db.get(Workspace, workspace_id)
     aligned = ws_row is not None and is_cycle_aligned(ws_row)
+    is_canva_ws = ws_row is not None and ws_row.platform == PLATFORM_CANVA
     cycle_cfg = cycle_settings(db) if aligned else None
     out: list[dict] = []
     for email, fee in planned:
@@ -1616,8 +1617,16 @@ def _preview_price_detail(
             "half_days": half_days,
             "from": start.isoformat(),
             "to": end.isoformat() if end is not None else None,
-            "unit_price_vnd": payment_flow.effective_fee(
-                m.fee_vnd if m is not None else None, user, default_fee
+            # Nhánh BẢNG GIÁ BẬC (Canva) KHÔNG có "đơn giá tháng" nào nhân ra được
+            # tổng: mua 3 tháng rẻ hơn 3 lần giá 1 tháng. Gửi con số của GPT sang đó
+            # là bày một phép nhân không khớp chính dòng tổng bên cạnh. Thiếu trường
+            # này thì màn hình tự bỏ dòng đơn giá.
+            "unit_price_vnd": (
+                None
+                if is_canva_ws
+                else payment_flow.effective_fee(
+                    m.fee_vnd if m is not None else None, user, default_fee
+                )
             ),
         }
         # PHÉP TÍNH cho khối giải thích: phần lẻ bao nhiêu, mấy chu kỳ trọn, chu kỳ
