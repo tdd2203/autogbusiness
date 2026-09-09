@@ -244,12 +244,15 @@ def handle_topup(
     return True
 
 
-def _fulfill_order(db: Session, order: PaymentOrder) -> None:
+def _fulfill_order(db: Session, order: PaymentOrder, events: list | None = None) -> None:
     """Thực thi intent của hoá đơn ĐÃ được credit ví (bước 2). Trừ phí SAU khi tạo
     member/queue (invite) / áp gia hạn (renew). Import router lazy để tránh circular.
 
     QUAN TRỌNG (user 2026-07-13): gọi SAU khi credit ví. Nếu hàm này lỗi → phí CHƯA
-    trừ → tiền QR đã credit ở lại ví (caller bắt exception, set fulfillment_error)."""
+    trừ → tiền QR đã credit ở lại ví (caller bắt exception, set fulfillment_error).
+
+    `events` = giỏ đựng thông báo SSE để caller bắn SAU khi phần này đã chốt. Bắn ngay
+    tại đây là báo cho extension một task mà lát nữa có thể bị huỷ cùng savepoint."""
     # Lazy import: routers.members.* import services → tránh vòng import lúc load.
     from app.models import Member, User, Workspace
     from app.routers.members.invite import (
@@ -261,10 +264,7 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
         perform_invite_core,
     )
     from app.routers.members.renew import perform_renew_core
-    from app.routers.members.subscription import (
-        perform_subscription_core,
-        subscription_fee,
-    )
+    from app.routers.members.subscription import perform_subscription_core
     from app.routers.wallet._shared import get_payment_settings
     from app.schemas import MemberUpdateSubscriptionIn
     from app.services import payment_flow, seats, wallet_service
@@ -326,6 +326,13 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
             # Vai trò Canva lưu trong hoá đơn lúc tạo QR — replay phải giữ đúng, kẻo
             # người trả tiền cho suất "nhà thiết kế thương hiệu" nhận suất thường.
             canva_role=payload.get("canva_role"),
+            # Phí mời được suy NGƯỢC từ cửa sổ vừa ghi lên member (`_member_fees`), nên
+            # mốc ở đây quyết định LUÔN cả số tiền lẫn hạn giao ra. Lấy giờ lúc tiền về
+            # là bán một cửa sổ mà mã QR không hề tính tiền: trong lúc chờ chuyển khoản
+            # điểm nối có thể vượt ngưỡng ép thêm tháng hoặc vượt luôn mốc chốt
+            # (§3.6.2), và chiều lệch luôn là "giao nhiều hơn số đã bán". Áp lại bằng
+            # ĐÚNG đồng hồ đã báo giá, đóng dấu sẵn trong hoá đơn.
+            now=payment_flow.priced_at_of(order),
         )
         email_fees = _member_fees(db, user, chargeable, default_fee)
         if email_fees and queue_item is not None:
@@ -335,10 +342,14 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
         # Toàn gia hạn → không có task ChatGPT (queue_item None) → không publish event.
         if queue_item is not None:
             order.queue_item_id = queue_item.id
-            publish_task_event(
+            event = (
                 ws.id,
                 {"type": "task-available", "task_id": str(queue_item.id), "task_type": "INVITE_MEMBER"},
             )
+            if events is None:
+                publish_task_event(*event)
+            else:
+                events.append(event)
         order.fulfilled_at = now
         db.flush()
     elif order.kind == "renew":
@@ -380,10 +391,19 @@ def _fulfill_order(db: Session, order: PaymentOrder) -> None:
             subscription_purchased_at=payload.get("subscription_purchased_at"),
             subscription_end_at=payload.get("subscription_end_at"),
         )
-        # Tính lại phí tại thời điểm áp (member có thể đã đổi hạn giữa chừng). Phí =
-        # đơn giá/tháng × số tháng kéo dài (subscription_fee), 0 nếu không kéo dài.
-        fee = subscription_fee(db, member, user, default_fee, body)
-        perform_subscription_core(db, user, member, body)
+        # Lấy THẲNG con số đã in trên hoá đơn, KHÔNG tính lại — cùng lý do với nhánh
+        # `renew` ở trên: `amount_vnd` là số khách đã nhìn thấy trên mã QR và đã chuyển
+        # tiền theo, còn mọi cách tính lại lúc tiền về chỉ là một giả thuyết về thế
+        # giới ở thời điểm khác. Bản cũ tính lại "phòng khi member đã đổi hạn giữa
+        # chừng", nhưng ca đó tính lại cũng không cứu được gì: trừ NHIỀU hơn thì
+        # `charge_renew` ném InsufficientBalance, trừ ÍT hơn thì phần dư kẹt trong ví.
+        fee = int(order.amount_vnd)
+        # Áp lại bằng ĐÚNG đồng hồ đã báo giá (dấu đóng sẵn trong hoá đơn): cửa sổ bán
+        # đo từ điểm nối = max(hạn cũ, now), nên lấy giờ lúc tiền về là giao thêm một
+        # mốc mà hoá đơn không hề tính tiền.
+        perform_subscription_core(
+            db, user, member, body, now=payment_flow.priced_at_of(order)
+        )
         if fee > 0:
             wallet_service.charge_renew(db, user, member.id, fee, email=member.email)
         order.member_id = member.id
@@ -413,6 +433,32 @@ def _fulfillment_error_text(exc: Exception) -> str:
     """
     detail = getattr(exc, "detail", None)
     return (str(detail) if detail else str(exc))[:500]
+
+
+def _order_failure_text(exc: Exception, paid: int, amount: int) -> str:
+    """Câu ĐẠI LÝ ĐỌC khi hoá đơn đã nhận tiền nhưng lệnh không chạy được.
+
+    Ca phổ biến nhất là chuyển THIẾU trong dung sai: ví được cộng đúng số nhận, còn
+    phí thu theo số in trên mã QR, nên số dư hụt đúng khoản chênh. `InsufficientBalance`
+    chỉ có message tiếng Anh kèm mấy con số nội bộ — dán nguyên vào màn hình người bán
+    hàng thì họ không hiểu, và cũng không biết phải làm gì tiếp. Nói thẳng cách gỡ:
+    tiền đã ở trong ví rồi, nạp bù phần thiếu rồi bấm lại lệnh (KHÔNG chuyển bù vào
+    chính mã hoá đơn cũ — số lẻ đó lệch quá dung sai nên webhook sẽ từ chối).
+    """
+    from app.services.wallet_service import InsufficientBalance
+
+    if isinstance(exc, InsufficientBalance):
+        thieu = int(getattr(exc, "shortfall", 0))
+        if paid < amount:
+            return (
+                f"Đã nhận {paid:,}đ, thiếu {amount - paid:,}đ so với hoá đơn nên chưa "
+                f"trừ được phí. Tiền đã vào Ví — nạp thêm {thieu:,}đ rồi bấm lại lệnh."
+            )
+        return (
+            f"Số dư Ví không đủ để trừ phí (còn thiếu {thieu:,}đ). Tiền đã vào Ví — "
+            "nạp thêm rồi bấm lại lệnh."
+        )
+    return _fulfillment_error_text(exc)
 
 
 def handle_order(
@@ -536,17 +582,39 @@ def handle_order(
     order.transaction_id = txn.id
 
     # Bước 2 — thực thi mời/gia hạn + trừ phí. Lỗi → giữ tiền trong ví.
+    #
+    # SAVEPOINT bao trọn bước này. Trước đây lỗi ở giữa chừng vẫn để lại nguyên phần
+    # đã làm: ca thật là khách chuyển THIẾU trong dung sai (mặc định 1.000đ) → ví
+    # được cộng đúng số nhận, nhưng phí trừ theo số trên hoá đơn ⇒ `charge_*` ném
+    # InsufficientBalance SAU khi hạn đã dời và chu kỳ 'đã thanh toán' đã nối. Ngoại
+    # lệ bị bắt ở đây, session vẫn commit ⇒ khách được phục vụ mà ví không mất đồng
+    # nào. Guard seat/chủ-sở-hữu ném giữa chừng cũng cùng kiểu hỏng.
+    #
+    # `begin_nested` flush mọi thay đổi đang treo TRƯỚC khi mở savepoint, nên khoản
+    # credit ví ở bước 1 nằm NGOÀI vùng bị hoàn tác — đúng nguyên tắc "action lỗi thì
+    # tiền QR ở lại ví".
+    events: list = []
+    sp = db.begin_nested()
     try:
-        _fulfill_order(db, order)
+        _fulfill_order(db, order, events)
+        sp.commit()
         if outcome is not None:
             outcome.update(result="credited", note=f"hoá đơn {order.kind} — đã nạp ví và thực thi")
     except Exception as e:  # noqa: BLE001 — webhook luôn trả 200; ghi lỗi vào order
+        sp.rollback()
+        events.clear()
         logger.exception("[sepay] order=%s đã nạp nhưng thực thi lỗi", order.id)
-        order.fulfillment_error = _fulfillment_error_text(e)
+        order.fulfillment_error = _order_failure_text(e, paid, int(order.amount_vnd))
         if outcome is not None:
             outcome.update(result="error", note=f"đã nạp ví nhưng thực thi lỗi: {e}")
     db.add(order)
     db.flush()
+    # Báo extension SAU khi phần thực thi đã chốt — không bắn task vừa bị huỷ.
+    if events:
+        from app.sse import publish_task_event  # lazy: tránh vòng import lúc load
+
+        for ws_id, event in events:
+            publish_task_event(ws_id, event)
     logger.info("[sepay] order handled order=%s kind=%s amount=%s user=%s",
                 order.id, order.kind, paid, order.user_id)
     return True

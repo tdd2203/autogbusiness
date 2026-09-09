@@ -110,6 +110,7 @@ def perform_invite_core(
     single: bool,
     reinvite: bool = False,
     canva_role: str | None = None,
+    now: datetime | None = None,
 ) -> tuple[QueueItem | None, list[Member], list[Member], list[Member]]:
     """Tạo QueueItem + Member/Invite cho lệnh mời, VÀ gia hạn email đã ACTIVE.
     KHÔNG trừ phí, KHÔNG commit, KHÔNG publish SSE — caller lo (endpoint hoặc webhook
@@ -146,12 +147,21 @@ def perform_invite_core(
       • all_members   = mọi member đụng tới (gia hạn TRƯỚC, rồi tới mời — theo bó).
       • chargeable    = member tạo lời mời MỚI (phí mời, ref=queue_item).
       • renew_members = member đang active được gia hạn (phí gia hạn, ref=member).
+
+    `now` = mốc BÁO GIÁ của lượt bán này, dùng cho TOÀN BỘ hàm (hạn mới, điểm nối,
+    câu hỏi "còn hạn nên miễn phí không"). Caller nào đã báo giá bằng một mốc thì
+    phải truyền LẠI đúng mốc đó, vì phí được suy NGƯỢC từ cửa sổ mà hàm này ghi lên
+    member (`_member_fees` → `sold_window`): lấy giờ khác là ghi một cửa sổ khác với
+    cửa sổ đã in trên mã QR. Webhook chạy lại lệnh hàng phút sau lúc báo giá — trong
+    khoảng đó điểm nối có thể vượt ngưỡng ép thêm tháng hoặc vượt luôn mốc chốt
+    (EXPIRY_RULES §3.6.2), và chiều lệch luôn là "giao nhiều hơn số đã bán". Mặc định
+    `None` = tự lấy giờ hiện tại, giữ nguyên hành vi cũ cho call site chưa đổi.
     """
     # Lazy import tránh phụ thuộc thứ tự nạp module trong package.
     from .renew import perform_renew_core
 
     workspace_id = workspace.id
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc) if now is None else now
     emails_lower = [e for e, _ in entries]
     existing_map = {
         m.email: m
@@ -181,7 +191,7 @@ def perform_invite_core(
 
     # ── GIA HẠN email đang active (cộng dồn hạn + chu kỳ trả tiền + audit RENEWED) ──
     for m, months in renew_targets:
-        perform_renew_core(db, user, m, months)
+        perform_renew_core(db, user, m, months, now=now)
         all_members.append(m)
         renew_members.append(m)
 
@@ -829,11 +839,16 @@ def _create_invite_order_and_raise(
     *,
     reinvite: bool = False,
     canva_role: str | None = None,
+    priced_at: datetime | None = None,
 ) -> None:
     """Ví thiếu → tạo hoá đơn QR mời + HTTP 402. KHÔNG tạo member/queue (chờ trả tiền).
 
     Chưa cấu hình ngân hàng nhận → không dựng được QR → fallback 402 báo nạp thêm.
     `reinvite` được lưu vào order payload để webhook replay giữ đúng hành vi mời-lại.
+
+    `priced_at` = mốc đã dùng để ra `amount`; đóng vào hoá đơn để webhook chạy lại
+    lệnh mời trên ĐÚNG cửa sổ đó thay vì cửa sổ của lúc tiền về (xem
+    `payment_flow.priced_at_of` và tham số `now` của `perform_invite_core`).
     """
     if not payment_flow.bank_configured(settings_row):
         raise HTTPException(
@@ -863,6 +878,7 @@ def _create_invite_order_and_raise(
         payload=order_payload,
         workspace_id=workspace.id,
         platform=workspace.platform,
+        priced_at=priced_at,
     )
     log_event(
         db,
@@ -1140,17 +1156,22 @@ def invite_member(
     default_fee = int(settings_row.invite_fee_vnd or 0)
 
     # Ví trước, QR sau: dự tính phí → quyết định trừ ví / tạo QR.
-    planned = plan_invite_fees(db, workspace_id, entries, user, default_fee)
+    # MỘT mốc cho cả tiền lẫn hạn: phí trừ thật được suy NGƯỢC từ cửa sổ mà
+    # `perform_invite_core` ghi lên member, nên báo giá và lúc áp mà lệch nhau vài
+    # mili giây là đủ để hai bên rơi hai phía một ngưỡng nửa ngày.
+    now = datetime.now(timezone.utc)
+    planned = plan_invite_fees(db, workspace_id, entries, user, default_fee, now=now)
     total = sum(f for _, f in planned)
     mode = payment_flow.decide_payment(db, user, total)
     if mode == payment_flow.DEFER:
         _create_invite_order_and_raise(
             db, user, ws, entries, body.role, total, settings_row,
-            canva_role=body.canva_role,
+            canva_role=body.canva_role, priced_at=now,
         )
 
     queue_item, members, chargeable, renew_members = perform_invite_core(
-        db, user, ws, entries, body.role, single=True, canva_role=body.canva_role
+        db, user, ws, entries, body.role, single=True, canva_role=body.canva_role,
+        now=now,
     )
     if mode == payment_flow.WALLET:
         email_fees = _member_fees(db, user, chargeable, default_fee)
@@ -1220,11 +1241,12 @@ def reinvite_member(
     ws = _get_workspace_or_404(db, workspace_id)
     invite_block.assert_not_blocked(ws)
     member = _member_or_404_visible(db, workspace_id, member_id, user)
+    # MỘT mốc cho cả tiền lẫn hạn — xem ghi chú ở `invite_member`. Đặt ngay đây để câu
+    # hỏi "còn hạn không" ở guard dưới và ở lúc tính phí không rơi hai bên một ngưỡng.
+    now = datetime.now(timezone.utc)
     # Mời hộ email CÒN HẠN của đại lý khác thì được (miễn phí, chủ giữ nguyên); email
     # đã hết hạn thì không — lần mời đó là chu kỳ mới có phí.
-    _assert_reinvite_not_billing_other_owner(
-        db, member, user, datetime.now(timezone.utc)
-    )
+    _assert_reinvite_not_billing_other_owner(db, member, user, now)
     _unblock_active_if_sync_missing(member)
 
     email = member.email.lower()
@@ -1241,13 +1263,14 @@ def reinvite_member(
 
     # Ví trước, QR sau — CÒN HẠN thì planned rỗng (miễn phí), total=0 → FREE/WALLET no-op.
     planned = plan_invite_fees(
-        db, workspace_id, entries, user, default_fee, reinvite=True
+        db, workspace_id, entries, user, default_fee, reinvite=True, now=now
     )
     total = sum(f for _, f in planned)
     mode = payment_flow.decide_payment(db, user, total)
     if mode == payment_flow.DEFER:
         _create_invite_order_and_raise(
-            db, user, ws, entries, role, total, settings_row, reinvite=True
+            db, user, ws, entries, role, total, settings_row, reinvite=True,
+            priced_at=now,
         )
 
     # Đánh dấu lời mời PENDING cũ của email này là superseded (extension sẽ thu hồi bản
@@ -1263,7 +1286,7 @@ def reinvite_member(
     )
 
     queue_item, members, chargeable, renew_members = perform_invite_core(
-        db, user, ws, entries, role, single=True, reinvite=True
+        db, user, ws, entries, role, single=True, reinvite=True, now=now
     )
     if mode == payment_flow.WALLET:
         email_fees = _member_fees(db, user, chargeable, default_fee)
@@ -1378,7 +1401,8 @@ def reinvite_members_batch(
         # chữ ký core, KHÔNG dùng tới vì mọi target đều còn hạn ⇒ miễn phí.
         entries = [(m.email.lower(), m.subscription_months) for m in group]
         queue_item, _members, _chargeable, _renew = perform_invite_core(
-            db, user, ws, entries, role, single=len(entries) == 1, reinvite=True
+            db, user, ws, entries, role, single=len(entries) == 1, reinvite=True,
+            now=now,
         )
         if queue_item is not None:
             queue_item_ids.append(str(queue_item.id))
@@ -1448,13 +1472,15 @@ def bulk_invite_members(
     settings_row = get_payment_settings(db)
     default_fee = int(settings_row.invite_fee_vnd or 0)
 
-    planned = plan_invite_fees(db, workspace_id, entries, user, default_fee)
+    # MỘT mốc cho cả tiền lẫn hạn — xem ghi chú ở `invite_member`.
+    now = datetime.now(timezone.utc)
+    planned = plan_invite_fees(db, workspace_id, entries, user, default_fee, now=now)
     total = sum(f for _, f in planned)
     mode = payment_flow.decide_payment(db, user, total)
     if mode == payment_flow.DEFER:
         _create_invite_order_and_raise(
             db, user, ws, entries, body.role, total, settings_row,
-            canva_role=body.canva_role,
+            canva_role=body.canva_role, priced_at=now,
         )
 
     # Cooldown đặt SAU nhánh 402 (ví thiếu → hoá đơn QR): nạp xong bấm lại ngay
@@ -1462,7 +1488,8 @@ def bulk_invite_members(
     enforce_action_cooldown(db, user, "MEMBER_BULK_INVITE", workspace_id)
 
     queue_item, members, chargeable, renew_members = perform_invite_core(
-        db, user, ws, entries, body.role, single=False, canva_role=body.canva_role
+        db, user, ws, entries, body.role, single=False, canva_role=body.canva_role,
+        now=now,
     )
     if mode == payment_flow.WALLET:
         email_fees = _member_fees(db, user, chargeable, default_fee)
