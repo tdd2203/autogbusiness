@@ -333,6 +333,7 @@ export default function WorkspaceLayout() {
         <ManualAddModal
           workspaceId={workspaceId}
           verifiedDomain={workspace?.verified_domain ?? null}
+          billingMode={workspace?.billing_mode ?? null}
           onClose={() => setShowManualAddModal(false)}
           onDone={() => {
             qc.invalidateQueries({ queryKey: ["members", workspaceId] });

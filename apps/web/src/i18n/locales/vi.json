@@ -675,6 +675,8 @@
   "invite.monthsIncrement": "Tăng 1 tháng",
   "invite.monthsUnit": "tháng",
   "invite.monthsShort": "th",
+  "invite.expiresOnPayday": "Theo ngày thanh toán",
+  "invite.expiresOnPaydayTooltip": "Hạn rơi vào ngày thanh toán của không gian, máy chủ tính khi lưu",
   "invite.expiresTooltip": "{months} tháng × 30 = {days} ngày",
   "invite.invalidEmailFormat": "Sai format email",
   "invite.duplicateSkipped": "{n} email trùng (sẽ bỏ qua)",

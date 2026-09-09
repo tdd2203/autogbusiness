@@ -44,6 +44,9 @@ from ._shared import (
     _extend_subscription_end,
     _get_workspace_or_404,
     claim_ownership,
+    cycle_settings,
+    is_cycle_aligned,
+    quote_cycle,
 )
 
 
@@ -53,13 +56,18 @@ def _append_unpaid_cycle(
     start_at: datetime | None,
     end_at: datetime | None,
     months: int | None,
+    prorated_half_days: int | None = None,
 ) -> None:
     """Nối MỘT chu kỳ CHƯA THANH TOÁN phủ [start_at → end_at].
 
     Bản sao của `_shared._append_paid_cycle` nhưng để `payment_status='unpaid'`
     (không set paid_at/paid_marked_by): thêm thủ công KHÔNG trừ ví, KHÔNG đánh dấu đã
     thanh toán — chỉ ghi nhận để đối soát chu kỳ + tiền. `cycle_number` nối tiếp max
-    hiện có. No-op nếu khoảng rỗng. Xem [[subscription-cycle-model]]."""
+    hiện có. No-op nếu khoảng rỗng. Xem [[subscription-cycle-model]].
+
+    `prorated_half_days` chỉ có ở chế độ `cycle_aligned`: kỳ đầu thường lẻ ngày nên
+    không nhét vào `months` nguyên được. Thiếu nó thì tab "Email đã add" thu TRỌN một
+    tháng cho quãng chỉ chạy tới mốc chốt (xem `added_members._cycle_fee`)."""
     if start_at is None or end_at is None or end_at <= start_at:
         return
     next_number = (
@@ -69,10 +77,65 @@ def _append_unpaid_cycle(
         MemberSubscriptionCycle(
             cycle_number=next_number,
             months=months,
+            prorated_half_days=prorated_half_days,
             start_at=start_at,
             end_at=end_at,
             payment_status="unpaid",
         )
+    )
+
+
+def _manual_window(
+    ws,
+    now: datetime,
+    months: int | None,
+    *,
+    current_end: datetime | None,
+    settings_row,
+) -> tuple[datetime, datetime, datetime | None, int | None, int | None]:
+    """Cửa sổ SẼ ghi cho một email thêm tay:
+    `(mốc neo, đầu kỳ, hạn, số tháng kỳ, nửa ngày lẻ)`.
+
+    Thêm tay không trừ ví, nhưng kỳ nó sinh ra là kỳ CÒN NỢ — tab "Email đã add" thu
+    tiền đúng theo kỳ đó (`added_members._cycle_fee`). Vì thế cửa sổ phải dựng bằng
+    ĐÚNG luật của không gian, không phải luôn cộng 30 ngày: ở chế độ neo theo chu kỳ,
+    hạn rơi vào MỐC CHỐT và phần lẻ tới mốc không nhét vào `months` nguyên được
+    (EXPIRY_RULES §3.6.2 và §3.6.5).
+
+    ĐIỂM NỐI = `max(hạn hiện tại, now)` — dùng chung `quote_cycle` với mời/gia hạn để
+    không sinh bản tính thứ ba.
+
+    MỐC NEO tách riêng khỏi đầu kỳ vì hai chế độ đặt nó khác nhau: `cycle_aligned` neo
+    vào ĐIỂM NỐI (§3.6.7 — hạn không còn cách neo đúng 30 ngày), còn chế độ 30 ngày
+    giữ nguyên quy ước cũ của chức năng này là lúc bấm nút.
+
+    `months` None/≤0 = VÔ THỜI HẠN (§5): trả hạn None, nhưng ĐẦU KỲ vẫn phải là hạn
+    đang có — trả `now` là caller ghi đè mất một hạn còn ở tương lai.
+    """
+    con_han = current_end is not None and current_end > now
+    joint = current_end if con_han else now
+    if months is None or months <= 0:
+        return now, joint, None, months, None
+    if not is_cycle_aligned(ws):
+        end = (
+            _extend_subscription_end(joint, months)
+            if con_han
+            else _end_from_purchase(now, months)
+        )
+        return now, joint, end, months, None
+    quote = quote_cycle(
+        ws,
+        now,
+        current_end=current_end,
+        extra_months=max(0, months - 1),
+        settings_row=settings_row,
+    )
+    return (
+        quote.join_at,
+        quote.join_at,
+        quote.end_at,
+        quote.whole_months,
+        quote.prorated_half_days,
     )
 
 
@@ -152,6 +215,8 @@ def manual_add_members(
 
     role = body.role
     now = datetime.now(timezone.utc)
+    # Đọc cấu hình chu kỳ MỘT lần cho cả mẻ: mỗi email hỏi lại là mỗi email một mốc.
+    cycle_cfg = cycle_settings(db) if is_cycle_aligned(ws) else None
     emails_lower = [e for e, _ in entries]
     existing_map = {
         m.email: m
@@ -170,20 +235,23 @@ def manual_add_members(
         existing = existing_map.get(email)
         if existing is not None and existing.status in ("active", "pending"):
             # Đã trong workspace → CỘNG DỒN 1 chu kỳ mới (giống gia hạn, không phí).
-            base_end = (
-                existing.subscription_end_at
-                if (
-                    existing.subscription_end_at is not None
-                    and existing.subscription_end_at > now
-                )
-                else now
+            anchor, base_end, new_end, cycle_months, prorated = _manual_window(
+                ws,
+                now,
+                months,
+                current_end=existing.subscription_end_at,
+                settings_row=cycle_cfg,
             )
-            new_end = _extend_subscription_end(base_end, months) or base_end
+            new_end = new_end or base_end
             _append_unpaid_cycle(
-                existing, start_at=base_end, end_at=new_end, months=months
+                existing,
+                start_at=base_end,
+                end_at=new_end,
+                months=cycle_months,
+                prorated_half_days=prorated,
             )
             existing.subscription_months = months
-            existing.subscription_purchased_at = now
+            existing.subscription_purchased_at = anchor
             existing.subscription_end_at = new_end
             _mark_member_unpaid(existing)
             member = existing
@@ -191,7 +259,11 @@ def manual_add_members(
             action = "renewed"
         else:
             # Mới hoàn toàn hoặc kích hoạt lại `removed` → chu kỳ tham gia mới từ now.
-            end = _end_from_purchase(now, months)
+            # Không có hạn cũ để nối (record `removed` coi như đợt mới) nên điểm nối
+            # chính là now ở cả hai chế độ; hạn thì vẫn phải theo luật của không gian.
+            anchor, _start, end, cycle_months, prorated = _manual_window(
+                ws, now, months, current_end=None, settings_row=cycle_cfg
+            )
             if existing is not None:
                 # Reactivate record `removed` = ĐỢT tham gia mới: bỏ kỳ còn phủ cửa sổ
                 # mới, GIỮ kỳ của các đợt đã kết thúc (tiền đã thu, có hoá đơn trong
@@ -207,7 +279,7 @@ def manual_add_members(
                 existing.removed_reason = None
                 existing.last_synced_at = None
                 existing.subscription_months = months
-                existing.subscription_purchased_at = now
+                existing.subscription_purchased_at = anchor
                 existing.subscription_end_at = end
                 member = existing
             else:
@@ -219,12 +291,18 @@ def manual_add_members(
                     invited_by_user_id=user.id,
                     joined_at=now,
                     subscription_months=months,
-                    subscription_purchased_at=now,
+                    subscription_purchased_at=anchor,
                     subscription_end_at=end,
                 )
                 db.add(member)
             db.flush()
-            _append_unpaid_cycle(member, start_at=now, end_at=end, months=months)
+            _append_unpaid_cycle(
+                member,
+                start_at=anchor,
+                end_at=end,
+                months=cycle_months,
+                prorated_half_days=prorated,
+            )
             _mark_member_unpaid(member)
             added.append(member)
             action = "added"

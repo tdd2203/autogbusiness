@@ -15,6 +15,7 @@ import { useFormatDate, useT } from "../i18n";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useManualAdd } from "../hooks/useManualAdd";
 import { parseEmailsFromText } from "../lib/emailParser";
+import type { BillingMode } from "../types";
 
 const DEFAULT_MONTHS = 1;
 const MIN_MONTHS = 1;
@@ -30,11 +31,13 @@ function clampMonths(n: number): number {
 export function ManualAddModal({
   workspaceId,
   verifiedDomain,
+  billingMode,
   onClose,
   onDone,
 }: {
   workspaceId: string;
   verifiedDomain: string | null;
+  billingMode: BillingMode | null;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -45,7 +48,12 @@ export function ManualAddModal({
   const domain = (verifiedDomain ?? "").trim().toLowerCase();
   const suffix = "@" + domain;
 
+  // Không gian chốt theo NGÀY THANH TOÁN thì hạn rơi vào mốc chốt, không phải hôm nay
+  // + 30×N — mà mốc đó chỉ máy chủ mới biết. Thà không hiện còn hơn hiện một ngày
+  // khác hẳn ngày sẽ được ghi (EXPIRY_RULES §8: giao diện không được tự đoán hạn).
+  const doanDuocHan = billingMode !== "cycle_aligned";
   const formatExpiresDate = (months: number) => {
+    if (!doanDuocHan) return t("invite.expiresOnPayday");
     const d = new Date();
     d.setUTCDate(d.getUTCDate() + months * DAYS_PER_MONTH);
     return formatDate(d, { day: "numeric", month: "short", year: "numeric" });
@@ -560,10 +568,14 @@ export function ManualAddModal({
                           color: "var(--ink-2)",
                           fontFamily: "var(--font-mono)",
                         }}
-                        title={t("invite.expiresTooltip", {
-                          months: row.months,
-                          days: row.months * DAYS_PER_MONTH,
-                        })}
+                        title={
+                          doanDuocHan
+                            ? t("invite.expiresTooltip", {
+                                months: row.months,
+                                days: row.months * DAYS_PER_MONTH,
+                              })
+                            : t("invite.expiresOnPaydayTooltip")
+                        }
                       >
                         {formatExpiresDate(row.months)}
                       </div>

@@ -675,6 +675,8 @@
   "invite.monthsIncrement": "加 1 个月",
   "invite.monthsUnit": "月",
   "invite.monthsShort": "月",
+  "invite.expiresOnPayday": "按付款日",
+  "invite.expiresOnPaydayTooltip": "到期日落在工作区的付款日，保存时由服务器计算",
   "invite.expiresTooltip": "{months} 月 × 30 = {days} 天",
   "invite.invalidEmailFormat": "邮箱格式错误",
   "invite.duplicateSkipped": "{n} 个重复邮箱 (将跳过)",
