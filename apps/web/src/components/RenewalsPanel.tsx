@@ -11,7 +11,8 @@ import { useAuth } from "../hooks/useAuth";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useRenewPreview } from "../hooks/useRenewPreview";
 import { FeeDetailModal } from "./FeeDetailModal";
-import { formatVnd } from "../lib/wallet";
+import { formatVnd, getQrOrder, type OrderQr } from "../lib/wallet";
+import OrderQrModal from "./OrderQrModal";
 
 // Cột ngày hiển thị tới giây, khớp bảng Thành viên (Members.tsx / AddedEmails.tsx).
 const PRECISE_TIME: Intl.DateTimeFormatOptions = {
@@ -84,6 +85,8 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
   const [bulkMonths, setBulkMonths] = useState(1);
   const [showBulkConfirm, setShowBulkConfirm] = useState(false);
   const [feeDetailOpen, setFeeDetailOpen] = useState(false);
+  // Ví không đủ khi gia hạn → BE trả hoá đơn QR (402); mở modal QR thay vì báo lỗi.
+  const [qrOrder, setQrOrder] = useState<OrderQr | null>(null);
   const [search, setSearch] = useState("");
 
   // Gộp SẮP + ĐÃ hết hạn thành 1 danh sách; đã hết hạn (khẩn nhất) lên trước, rồi
@@ -126,32 +129,52 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
   // của TỪNG dòng (danh sách gom xuyên workspace) — chỉ gửi số tháng → BE cộng dồn
   // + tạo chu kỳ mới + reset 'chưa thanh toán'. Gia hạn là TỰ PHỤC VỤ (áp NGAY,
   // KHÔNG cần duyệt — kể cả sub-admin). Gom 1 toast tổng kết thay vì N toast.
+  //
+  // TUẦN TỰ và DỪNG ở email đầu tiên ví không đủ tiền (giống popup "đến hạn" ở trang
+  // Tổng quan): mỗi email thiếu tiền sinh MỘT hoá đơn QR riêng, bắn cả loạt cùng lúc
+  // là người dùng lãnh một xấp mã QR chồng nhau mà màn hình chỉ báo "N lỗi". Quét
+  // xong mã đầu tiên thì bấm lại để chạy tiếp phần còn lại.
   const bulkRenew = useMutation({
     mutationFn: async (vars: { rows: AddedMember[]; months: number }) => {
-      const results = await Promise.allSettled(
-        vars.rows.map((m) =>
-          api(
-            `/api/v1/workspaces/${m.workspace_id}/members/${m.id}/renew`,
-            {
-              method: "POST",
-              body: JSON.stringify({ months: vars.months }),
-            },
-          ),
-        ),
-      );
-      const ok = results.filter((r) => r.status === "fulfilled").length;
-      return { ok, fail: results.length - ok };
+      // Gom id đã xong rồi mới bỏ chọn MỘT LẦN ở `onSuccess`: bỏ dần trong lúc chạy
+      // thì bảng xác nhận rụng từng dòng và bản xem trước bị hỏi lại sau mỗi email.
+      const done: string[] = [];
+      for (const m of vars.rows) {
+        try {
+          await api(`/api/v1/workspaces/${m.workspace_id}/members/${m.id}/renew`, {
+            method: "POST",
+            body: JSON.stringify({ months: vars.months }),
+          });
+          done.push(m.id);
+        } catch (e) {
+          const order = getQrOrder(e);
+          if (order) return { done, order, err: null };
+          return { done, order: null, err: e };
+        }
+      }
+      return { done, order: null, err: null };
     },
-    onSuccess: ({ ok, fail }) => {
-      const base = t("renewals.bulkResultOk", { n: ok });
-      toast.success(
-        fail > 0 ? `${base} ${t("renewals.bulkResultPartial", { n: fail })}` : base,
-      );
-      setSelectedIds(new Set());
-      setShowBulkConfirm(false);
+    onSuccess: ({ done, order, err }) => {
       qc.invalidateQueries({ queryKey: ["added-members"] });
       qc.invalidateQueries({ queryKey: ["members"] });
       qc.invalidateQueries({ queryKey: ["member-logs"] });
+      if (done.length > 0) {
+        toast.success(t("renewals.bulkResultOk", { n: done.length }));
+      }
+      if (order || err) {
+        // Dừng giữa chừng: bỏ chọn phần đã xong, GIỮ phần còn lại để bấm tiếp sau
+        // khi trả tiền (hoặc sau khi xử lý lỗi).
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          for (const id of done) next.delete(id);
+          return next;
+        });
+        if (order) setQrOrder(order);
+        else toast.error(err instanceof Error ? err.message : String(err));
+        return;
+      }
+      setSelectedIds(new Set());
+      setShowBulkConfirm(false);
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : String(e)),
   });
@@ -501,6 +524,20 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
             </div>
           </div>
         </div>
+      )}
+
+      {qrOrder && (
+        <OrderQrModal
+          order={qrOrder}
+          onClose={() => setQrOrder(null)}
+          onPaid={() => {
+            // BE đã chạy nốt lượt gia hạn của hoá đơn này → bỏ nó khỏi ô chọn rồi
+            // trả về danh sách để bấm tiếp phần còn lại.
+            setQrOrder(null);
+            qc.invalidateQueries({ queryKey: ["added-members"] });
+            qc.invalidateQueries({ queryKey: ["members"] });
+          }}
+        />
       )}
 
       {feeDetailOpen && (preview.data?.rows.length ?? 0) > 0 && (
