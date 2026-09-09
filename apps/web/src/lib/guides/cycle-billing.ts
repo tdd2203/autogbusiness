@@ -6,6 +6,13 @@
  *  Không kể chuyện bên trong (mua/hạ suất, đợt gỡ chạy ra sao) — xem
  *  `routers/members/EXPIRY_RULES.md` §3.6 nếu cần bản đầy đủ cho người làm.
  *
+ *  NÓI RÕ LÝ DO LÀ THEO LỊCH CỦA CHATGPT (chốt user 9/9/2026): hai luật khó chịu
+ *  nhất — mua sát mốc phải cộng một tháng, và gỡ đúng giờ không ân hạn — đọc như
+ *  ta bày ra để ép khách. Sự thật là ChatGPT thu trọn tháng cho mỗi suất còn nằm
+ *  trong không gian lúc hoá đơn chạy, nên nói thẳng chỗ đó thì đại lý hiểu và
+ *  thông cảm, thay vì tưởng mình khó tính. Đây là LÝ DO KINH DOANH khách nhìn
+ *  thấy trên hoá đơn, khác với cơ chế nội bộ vẫn phải giấu.
+ *
  *  NGẮN LÀ CỐ Ý (chốt user 8/9/2026): bản đầu dài gấp ba, đủ ý nhưng không ai đọc
  *  hết. Thêm ý mới thì phải bỏ bớt ý cũ, đừng để bài dài lại.
  *
@@ -69,13 +76,13 @@ const cycleBilling: Guide = {
       eyebrow: "Hướng dẫn · cách tính mới",
       title: "Hạn dùng theo ngày thanh toán của không gian",
       intro:
-        "Từ **8/9/2026**, mọi email trong một không gian ChatGPT cùng hết hạn vào **một ngày duy nhất trong tháng** — gọi là **ngày thanh toán của không gian**. Tiền thì tính đúng theo số ngày khách dùng.",
+        "Từ **8/9/2026**, mọi email trong một không gian ChatGPT cùng hết hạn vào **một ngày duy nhất trong tháng** — đúng ngày **ChatGPT thu tiền không gian đó**. Mình trả theo lịch của họ nên hạn của khách cũng đi theo lịch đó, bù lại tiền tính đúng số ngày khách dùng.",
       sections: [
         {
           steps: [
             {
               title: "Mỗi không gian có ngày thanh toán riêng",
-              body: "Trong cùng một không gian thì mọi email hết hạn chung một ngày, còn không gian khác có ngày khác. Ngày đó lặp lại hàng tháng, lúc **10 giờ sáng**. Ai đang còn hạn cũ thì giữ nguyên hạn đó, tới lần gia hạn sau mới về chung ngày thanh toán.",
+              body: "Ngày thanh toán là ngày **ChatGPT thu tiền của chính không gian đó**, mình không dời được — mỗi không gian một ngày khác nhau. Ngày đó lặp lại hàng tháng, lúc **10 giờ sáng**, và mọi email trong cùng không gian hết hạn cùng lúc. Ai đang còn hạn cũ thì giữ nguyên hạn đó, tới lần gia hạn sau mới về chung ngày.",
             },
             {
               title: "Dùng bao nhiêu ngày thì trả bấy nhiêu",
@@ -83,11 +90,11 @@ const cycleBilling: Guide = {
             },
             {
               title: "Mua sát ngày thanh toán thì trả thêm một tháng",
-              body: "Còn vài ngày thì quá ngắn để bán riêng. Mua trong **tuần cuối** trước ngày thanh toán thì trả **số ngày còn lại cộng một tháng**, đổi lại khách dùng thẳng tới ngày thanh toán tháng sau.",
+              body: "ChatGPT thu **trọn một tháng** cho mỗi suất, kể cả suất chỉ dùng mấy ngày cuối kỳ. Nên mua trong **tuần cuối** trước ngày thanh toán thì trả **số ngày còn lại cộng một tháng**, đổi lại khách dùng thẳng tới ngày thanh toán tháng sau.",
             },
             {
               title: "Không có ân hạn",
-              body: "Tới **10 giờ sáng** ngày thanh toán mà chưa gia hạn thì email **bị gỡ ngay**, không chờ thêm giờ nào. Nhắc khách gia hạn trước đó.",
+              body: "Đúng **10 giờ sáng** ngày thanh toán là hoá đơn ChatGPT chạy: suất nào còn trong không gian lúc đó thì mình phải trả trọn tháng cho suất ấy. Nên email chưa gia hạn **bị gỡ đúng giờ**. Nhắc khách trước một hai hôm.",
             },
             {
               title: "Ví dụ",
@@ -112,13 +119,13 @@ const cycleBilling: Guide = {
       eyebrow: "使用指南 · 新的计算方式",
       title: "按工作区结算日计算到期时间",
       intro:
-        "自 **2026 年 9 月 8 日**起，同一个 ChatGPT 工作区里的所有邮箱都在**每月的同一天**到期——这一天叫**结算日**。费用则按客户实际使用的天数计算。",
+        "自 **2026 年 9 月 8 日**起，同一个 ChatGPT 工作区里的所有邮箱都在**每月的同一天**到期——正是 **ChatGPT 向这个工作区收费的那天**。我们跟着他们的账期走，客户的到期日也就跟着走；作为补偿，费用按客户实际使用的天数计算。",
       sections: [
         {
           steps: [
             {
               title: "每个工作区都有自己的结算日",
-              body: "同一个工作区里的所有邮箱在同一天到期，不同工作区的结算日各不相同。结算日每月重复一次，时间是**上午 10 点**。此前仍在有效期内的客户保持原到期日，下次续费时才并入结算日。",
+              body: "结算日就是 **ChatGPT 向这个工作区收费的日子**，我们改不了，每个工作区各不相同。它每月重复一次，时间是**上午 10 点**，同一个工作区里的邮箱同时到期。此前仍在有效期内的客户保持原到期日，下次续费时才并入结算日。",
             },
             {
               title: "用几天就付几天的钱",
@@ -126,11 +133,11 @@ const cycleBilling: Guide = {
             },
             {
               title: "临近结算日购买要多付一个月",
-              body: "只剩几天太短，不够单独卖。在结算日前**最后一周**购买要付**剩余天数加一个月**，客户则可以直接用到下个月的结算日。",
+              body: "ChatGPT 对每个席位都按**整月**收费，哪怕这个席位只用了月末几天。所以在结算日前**最后一周**购买要付**剩余天数加一个月**，客户则可以直接用到下个月的结算日。",
             },
             {
               title: "没有宽限期",
-              body: "到结算日**上午 10 点**（越南时间）还没续费，邮箱**立即被移出**，一小时也不会多等。请提前提醒客户续费。",
+              body: "结算日**上午 10 点**（越南时间）一到，ChatGPT 的账单就出：席位还留在工作区里，我们就得为它付满一个月。所以未续费的邮箱**准点被移出**。请提前一两天提醒客户。",
             },
             {
               title: "示例",
