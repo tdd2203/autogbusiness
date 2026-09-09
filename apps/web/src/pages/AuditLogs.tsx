@@ -3260,8 +3260,10 @@ export default function AuditLogs() {
   // Bấm lại chip (hoặc bấm tab Chính) để bỏ lọc, xem cả 3 nhóm.
   const [bucket, setBucket] = useState<MainBucket | null>("member"); // chip trong tab Chính
   // Rẽ nhánh của chip "Thành viên" (mời + gia hạn · xoá · đồng bộ). Mở trang là
-  // chưa rẽ: thấy cả 3 việc, bấm một nhánh mới thu hẹp lại.
-  const [memberSub, setMemberSub] = useState<MemberSub | null>(null);
+  // đứng sẵn ở "Mời + gia hạn" (chốt user 2026-09-09): mời và gia hạn là việc
+  // user vào nhật ký để xem, xoá và đồng bộ bấm sang khi cần. Ngày không có lệnh
+  // mời/gia hạn nào thì coi như không lọc, thấy lại cả 3 (xem `activeMemberSub`).
+  const [memberSub, setMemberSub] = useState<MemberSub | null>("invite");
   const [otherCat, setOtherCat] = useState<OtherBucket | null>(null); // chip trong tab Khác
   // Lọc theo MÃ HOÁ ĐƠN: bấm mã trên lệnh mời/gia hạn → chỉ còn dòng tiền của lệnh đó.
   const [payRef, setPayRef] = useState<string | null>(null);
