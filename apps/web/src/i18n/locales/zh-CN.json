@@ -740,6 +740,7 @@
   "invite.feeChargedCount": "{n} 个收费",
   "invite.feeFreeCount": "{n} 个免费",
   "invite.feeTotalLabel": "邀请费用合计",
+  "invite.feeBreakdownEmails": "{n} 个邮箱",
   "invite.feeBreakdown": "{fee}/月 × {months} 个月 · {n} 个邮箱",
   "invite.feeTotalInline": "费用合计: {total}",
   "invite.feeDetailShow": "查看明细",

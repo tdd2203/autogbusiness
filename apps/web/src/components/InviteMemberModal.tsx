@@ -163,7 +163,7 @@ export function InviteMemberModal({
   });
 
   const previewKey = entries.map((e) => `${e.email}:${e.months}`).join(",");
-  const { data: feePreview } = useQuery({
+  const feeQuery = useQuery({
     queryKey: ["invite-fee-preview", workspaceId, previewKey],
     queryFn: () =>
       api<{
@@ -193,6 +193,7 @@ export function InviteMemberModal({
     // đúng phần vừa gõ, còn số tạm thì sai hẳn ở không gian chốt theo chu kỳ.
     placeholderData: keepPreviousData,
   });
+  const feePreview = feeQuery.data;
   const previewFreeSet = useMemo(
     () => new Set((feePreview?.free_emails ?? []).map((e) => e.toLowerCase())),
     [feePreview],
@@ -243,11 +244,22 @@ export function InviteMemberModal({
   const renewCount = entries.filter((e) => isRenewEmail(e.email)).length;
   const totalMonths = chargeableEntries.reduce((sum, e) => sum + e.months, 0);
   const showFee = chargeable && feePerMonth > 0 && chargeableEntries.length > 0;
-  // Tổng phí: ưu tiên số THẬT từ backend preview (đã tính đúng miễn phí + phí override
-  // riêng); fallback ước tính client (đơn giá × tháng) khi preview chưa tải.
-  const totalFee = feePreview?.total_fee ?? feePerMonth * totalMonths;
+  // Tổng phí CHỈ lấy từ máy chủ. Bản cũ có đường lùi "đơn giá × số tháng" khi preview
+  // chưa về — con số đó sai ở cả hai nhánh đang bán: Canva tính theo BẢNG BẬC (3 tháng
+  // rẻ hơn 3 lần một tháng), còn không gian chốt theo chu kỳ thì tiền đo theo phần lẻ
+  // tới mốc chốt. Thà hiện dấu chờ còn hơn hiện một con số rồi lát nữa nhảy sang số
+  // khác, nhất là khi chính nó quyết định cảnh báo thiếu số dư (EXPIRY_RULES §8).
+  const totalFee = feePreview?.total_fee;
+  // `keepPreviousData` giữ kết quả của mẻ TRƯỚC trong lúc hỏi lại, nên chỉ xét
+  // "đã có số" là in đậm tiền của 1 tháng ngay cạnh ô vừa gõ 12 — và tệ hơn, so số
+  // dư với con số cũ đó rồi bảo "đủ tiền". Cùng cái bẫy mà màn hình gia hạn đã gạch
+  // (xem ChangeSubscriptionModal / RenewalsPanel): phải coi dữ liệu tạm là CHƯA có.
+  const feeReady = !feeQuery.isPlaceholderData && totalFee != null;
   const balance = wallet?.balance ?? 0;
-  const insufficient = showFee && balance < totalFee;
+  const insufficient = showFee && feeReady && balance < totalFee;
+  // Chỉ bày phép nhân khi nó ra ĐÚNG số máy chủ chốt — cùng luật với khối cách tính
+  // của màn hình gia hạn (`RenewCalcRows.unitDrivesFee`).
+  const unitDrivesFee = feeReady && feePerMonth * totalMonths === totalFee;
 
   // Modal cố định: chỉ đóng qua nút Huỷ hoặc submit success.
   // Why: paste nhiều email + chỉnh months tốn công, lỡ click backdrop / Esc
@@ -632,15 +644,19 @@ export function InviteMemberModal({
                       color: "var(--ink)",
                     }}
                   >
-                    {formatVnd(totalFee)}
+                    {feeReady ? formatVnd(totalFee) : "…"}
                   </span>
                 </div>
                 <div style={{ fontSize: 11, color: "var(--ink-3)" }}>
-                  {t("invite.feeBreakdown", {
-                    fee: formatVnd(feePerMonth),
-                    months: totalMonths,
-                    n: chargeableEntries.length,
-                  })}
+                  {unitDrivesFee
+                    ? t("invite.feeBreakdown", {
+                        fee: formatVnd(feePerMonth),
+                        months: totalMonths,
+                        n: chargeableEntries.length,
+                      })
+                    : t("invite.feeBreakdownEmails", {
+                        n: chargeableEntries.length,
+                      })}
                 </div>
                 <div
                   style={{
@@ -648,11 +664,15 @@ export function InviteMemberModal({
                     color: insufficient ? "var(--danger)" : "var(--ink-3)",
                   }}
                 >
-                  {insufficient
-                    ? t("invite.feeBalanceInsufficient", {
-                        balance: formatVnd(balance),
-                      })
-                    : t("invite.feeBalance", { balance: formatVnd(balance) })}
+                  {/* Hỏi hụt thì nói thẳng là chưa có giá — để dấu ba chấm treo mãi
+                      thì người bán tưởng còn đang tải. */}
+                  {!feeReady && feeQuery.isError
+                    ? t("subscription.previewFailed")
+                    : insufficient
+                      ? t("invite.feeBalanceInsufficient", {
+                          balance: formatVnd(balance),
+                        })
+                      : t("invite.feeBalance", { balance: formatVnd(balance) })}
                 </div>
               </div>
             )}
@@ -974,7 +994,9 @@ export function InviteMemberModal({
                         color: insufficient ? "var(--danger)" : "var(--ink)",
                       }}
                     >
-                      {t("invite.feeTotalInline", { total: formatVnd(totalFee) })}
+                      {t("invite.feeTotalInline", {
+                        total: feeReady ? formatVnd(totalFee) : "…",
+                      })}
                     </span>
                   </>
                 )}

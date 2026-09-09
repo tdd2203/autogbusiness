@@ -740,6 +740,7 @@
   "invite.feeChargedCount": "{n} tính phí",
   "invite.feeFreeCount": "{n} miễn phí",
   "invite.feeTotalLabel": "Tổng phí mời",
+  "invite.feeBreakdownEmails": "{n} email",
   "invite.feeBreakdown": "{fee}/tháng × {months} tháng · {n} email",
   "invite.feeTotalInline": "Tổng phí: {total}",
   "invite.feeDetailShow": "Xem chi tiết",
