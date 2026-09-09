@@ -394,6 +394,17 @@ def _trim_cycles_to_end(
         if c.end_at is not None and c.end_at > end_at:
             c.end_at = end_at
             # Cắt kỳ → cập nhật lại số tháng cho khớp cửa sổ mới.
+            #
+            # ⚠️ DÒNG CÓ `prorated_half_days` (chế độ neo theo chu kỳ) ĐANG BỊ ĐẾM
+            # THỪA ở đây: `_months_between` có SÀN 1 tháng, nên kỳ khai "0 tháng +
+            # N nửa ngày" bị cắt NGẮN ĐI lại thành "1 tháng + N nửa ngày", mà
+            # `report.cycle_units` cộng cả hai khoản. Chưa vá vì mọi cách vá tại chỗ
+            # đều bị `report._cycle_length_days` đánh bại: mẫu số của phần lẻ được
+            # suy NGƯỢC từ `end_at` với giả định đó là một mốc chốt, mà cắt kỳ thì
+            # `end_at` thành ngày bất kỳ ⇒ mẫu số nhảy 28/29/30/31 và tiền vẫn TĂNG
+            # được dù cửa sổ ngắn đi. Chữa tận gốc phải đụng cách định giá của MỌI
+            # dòng kỳ lịch sử (hoặc thêm cột `cycle_days` lúc bán) — việc đó làm đổi
+            # số liệu doanh thu đã báo, phải hỏi trước.
             if c.start_at is not None:
                 c.months = _months_between(c.start_at, end_at)
         kept.append(c)

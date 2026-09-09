@@ -1607,7 +1607,14 @@ def _preview_price_detail(
         end = expiries.get(email)
         m = existing.get(email)
         cur_end = m.subscription_end_at if m is not None else None
-        start = cur_end if cur_end is not None and cur_end > now else now
+        # ĐIỂM NỐI chỉ là hạn cũ khi lượt này thật sự NỐI TIẾP gói đang chạy — tức
+        # email đang ACTIVE (nhánh gia hạn của `plan_invite_fees`). Email hết hạn,
+        # hoặc còn "hạn" mà kỳ chưa có tiền (hạn do đồng bộ dựng ra, hoặc vừa bị hoàn
+        # phí), được tính như một chu kỳ MỚI đo từ bây giờ — cả tiền lẫn hạn đều đã
+        # dựng như vậy. Lấy hạn cũ ở đây là bày một quãng dài hơn hẳn quãng đã tính
+        # tiền: người bán đọc "45 ngày" cho một lượt chỉ mua 30.
+        noi_tiep = m is not None and m.status == "active"
+        start = cur_end if noi_tiep and cur_end is not None and cur_end > now else now
         half_days = half_days_between(start, end) if end is not None else 0
         row = {
             "email": email,
