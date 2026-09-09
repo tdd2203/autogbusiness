@@ -1,4 +1,5 @@
-/** Bài hướng dẫn: hạn dùng của cả không gian rơi vào MỘT ngày thanh toán hàng tháng.
+/** Bài hướng dẫn: hạn dùng của một không gian rơi vào MỘT ngày thanh toán hàng
+ *  tháng của CHÍNH không gian đó — mỗi không gian một chu kỳ riêng.
  *
  *  Bài này giải thích cách tính mới cho đại lý, nên chỉ nói thứ họ nhìn thấy và
  *  quyết định được: hạn rơi ngày nào, trả bao nhiêu tiền, khi nào phải gia hạn.
@@ -8,7 +9,7 @@
  *  NGẮN LÀ CỐ Ý (chốt user 8/9/2026): bản đầu dài gấp ba, đủ ý nhưng không ai đọc
  *  hết. Thêm ý mới thì phải bỏ bớt ý cũ, đừng để bài dài lại.
  *
- *  PHẦN TIỀN GOM VÀO ĐÚNG HAI CHỖ (chốt user 8/9/2026): bước "Tiền tính theo ngày"
+ *  PHẦN TIỀN GOM VÀO ĐÚNG HAI CHỖ (chốt user 8/9/2026): bước "Dùng bao nhiêu ngày thì trả bấy nhiêu"
  *  nói công thức, bước "Ví dụ" đưa BẢNG hai ca mua. Bản trước rải số ra bốn bước
  *  rời nhau và để cách tính ngày lẻ nằm SAU ví dụ, đọc xong vẫn không nhẩm được.
  *  Chi tiết nhỏ (nửa ngày, phạm vi áp dụng) đẩy xuống mục Lưu ý.
@@ -73,20 +74,20 @@ const cycleBilling: Guide = {
         {
           steps: [
             {
-              title: "Cả không gian hết hạn cùng một ngày",
-              body: "Ngày thanh toán lặp lại hàng tháng, lúc **10 giờ sáng**. Ai đang còn hạn cũ thì giữ nguyên hạn đó, tới lần gia hạn sau mới về chung ngày thanh toán.",
+              title: "Mỗi không gian có ngày thanh toán riêng",
+              body: "Trong cùng một không gian thì mọi email hết hạn chung một ngày, còn không gian khác có ngày khác. Ngày đó lặp lại hàng tháng, lúc **10 giờ sáng**. Ai đang còn hạn cũ thì giữ nguyên hạn đó, tới lần gia hạn sau mới về chung ngày thanh toán.",
             },
             {
-              title: "Tiền tính theo ngày",
-              body: "Giá một ngày = **đơn giá tháng chia cho số ngày của tháng đó**. Mua giữa tháng thì chỉ trả từ hôm mua tới ngày thanh toán. Gia hạn sớm tính tiếp từ hạn cũ nên không thu trùng ngày nào. **Tổng tiền hiện sẵn trong bảng mời** trước khi bạn bấm gửi.",
+              title: "Dùng bao nhiêu ngày thì trả bấy nhiêu",
+              body: "Giá một ngày = **đơn giá tháng chia cho số ngày trong tháng**. Mua giữa tháng chỉ trả từ hôm mua tới ngày thanh toán. Gia hạn sớm thì tính tiếp từ hạn cũ, không mất ngày nào. **Bảng mời hiện sẵn tổng tiền** trước khi bạn bấm gửi.",
             },
             {
               title: "Mua sát ngày thanh toán thì trả thêm một tháng",
-              body: "Quãng còn lại lúc đó quá ngắn để bán riêng. Mua trong **khoảng một tuần cuối** trước ngày thanh toán thì trả **số ngày còn lại cộng một tháng**, và khách dùng thẳng tới ngày thanh toán của tháng sau.",
+              body: "Còn vài ngày thì quá ngắn để bán riêng. Mua trong **tuần cuối** trước ngày thanh toán thì trả **số ngày còn lại cộng một tháng**, đổi lại khách dùng thẳng tới ngày thanh toán tháng sau.",
             },
             {
               title: "Không có ân hạn",
-              body: "Đúng **10 giờ sáng giờ Việt Nam** ngày thanh toán, email chưa gia hạn **bị gỡ ngay**. Nhắc khách gia hạn trước đó.",
+              body: "Tới **10 giờ sáng** ngày thanh toán mà chưa gia hạn thì email **bị gỡ ngay**, không chờ thêm giờ nào. Nhắc khách gia hạn trước đó.",
             },
             {
               title: "Ví dụ",
@@ -116,20 +117,20 @@ const cycleBilling: Guide = {
         {
           steps: [
             {
-              title: "整个工作区同一天到期",
-              body: "结算日每月重复一次，时间是**上午 10 点**。此前仍在有效期内的客户保持原到期日，下次续费时才并入结算日。",
+              title: "每个工作区都有自己的结算日",
+              body: "同一个工作区里的所有邮箱在同一天到期，不同工作区的结算日各不相同。结算日每月重复一次，时间是**上午 10 点**。此前仍在有效期内的客户保持原到期日，下次续费时才并入结算日。",
             },
             {
-              title: "按天计费",
-              body: "每天单价 = **月单价 ÷ 当月天数**。月中购买就只付从购买当天到结算日这一段。提前续费从原到期日接着算，不会重复收费。**邀请面板会先显示总金额**，你再点发送。",
+              title: "用几天就付几天的钱",
+              body: "每天单价 = **月单价 ÷ 当月天数**。月中购买只付从购买当天到结算日这几天。提前续费从原到期日接着算，一天也不会重复收。**邀请面板会先显示总金额**，你再点发送。",
             },
             {
               title: "临近结算日购买要多付一个月",
-              body: "这时剩下的时间太短，不够单独卖。在结算日前**最后一周左右**购买，就要付**剩余天数再加一个月**，客户可以直接用到下个月的结算日。",
+              body: "只剩几天太短，不够单独卖。在结算日前**最后一周**购买要付**剩余天数加一个月**，客户则可以直接用到下个月的结算日。",
             },
             {
               title: "没有宽限期",
-              body: "**越南时间结算日上午 10 点整**，未续费的邮箱**立即被移出**。请提前提醒客户续费。",
+              body: "到结算日**上午 10 点**（越南时间）还没续费，邮箱**立即被移出**，一小时也不会多等。请提前提醒客户续费。",
             },
             {
               title: "示例",
