@@ -819,7 +819,6 @@ function VoidedRow({
     : pairs.reduce((a, p) => (p.refund.created_at > a.created_at ? p.refund : a), pairs[0].refund)
         .balance_after;
   const left = stranded - (usage?.used ?? 0);
-  const per = stranded / pairs.length;
   return (
     <RowShell
       face={FACE.voided}
@@ -843,7 +842,15 @@ function VoidedRow({
           items={pairs.map((p) => ({
             key: p.fee.id,
             email: p.fee.meta?.email ? String(p.fee.meta.email) : "(không rõ email)",
-            amount: stranded > 0 ? `tiền QR ${formatVnd(per)} ở lại ví` : `hoàn ${stamp(p.refund.created_at)}`,
+            // Số của CHÍNH email này, đọc thẳng từ bút toán phí. Trước đây chia đều
+            // cục tiền QR cho số email — sai ngay khi các email trong mẻ có giá khác
+            // nhau, mà đó là chuyện thường: không gian chốt theo chu kỳ thì mỗi email
+            // một điểm nối, Canva thì mỗi email một bậc giá. Con số chia đều ấy không
+            // khớp bút toán nào trong sổ.
+            amount:
+              stranded > 0
+                ? `tiền QR ${formatVnd(-p.fee.amount)} ở lại ví`
+                : `hoàn ${stamp(p.refund.created_at)}`,
             tone: "var(--ink-3)",
           }))}
         />
