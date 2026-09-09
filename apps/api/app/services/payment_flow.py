@@ -118,6 +118,36 @@ def prorated_fee(
     return -(-tu_so // mau_so) * step
 
 
+def fee_window_parts(
+    db: Session,
+    user: User,
+    *,
+    prorated_half_days: int,
+    cycle_days: int,
+    whole_months: int,
+    member_fee: int | None = None,
+    default_fee: int = 0,
+    settings_row: PaymentSettings | None = None,
+) -> tuple[int, int]:
+    """`(tiền phần lẻ, tiền các chu kỳ trọn)` của một lượt bán `cycle_aligned`.
+
+    Tách ra để màn hình bày được PHÉP TÍNH ("2 ngày lẻ 21.300đ + 1 tháng trọn
+    330.000đ = 351.300đ") mà không phải tự nhân chia lại ở web — tự tính ở đó là
+    dựng nguồn sự thật thứ hai cho tiền, có ngày nó lệch với số thật bị trừ.
+    Tổng hai phần LUÔN bằng `fee_for_window` vì chính hàm đó gọi hàm này.
+    """
+    row = settings_row if settings_row is not None else get_payment_settings(db)
+    per_month = effective_fee(member_fee, user, default_fee)
+    # Bước làm tròn là THAM SỐ (EXPIRY_RULES §3.6.6) — giá trị dự phòng phải là chính
+    # hằng của `models.py`, không phải một số 1000 gõ lại ở đây: hai nơi giữ cùng một
+    # con số thì sớm muộn cũng có nơi đổi mà nơi kia quên, và chênh lệch chỉ lộ ra ở
+    # số tiền trên mã QR. `getattr` giữ lại để hàng cấu hình giả trong test (không có
+    # cột này) vẫn chạy được.
+    round_to = int(getattr(row, "price_round_to_vnd", None) or PRICE_ROUND_TO_VND_DEFAULT)
+    lele = prorated_fee(per_month, prorated_half_days, cycle_days, round_to)
+    return lele, per_month * max(0, int(whole_months))
+
+
 def fee_for_window(
     db: Session,
     user: User,
@@ -142,16 +172,17 @@ def fee_for_window(
     `payment_settings.invite_fee_vnd` (`effective_fee`). Nhánh Canva KHÔNG dùng hàm
     này — Canva bán theo GÓI bậc thang, không có chu kỳ hoá đơn để neo vào.
     """
-    row = settings_row if settings_row is not None else get_payment_settings(db)
-    per_month = effective_fee(member_fee, user, default_fee)
-    # Bước làm tròn là THAM SỐ (EXPIRY_RULES §3.6.6) — giá trị dự phòng phải là chính
-    # hằng của `models.py`, không phải một số 1000 gõ lại ở đây: hai nơi giữ cùng một
-    # con số thì sớm muộn cũng có nơi đổi mà nơi kia quên, và chênh lệch chỉ lộ ra ở
-    # số tiền trên mã QR. `getattr` giữ lại để hàng cấu hình giả trong test (không có
-    # cột này) vẫn chạy được.
-    round_to = int(getattr(row, "price_round_to_vnd", None) or PRICE_ROUND_TO_VND_DEFAULT)
-    lele = prorated_fee(per_month, prorated_half_days, cycle_days, round_to)
-    return lele + per_month * max(0, int(whole_months))
+    lele, tron = fee_window_parts(
+        db,
+        user,
+        prorated_half_days=prorated_half_days,
+        cycle_days=cycle_days,
+        whole_months=whole_months,
+        member_fee=member_fee,
+        default_fee=default_fee,
+        settings_row=settings_row,
+    )
+    return lele + tron
 
 
 def bank_configured(settings_row: PaymentSettings) -> bool:

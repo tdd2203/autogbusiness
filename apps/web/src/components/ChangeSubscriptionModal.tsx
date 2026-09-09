@@ -28,10 +28,18 @@ import {
   useCorrectAddDate,
   useRenewSubscription,
 } from "../hooks/useSubscriptionApprovals";
-import { useRenewPreview } from "../hooks/useRenewPreview";
-import { FeeDetailModal } from "./FeeDetailModal";
+import { useRenewPreview, type RenewPreviewItem } from "../hooks/useRenewPreview";
+import { formatVnDate, formatVnMoment } from "../lib/cycle-time";
 
 type Mode = "months" | "date" | "unlimited";
+
+/**
+ * Hai khoản tiền server đã tách sẵn (`renew-preview → items`): tiền phần lẻ và tiền
+ * các chu kỳ trọn, luôn cộng lại đúng bằng `fee`. Khai ở đây vì kiểu dùng chung của
+ * khối chi tiết phí chưa có hai trường này — web chỉ ĐỌC, tuyệt đối không nhân chia
+ * lại: nhân lại là dựng thêm một nguồn sự thật thứ hai cho tiền.
+ */
+type FeeSplit = { fee_prorated?: number; fee_whole?: number };
 
 /** 1 tháng = 30 ngày (khớp BE SUBSCRIPTION_DAYS_PER_MONTH). */
 const DAYS_PER_MONTH = 30;
@@ -53,6 +61,72 @@ function toLocalInputValue(iso: string | null | undefined): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
     d.getHours(),
   )}:${pad(d.getMinutes())}`;
+}
+
+/**
+ * Một dòng "nhãn trái — số phải" của thẻ cách tính phí.
+ *
+ * Dùng flex + wrap chứ không phải hai cột cứng: trên điện thoại (~360px) nhãn kiểu
+ * "12,5 ngày lẻ tới 30/09/2026" dài hơn nửa thẻ, cột cứng thì số bị đẩy tràn ra
+ * ngoài và bị cắt. Wrap thì số tự rơi xuống dòng dưới mà vẫn canh phải.
+ */
+function CalcRow({
+  label,
+  value,
+  hint,
+  strong = false,
+}: {
+  label: string;
+  value: string;
+  /** Chú thích nhỏ trong ngoặc, đứng sau giá trị (vd "hạn hiện tại"). */
+  hint?: string;
+  strong?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "baseline",
+        justifyContent: "space-between",
+        gap: "2px 10px",
+      }}
+    >
+      <span
+        style={{
+          fontSize: strong ? 13 : 12.5,
+          color: strong ? "var(--ink)" : "var(--ink-3)",
+          fontWeight: strong ? 600 : 400,
+        }}
+      >
+        {label}
+      </span>
+      <span
+        style={{
+          marginLeft: "auto",
+          textAlign: "right",
+          overflowWrap: "anywhere",
+        }}
+      >
+        <span
+          style={{
+            fontFamily: "var(--font-mono)",
+            fontSize: strong ? 15 : 12.5,
+            fontWeight: strong ? 700 : 500,
+            color: "var(--ink)",
+          }}
+        >
+          {value}
+        </span>
+        {hint && (
+          <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+            {" "}
+            ({hint})
+          </span>
+        )}
+      </span>
+    </div>
+  );
 }
 
 export function ChangeSubscriptionModal({
@@ -87,8 +161,6 @@ export function ChangeSubscriptionModal({
   );
   // Ví không đủ khi gia hạn → BE trả hoá đơn QR (feature 003); mở modal QR.
   const [qrOrder, setQrOrder] = useState<OrderQr | null>(null);
-  // Bảng "vì sao ra con số này" — dùng chung khối của ô mời.
-  const [feeDetailOpen, setFeeDetailOpen] = useState(false);
   const change = useChangeSubscription(workspaceId, {
     onPaymentRequired: (order) => setQrOrder(order),
   });
@@ -194,15 +266,21 @@ export function ChangeSubscriptionModal({
       purchasedAt: anchorEditActive ? pendingAddDate : null,
     },
   );
-  const previewItem = preview.data?.byMember.get(member.id) ?? null;
+  const previewItem: (RenewPreviewItem & FeeSplit) | null =
+    preview.data?.byMember.get(member.id) ?? null;
   const serverEnd = previewItem?.to ? new Date(previewItem.to) : null;
   // Số của server là nguồn đúng; `localEnd` chỉ đỡ trống ô trong lúc chờ trả lời.
   const appliedEnd = mode === "months" ? serverEnd ?? localEnd : localEnd;
-  // CHƯA có câu trả lời của server (lần mở đầu tiên) → hiện "…" thay vì con số tính
-  // tạm. Nháy một con số sai rồi mới sửa lại chính là cách người dùng đọc nhầm giá:
-  // họ nhìn thấy số đầu tiên, không nhìn thấy số thay thế nó.
+  // CHƯA có câu trả lời ĐÚNG CHO SỐ THÁNG ĐANG GÕ → hiện "…" thay vì con số cũ.
+  // `keepPreviousData` giữ kết quả của lượt trước trong cache, nên gõ 1 → 3 mà chỉ
+  // xét `!previewItem` thì màn hình vẫn in đậm hạn và tiền của 1 tháng như thể đã
+  // chốt, đứng ngay cạnh ô ghi 3. Người đọc nhớ con số ĐẦU TIÊN họ thấy.
   const previewPending =
-    mode === "months" && monthsValid && !editingAddDate && !previewItem && !preview.isError;
+    mode === "months" &&
+    monthsValid &&
+    !editingAddDate &&
+    !preview.isError &&
+    (preview.isFetching || !previewItem);
 
   // Kết quả hạn CUỐI sẽ áp (khớp theo mode): dùng cho mũi tên "hạn hiện tại → mới".
   //   - Vô thời hạn → null (xoá hạn).
@@ -210,6 +288,9 @@ export function ChangeSubscriptionModal({
   //   - Theo tháng → appliedEnd (ngày thêm/hiện tại + tháng×30).
   const finalEnd = mode === "unlimited" ? null : mode === "date" ? endDate : appliedEnd;
   // "Hạn hiện tại → mới": hiện khi đang sửa ngày thêm (khớp mốc cuối theo mode).
+  // Luồng đó KHÔNG gia hạn và không thu tiền, nên nó giữ mũi tên gọn ở đầu modal còn
+  // THẺ KẾT QUẢ (nói "sau khi gia hạn") thì tắt — hai chỗ cùng hiện một con số với
+  // hai cách gọi khác nhau là đọc thành hai kết quả.
   const previewNewEnd = anchorEditActive ? finalEnd : null;
   // Ô "Số tháng" CHỈ hiện ở chế độ theo tháng. Ở "Theo ngày cụ thể" thì ngày hết hạn
   // được seed từ hạn vừa tính rồi admin ±ngày tuỳ ý → ẩn Số tháng để khỏi 2 mốc lẫn nhau.
@@ -272,6 +353,71 @@ export function ChangeSubscriptionModal({
   const showRenewFee = chargeable && (previewPending || renewFee > 0);
   const walletBalance = wallet?.balance ?? 0;
   const feeInsufficient = showRenewFee && !previewPending && walletBalance < renewFee;
+
+  // ── Thẻ "Cách tính phí" (thay cho popup chi tiết cũ) ───────────────────────
+  // Popup thứ hai mở đè lên modal này nên chữ bị che gần hết — giải thích mà đọc
+  // không ra thì bằng không có. Nay bày thẳng trong modal.
+  // Sửa "Ngày thêm" thì không thu tiền (BE correct_add_date) → giấu cả thẻ.
+  const showCalcCard = showRenewFee && !pendingAddDate;
+  // Nửa ngày là đơn vị THẬT của phần lẻ — hiện "12,5 ngày", đừng làm tròn.
+  const halfDaysText = (halfDays: number) =>
+    (halfDays / 2).toLocaleString(lang === "zh-CN" ? "zh-CN" : "vi-VN");
+  // Hạn ĐANG có: ưu tiên số server vừa trả (cùng một lượt hỏi với hạn mới) để hai
+  // đầu mũi tên không bao giờ lệch nguồn.
+  const curEndIso = previewItem?.current_end_at ?? member.subscription_end_at;
+  // Điểm nối là hạn cũ (còn hạn) hay bây giờ (đã hết hạn) — người bán hỏi câu này
+  // ngay khi thấy số ngày lẻ, nên nói luôn thay vì bắt họ đối chiếu hai mốc.
+  const fromIsCurrentEnd =
+    previewItem?.current_end_at != null &&
+    new Date(previewItem.from).getTime() ===
+      new Date(previewItem.current_end_at).getTime();
+  // Đơn giá tháng chỉ nói lên tổng ở nhánh tính theo tháng. Nhánh bảng giá bậc (Canva,
+  // mua dài rẻ hơn) không nhân đơn giá, in nó ra là bày một con số tiền không liên
+  // quan gì tới dòng tổng ngay bên dưới.
+  const unitDrivesFee =
+    previewItem?.unit_price_vnd != null &&
+    (previewItem.cycle_days != null ||
+      previewItem.unit_price_vnd * months === previewItem.fee);
+  // CÁC KHOẢN TIỀN lấy thẳng từ server: `fee_prorated` + `fee_whole` === `fee`.
+  const feeLines: { key: string; label: string; value: number }[] = [];
+  if (previewItem) {
+    if ((previewItem.prorated_half_days ?? 0) > 0 && previewItem.fee_prorated != null) {
+      feeLines.push({
+        key: "prorated",
+        label: t("subscription.calcProrated", {
+          days: halfDaysText(previewItem.prorated_half_days ?? 0),
+          date: formatVnDate(lang, previewItem.cycle_end ?? null),
+        }),
+        value: previewItem.fee_prorated,
+      });
+    }
+    if ((previewItem.whole_months ?? 0) > 0 && previewItem.fee_whole != null) {
+      feeLines.push({
+        key: "whole",
+        label: t("subscription.calcWholeMonths", {
+          n: previewItem.whole_months ?? 0,
+        }),
+        value: previewItem.fee_whole,
+      });
+    }
+    // Không gian chế độ cũ (30 ngày) chỉ có một khoản. Chỉ in phép nhân khi nó ra
+    // ĐÚNG số server chốt: bảng giá bậc (mua dài rẻ hơn) không nhân được, in ra là
+    // người bán đọc thấy một phép tính không khớp tổng ngay bên dưới.
+    if (
+      previewItem.cycle_days == null &&
+      unitDrivesFee &&
+      previewItem.unit_price_vnd != null
+    ) {
+      feeLines.push({
+        key: "legacy",
+        label: t("subscription.calcMonthsLegacy", {
+          n: months,
+          price: formatVnd(previewItem.unit_price_vnd),
+        }),
+        value: previewItem.fee,
+      });
+    }
+  }
 
   // Áp dụng bật khi: đã Lưu ngày thêm (theo mode: tháng→Số tháng hợp lệ, ngày→có ngày,
   // vô thời hạn→luôn được) HOẶC thay đổi hạn hợp lệ.
@@ -346,12 +492,6 @@ export function ChangeSubscriptionModal({
         onPaid={() => onClose()}
       />
     )}
-    {feeDetailOpen && previewItem && (
-      <FeeDetailModal
-        rows={[previewItem]}
-        onClose={() => setFeeDetailOpen(false)}
-      />
-    )}
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
       style={{ padding: 16 }}
@@ -392,9 +532,12 @@ export function ChangeSubscriptionModal({
             <span className="cell-muted">{member.email}</span>
             <div style={{ marginTop: 2 }}>
               {t("subscription.currentLabel")}:{" "}
+              {/* Cùng nguồn với thẻ kết quả (`curEndIso`): danh sách trong cache có
+                  thể cũ hơn câu trả lời server vừa lấy, để hai nguồn là hai con số
+                  "hạn hiện tại" khác nhau cách nhau ba dòng. */}
               <strong>
-                {member.subscription_end_at
-                  ? fmtDateTime(member.subscription_end_at)
+                {curEndIso
+                  ? fmtDateTime(curEndIso)
                   : t("subscription.unlimited")}
               </strong>
               {/* Sửa ngày thêm → hạn hiện tại đổi: hiện "cũ → mới". */}
@@ -547,19 +690,76 @@ export function ChangeSubscriptionModal({
                   autoFocus={!anchorEditActive}
                 />
               </label>
-              {(appliedEnd || previewPending) && (
-                <div style={{ fontSize: 12.5, color: "var(--ink-2)" }}>
-                  {t("subscription.computedHint", {
-                    date:
-                      previewPending || !appliedEnd
-                        ? "…"
-                        : fmtDateTime(appliedEnd.toISOString()),
-                  })}
-                  {months > 1 && (
-                    <span>
-                      {" · "}
-                      {t("subscription.cycleHint", { n: months })}
+              {/* THẺ KẾT QUẢ — câu hỏi đầu tiên của người bán là "khách dùng tới
+                  bao giờ", nên hạn mới đứng trên tiền và to hơn mọi thứ quanh nó. */}
+              {!anchorEditActive && (appliedEnd || previewPending) && (
+                <div
+                  style={{
+                    padding: "10px 12px",
+                    background: "var(--success-bg)",
+                    border: "1px solid var(--success-border)",
+                    borderRadius: "var(--radius)",
+                    display: "grid",
+                    gap: 4,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 10.5,
+                      fontWeight: 600,
+                      letterSpacing: "0.07em",
+                      textTransform: "uppercase",
+                      color: "var(--ink-3)",
+                    }}
+                  >
+                    {renew
+                      ? t("subscription.renewResultLabel")
+                      : t("renewals.nextExpiry")}
+                  </div>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      alignItems: "baseline",
+                      gap: "2px 8px",
+                    }}
+                  >
+                    <span
+                      style={{
+                        fontSize: 12.5,
+                        fontFamily: "var(--font-mono)",
+                        color: "var(--ink-3)",
+                      }}
+                    >
+                      {curEndIso
+                        ? fmtDateTime(curEndIso)
+                        : t("subscription.unlimited")}
                     </span>
+                    <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>
+                      →
+                    </span>
+                    {/* Chờ server thì hiện "…", KHÔNG hiện số tính tạm: người đọc
+                        nhớ con số ĐẦU TIÊN họ thấy, không nhớ con số thay thế nó. */}
+                    <strong
+                      style={{
+                        fontSize: 15,
+                        fontWeight: 700,
+                        fontFamily: "var(--font-mono)",
+                        color: "var(--success)",
+                        overflowWrap: "anywhere",
+                      }}
+                    >
+                      {previewPending || !appliedEnd
+                        ? "…"
+                        : fmtDateTime(appliedEnd.toISOString())}
+                    </strong>
+                  </div>
+                  {/* Không gian thanh toán chung một ngày mỗi tháng: nói vì sao hạn
+                      rơi đúng ngày đó, kẻo người bán tưởng hệ thống cộng nhầm. */}
+                  {previewItem?.cycle_days != null && (
+                    <div style={{ fontSize: 11.5, color: "var(--ink-3)" }}>
+                      {t("subscription.renewOnPayday")}
+                    </div>
                   )}
                 </div>
               )}
@@ -570,63 +770,92 @@ export function ChangeSubscriptionModal({
                   {t("subscription.previewFailed")}
                 </div>
               )}
-              {/* Không gian thanh toán chung một ngày mỗi tháng: nói thẳng hạn rơi
-                  vào ngày đó và lượt này tính tiền cho bao nhiêu ngày, kể từ mốc nào.
-                  Thiếu câu này thì người bán thấy một ngày lạ + một số tiền lạ mà
-                  không biết giải thích với khách thế nào. */}
-              {previewItem?.cycle_days != null && (
-                <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
-                  {t("subscription.renewCycleHint", {
-                    days: (previewItem.half_days / 2).toLocaleString(
-                      lang === "zh-CN" ? "zh-CN" : "vi-VN",
-                    ),
-                    from: fmtDateTime(previewItem.from),
-                  })}
-                  {" "}
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    style={{ padding: "0 6px", fontSize: 12 }}
-                    onClick={() => setFeeDetailOpen(true)}
-                  >
-                    {t("invite.feeDetailShow")}
-                  </button>
-                </div>
-              )}
-              {/* Phí SẼ trừ khỏi Ví — số do server chốt (xem ghi chú đầu file). */}
-              {showRenewFee && (
+              {/* THẺ CÁCH TÍNH — mọi con số đều của server, web chỉ ghép nhãn. */}
+              {showCalcCard && (
                 <div
                   style={{
                     padding: "10px 12px",
                     background: "var(--surface-2)",
-                    border: `1px solid ${feeInsufficient ? "var(--danger-border, var(--border))" : "var(--border)"}`,
+                    border: `1px solid ${feeInsufficient ? "var(--danger-border)" : "var(--border)"}`,
                     borderRadius: "var(--radius)",
                     display: "grid",
-                    gap: 4,
+                    gap: 6,
                   }}
                 >
                   <div
                     style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "baseline",
-                      gap: 8,
+                      fontSize: 10.5,
+                      fontWeight: 600,
+                      letterSpacing: "0.07em",
+                      textTransform: "uppercase",
+                      color: "var(--ink-3)",
                     }}
                   >
-                    <span style={{ fontSize: 12, color: "var(--ink-3)" }}>
-                      {t("subscription.renewFeeLabel")}
-                    </span>
-                    <span
-                      style={{
-                        fontSize: 15,
-                        fontWeight: 700,
-                        fontFamily: "var(--font-mono)",
-                        color: "var(--ink)",
-                      }}
-                    >
-                      {previewPending ? "…" : formatVnd(renewFee)}
-                    </span>
+                    {t("subscription.calcTitle")}
                   </div>
+                  {/* Đang hỏi lại (đổi số tháng) thì NGƯNG bày phân rã: dòng tổng
+                      hiện "…" mà mấy dòng khoản vẫn in số của lượt trước là thẻ tự
+                      mâu thuẫn với chính nó. */}
+                  {previewItem && !previewPending && (
+                    <>
+                      {previewItem.cycle_start &&
+                        previewItem.cycle_end &&
+                        previewItem.cycle_days != null && (
+                          <CalcRow
+                            label={t("invite.feeDetailCycle")}
+                            value={t("subscription.calcCycleValue", {
+                              start: formatVnDate(
+                                lang,
+                                previewItem.cycle_start,
+                              ),
+                              end: formatVnDate(lang, previewItem.cycle_end),
+                              days: previewItem.cycle_days,
+                            })}
+                          />
+                        )}
+                      {/* Giờ VN cho CẢ thẻ: dòng chu kỳ và dòng ngày lẻ đã là giờ
+                          VN (formatVnDate), để riêng dòng này theo giờ máy thì máy
+                          đặt sai múi là hai dòng cạnh nhau lệch nhau một ngày. */}
+                      <CalcRow
+                        label={t("invite.feeDetailFrom")}
+                        value={formatVnMoment(lang, previewItem.from)}
+                        hint={
+                          fromIsCurrentEnd
+                            ? t("subscription.calcFromCurrent")
+                            : t("subscription.calcFromNow")
+                        }
+                      />
+                      {previewItem.unit_price_vnd != null && (
+                        <CalcRow
+                          label={t("invite.feeDetailUnit")}
+                          value={t("invite.feeDetailUnitValue", {
+                            price: formatVnd(previewItem.unit_price_vnd),
+                          })}
+                        />
+                      )}
+                      {feeLines.length > 0 && (
+                        <div
+                          style={{
+                            height: 1,
+                            background: "var(--border)",
+                            margin: "2px 0",
+                          }}
+                        />
+                      )}
+                      {feeLines.map((line) => (
+                        <CalcRow
+                          key={line.key}
+                          label={line.label}
+                          value={formatVnd(line.value)}
+                        />
+                      ))}
+                    </>
+                  )}
+                  <CalcRow
+                    strong
+                    label={t("subscription.renewFeeLabel")}
+                    value={previewPending ? "…" : formatVnd(renewFee)}
+                  />
                   <div
                     style={{
                       fontSize: 11,

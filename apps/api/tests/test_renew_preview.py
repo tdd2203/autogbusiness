@@ -171,6 +171,10 @@ def test_tien_tinh_theo_so_ngay_that(client: TestClient, auth_header: dict) -> N
     # Phần lẻ luôn RẺ HƠN một chu kỳ trọn (và lớn hơn 0) — con số web từng hiện là
     # nguyên một đơn giá.
     assert 0 < item["fee"] < UNIT_VND
+    # Hai khoản để màn hình bày phép tính; cộng lại phải ĐÚNG bằng số sẽ trừ, không
+    # thì bảng "cách tính" tự mâu thuẫn với dòng tổng ngay cạnh nó.
+    assert item["fee_prorated"] + item["fee_whole"] == item["fee"]
+    assert item["fee_whole"] == 0, "chưa có chu kỳ trọn nào trong lượt này"
 
 
 def test_khong_gian_ba_muoi_ngay_van_ra_so_cu(
@@ -274,6 +278,7 @@ def test_khach_da_hoi_tu_gia_han_lan_toi_tra_tron_mot_thang(
     assert item["prorated_half_days"] == 0, "đã hội tụ thì không còn ngày lẻ nào"
     assert item["whole_months"] == 1
     assert item["fee"] == UNIT_VND, "một chu kỳ trọn = đúng một đơn giá"
+    assert (item["fee_prorated"], item["fee_whole"]) == (0, UNIT_VND)
     end = _to(item)
     assert end.day == ANCHOR_DAY and (end.hour, end.minute) == (CUTOFF.hour, CUTOFF.minute)
     assert timedelta(days=28) <= end - moc <= timedelta(days=31), (

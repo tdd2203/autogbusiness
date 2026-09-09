@@ -394,6 +394,19 @@ def _preview_item(
         ),
     }
     if quote is not None:
+        # Tách sẵn HAI KHOẢN để màn hình bày được phép tính ("2 ngày lẻ 21.300đ +
+        # 1 tháng trọn 330.000đ") mà không phải tự nhân chia — web tự tính là dựng
+        # nguồn sự thật thứ hai cho tiền. Tổng hai khoản đúng bằng `fee` ở trên.
+        le_vnd, tron_vnd = payment_flow.fee_window_parts(
+            db,
+            user,
+            prorated_half_days=quote.prorated_half_days,
+            cycle_days=quote.cycle_days,
+            whole_months=quote.whole_months,
+            member_fee=member.fee_vnd,
+            default_fee=default_fee,
+            settings_row=settings_row,
+        )
         row.update(
             {
                 "prorated_half_days": quote.prorated_half_days,
@@ -402,6 +415,8 @@ def _preview_item(
                 "cycle_start": quote.cycle_start.isoformat(),
                 "cycle_end": quote.cycle_end.isoformat(),
                 "forced_extra_month": quote.forced_extra_month,
+                "fee_prorated": le_vnd,
+                "fee_whole": tron_vnd,
             }
         )
     return row
