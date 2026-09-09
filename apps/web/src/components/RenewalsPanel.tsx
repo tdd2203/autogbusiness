@@ -9,6 +9,9 @@ import { ChangeSubscriptionModal } from "./ChangeSubscriptionModal";
 import { SearchInput } from "../pages/Members";
 import { useAuth } from "../hooks/useAuth";
 import { useIsMobile } from "../hooks/useIsMobile";
+import { useRenewPreview } from "../hooks/useRenewPreview";
+import { FeeDetailModal } from "./FeeDetailModal";
+import { formatVnd } from "../lib/wallet";
 
 // Cột ngày hiển thị tới giây, khớp bảng Thành viên (Members.tsx / AddedEmails.tsx).
 const PRECISE_TIME: Intl.DateTimeFormatOptions = {
@@ -20,9 +23,12 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MONTH_DAYS = 30;
 
-/** Hạn tiếp theo (cộng dồn, khớp BE): còn hạn → hạn cũ + tháng×30; hết hạn → bây
- *  giờ + tháng×30. Export vì popup "đến hạn theo tuần" ở trang Tổng quan cũng phải
- *  hiện đúng con số này — hai chỗ đoán hạn mới theo hai cách là sớm muộn lệch. */
+/** Hạn tiếp theo TÍNH TẠM: còn hạn → hạn cũ + tháng×30; hết hạn → bây giờ + tháng×30.
+ *
+ *  ⚠️ CHỈ để lấp ô trong lúc chờ server trả lời. Không gian thanh toán chung một ngày
+ *  mỗi tháng cho hạn rơi vào ĐÚNG ngày đó, không phải cộng 30 ngày — con số thật lấy
+ *  từ `useRenewPreview`. Export vì popup "đến hạn theo tuần" ở trang Tổng quan cũng
+ *  dùng chung phần dự phòng này. */
 export function nextEndAfterRenew(
   endAt: string | null,
   months: number,
@@ -77,6 +83,7 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMonths, setBulkMonths] = useState(1);
   const [showBulkConfirm, setShowBulkConfirm] = useState(false);
+  const [feeDetailOpen, setFeeDetailOpen] = useState(false);
   const [search, setSearch] = useState("");
 
   // Gộp SẮP + ĐÃ hết hạn thành 1 danh sách; đã hết hạn (khẩn nhất) lên trước, rồi
@@ -154,6 +161,32 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
     () => rows.filter((m) => selectedIds.has(m.id)),
     [rows, selectedIds],
   );
+
+  // HẠN MỚI + PHÍ của TỪNG dòng do server chốt (danh sách gom xuyên không gian nên
+  // hook tự chia nhóm theo không gian). Trước đây popup cộng 30 ngày cho mọi dòng:
+  // ở không gian thanh toán chung một ngày, hạn rơi vào ngày đó và tiền tính theo số
+  // ngày thật — bảng xác nhận báo một đằng, bấm xong ra một nẻo.
+  const preview = useRenewPreview(
+    selectedRows.map((m) => ({ id: m.id, workspace_id: m.workspace_id })),
+    bulkMonths,
+    { enabled: showBulkConfirm },
+  );
+  /** Hạn mới của một dòng.
+   *
+   *  Đang chờ server thì hiện "…" chứ KHÔNG nháy số tính tạm: người đọc nhớ con số
+   *  đầu tiên họ thấy, số thay thế nó vài trăm mili giây sau không ai để ý. Chỉ khi
+   *  hỏi hụt hẳn mới rơi về số tạm để bảng không trống trơn. */
+  const nextEndLabel = (m: AddedMember): string => {
+    const item = preview.data?.byMember.get(m.id);
+    if (item?.to) return fmtRenewExpiry(formatDateTime, item.to);
+    if (preview.isError) {
+      return fmtRenewExpiry(
+        formatDateTime,
+        nextEndAfterRenew(m.subscription_end_at, bulkMonths),
+      );
+    }
+    return "…";
+  };
 
   return (
     <div>
@@ -356,10 +389,7 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
                         <span
                           style={{ color: "var(--success)", fontWeight: 600 }}
                         >
-                          {fmtRenewExpiry(
-                            formatDateTime,
-                            nextEndAfterRenew(m.subscription_end_at, bulkMonths),
-                          )}
+                          {nextEndLabel(m)}
                         </span>
                       </div>
                     </div>
@@ -403,10 +433,7 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
                             fontWeight: 600,
                           }}
                         >
-                          {fmtRenewExpiry(
-                            formatDateTime,
-                            nextEndAfterRenew(m.subscription_end_at, bulkMonths),
-                          )}
+                          {nextEndLabel(m)}
                         </td>
                       </tr>
                     ))}
@@ -419,10 +446,38 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
                 padding: "12px 20px",
                 borderTop: "1px solid var(--border)",
                 display: "flex",
+                alignItems: "center",
                 justifyContent: "flex-end",
                 gap: 8,
+                flexWrap: "wrap",
               }}
             >
+              {/* Tiền và cách tính nằm NGAY cạnh nút bấm: đây là chỗ chốt, không bắt
+                  người dùng cuộn ngược lên bảng để cộng nhẩm. */}
+              {(preview.data?.rows.length ?? 0) > 0 && (
+                <div
+                  style={{
+                    marginRight: "auto",
+                    fontSize: 13,
+                    color: "var(--ink-2)",
+                  }}
+                >
+                  {preview.data?.chargeable &&
+                    t("invite.feeTotalInline", {
+                      total: preview.isFetching
+                        ? "…"
+                        : formatVnd(preview.data?.totalFee ?? 0),
+                    })}
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    style={{ padding: "0 6px", fontSize: 12 }}
+                    onClick={() => setFeeDetailOpen(true)}
+                  >
+                    {t("invite.feeDetailShow")}
+                  </button>
+                </div>
+              )}
               <button
                 type="button"
                 className="btn btn-ghost"
@@ -446,6 +501,13 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
             </div>
           </div>
         </div>
+      )}
+
+      {feeDetailOpen && (preview.data?.rows.length ?? 0) > 0 && (
+        <FeeDetailModal
+          rows={preview.data?.rows ?? []}
+          onClose={() => setFeeDetailOpen(false)}
+        />
       )}
 
       {detailMember && (

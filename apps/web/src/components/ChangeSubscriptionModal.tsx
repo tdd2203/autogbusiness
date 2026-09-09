@@ -10,9 +10,14 @@
  *
  * "Ngày thêm" (log dashboard) và "Ngày tham gia ChatGPT" (joined_at scrape) là HAI mốc
  * TÁCH BIỆT — hiển thị tham khảo, không ép bằng nhau.
+ *
+ * ⚠️ HẠN MỚI + PHÍ Ở CHẾ ĐỘ THEO THÁNG DO **SERVER** CHỐT (`renew-preview`). Không
+ * gian thanh toán chung một ngày mỗi tháng thì hạn rơi vào ĐÚNG ngày đó và tiền tính
+ * theo số ngày thật tới đó — `mốc + tháng×30` và `đơn giá × số tháng` chỉ đúng ở chế
+ * độ 30 ngày. Phép tính tại chỗ bên dưới chỉ là số TẠM cho đỡ trống ô lúc chờ trả lời.
  */
 import { useMemo, useState } from "react";
-import { useFormatDate, useFormatDateTime, useT } from "../i18n";
+import { useFormatDate, useFormatDateTime, useI18n, useT } from "../i18n";
 import { useAuth } from "../hooks/useAuth";
 import { useWallet } from "../hooks/useWallet";
 import type { Member } from "../types";
@@ -23,6 +28,8 @@ import {
   useCorrectAddDate,
   useRenewSubscription,
 } from "../hooks/useSubscriptionApprovals";
+import { useRenewPreview } from "../hooks/useRenewPreview";
+import { FeeDetailModal } from "./FeeDetailModal";
 
 type Mode = "months" | "date" | "unlimited";
 
@@ -62,6 +69,7 @@ export function ChangeSubscriptionModal({
   renew?: boolean;
 }) {
   const t = useT();
+  const { lang } = useI18n();
   const formatDate = useFormatDate();
   const formatDateTime = useFormatDateTime();
   // "DD/MM/YYYY - HH:MM:SS" — ngày kèm giờ tới giây.
@@ -79,6 +87,8 @@ export function ChangeSubscriptionModal({
   );
   // Ví không đủ khi gia hạn → BE trả hoá đơn QR (feature 003); mở modal QR.
   const [qrOrder, setQrOrder] = useState<OrderQr | null>(null);
+  // Bảng "vì sao ra con số này" — dùng chung khối của ô mời.
+  const [feeDetailOpen, setFeeDetailOpen] = useState(false);
   const change = useChangeSubscription(workspaceId, {
     onPaymentRequired: (order) => setQrOrder(order),
   });
@@ -154,7 +164,7 @@ export function ChangeSubscriptionModal({
   //     dụng cho MỌI member (kể cả chưa có gói) — nhập Số tháng thì tính thẳng từ
   //     ngày thêm mới; BE correct_add_date nhận months tương ứng.
   //   - Gia hạn thường (mode months) → CỘNG DỒN từ hạn hiện tại.
-  const appliedEnd = useMemo<Date | null>(() => {
+  const localEnd = useMemo<Date | null>(() => {
     if (anchorEditActive) {
       if (!monthsValid || !effectiveAddDateIso) return null;
       return new Date(
@@ -172,6 +182,27 @@ export function ChangeSubscriptionModal({
     mode,
     renewBaseMs,
   ]);
+
+  // HẠN THẬT + PHÍ THẬT do server chốt. Chỉ hỏi ở chế độ THEO THÁNG: "theo ngày cụ
+  // thể" là admin tự đặt mốc (backend không tính lại), "vô thời hạn" thì không có hạn
+  // nào để hỏi. Đang GÕ ngày thêm thì chưa hỏi — chờ bấm "Lưu" mới có mốc neo thật.
+  const preview = useRenewPreview(
+    [{ id: member.id, workspace_id: workspaceId }],
+    months,
+    {
+      enabled: mode === "months" && monthsValid && !editingAddDate,
+      purchasedAt: anchorEditActive ? pendingAddDate : null,
+    },
+  );
+  const previewItem = preview.data?.byMember.get(member.id) ?? null;
+  const serverEnd = previewItem?.to ? new Date(previewItem.to) : null;
+  // Số của server là nguồn đúng; `localEnd` chỉ đỡ trống ô trong lúc chờ trả lời.
+  const appliedEnd = mode === "months" ? serverEnd ?? localEnd : localEnd;
+  // CHƯA có câu trả lời của server (lần mở đầu tiên) → hiện "…" thay vì con số tính
+  // tạm. Nháy một con số sai rồi mới sửa lại chính là cách người dùng đọc nhầm giá:
+  // họ nhìn thấy số đầu tiên, không nhìn thấy số thay thế nó.
+  const previewPending =
+    mode === "months" && monthsValid && !editingAddDate && !previewItem && !preview.isError;
 
   // Kết quả hạn CUỐI sẽ áp (khớp theo mode): dùng cho mũi tên "hạn hiện tại → mới".
   //   - Vô thời hạn → null (xoá hạn).
@@ -232,10 +263,15 @@ export function ChangeSubscriptionModal({
     }
     return 0;
   })();
-  const renewFee = feePerMonth * chargeMonths;
-  const showRenewFee = chargeable && renewFee > 0;
+  // Ở chế độ theo tháng, PHÍ do server chốt (gia hạn giữa kỳ chỉ trả phần lẻ tới ngày
+  // thanh toán của không gian, không phải trọn một đơn giá). "Theo ngày cụ thể" thì
+  // backend vẫn tính theo số tháng kéo dài nên ước tính tại chỗ là khớp.
+  const localFee = feePerMonth * chargeMonths;
+  const renewFee =
+    mode === "months" && previewItem != null ? previewItem.fee : localFee;
+  const showRenewFee = chargeable && (previewPending || renewFee > 0);
   const walletBalance = wallet?.balance ?? 0;
-  const feeInsufficient = showRenewFee && walletBalance < renewFee;
+  const feeInsufficient = showRenewFee && !previewPending && walletBalance < renewFee;
 
   // Áp dụng bật khi: đã Lưu ngày thêm (theo mode: tháng→Số tháng hợp lệ, ngày→có ngày,
   // vô thời hạn→luôn được) HOẶC thay đổi hạn hợp lệ.
@@ -308,6 +344,12 @@ export function ChangeSubscriptionModal({
         order={qrOrder}
         onClose={() => setQrOrder(null)}
         onPaid={() => onClose()}
+      />
+    )}
+    {feeDetailOpen && previewItem && (
+      <FeeDetailModal
+        rows={[previewItem]}
+        onClose={() => setFeeDetailOpen(false)}
       />
     )}
     <div
@@ -505,10 +547,13 @@ export function ChangeSubscriptionModal({
                   autoFocus={!anchorEditActive}
                 />
               </label>
-              {appliedEnd && (
+              {(appliedEnd || previewPending) && (
                 <div style={{ fontSize: 12.5, color: "var(--ink-2)" }}>
                   {t("subscription.computedHint", {
-                    date: fmtDateTime(appliedEnd.toISOString()),
+                    date:
+                      previewPending || !appliedEnd
+                        ? "…"
+                        : fmtDateTime(appliedEnd.toISOString()),
                   })}
                   {months > 1 && (
                     <span>
@@ -518,7 +563,37 @@ export function ChangeSubscriptionModal({
                   )}
                 </div>
               )}
-              {/* Tổng phí gia hạn SẼ trừ khỏi Ví (phí cố định, không theo tháng). */}
+              {/* Hỏi hụt (mất mạng, hết phiên) thì nói thẳng là số đang hiện chỉ
+                  ước tính, đừng để người bán tưởng đó là con số đã chốt. */}
+              {preview.isError && (
+                <div style={{ fontSize: 12, color: "var(--danger)" }}>
+                  {t("subscription.previewFailed")}
+                </div>
+              )}
+              {/* Không gian thanh toán chung một ngày mỗi tháng: nói thẳng hạn rơi
+                  vào ngày đó và lượt này tính tiền cho bao nhiêu ngày, kể từ mốc nào.
+                  Thiếu câu này thì người bán thấy một ngày lạ + một số tiền lạ mà
+                  không biết giải thích với khách thế nào. */}
+              {previewItem?.cycle_days != null && (
+                <div style={{ fontSize: 12, color: "var(--ink-3)" }}>
+                  {t("subscription.renewCycleHint", {
+                    days: (previewItem.half_days / 2).toLocaleString(
+                      lang === "zh-CN" ? "zh-CN" : "vi-VN",
+                    ),
+                    from: fmtDateTime(previewItem.from),
+                  })}
+                  {" "}
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    style={{ padding: "0 6px", fontSize: 12 }}
+                    onClick={() => setFeeDetailOpen(true)}
+                  >
+                    {t("invite.feeDetailShow")}
+                  </button>
+                </div>
+              )}
+              {/* Phí SẼ trừ khỏi Ví — số do server chốt (xem ghi chú đầu file). */}
               {showRenewFee && (
                 <div
                   style={{
@@ -549,7 +624,7 @@ export function ChangeSubscriptionModal({
                         color: "var(--ink)",
                       }}
                     >
-                      {formatVnd(renewFee)}
+                      {previewPending ? "…" : formatVnd(renewFee)}
                     </span>
                   </div>
                   <div

@@ -39,6 +39,36 @@ from ._shared import (
 )
 
 
+def end_from_anchor(
+    ws,
+    anchor: datetime,
+    months: int | None,
+    *,
+    now: datetime,
+    old_end: datetime | None,
+    settings_row=None,
+) -> datetime | None:
+    """Hạn mới từ (mốc neo, số tháng), theo chế độ tính hạn của workspace.
+
+    ⚠️ Ở chế độ chu kỳ dùng `snap_to_boundary` chứ KHÔNG dùng `boundary_for`: đây là
+    SỬA dữ liệu, không phải bán. `boundary_for` áp ngưỡng ép thêm tháng (luật của
+    việc bán) nên sẽ tặng khách thêm một chu kỳ mà không ai mua.
+
+    Kèm chốt chặn của EXPIRY_RULES §6: nắn xong mà hạn rơi vào QUÁ KHỨ thì giữ hạn
+    cũ — đẩy hạn về quá khứ là job tự-gỡ xoá member ngay tick kế tiếp.
+
+    Hàm rời (không nằm trong endpoint) để màn hình sửa ngày còn HỎI TRƯỚC được hạn
+    sẽ ra (`renew.preview_renew`): tự đoán `neo + tháng×30` ở web là hiện một ngày,
+    bấm xong lại ra một ngày khác.
+    """
+    if ws is None or not is_cycle_aligned(ws):
+        return _end_from_purchase(anchor, months)
+    snapped = snap_to_boundary(
+        ws, anchor, max(0, (months or 1) - 1), settings_row=settings_row
+    )
+    return snapped if snapped > now else (old_end or snapped)
+
+
 @router.patch("/{member_id}/add-date", response_model=MemberOut)
 def correct_member_add_date(
     workspace_id: UUID,
@@ -78,21 +108,15 @@ def correct_member_add_date(
     cycle_cfg = cycle_settings(db) if aligned else None
 
     def _end_from(anchor, months: int):
-        """Hạn mới từ (mốc neo, số tháng), theo chế độ của workspace.
-
-        ⚠️ Ở chế độ chu kỳ dùng `snap_to_boundary` chứ KHÔNG dùng `boundary_for`:
-        đây là SỬA dữ liệu, không phải bán. `boundary_for` áp ngưỡng ép thêm tháng
-        (luật của việc bán) nên sẽ tặng khách thêm một chu kỳ mà không ai mua.
-
-        Kèm chốt chặn của EXPIRY_RULES §6: nắn xong mà hạn rơi vào QUÁ KHỨ thì giữ
-        hạn cũ — đẩy hạn về quá khứ là job tự-gỡ xoá member ngay tick kế tiếp.
-        """
-        if not aligned:
-            return _end_from_purchase(anchor, months)
-        snapped = snap_to_boundary(
-            ws, anchor, max(0, (months or 1) - 1), settings_row=cycle_cfg
+        """Hạn mới từ (mốc neo, số tháng) — xem `end_from_anchor` ở đầu file."""
+        return end_from_anchor(
+            ws,
+            anchor,
+            months,
+            now=now,
+            old_end=old_end,
+            settings_row=cycle_cfg,
         )
-        return snapped if snapped > now else (old_end or snapped)
 
     old_months = member.subscription_months
     member.subscription_purchased_at = body.add_date

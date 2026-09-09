@@ -1152,6 +1152,22 @@ class MemberRenewIn(BaseModel):
     months: int = Field(ge=1, le=60)
 
 
+class MemberRenewPreviewIn(BaseModel):
+    """POST renew-preview — HỎI TRƯỚC "gia hạn xong hạn tới đâu, thu bao nhiêu".
+
+    Chỉ đọc: không tạo, không trừ, không khoá gì. Nhận NHIỀU member một lượt vì màn
+    hình gia hạn hàng loạt cần đúng con số cho từng dòng — hỏi lẻ từng email thì mỗi
+    lượt xem lại là vài trăm lời gọi.
+
+    `purchased_at` chỉ dùng cho màn hình SỬA "Ngày gia hạn" (neo lại mốc, super-admin):
+    hạn khi đó tính từ mốc neo mới chứ không cộng dồn, và không thu phí.
+    """
+
+    member_ids: list[UUID] = Field(min_length=1, max_length=500)
+    months: int = Field(ge=1, le=60)
+    purchased_at: datetime | None = None
+
+
 class MemberCorrectAddDateIn(BaseModel):
     """PATCH add-date — SỬA "Ngày gia hạn / ngày add đầu tiên" (mốc neo) ĐÚNG 1 LẦN.
 

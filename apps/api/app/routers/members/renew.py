@@ -5,6 +5,7 @@
 
 Endpoint:
   - POST /{member_id}/renew → renew_member_subscription
+  - POST /renew-preview     → preview_renew (chỉ ĐỌC, không đụng gì)
 
 Khác PATCH /{member_id}/subscription (subscription.py — CÓ DUYỆT cho sub-admin):
 gia hạn (cộng tháng) là quyền TỰ PHỤC VỤ của cả sub-admin lẫn super-admin (yêu cầu
@@ -23,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.audit import log_event
@@ -31,13 +33,15 @@ from app.models import Member, User
 from app.permissions import Permission
 from app.routers.wallet._shared import get_payment_settings
 from app.services import payment_flow, wallet_service
-from app.schemas import MemberRenewIn, MemberOut
+from app.schemas import MemberRenewIn, MemberRenewPreviewIn, MemberOut
 
+from .correct_add_date import end_from_anchor
 from ._shared import (
     router,
     SUBSCRIPTION_DAYS_PER_MONTH,
     _append_paid_cycle,
     cycle_settings,
+    half_days_between,
     is_cycle_aligned,
     quote_cycle,
     _end_from_purchase,
@@ -46,6 +50,7 @@ from ._shared import (
     _get_workspace_or_404,
     _mark_member_paid,
     _member_or_404_visible,
+    _visibility_filter,
 )
 
 
@@ -66,6 +71,67 @@ def _renew_quote(db: Session, member: Member, months: int, *, old_end, now):
         current_end=old_end,
         extra_months=max(0, months - 1),
         settings_row=cycle_settings(db),
+    )
+
+
+def renew_window(db: Session, member: Member, months: int, *, now: datetime):
+    """Cửa sổ SẼ bán cho lượt gia hạn này: `(điểm nối, hạn mới, báo giá|None)`.
+
+    ĐIỂM VÀO DUY NHẤT của câu hỏi "gia hạn xong hạn tới đâu" — cả lúc áp thật
+    (`perform_renew_core`) lẫn lúc chỉ xem trước (`preview_renew`) đều gọi hàm này.
+    Tách ra vì màn hình gia hạn từng tự cộng `months×30` ở web: đúng ở chế độ 30
+    ngày, nhưng ở không gian chốt theo chu kỳ hoá đơn thì hạn rơi vào MỐC CHỐT, tức
+    người bán đọc một ngày còn hệ thống ghi một ngày khác (EXPIRY_RULES §3.6.2).
+    """
+    old_end = member.subscription_end_at
+    quote = _renew_quote(db, member, months, old_end=old_end, now=now)
+    if quote is not None:
+        # Chế độ `cycle_aligned`: hạn rơi đúng MỐC CHỐT, cửa sổ tính từ ĐIỂM NỐI.
+        return quote.join_at, quote.end_at, quote
+    if old_end is not None and old_end > now:
+        # Cộng dồn: còn hạn → nối tiếp hạn cũ; hết hạn/chưa có → tính từ bây giờ.
+        return old_end, _extend_subscription_end(old_end, months), None
+    return now, _end_from_purchase(now, months), None
+
+
+def renew_fee(
+    db: Session,
+    user: User,
+    member: Member,
+    months: int,
+    *,
+    quote,
+    settings_row,
+    default_fee: int,
+) -> int:
+    """Phí một lượt gia hạn — `quote` là báo giá của CHÍNH cửa sổ vừa dựng ở
+    `renew_window` (None = chế độ 30 ngày).
+
+    Nhận `quote` chứ không tự dựng lại: tiền và hạn phải ra từ CÙNG một cửa sổ, dựng
+    hai lần là hai mốc giờ khác nhau và có thể rơi hai bên ngưỡng làm tròn nửa ngày.
+    """
+    if quote is not None:
+        # Chế độ `cycle_aligned`: phần lẻ tới mốc + các chu kỳ trọn (§3.6.5).
+        return payment_flow.fee_for_window(
+            db,
+            user,
+            prorated_half_days=quote.prorated_half_days,
+            cycle_days=quote.cycle_days,
+            whole_months=quote.whole_months,
+            member_fee=member.fee_vnd,
+            default_fee=default_fee,
+            settings_row=settings_row,
+        )
+    # Chế độ 30-ngày: đơn giá/tháng (2 tầng) × số tháng (user 2026-07-13). GPT nhân
+    # đơn giá/tháng; Canva tra bảng bậc (mua dài rẻ hơn) — cùng một điểm vào.
+    return payment_flow.fee_for_months(
+        db,
+        user,
+        months=months,
+        platform=payment_flow.member_platform(member),
+        member_fee=member.fee_vnd,
+        default_fee=default_fee,
+        settings_row=settings_row,
     )
 
 
@@ -93,18 +159,7 @@ def perform_renew_core(
     # hoặc member cũ trước bảng cycles) → lịch sử liền mạch trước khi nối kỳ mới.
     _ensure_cycles_materialized(member, now=now, actor_id=user.id, db=db)
 
-    quote = _renew_quote(db, member, months, old_end=old_end, now=now)
-    if quote is not None:
-        # Chế độ `cycle_aligned`: hạn rơi đúng MỐC CHỐT, cửa sổ tính từ ĐIỂM NỐI.
-        start_at = quote.join_at
-        new_end = quote.end_at
-    elif old_end is not None and old_end > now:
-        # Cộng dồn: còn hạn → nối tiếp hạn cũ; hết hạn/chưa có → tính từ bây giờ.
-        start_at = old_end
-        new_end = _extend_subscription_end(old_end, months)
-    else:
-        start_at = now
-        new_end = _end_from_purchase(now, months)
+    start_at, new_end, quote = renew_window(db, member, months, now=now)
 
     # `subscription_months` giữ SỐ MỐC KHÁCH YÊU CẦU (luôn ≥ 1), KHÔNG phải
     # `quote.whole_months` — kỳ lẻ có `whole_months=0`, mà `months ≤ 0` trên member
@@ -253,31 +308,16 @@ def renew_member_subscription(
     # `quote` xuống: `perform_renew_core` còn phục vụ webhook và luồng mời, mà một
     # nhánh quên chuyền là tiền theo cửa sổ này, hạn ghi theo cửa sổ khác — cùng lý do
     # đã ghi ở `_shared.sold_window`.
-    quote = _renew_quote(db, member, months, old_end=member.subscription_end_at, now=now)
-    if quote is not None:
-        # Chế độ `cycle_aligned`: phần lẻ tới mốc + các chu kỳ trọn (§3.6.5).
-        fee = payment_flow.fee_for_window(
-            db,
-            user,
-            prorated_half_days=quote.prorated_half_days,
-            cycle_days=quote.cycle_days,
-            whole_months=quote.whole_months,
-            member_fee=member.fee_vnd,
-            default_fee=default_fee,
-            settings_row=settings_row,
-        )
-    else:
-        # Chế độ 30-ngày: đơn giá/tháng (2 tầng) × số tháng (user 2026-07-13). GPT nhân
-        # đơn giá/tháng; Canva tra bảng bậc (mua dài rẻ hơn) — cùng một điểm vào.
-        fee = payment_flow.fee_for_months(
-            db,
-            user,
-            months=months,
-            platform=payment_flow.member_platform(member),
-            member_fee=member.fee_vnd,
-            default_fee=default_fee,
-            settings_row=settings_row,
-        )
+    _join_at, _new_end, quote = renew_window(db, member, months, now=now)
+    fee = renew_fee(
+        db,
+        user,
+        member,
+        months,
+        quote=quote,
+        settings_row=settings_row,
+        default_fee=default_fee,
+    )
 
     # Ví trước, QR sau (chỉ user bị tính phí; decide_payment tự bỏ qua super/non-beta).
     mode = payment_flow.decide_payment(db, user, fee)
@@ -293,3 +333,143 @@ def renew_member_subscription(
     db.commit()
     db.refresh(member)
     return member
+
+
+def _preview_item(
+    db: Session,
+    user: User,
+    member: Member,
+    months: int,
+    *,
+    now: datetime,
+    settings_row,
+    default_fee: int,
+    anchor: datetime | None,
+) -> dict:
+    """Một dòng xem trước. Đi qua ĐÚNG các hàm mà lệnh thật sẽ gọi (`renew_window`,
+    `renew_fee`, `end_from_anchor`) — không có phép tính riêng nào ở đây, vì bản xem
+    trước lệch với lệnh thật còn tệ hơn không có bản xem trước."""
+    ws = getattr(member, "workspace", None)
+    if anchor is not None:
+        # Màn hình SỬA "Ngày gia hạn": neo lại từ mốc mới, KHÔNG cộng dồn, KHÔNG thu phí.
+        start_at = anchor
+        end_at = end_from_anchor(
+            ws,
+            anchor,
+            months,
+            now=now,
+            old_end=member.subscription_end_at,
+            settings_row=cycle_settings(db),
+        )
+        quote, fee = None, 0
+    else:
+        start_at, end_at, quote = renew_window(db, member, months, now=now)
+        fee = renew_fee(
+            db,
+            user,
+            member,
+            months,
+            quote=quote,
+            settings_row=settings_row,
+            default_fee=default_fee,
+        )
+    row = {
+        "member_id": str(member.id),
+        "email": member.email,
+        "fee": fee,
+        "current_end_at": (
+            member.subscription_end_at.isoformat()
+            if member.subscription_end_at is not None
+            else None
+        ),
+        # `from` = ĐIỂM NỐI (hạn cũ nếu còn hạn), `to` = hạn mới. Đặt tên trùng
+        # `invite-preview → detail` để web dùng lại nguyên khối chi tiết cách tính.
+        "from": start_at.isoformat(),
+        "to": end_at.isoformat() if end_at is not None else None,
+        # Nửa ngày là đơn vị THẬT của phần lẻ (§3.6.4) — trả số nguyên nửa-ngày để
+        # web tự hiện "20,5 ngày", đừng làm tròn ở đây.
+        "half_days": half_days_between(start_at, end_at) if end_at is not None else 0,
+        "unit_price_vnd": payment_flow.effective_fee(
+            member.fee_vnd, user, default_fee
+        ),
+    }
+    if quote is not None:
+        row.update(
+            {
+                "prorated_half_days": quote.prorated_half_days,
+                "whole_months": quote.whole_months,
+                "cycle_days": quote.cycle_days,
+                "cycle_start": quote.cycle_start.isoformat(),
+                "cycle_end": quote.cycle_end.isoformat(),
+                "forced_extra_month": quote.forced_extra_month,
+            }
+        )
+    return row
+
+
+@router.post("/renew-preview", response_model=dict)
+def preview_renew(
+    workspace_id: UUID,
+    body: MemberRenewPreviewIn,
+    db: Session = Depends(get_session),
+    user: User = Depends(require_permission(Permission.MEMBER_INVITE)),
+) -> dict:
+    """Xem trước lượt gia hạn — KHÔNG tạo, KHÔNG trừ, KHÔNG khoá gì.
+
+    Vì sao cần: hạn mới KHÔNG còn suy được ở web. Không gian chốt theo chu kỳ hoá đơn
+    cho hạn rơi đúng MỐC CHỐT và thu tiền theo số ngày thật từ điểm nối tới mốc đó
+    (EXPIRY_RULES §3.6), nên phép `hạn cũ + tháng×30` mà web từng tự tính vừa sai ngày
+    vừa sai tiền — người bán báo với khách một đằng, hệ thống ghi một nẻo.
+
+    Trả về ĐÚNG các con số của lượt bán: hạn mới, tiền, và phân rã để giải thích
+    (phần lẻ mấy nửa ngày trên chu kỳ mấy ngày, mấy chu kỳ trọn). Cùng bộ trường với
+    `invite-preview → detail` để hai màn hình dùng chung một khối "chi tiết cách tính".
+
+    Nhận NHIỀU member cùng lúc (gia hạn hàng loạt). `member_ids` không thuộc workspace
+    này — hoặc sub-admin không được thấy — thì rơi vào `missing`, KHÔNG làm hỏng cả
+    bảng: chọn 200 dòng mà một dòng lạ là mất luôn số tiền của 199 dòng kia.
+    """
+    _get_workspace_or_404(db, workspace_id)
+    if body.purchased_at is not None and len(body.member_ids) > 1:
+        # Mốc neo là của MỘT email cụ thể (màn hình sửa "Ngày gia hạn"). Áp một mốc
+        # cho cả mẻ là dựng ra một bảng số không màn hình nào yêu cầu.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="`purchased_at` chỉ dùng khi xem trước cho đúng một thành viên",
+        )
+    months = body.months
+    # MỘT mốc giờ cho cả bảng: hai dòng cạnh nhau mà đo bằng hai đồng hồ thì có thể
+    # rơi hai bên ngưỡng làm tròn nửa ngày, nhìn như hệ thống tính sai.
+    now = datetime.now(timezone.utc)
+    settings_row = get_payment_settings(db)
+    default_fee = int(settings_row.invite_fee_vnd or 0)
+
+    stmt = select(Member).where(
+        Member.workspace_id == workspace_id, Member.id.in_(body.member_ids)
+    )
+    found = {m.id: m for m in db.execute(_visibility_filter(stmt, user)).scalars()}
+
+    items: list[dict] = []
+    for member_id in body.member_ids:
+        member = found.get(member_id)
+        if member is None:
+            continue
+        items.append(
+            _preview_item(
+                db,
+                user,
+                member,
+                months,
+                now=now,
+                settings_row=settings_row,
+                default_fee=default_fee,
+                anchor=body.purchased_at,
+            )
+        )
+    return {
+        "months": months,
+        "chargeable": payment_flow.is_chargeable_user(user),
+        "total_fee": sum(int(i["fee"]) for i in items),
+        "items": items,
+        "missing": [str(i) for i in body.member_ids if i not in found],
+    }

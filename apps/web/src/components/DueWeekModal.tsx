@@ -10,6 +10,10 @@
  * chỉ gửi số tháng, backend cộng dồn hạn + tạo chu kỳ mới) — không có đường thứ
  * hai để hai chỗ lệch nhau.
  *
+ * HẠN MỚI VÀ TIỀN do server chốt (`renew-preview`, xem hooks/useRenewPreview): không
+ * gian thanh toán chung một ngày mỗi tháng thì hạn rơi vào ĐÚNG ngày đó và tiền tính
+ * theo số ngày thật tới đó — cộng 30 ngày rồi nhân đơn giá là sai cả hai con số.
+ *
  * VÍ KHÔNG ĐỦ: backend trả 402 kèm hoá đơn QR, và ở đây mở đúng `OrderQrModal`
  * như trang Mời/Gia hạn/Email đã thêm — quét xong backend tự chạy nốt lượt gia
  * hạn. Chạy TUẦN TỰ và DỪNG ở ghế đầu tiên thiếu tiền: mỗi ghế thiếu tiền sinh
@@ -25,6 +29,7 @@ import OrderQrModal from "./OrderQrModal";
 import { getQrOrder, type OrderQr } from "../lib/wallet";
 import { money, shortDay } from "../lib/dashboard";
 import { nextEndAfterRenew } from "./RenewalsPanel";
+import { useRenewPreview } from "../hooks/useRenewPreview";
 
 export type DueMember = {
   member_id: string;
@@ -76,7 +81,32 @@ export default function DueWeekModal({
     () => rows.filter((r) => selected.has(r.member_id)),
     [rows, selected],
   );
-  const totalFee = selectedRows.reduce((a, r) => a + r.fee * months, 0);
+  // Hạn mới + tiền THẬT của các ghế đang chọn. `r.fee` từ danh sách đến hạn chỉ là
+  // đơn giá một tháng (con số "tiền đang treo" của trang Tổng quan), không phải số sẽ
+  // bị trừ khi bấm gia hạn.
+  const preview = useRenewPreview(
+    selectedRows.map((r) => ({ id: r.member_id, workspace_id: r.workspace_id })),
+    months,
+  );
+  // Đủ số dòng mới coi là có câu trả lời: thiếu dòng nào thì tổng chưa phải tổng.
+  const previewReady =
+    selectedRows.length > 0 && preview.data?.rows.length === selectedRows.length;
+  const totalFee = previewReady
+    ? (preview.data?.totalFee ?? 0)
+    : selectedRows.reduce((a, r) => a + r.fee * months, 0);
+  /** Hạn mới / tiền của một ghế: chờ server thì hiện "…", đừng nháy số tính tạm. */
+  const nextLabel = (r: DueMember): string =>
+    preview.data?.byMember.get(r.member_id)?.to
+      ? dayLabel(preview.data.byMember.get(r.member_id)!.to as string)
+      : preview.isError
+        ? dayLabel(nextEndAfterRenew(r.end_at, months))
+        : "…";
+  const feeLabel = (r: DueMember): string => {
+    const item = preview.data?.byMember.get(r.member_id);
+    if (item) return `${money(item.fee)}đ`;
+    if (!selected.has(r.member_id) || preview.isError) return `${money(r.fee)}đ`;
+    return "…";
+  };
   const allOn = rows.length > 0 && selected.size === rows.length;
 
   const invalidate = () => {
@@ -236,13 +266,15 @@ export default function DueWeekModal({
                   <>
                     {" → "}
                     <strong style={{ color: "#059669" }}>
-                      {dayLabel(nextEndAfterRenew(r.end_at, months))}
+                      {nextLabel(r)}
                     </strong>
                   </>
                 )}
               </span>
+              {/* Ghế ĐANG CHỌN hiện số sẽ bị trừ (server chốt); ghế chưa chọn giữ
+                  đơn giá một tháng như danh sách đến hạn vẫn hiện. */}
               <span style={{ fontSize: 12.5, color: "var(--ink-2)", minWidth: 66, textAlign: "right" }}>
-                {money(r.fee)}đ
+                {feeLabel(r)}
               </span>
             </label>
           ))}
@@ -274,7 +306,9 @@ export default function DueWeekModal({
             {selectedRows.length > 0 && (
               <span style={{ fontSize: 12.5, color: "var(--ink-2)" }}>
                 {selectedRows.length} ghế ·{" "}
-                <strong style={{ color: "var(--ink)" }}>{money(totalFee)}đ</strong>
+                <strong style={{ color: "var(--ink)" }}>
+                  {previewReady || preview.isError ? `${money(totalFee)}đ` : "…"}
+                </strong>
               </span>
             )}
             <button
