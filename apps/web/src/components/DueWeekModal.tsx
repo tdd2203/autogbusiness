@@ -30,6 +30,8 @@ import { getQrOrder, type OrderQr } from "../lib/wallet";
 import { money, shortDay } from "../lib/dashboard";
 import { nextEndAfterRenew } from "./RenewalsPanel";
 import { useRenewPreview } from "../hooks/useRenewPreview";
+import { RenewCalcRows } from "./RenewCalcRows";
+import { useT } from "../i18n";
 
 export type DueMember = {
   member_id: string;
@@ -66,6 +68,10 @@ export default function DueWeekModal({
   const [months, setMonths] = useState(1);
   const [error, setError] = useState<string | null>(null);
   const [qrOrder, setQrOrder] = useState<OrderQr | null>(null);
+  // Ghế đang bung phần "cách tính phí". Cùng lối của trang Gia hạn: bấm vào email là
+  // thấy vì sao ra con số đó, không phải mở thêm một lớp popup nữa.
+  const [openCalc, setOpenCalc] = useState<Set<string>>(new Set());
+  const t = useT();
 
   // Danh sách tới hạn của NHÁNH đang mở (mở từ Tổng quan nào thì lấy số nhánh đó).
   const platform = usePlatform();
@@ -221,8 +227,12 @@ export default function DueWeekModal({
               </span>
             </label>
           )}
-          {rows.map((r) => (
-            <label key={r.member_id} style={rowStyle}>
+          {rows.map((r) => {
+            const item = preview.data?.byMember.get(r.member_id);
+            const open = openCalc.has(r.member_id);
+            return (
+            <div key={r.member_id}>
+            <label style={rowStyle}>
               <input
                 type="checkbox"
                 checked={selected.has(r.member_id)}
@@ -276,8 +286,61 @@ export default function DueWeekModal({
               <span style={{ fontSize: 12.5, color: "var(--ink-2)", minWidth: 66, textAlign: "right" }}>
                 {feeLabel(r)}
               </span>
+              {/* Nút riêng, KHÔNG lồng trong vùng bấm của checkbox: bấm nó chỉ mở
+                  cách tính, không vô tình tích/bỏ tích ghế. Chỉ có gì để mở khi
+                  server đã trả dòng của ghế này. */}
+              {item && (
+                <button
+                  type="button"
+                  aria-expanded={open}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setOpenCalc((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(r.member_id)) next.delete(r.member_id);
+                      else next.add(r.member_id);
+                      return next;
+                    });
+                  }}
+                  title={
+                    open ? t("invite.feeDetailHide") : t("invite.feeDetailShow")
+                  }
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: "0 2px",
+                    cursor: "pointer",
+                    color: "var(--ink-3)",
+                    fontSize: 11,
+                  }}
+                >
+                  {open ? "▾" : "▸"}
+                </button>
+              )}
             </label>
-          ))}
+            {open && item && (
+              <div
+                style={{
+                  padding: "8px 20px 12px 44px",
+                  background: "var(--surface-2)",
+                  borderBottom: "1px solid var(--border)",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 3,
+                  maxWidth: 460,
+                }}
+              >
+                <RenewCalcRows
+                  item={item}
+                  months={months}
+                  totalLabel={t("invite.feeDetailFee")}
+                />
+              </div>
+            )}
+            </div>
+            );
+          })}
         </div>
 
         <div style={footer}>

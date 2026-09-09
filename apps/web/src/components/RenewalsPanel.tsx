@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState, type CSSProperties } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { useFormatDateTime, useI18n, useT } from "../i18n";
@@ -13,6 +13,7 @@ import { useRenewPreview } from "../hooks/useRenewPreview";
 import { formatVnd, getQrOrder, type OrderQr } from "../lib/wallet";
 import { formatVnDate } from "../lib/cycle-time";
 import OrderQrModal from "./OrderQrModal";
+import { RenewCalcRows } from "./RenewCalcRows";
 
 // Cột ngày hiển thị tới giây, khớp bảng Thành viên (Members.tsx / AddedEmails.tsx).
 const PRECISE_TIME: Intl.DateTimeFormatOptions = {
@@ -85,6 +86,9 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMonths, setBulkMonths] = useState(1);
   const [showBulkConfirm, setShowBulkConfirm] = useState(false);
+  // Những email đang bung phần "cách tính phí" trong popup gia hạn hàng loạt. Cho mở
+  // NHIỀU dòng một lúc: người bán hay đặt hai email cạnh nhau để xem vì sao lệch tiền.
+  const [openCalc, setOpenCalc] = useState<Set<string>>(new Set());
   // Ví không đủ khi gia hạn → BE trả hoá đơn QR (402); mở modal QR thay vì báo lỗi.
   const [qrOrder, setQrOrder] = useState<OrderQr | null>(null);
   const [search, setSearch] = useState("");
@@ -222,13 +226,15 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
   // thì giữ số cũ còn đỡ, với TIỀN thì không: người bán đọc số rồi báo giá cho khách.
   // Nên trong lúc hỏi lại, mọi ô tiền cùng hiện "…" và cùng sáng lên một lượt.
   const feeLabel = (m: AddedMember): string => {
-    if (preview.isFetching) return "…";
+    // `isPlaceholderData` = số đang hiện là của lượt hỏi TRƯỚC (đổi số tháng). Refetch
+    // nền (quay lại tab) không bật cờ này nên bảng không nháy "…" vô cớ.
+    if (preview.isPlaceholderData) return "…";
     const item = preview.data?.byMember.get(m.id);
     // KHÔNG tự nhân đơn giá với số tháng để lấp chỗ trống: ở không gian chốt theo
     // chu kỳ, con số đó sai — mà sai im lặng thì tệ hơn hẳn một dấu gạch.
     return item ? formatVnd(item.fee) : "—";
   };
-  const totalLabel = preview.isFetching
+  const totalLabel = preview.isPlaceholderData
     ? "…"
     : formatVnd(preview.data?.totalFee ?? 0);
 
@@ -250,11 +256,97 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
         })
       : null,
   );
+  // Đơn giá chỉ nói lên tổng ở nhánh tính theo tháng — dùng ĐÚNG điều kiện của khối
+  // cách tính (`unitDrivesFee` trong RenewCalcRows), không thì đầu popup in một con
+  // số mà khối bung ra của chính email đó cố tình giấu.
   const sharedUnit = sameValue((r) =>
-    r.unit_price_vnd != null
+    r.unit_price_vnd != null &&
+    (r.cycle_days != null || r.unit_price_vnd * bulkMonths === r.fee)
       ? t("invite.feeDetailUnitValue", { price: formatVnd(r.unit_price_vnd) })
       : null,
   );
+
+  // Ý MUỐN mở nằm ở `openCalc`, nhưng cái được VẼ phải lọc lại: (a) theo danh sách
+  // đang chọn — gia hạn xong một phần (hoặc bỏ chọn) mà giữ id cũ thì lần sau email
+  // đó vừa chọn lại đã tự bung; (b) theo `showFee` — tài khoản KHÔNG bị trừ tiền thì
+  // popup giấu hẳn cột tiền, để khối cách tính bung ra là bày đúng những con số vừa
+  // giấu, và con số đó sẽ không bao giờ bị trừ.
+  const openIds = useMemo(() => {
+    const live = new Set<string>();
+    if (!showFee) return live;
+    for (const m of selectedRows) if (openCalc.has(m.id)) live.add(m.id);
+    return live;
+  }, [selectedRows, openCalc, showFee]);
+  const toggleCalc = (id: string) => {
+    if (!showFee) return;
+    setOpenCalc((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  /** Phần "cách tính phí" của MỘT email — dùng chung cho thẻ mobile và hàng phụ
+   *  desktop, dựng bằng đúng khối mà ô gia hạn lẻ đang dùng nên hai màn hình không
+   *  giải thích theo hai kiểu.
+   *
+   *  Chưa có số của server thì nói thẳng là đang chờ / chưa hỏi được. Đây là chỗ
+   *  người bán đọc để báo giá cho khách, bịa một con số ở đây là sai kiểu tệ nhất. */
+  const renderCalc = (m: AddedMember) => {
+    if (!showFee) return null;
+    const item = preview.data?.byMember.get(m.id);
+    // Đổi số tháng thì số cũ vẫn nằm trong cache thêm một nhịp (keepPreviousData) —
+    // giống cột "Thành tiền", khối này cũng phải im trong lúc hỏi lại chứ không bày
+    // cách tính của số tháng cũ. Ba trạng thái nói ba câu khác nhau: đang hỏi, hỏi
+    // hụt, và server không trả dòng này (email không còn thuộc không gian đó).
+    if (preview.isPlaceholderData || !item) {
+      return (
+        <div className="cell-muted" style={{ fontSize: 12.5 }}>
+          {preview.isPlaceholderData
+            ? t("common.loading")
+            : preview.isError
+              ? t("subscription.previewFailed")
+              : t("common.empty")}
+        </div>
+      );
+    }
+    return (
+      // Chặn bề ngang: hàng phụ desktop rộng bằng cả bảng, mà mỗi dòng là flex
+      // space-between nên nhãn dính mép trái còn số dính mép phải, cách nhau 400px.
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 3,
+          maxWidth: 460,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 11.5,
+            fontWeight: 600,
+            color: "var(--ink-3)",
+            marginBottom: 2,
+          }}
+        >
+          {t("subscription.calcTitle")}
+        </div>
+        {/* `showUnit={!sharedUnit}`: đơn giá đã nói một lần ở đầu popup khi cả mẻ
+            giống nhau — nhắc lại ở từng email chỉ làm khối dài thêm. */}
+        {/* `showUnit`/`showCycle`: hai thứ này đã nói một lần ở đầu popup khi cả mẻ
+            giống nhau — nhắc lại ở từng email chỉ làm khối dài thêm. Mobile bỏ luôn
+            dòng tổng vì thẻ ngay trên đã in đúng con số đó. */}
+        <RenewCalcRows
+          item={item}
+          months={bulkMonths}
+          totalLabel={isMobile ? undefined : t("invite.feeDetailFee")}
+          showUnit={!sharedUnit}
+          showCycle={!sharedCycle}
+        />
+      </div>
+    );
+  };
 
   return (
     <div>
@@ -305,7 +397,13 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
                 <button
                   type="button"
                   className="btn btn-primary btn-sm"
-                  onClick={() => setShowBulkConfirm(true)}
+                  onClick={() => {
+                    // Mỗi lần mở popup là một lượt đọc mới: khối cách tính của lần
+                    // trước phải đóng lại, không thì popup vừa hiện ra đã bung sẵn
+                    // vài khối chẳng ai vừa bấm.
+                    setOpenCalc(new Set());
+                    setShowBulkConfirm(true);
+                  }}
                   disabled={bulkRenew.isPending || bulkMonths < 1}
                 >
                   {t("renewals.bulkRenewBtn", { n: selectedCount })}
@@ -400,7 +498,10 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
       {showBulkConfirm && selectedRows.length > 0 && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-          style={{ padding: 16 }}
+          // Neo MÉP TRÊN thay vì canh giữa dọc: bung một khối cách tính làm popup cao
+          // thêm ~160px, canh giữa thì cả popup trượt lên và dòng vừa bấm chạy khỏi
+          // chỗ con trỏ đang chỉ.
+          style={{ padding: 16, alignItems: "flex-start", paddingTop: "7vh" }}
         >
           <div
             className="bg-white rounded-lg shadow-xl"
@@ -458,72 +559,128 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
                    dòng, tiền một dòng riêng. Ba thứ này xếp chồng nên đọc được ở
                    màn 360px mà không phải kéo ngang. */
                 <div style={{ display: "flex", flexDirection: "column" }}>
-                  {selectedRows.map((m) => (
-                    <div
-                      key={m.id}
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 4,
-                        padding: "12px 16px",
-                        borderBottom: "1px solid var(--border)",
-                      }}
-                    >
+                  {selectedRows.map((m) => {
+                    const open = openIds.has(m.id);
+                    // Không bị trừ tiền thì không có gì để giải thích — bỏ luôn vẻ
+                    // "bấm được" thay vì để bấm mà chẳng ra gì.
+                    const canOpen = showFee;
+                    return (
                       <div
-                        className="cell-email"
-                        style={{ fontWeight: 600, wordBreak: "break-all" }}
-                      >
-                        {m.email}
-                      </div>
-                      <div
+                        key={m.id}
                         style={{
-                          fontSize: 12.5,
-                          fontFamily: "var(--font-mono)",
-                          display: "flex",
-                          flexWrap: "wrap",
-                          alignItems: "center",
-                          gap: 6,
+                          borderBottom: "1px solid var(--border)",
+                          // Nền đổi nhẹ khi mở: giữa một danh sách dài, mắt phải thấy
+                          // ngay khối cách tính đang thuộc về email nào.
+                          background: open ? "var(--surface-2)" : undefined,
                         }}
                       >
-                        <span className="cell-muted">
-                          {fmtRenewExpiry(
-                            formatDateTime,
-                            m.subscription_end_at as string,
-                          )}
-                        </span>
-                        <span className="cell-muted">→</span>
-                        <span
-                          style={{ color: "var(--success)", fontWeight: 600 }}
-                        >
-                          {nextEndLabel(m)}
-                        </span>
-                      </div>
-                      {showFee && (
-                        <div
+                        {/* Cả thẻ là MỘT nút thật: ngón tay bấm chỗ nào trong thẻ cũng
+                            mở được, mà Tab + Enter/Space cũng mở được y hệt. */}
+                        <button
+                          type="button"
+                          onClick={() => toggleCalc(m.id)}
+                          aria-expanded={canOpen ? open : undefined}
+                          disabled={!canOpen}
+                          title={
+                            open
+                              ? t("invite.feeDetailHide")
+                              : t("invite.feeDetailShow")
+                          }
                           style={{
                             display: "flex",
-                            alignItems: "baseline",
-                            justifyContent: "space-between",
-                            gap: 12,
-                            marginTop: 2,
+                            flexDirection: "column",
+                            gap: 4,
+                            width: "100%",
+                            padding: "12px 16px",
+                            background: "none",
+                            border: "none",
+                            font: "inherit",
+                            color: "inherit",
+                            textAlign: "left",
+                            cursor: canOpen ? "pointer" : "default",
                           }}
                         >
-                          <span className="cell-muted" style={{ fontSize: 12.5 }}>
-                            {t("invite.feeDetailFee")}
-                          </span>
-                          <span
+                          <div
+                            className="cell-email"
                             style={{
-                              fontSize: 13.5,
-                              fontFamily: "var(--font-mono)",
+                              display: "flex",
+                              alignItems: "baseline",
+                              gap: 6,
                               fontWeight: 600,
+                              wordBreak: "break-all",
                             }}
                           >
-                            {feeLabel(m)}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                            {canOpen && (
+                              <span
+                                aria-hidden
+                                style={{ fontSize: 11, color: "var(--ink-3)" }}
+                              >
+                                {open ? "▾" : "▸"}
+                              </span>
+                            )}
+                            <span>{m.email}</span>
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 12.5,
+                              fontFamily: "var(--font-mono)",
+                              display: "flex",
+                              flexWrap: "wrap",
+                              alignItems: "center",
+                              gap: 6,
+                            }}
+                          >
+                            <span className="cell-muted">
+                              {fmtRenewExpiry(
+                                formatDateTime,
+                                m.subscription_end_at as string,
+                              )}
+                            </span>
+                            <span className="cell-muted">→</span>
+                            <span
+                              style={{ color: "var(--success)", fontWeight: 600 }}
+                            >
+                              {nextEndLabel(m)}
+                            </span>
+                          </div>
+                          {showFee && (
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "baseline",
+                                justifyContent: "space-between",
+                                gap: 12,
+                                marginTop: 2,
+                              }}
+                            >
+                              <span
+                                className="cell-muted"
+                                style={{ fontSize: 12.5 }}
+                              >
+                                {t("invite.feeDetailFee")}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: 13.5,
+                                  fontFamily: "var(--font-mono)",
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {feeLabel(m)}
+                              </span>
+                            </div>
+                          )}
+                        </button>
+                        {/* Thụt vào bằng mũi chỉ hướng để khối cách tính dính vào
+                            email của nó, không lẫn sang thẻ dưới. */}
+                        {open && (
+                          <div style={{ padding: "0 16px 12px 32px" }}>
+                            {renderCalc(m)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                   {/* Thẻ tổng khép danh sách — nền đậm hơn để mắt dừng đúng ở con
                       số sắp bị trừ, không phải tự cộng nhẩm các thẻ bên trên. */}
                   {showFee && (
@@ -587,47 +744,137 @@ export function RenewalsPanel({ members }: { members: AddedMember[] }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {selectedRows.map((m) => (
-                      <tr key={m.id}>
-                        <td
-                          className="cell-email"
-                          style={{ overflow: "hidden", textOverflow: "ellipsis" }}
-                          title={m.email}
-                        >
-                          {m.email}
-                        </td>
-                        {/* 12.5px cho hai cột ngày: chuỗi tới giây khá dài, để
-                            13.5px mặc định là chạm mép ô khi bảng có thêm cột tiền. */}
-                        <td style={{ fontSize: 12.5, fontFamily: "var(--font-mono)" }}>
-                          {fmtRenewExpiry(
-                            formatDateTime,
-                            m.subscription_end_at as string,
-                          )}
-                        </td>
-                        <td
-                          style={{
-                            fontSize: 12.5,
-                            fontFamily: "var(--font-mono)",
-                            color: "var(--success)",
-                            fontWeight: 600,
-                          }}
-                        >
-                          {nextEndLabel(m)}
-                        </td>
-                        {showFee && (
-                          <td
+                    {selectedRows.map((m) => {
+                      const open = openIds.has(m.id);
+                      const canOpen = showFee;
+                      // Mở ra thì hàng email và hàng cách tính phải đọc như MỘT khối:
+                      // bỏ vạch kẻ chen giữa, dùng chung một nền.
+                      const openCell: CSSProperties = open
+                        ? { borderBottom: "none" }
+                        : {};
+                      return (
+                        <Fragment key={m.id}>
+                          <tr
+                            onClick={() => toggleCalc(m.id)}
                             style={{
-                              textAlign: "right",
-                              fontSize: 13,
-                              fontFamily: "var(--font-mono)",
-                              fontWeight: 600,
+                              cursor: canOpen ? "pointer" : "default",
+                              background: open ? "var(--surface-2)" : undefined,
                             }}
                           >
-                            {feeLabel(m)}
-                          </td>
-                        )}
-                      </tr>
-                    ))}
+                            <td
+                              className="cell-email"
+                              style={{ overflow: "hidden", ...openCell }}
+                            >
+                              {/* Nút THẬT chứ không phải <tr onClick> trơ trọi: Tab tới
+                                  rồi Enter/Space là mở được. Cả hàng vẫn bấm được nên
+                                  chặn nổi bọt, kẻo một cú bấm đếm hai lần và đóng ngay
+                                  cái vừa mở. */}
+                              <button
+                                type="button"
+                                className="cell-email-link"
+                                aria-expanded={canOpen ? open : undefined}
+                                disabled={!canOpen}
+                                title={
+                                  open
+                                    ? t("invite.feeDetailHide")
+                                    : t("invite.feeDetailShow")
+                                }
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  toggleCalc(m.id);
+                                }}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 6,
+                                  width: "100%",
+                                  minWidth: 0,
+                                }}
+                              >
+                                {canOpen && (
+                                  <span
+                                    aria-hidden
+                                    style={{
+                                      fontSize: 11,
+                                      color: "var(--ink-3)",
+                                      flex: "0 0 auto",
+                                    }}
+                                  >
+                                    {open ? "▾" : "▸"}
+                                  </span>
+                                )}
+                                <span
+                                  title={m.email}
+                                  style={{
+                                    minWidth: 0,
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {m.email}
+                                </span>
+                              </button>
+                            </td>
+                            {/* 12.5px cho hai cột ngày: chuỗi tới giây khá dài, để
+                                13.5px mặc định là chạm mép ô khi bảng có thêm cột tiền. */}
+                            <td
+                              style={{
+                                fontSize: 12.5,
+                                fontFamily: "var(--font-mono)",
+                                ...openCell,
+                              }}
+                            >
+                              {fmtRenewExpiry(
+                                formatDateTime,
+                                m.subscription_end_at as string,
+                              )}
+                            </td>
+                            <td
+                              style={{
+                                fontSize: 12.5,
+                                fontFamily: "var(--font-mono)",
+                                color: "var(--success)",
+                                fontWeight: 600,
+                                ...openCell,
+                              }}
+                            >
+                              {nextEndLabel(m)}
+                            </td>
+                            {showFee && (
+                              <td
+                                style={{
+                                  textAlign: "right",
+                                  fontSize: 13,
+                                  fontFamily: "var(--font-mono)",
+                                  fontWeight: 600,
+                                  ...openCell,
+                                }}
+                              >
+                                {feeLabel(m)}
+                              </td>
+                            )}
+                          </tr>
+                          {/* Hàng phụ chiếm hết bề ngang: khối cách tính tự xuống dòng
+                              được, không phải nhét vừa một cột. `whiteSpace: normal`
+                              vì bảng compact mặc định nowrap. */}
+                          {open && (
+                            <tr>
+                              <td
+                                colSpan={showFee ? 4 : 3}
+                                style={{
+                                  background: "var(--surface-2)",
+                                  padding: "0 12px 12px 26px",
+                                  whiteSpace: "normal",
+                                }}
+                              >
+                                {renderCalc(m)}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
                     {/* Tổng nằm ngay dưới các dòng, cùng một bảng: tiền chỉ hiện
                         ở ĐÚNG MỘT chỗ nên không có hai con số để phải đối chiếu. */}
                     {/* GHIM đáy vùng cuộn: chọn vài chục email thì dòng tổng bị đẩy

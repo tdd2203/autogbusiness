@@ -98,6 +98,7 @@
   "subscription.calcProrated": "零头 {days} 天，至 {date}",
   "subscription.calcWholeMonths": "{n} 个完整周期",
   "subscription.calcMonthsLegacy": "{n} 个月 × {price}",
+  "subscription.calcPackage": "{n} 个月套餐",
   "subscription.calcCycleValue": "{start} → {end} · {days} 天",
   "subscription.dateLabel": "新到期日期",
   "subscription.unlimitedHint": "设为无限期（清除有效期）。",

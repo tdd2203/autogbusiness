@@ -98,6 +98,7 @@
   "subscription.calcProrated": "{days} ngày lẻ tới {date}",
   "subscription.calcWholeMonths": "{n} tháng trọn",
   "subscription.calcMonthsLegacy": "{n} tháng × {price}",
+  "subscription.calcPackage": "Gói {n} tháng",
   "subscription.calcCycleValue": "{start} → {end} · {days} ngày",
   "subscription.dateLabel": "Ngày hết hạn mới",
   "subscription.unlimitedHint": "Đặt thành không giới hạn (xoá hạn dùng).",

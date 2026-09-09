@@ -29,6 +29,9 @@ export type FeeDetailRow = {
   cycle_days?: number;
   cycle_start?: string;
   cycle_end?: string;
+  /** Hai khoản server đã tách sẵn, LUÔN cộng khít `fee` — web chỉ đọc, không nhân lại. */
+  fee_prorated?: number;
+  fee_whole?: number;
 };
 
 /**
