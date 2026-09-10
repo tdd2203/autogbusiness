@@ -169,16 +169,16 @@ h1 { font-size: 18pt; line-height: 1.25; letter-spacing: -.02em; margin: 3pt 0 6
 .step-table td:last-child { white-space: nowrap; }
 /* Bảng so sánh: ô nào cũng xuống dòng được. Cột được khuyên tô xanh lá, đóng
    khung xanh cả cột và gắn nhãn trên đầu — kiểu cột "nên chọn" của bảng giá;
-   cột đối chiếu (vd Plus) chỉ tô vàng nhạt, sắc "có giới hạn". Khung và nhãn
-   giữ được thứ bậc cả khi in đen trắng làm nền phai. */
+   cột đối chiếu (vd Plus) tô cùng tông xanh nhưng nhạt hơn hẳn, không khung.
+   Khung và nhãn giữ được thứ bậc cả khi in đen trắng làm nền phai. */
 .step-table.compare th:first-child, .step-table.compare td:first-child { width: 26%; white-space: normal; }
 .step-table.compare td:last-child { white-space: normal; }
 .step-table.compare .is-hi { background: #edf7f1; border-left: 1.5pt solid #0f7b57; border-right: 1.5pt solid #0f7b57; }
-.step-table.compare .is-base { background: #fdf6e3; }
+.step-table.compare .is-base { background: #f4faf6; }
 .step-table.compare td.is-hi { color: #1c1a17; }
 .step-table.compare th.is-hi, .step-table.compare th.is-base { font-weight: 700; text-transform: none; letter-spacing: 0; font-size: 8.5pt; vertical-align: bottom; }
 .step-table.compare th.is-hi { color: #0f7b57; border-top: 2pt solid #0f7b57; }
-.step-table.compare th.is-base { color: #a06a12; }
+.step-table.compare th.is-base { color: #3f9c77; }
 .step-table.compare tr:last-child td.is-hi { border-bottom: 2pt solid #0f7b57; }
 .step-table.compare .badge { display: block; width: fit-content; max-width: 100%; margin-bottom: 1mm; padding: 0 1.8mm; border-radius: 999px; background: #0f7b57; color: #fff; font-size: 6.5pt; font-weight: 700; line-height: 4.2mm; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .step-table.compare td { vertical-align: top; }

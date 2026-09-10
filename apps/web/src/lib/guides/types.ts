@@ -39,10 +39,11 @@ export type GuideTable = {
    *  khi gói được khuyên không đứng cuối (vd Business giữa 6 gói). */
   highlight?: number;
   /** Cột ĐỐI CHIẾU, đếm từ 0 — gói khách hay hỏi "sao không mua cái này cho
-   *  xong" (vd Plus). Tô nền vàng nhạt, sắc "có giới hạn", đứng cạnh cột được
-   *  khuyên tô xanh lá có khung: mục đích là khách nhìn vào thấy ngay Business
-   *  HƠN HẲN Plus, chứ không phải hai gói ngang nhau (chốt user 10/9/2026). Không
-   *  đặt thì bảng chỉ tô một cột như cũ. */
+   *  xong" (vd Plus). Tô cùng tông xanh lá với cột được khuyên nhưng NHẠT HƠN
+   *  hẳn, không khung, không nhãn: hai cột cùng hướng, mà cột có khung đậm hơn
+   *  là cột hơn — khách nhìn vào thấy ngay Business HƠN HẲN Plus, chứ không phải
+   *  hai gói ngang nhau (chốt user 10/9/2026; bản đầu tô vàng, user đổi sang xanh
+   *  nhạt). Không đặt thì bảng chỉ tô một cột như cũ. */
   baseline?: number;
   /** Nhãn nhỏ gắn trên đầu cột được khuyên, vd "Nên chọn" — viết theo ngôn ngữ
    *  của bài. Bỏ trống thì không có nhãn. */

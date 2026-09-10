@@ -3341,9 +3341,10 @@ body {
      Ô nào cũng được xuống dòng — ở đây ô cuối là cả câu chứ không phải một ngày
      tháng. Cột được khuyên (`is-hi`) tô xanh lá, ĐÓNG KHUNG xanh cả cột và gắn
      nhãn "Nên chọn" trên đầu — kiểu cột nổi bật của bảng giá ai cũng quen; cột
-     đối chiếu (`is-base`, vd Plus) chỉ tô vàng nhạt, sắc "có giới hạn". Hai cột
-     cùng nổi khỏi phần còn lại nhưng thứ bậc rõ: khách nhìn vào là thấy Business
-     hơn hẳn Plus. Đầu hai cột đậm, chữ thường (không hoa hết như đầu cột mặc
+     đối chiếu (`is-base`, vd Plus) tô CÙNG TÔNG xanh nhưng nhạt hơn hẳn, không
+     khung — pha từ chính token xanh nên đổi theme là hai cột vẫn cùng họ màu. Hai
+     cột cùng nổi khỏi phần còn lại nhưng thứ bậc rõ: khách nhìn vào là thấy
+     Business hơn hẳn Plus. Đầu hai cột đậm, chữ thường (không hoa hết như đầu cột mặc
      định) — nền nhạt một mình thì lướt qua là mất. */
   .guide-table-compare thead th:first-child,
   .guide-table-compare tbody td:first-child {
@@ -3362,7 +3363,7 @@ body {
       inset -1.5px 0 0 var(--success);
   }
   .guide-table-compare .is-base {
-    background: var(--warning-bg);
+    background: color-mix(in srgb, var(--success-bg) 50%, var(--surface));
   }
   .guide-table-compare tbody td.is-hi {
     color: var(--ink);
@@ -3383,7 +3384,7 @@ body {
       inset 0 2px 0 var(--success);
   }
   .guide-table-compare thead th.is-base {
-    color: var(--warning);
+    color: color-mix(in srgb, var(--success) 60%, var(--ink-3));
   }
   .guide-table-compare tbody tr:last-child td.is-hi {
     box-shadow:

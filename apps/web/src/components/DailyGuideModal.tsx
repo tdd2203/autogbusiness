@@ -595,7 +595,7 @@ function Step({
 /** Bảng của một bước.
  *
  *  Bảng so sánh (`layout: "compare"`) đóng khung cột được khuyên — `highlight`,
- *  mặc định cột cuối — kèm nhãn `highlightLabel`, và tô vàng nhạt cột đối chiếu
+ *  mặc định cột cuối — kèm nhãn `highlightLabel`, và tô xanh nhạt cột đối chiếu
  *  `baseline`, để khách thấy ngay Business hơn hẳn Plus. Quá 3 cột (vd 6 gói
  *  ChatGPT) thì thành bảng RỘNG: thoát khỏi
  *  trần bề ngang của cột chữ, chữ nhỏ hơn, màn hẹp cuộn ngang trong khung chứ

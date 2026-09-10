@@ -20,7 +20,7 @@
  *
  *  PLUS CŨNG PHẢI NỔI, NHƯNG THẤP HƠN BUSINESS (chốt user 10/9/2026): cả bài là
  *  câu trả lời cho "sao không mua Plus", nên cột Plus là cột `baseline` — tô
- *  vàng nhạt, sắc "có giới hạn"; còn Business tô xanh lá, đóng khung cả cột và
+ *  xanh lá nhạt hơn hẳn; còn Business tô xanh lá đậm, đóng khung cả cột và
  *  gắn nhãn "Nên chọn" (`highlightLabel`) như cột nổi bật của bảng giá — bản
  *  tiếng Anh ghi "Top pick" chứ không "Recommended": cột gói chỉ rộng cỡ 90px ở
  *  màn hẹp và trên giấy, chữ dài hơn là nhãn bị cắt thành "Recommen…". Sáu gói
