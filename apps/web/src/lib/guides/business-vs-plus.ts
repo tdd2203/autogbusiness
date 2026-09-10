@@ -36,11 +36,12 @@
  *
  *  BA DÒNG MÔ HÌNH LẤY TỪ ẢNH CHỤP MÀN HÌNH THẬT của user (10/9/2026), không chỉ
  *  từ tài liệu — tài liệu nói theo tên nội bộ, giao diện lại nói theo thanh trượt:
- *  - Thanh "Thinking effort" ở Plus chỉ tới **Instant, Medium, High**; nấc Pro
- *    hiện ổ KHOÁ. Ở suất Business thanh chạy hết, nấc cuối là **6 Pro** mở sẵn,
- *    và có cả Extra High. Nên ô Plus ghi "Khoá", không phải gạch ngang. Gói Pro
- *    và Enterprise cũng có 6 Pro (user xác nhận 10/9/2026) — chỉ Plus trở xuống
- *    là không.
+ *  - **6 Pro là một NẤC của thanh "Thinking effort"**, không phải thứ nằm ngoài
+ *    nó (user chỉnh 10/9/2026): thanh chạy Instant → Medium → High → Extra High
+ *    → 6 Pro. Ở Plus thanh dừng ở High và nấc Pro hiện ổ KHOÁ; ở suất Business
+ *    thanh chạy hết. Gói Pro và Enterprise cũng có 6 Pro — chỉ Plus trở xuống là
+ *    không. Vì vậy dòng "nấc suy luận" phải kể cả 6 Pro, còn dòng dưới chỉ nói
+ *    HẠN MỨC của nấc đó, đừng lặp lại chữ "có".
  *  - Trong tab **Work**, tài khoản Plus chọn được **GPT-6 Astra Max** y như suất
  *    Business (user đối chiếu hai tài khoản). Vì vậy dòng Codex & Work KHÔNG in
  *    đậm cột Business: hai bên như nhau, khoe ở đó là nói quá.
@@ -99,8 +100,8 @@ const businessVsPlus: Guide = {
                   ["Giá mỗi tháng", "0 ₫", go, plus, `từ ${pro}`, bizStd, "Liên hệ"],
                   ["Mua tối thiểu", "1", "1", "1", "1", "2 suất — qua đại lý mua lẻ **1 suất**", "Theo hợp đồng"],
                   ["Mô hình trong Chat", "GPT-5.6 Luna", "GPT-5.6 Luna", "GPT-5.6 Sol", "GPT-5.6 Sol", "**GPT-5.6 Sol**", "GPT-5.6 Sol"],
-                  ["Mức suy luận trong Chat", "Instant, Think", "Instant, Think", "Instant, Medium, High", "Thêm Extra High", "**Thêm Extra High**", "Thêm Extra High"],
-                  ["Mô hình Pro (6 Pro) trong Chat", "—", "—", "Khoá", "Có, 50–200 tin/tuần", "**Có, 15 tin/tháng**", "Có, do workspace đặt"],
+                  ["Nấc suy luận trong Chat", "Instant, Think", "Instant, Think", "Instant, Medium, High", "Thêm Extra High, 6 Pro", "**Thêm Extra High, 6 Pro**", "Thêm Extra High, 6 Pro"],
+                  ["Hạn mức 6 Pro trong Chat", "—", "—", "Khoá", "50–200 tin/tuần", "**15 tin/tháng**", "Do workspace đặt"],
                   ["Chat thường", "Không giới hạn", "Không giới hạn", "Có hạn mức", "Không giới hạn", "**Không giới hạn**", "Không giới hạn"],
                   ["Tạo ảnh", "Ít và chậm", "Nhiều hơn", "Nhiều, đẹp hơn", "Không giới hạn", "**Như Plus**", "Như Plus"],
                   ["Codex & Work", "Hạn chế", "Hạn chế", "Có GPT-6 Astra", "Có GPT-6 Astra, tối đa", "Có GPT-6 Astra", "Có GPT-6 Astra"],
@@ -139,8 +140,8 @@ const businessVsPlus: Guide = {
                   ["Price per month", "0 ₫", go, plus, `from ${pro}`, bizStd, "Contact sales"],
                   ["Minimum purchase", "1", "1", "1", "1", "2 seats — from a reseller you buy **1 seat**", "By contract"],
                   ["Model in Chat", "GPT-5.6 Luna", "GPT-5.6 Luna", "GPT-5.6 Sol", "GPT-5.6 Sol", "**GPT-5.6 Sol**", "GPT-5.6 Sol"],
-                  ["Reasoning levels in Chat", "Instant, Think", "Instant, Think", "Instant, Medium, High", "Plus Extra High", "**Plus Extra High**", "Plus Extra High"],
-                  ["Pro models (6 Pro) in Chat", "—", "—", "Locked", "Yes, 50–200 msgs/week", "**Yes, 15 msgs/month**", "Yes, set by workspace"],
+                  ["Reasoning levels in Chat", "Instant, Think", "Instant, Think", "Instant, Medium, High", "Adds Extra High, 6 Pro", "**Adds Extra High, 6 Pro**", "Adds Extra High, 6 Pro"],
+                  ["6 Pro allowance in Chat", "—", "—", "Locked", "50–200 msgs/week", "**15 msgs/month**", "Set by workspace"],
                   ["Everyday chat", "Unlimited", "Unlimited", "Limits apply", "Unlimited", "**Unlimited**", "Unlimited"],
                   ["Image creation", "Few and slow", "More", "More and better", "Unlimited", "**Same as Plus**", "Same as Plus"],
                   ["Codex & Work", "Limited", "Limited", "GPT-6 Astra", "GPT-6 Astra, maximum", "GPT-6 Astra", "GPT-6 Astra"],
@@ -178,8 +179,8 @@ const businessVsPlus: Guide = {
                   ["每月价格", "0 ₫", go, plus, `${pro} 起`, bizStd, "联系销售"],
                   ["最低购买", "1", "1", "1", "1", "2 个席位——通过代理零买 **1 个席位**", "按合同"],
                   ["Chat 中的模型", "GPT-5.6 Luna", "GPT-5.6 Luna", "GPT-5.6 Sol", "GPT-5.6 Sol", "**GPT-5.6 Sol**", "GPT-5.6 Sol"],
-                  ["Chat 推理档位", "Instant、Think", "Instant、Think", "Instant、Medium、High", "增加 Extra High", "**增加 Extra High**", "增加 Extra High"],
-                  ["Chat 中的 Pro 模型（6 Pro）", "—", "—", "锁定", "有，每周 50–200 条", "**有，每月 15 条**", "有，由工作区设定"],
+                  ["Chat 推理档位", "Instant、Think", "Instant、Think", "Instant、Medium、High", "增加 Extra High、6 Pro", "**增加 Extra High、6 Pro**", "增加 Extra High、6 Pro"],
+                  ["Chat 中 6 Pro 的额度", "—", "—", "锁定", "每周 50–200 条", "**每月 15 条**", "由工作区设定"],
                   ["普通聊天", "不限量", "不限量", "有额度限制", "不限量", "**不限量**", "不限量"],
                   ["图片生成", "少且慢", "更多", "更多更精细", "不限量", "**与 Plus 相同**", "与 Plus 相同"],
                   ["Codex 与 Work", "受限", "受限", "有 GPT-6 Astra", "有 GPT-6 Astra，最高", "有 GPT-6 Astra", "有 GPT-6 Astra"],

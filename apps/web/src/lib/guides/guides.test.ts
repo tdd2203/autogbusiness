@@ -257,14 +257,17 @@ describe("bài sáu gói ChatGPT", () => {
     }
   });
 
-  it("Plus: mô hình Pro trong Chat là KHOÁ, không phải không có", () => {
-    // Ảnh chụp thật: nấc Pro của Plus hiện ổ khoá; gạch ngang là nói quá.
-    const row = steps(guide.content.vi)[0].table!.rows.find((r) => r[0].includes("6 Pro"))!;
-    expect(row[3]).toBe("Khoá");
-    expect(row[5]).toContain("Có");
-    // 6 Pro có ở Pro, suất Business và Enterprise — chỉ Plus trở xuống là không.
-    expect(row[4]).toContain("Có");
-    expect(row[6]).toContain("Có");
+  it("6 Pro là một nấc của thanh suy luận, và Plus thì nấc đó bị KHOÁ", () => {
+    const rows = steps(guide.content.vi)[0].table!.rows;
+    // Nấc suy luận: Pro, suất Business và Enterprise chạy hết thanh tới 6 Pro.
+    const nac = rows.find((r) => r[0].includes("Nấc suy luận"))!;
+    for (const i of [4, 5, 6]) expect(nac[i]).toContain("6 Pro");
+    expect(nac[3]).not.toContain("6 Pro");
+    // Dòng hạn mức chỉ nói số tin, không lặp lại chuyện có hay không.
+    const han = rows.find((r) => r[0].includes("Hạn mức 6 Pro"))!;
+    expect(han[3]).toBe("Khoá");
+    expect(han[4]).toContain("tin/tuần");
+    expect(han[5]).toContain("15 tin/tháng");
   });
 
   it("Codex & Work: Plus và Business như nhau nên KHÔNG in đậm cột Business", () => {
