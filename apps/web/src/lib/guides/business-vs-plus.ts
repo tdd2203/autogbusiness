@@ -63,6 +63,14 @@
  *  lượng, trần tuần lại không có số, ghi vào bảng là hứa thứ không giữ được. Nói
  *  thẳng chỗ Business chỉ bằng Plus để khách dùng Codex nặng khỏi mua nhầm.
  *
+ *  DÒNG LƯU Ý RIÊNG CHO SUẤT BUSINESS (chốt user 10/9/2026): lấy từ bài "ChatGPT
+ *  Business models and limits" (cập nhật 10/9/2026). Standard: bảng ước tính mỗi
+ *  cửa sổ 5 giờ (Astra 5–45, Sol 10–100, Terra 25–200, Luna 250–2.000), phần dùng
+ *  Astra "limited within the allowance"; chạy trên cloud tốn hơn tại máy. Premium:
+ *  gấp 5 lần Standard, dùng trọn hạn mức cho Astra, KHÔNG có trần 5 giờ. Hết hạn
+ *  mức: chờ kỳ, hoặc credits của workspace nếu đã nạp và spending control cho phép.
+ *  Số ghi kèm chữ "ước tính" và chỉ nằm ở Lưu ý, cùng lý do như đoạn trên.
+ *
  *  BÀI CHỈ CÓ ĐÚNG MỘT BẢNG (chốt user 10/9/2026): bản trước còn bước "đặt giá
  *  cạnh nhau" rồi bước "tiết kiệm được bao nhiêu"; user bỏ cả hai. Bài in đưa
  *  khách không nên khoe giá bán, và một bảng đã nói đủ.
@@ -136,7 +144,8 @@ const businessVsPlus: Guide = {
       ],
       notes: [
         `ChatGPT chỉ bán Business từ 2 suất trở lên, tức ít nhất ${bizMin}/tháng — mua lẻ qua đại lý thì chỉ trả đúng suất mình dùng.`,
-        "Work và Codex dùng chung một hạn mức, tính theo cửa sổ 5 giờ và theo tuần. Suất Business có hạn mức bằng Plus, gói Pro gấp 5 đến 20 lần. Đây là ngân sách tính toán chứ không phải số tin cố định: tin càng dài, nấc suy luận càng cao thì càng tốn.",
+        "Work và Codex dùng chung một hạn mức, tính theo cửa sổ 5 giờ và theo tuần. Suất Business Standard có hạn mức bằng Plus, gói Pro gấp 5 đến 20 lần. Đây là ngân sách tính toán chứ không phải số tin cố định: tin càng dài, nấc suy luận càng cao thì càng tốn, việc chạy trên cloud tốn hơn chạy tại máy.",
+        "Chi tiết cho suất Business: với Standard, OpenAI ước tính mỗi cửa sổ 5 giờ được khoảng 5–45 tin GPT-6 Astra, 10–100 tin GPT-5.6 Sol, 25–200 tin Terra, 250–2.000 tin Luna, trong đó phần dùng Astra bị giới hạn. Premium gấp 5 lần Standard, dùng trọn hạn mức cho Astra và không có trần 5 giờ, chỉ còn trần tuần. Hết hạn mức thì chờ tới kỳ, hoặc chạy tiếp bằng credits nếu workspace có nạp và cho phép.",
       ],
     },
     en: {
@@ -179,7 +188,8 @@ const businessVsPlus: Guide = {
       ],
       notes: [
         `ChatGPT sells Business from 2 seats up, so at least ${bizMin} a month — buying a single seat from a reseller means you pay only for the seat you use.`,
-        "Work and Codex share one allowance, measured over a 5-hour window and a weekly window. A Business seat gets the same allowance as Plus; Pro gets 5 to 20 times more. It is a compute budget, not a fixed number of messages: longer requests and higher reasoning levels use more of it.",
+        "Work and Codex share one allowance, measured over a 5-hour window and a weekly window. A Business Standard seat gets the same allowance as Plus; Pro gets 5 to 20 times more. It is a compute budget, not a fixed number of messages: longer requests and higher reasoning levels use more of it, and cloud runs use more than local ones.",
+        "Business seat details: for Standard, OpenAI estimates roughly 5–45 GPT-6 Astra, 10–100 GPT-5.6 Sol, 25–200 Terra and 250–2,000 Luna messages per 5-hour window, with Astra limited to part of that allowance. Premium has 5 times the Standard allowance, can spend all of it on Astra, and has no 5-hour cap, only the weekly one. Once the allowance is used up, wait for the reset, or keep going on workspace credits if the workspace has bought them and allows it.",
       ],
     },
     "zh-CN": {
@@ -221,7 +231,8 @@ const businessVsPlus: Guide = {
       ],
       notes: [
         `ChatGPT 的 Business 至少要买 2 个席位，即每月至少 ${bizMin}——通过代理零买则只付自己用的那一个。`,
-        "Work 与 Codex 共用同一额度，按 5 小时窗口和每周窗口计算。Business 席位的额度与 Plus 相同，Pro 为其 5 到 20 倍。这是算力预算而非固定条数：请求越长、推理档位越高，消耗越多。",
+        "Work 与 Codex 共用同一额度，按 5 小时窗口和每周窗口计算。Business Standard 席位的额度与 Plus 相同，Pro 为其 5 到 20 倍。这是算力预算而非固定条数：请求越长、推理档位越高，消耗越多；云端运行比本机更耗。",
+        "Business 席位详情：Standard 按 OpenAI 估算，每 5 小时窗口约可发 5–45 条 GPT-6 Astra、10–100 条 GPT-5.6 Sol、25–200 条 Terra、250–2,000 条 Luna，其中 Astra 只能占该额度的一部分。Premium 为 Standard 的 5 倍，可将全部额度用于 Astra，且没有 5 小时上限，只有每周上限。额度用完后等待重置，或在工作区已购买并允许的情况下用工作区 credits 继续。",
       ],
     },
   },

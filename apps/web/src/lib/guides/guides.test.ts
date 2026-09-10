@@ -293,10 +293,16 @@ describe("bài sáu gói ChatGPT", () => {
     // khách đọc ngôn ngữ đó mua nhầm.
     for (const lang of GUIDE_LANGS) {
       const notes = guide.content[lang].notes!;
-      expect(notes.length).toBe(2);
+      expect(notes.length).toBe(3);
       expect(notes[1]).toMatch(/Codex/);
       expect(notes[1]).toMatch(/Plus/);
       expect(notes[1]).toMatch(/Business/);
+      // Dòng riêng cho suất Business: số ước tính của Standard theo bảng OpenAI,
+      // Premium khác chỗ nào, và hết hạn mức thì đi đường nào.
+      expect(notes[2]).toMatch(/5–45/);
+      expect(notes[2]).toMatch(/250–2[.,]000/);
+      expect(notes[2]).toMatch(/Premium/);
+      expect(notes[2]).toMatch(/credits/);
     }
   });
 
