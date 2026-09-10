@@ -248,7 +248,9 @@ describe("lệnh mời sinh ra từ lần chuyển hạn sử dụng", () => {
     expect(invite.title).toBe("Chuyển hạn sử dụng");
     expect(invite.actorType).toBe("ADMIN");
     expect(invite.actorLabel).toBe("huumisa");
-    expect(invite.emails).toEqual([NEW_EMAIL]); // email cũ KHÔNG chen vào cột email
+    // Cột email chỉ có email mới (email cũ nằm ở khoá `source_email`, trang không
+    // đọc khoá đó — ca đổi email kiểu cũ và ca gỡ hỏng bên dưới mới ép lọc thật).
+    expect(invite.emails).toEqual([NEW_EMAIL]);
     expect(summarize(invite)).toBe(
       `Mời vào ${WS} — nhận hạn chuyển từ ${OLD_EMAIL}`,
     );
@@ -269,6 +271,74 @@ describe("lệnh mời sinh ra từ lần chuyển hạn sử dụng", () => {
     expect(remove.stages.queued).toBe(true);
     expect(summarize(remove)).toBe(`Gỡ khỏi ${WS} — đã chuyển hạn sang ${NEW_EMAIL}`);
     expect(remove.memberSub).toBe("remove");
+  });
+});
+
+describe("tiện ích chưa nhận lệnh — nhóm chỉ có dòng của admin", () => {
+  it("câu đủ hai email, ở đúng chỗ Mời + gia hạn, mang màu lệnh mời", () => {
+    const [g] = buildGroups(decorate([TRANSFER_ROW]));
+    expect(g.lifecycle).toBe(true); // API đã gắn khoá lệnh cho dòng này
+    expect(g.title).toBe("Chuyển hạn sử dụng");
+    expect(g.actorLabel).toBe("huumisa");
+    expect(g.gstatus).toBe("queued");
+    expect(g.impGroup).toBe("invite");
+    expect(g.buckets).toContain("member");
+    expect(g.memberSub).toBe("invite");
+    expect(summarize(g)).toBe(`Chuyển hạn ${OLD_EMAIL} → ${NEW_EMAIL} · ${WS}`);
+  });
+
+  it("cộng dồn (không mời) thì đứng ở Xoá với màu lệnh gỡ", () => {
+    const row: RawEvent = {
+      ...TRANSFER_ROW,
+      data: {
+        ...TRANSFER_ROW.data,
+        mode: "accumulate",
+        will_invite: false,
+        invite_queue_item_id: null,
+        queue_item_id: REMOVE_QID,
+        transfer_origin: origin("remove", { mode: "accumulate" }),
+      },
+    };
+    const [g] = buildGroups(decorate([row]));
+    expect(g.memberSub).toBe("remove");
+    expect(g.impGroup).toBe("remove");
+    expect(g.title).toBe("Xoá do chuyển hạn sử dụng");
+    expect(summarize(g)).toBe(`Chuyển hạn ${OLD_EMAIL} → ${NEW_EMAIL} · ${WS}`);
+  });
+});
+
+describe("lệnh gỡ email cũ THẤT BẠI", () => {
+  it("vẫn mang tên chuyển hạn, đỏ, và nói rõ chưa gỡ được", () => {
+    const failedLeg: RawEvent[] = [
+      {
+        ...REMOVE_LEG[0],
+        result: "FAILED",
+        data: { ...REMOVE_LEG[0].data, status: "FAILED", error_code: "MEMBER_NOT_FOUND" },
+      },
+      {
+        ...REMOVE_LEG[1],
+        action: "MEMBER_EMAIL_CHANGE_REMOVE_FAILED",
+        result: "ERROR",
+        data: {
+          email: OLD_EMAIL,
+          new_email: NEW_EMAIL, // email mới cũng nằm trong payload — không được chen vào cột
+          workspace_id: WS_ID,
+          queue_item_id: REMOVE_QID,
+          task_type: "REMOVE_MEMBER",
+          error_code: "MEMBER_NOT_FOUND",
+          transfer_origin: origin("remove"),
+        },
+      },
+      REMOVE_LEG[2],
+    ];
+    const [g] = buildGroups(decorate(newestFirst(failedLeg)));
+    expect(g.title).toBe("Xoá do chuyển hạn sử dụng");
+    expect(g.gstatus).toBe("failed");
+    expect(g.emails).toEqual([OLD_EMAIL]);
+    expect(g.actorLabel).toBe("huumisa");
+    expect(summarize(g)).toBe(
+      `Gỡ khỏi ${WS} — chưa gỡ được, hạn đã chuyển sang ${NEW_EMAIL}`,
+    );
   });
 });
 
@@ -303,9 +373,12 @@ describe("API cũ chưa bơm ngữ cảnh", () => {
     expect(plain.actorType).toBe("EXTENSION");
   });
 
-  it("dòng của admin có trong nhóm là đủ để đọc ra ngữ cảnh", () => {
+  /* Dự phòng, KHÔNG phải hình dạng dữ liệu thật: API hễ gắn khoá lệnh cho dòng của
+     admin là gắn luôn transfer_origin. Giữ để nhánh đọc thẳng dòng của admin không
+     chết lặng nếu một ngày trường đó thiếu. */
+  it("dự phòng: dòng của admin có trong nhóm nhưng thiếu transfer_origin", () => {
     const row = strip(TRANSFER_ROW);
-    row.data!.queue_item_id = INVITE_QID; // chỉ phần gom nhóm, chưa có transfer_origin
+    row.data!.queue_item_id = INVITE_QID;
     const [g] = buildGroups(decorate(newestFirst([row, ...INVITE_LEG.map(strip)])));
     expect(g.title).toBe("Chuyển hạn sử dụng");
     expect(g.actorLabel).toBe("huumisa");

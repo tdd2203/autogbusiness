@@ -149,6 +149,56 @@ def test_transfer_row_joins_invite_task_and_both_tasks_carry_origin(
         assert o["target_email"] == "take@example.com", action
         assert o["kind"] == "subscription_transfer", action
 
+    # (3) Dòng của admin nằm NGOÀI trang đang tải (cửa sổ 200 dòng đã trôi): các dòng
+    # của lệnh vẫn tự kể được — đây là lý do tra ngược theo id lệnh chứ không tìm
+    # trong chính trang.
+    page = client.get("/api/v1/audit-logs?limit=2", headers=auth_header).json()
+    assert page and all(x["action"] != "MEMBER_SUBSCRIPTION_TRANSFERRED" for x in page)
+    of_remove = [
+        x
+        for x in page
+        if x.get("target_id") == remove["id"]
+        or (x.get("data") or {}).get("queue_item_id") == remove["id"]
+    ]
+    assert of_remove, [x["action"] for x in page]
+    for x in of_remove:
+        o = x["data"]["transfer_origin"]
+        assert o["leg"] == "remove" and o["actor_label"] == row["actor_label"], x["action"]
+
+
+def test_failed_removal_rows_carry_origin(client: TestClient, auth_header: dict) -> None:
+    """Lệnh gỡ email cũ HỎNG: dòng cảnh báo lẫn dòng hàng đợi đều mang ngữ cảnh nhánh
+    gỡ, để nhật ký nói "chưa gỡ được, hạn đã chuyển sang…" thay vì "Gỡ thành viên"."""
+    ws = _create_workspace(client, auth_header)
+    _upsert_active(client, ws, ["stuck@example.com"])
+    src = _members(client, ws["id"], auth_header)["stuck@example.com"]
+    _set_subscription(client, ws["id"], src["id"], 2, auth_header)
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{src['id']}/transfer-subscription",
+        json={"target_email": "moved@example.com"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 201, resp.text
+    remove = _task(client, ws["id"], auth_header, "REMOVE_MEMBER", "stuck@example.com")
+
+    resp = client.patch(
+        f"/api/v1/queue/{remove['id']}",
+        json={
+            "status": "FAILED",
+            "error_code": "MEMBER_NOT_FOUND",
+            "error_message": "không thấy ở cả hai tab",
+        },
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert resp.status_code == 200, resp.text
+
+    logs = _audit(client, auth_header)
+    for action in ("MEMBER_EMAIL_CHANGE_REMOVE_FAILED", "QUEUE_UPDATED:REMOVE_MEMBER"):
+        o = _row(logs, action, remove["id"])["data"]["transfer_origin"]
+        assert o["leg"] == "remove", action
+        assert o["source_email"] == "stuck@example.com", action
+        assert o["target_email"] == "moved@example.com", action
+
 
 def test_accumulate_transfer_row_joins_remove_task(
     client: TestClient, auth_header: dict

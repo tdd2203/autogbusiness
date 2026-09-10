@@ -232,6 +232,22 @@ function isSubscriptionExtend(data: Record<string, unknown> | null): boolean {
   return !Number.isNaN(from) && !Number.isNaN(to) && to > from;
 }
 
+/** Dòng của admin khi bấm "Chuyển hạn sử dụng đến" / "Đổi email" (cũ). Một cú bấm
+ *  sinh ra hai lệnh hàng đợi; xem khối "ĐỔI EMAIL / CHUYỂN HẠN SỬ DỤNG" bên dưới. */
+const TRANSFER_OPS = new Set(["MEMBER_EMAIL_CHANGED", "MEMBER_SUBSCRIPTION_TRANSFERRED"]);
+
+/** Dòng đổi email thuộc lệnh MỜI hay lệnh GỠ: đọc `transfer_origin.leg` API bơm,
+ *  không có thì có lệnh mời là mời, còn lại (cộng dồn) là gỡ. */
+function transferLegOfEvent(e: EventLike): "invite" | "remove" {
+  const o = e.data?.transfer_origin;
+  if (o && typeof o === "object" && (o as Record<string, unknown>).leg === "remove")
+    return "remove";
+  if (o && typeof o === "object" && (o as Record<string, unknown>).leg === "invite")
+    return "invite";
+  const inviteQ = e.data?.invite_queue_item_id;
+  return typeof inviteQ === "string" && inviteQ ? "invite" : "remove";
+}
+
 /** Sự kiện thuộc chip "Thành viên" của tab "Chính" (lệnh mời hoặc lệnh gia hạn). */
 function isMainMemberEvent(e: EventLike): boolean {
   const [op, sub] = e.action.split(":");
@@ -294,6 +310,11 @@ const SYNC_QUEUE_SUBS = new Set(["SYNC_MEMBER", "SYNC_MEMBERS_BATCH"]);
 function memberSubOfEvent(e: EventLike): MemberSub | null {
   if (isMainMemberEvent(e)) return "invite";
   const [op, sub] = e.action.split(":");
+  /* Cú bấm chuyển hạn / đổi email đứng cùng chỗ với lệnh nó sinh ra NGAY TỪ LÚC BẤM
+     (mời → "Mời + gia hạn", cộng dồn → "Xoá"). Trước đây nó nằm tab Khác cho tới khi
+     tiện ích nhận lệnh rồi cả nhóm mới nhảy sang tab Chính — một việc hiện ở hai tab
+     tuỳ thời điểm (review 10/9/2026). */
+  if (TRANSFER_OPS.has(op)) return transferLegOfEvent(e);
   const queued = op.startsWith("QUEUE_") && !!sub;
   if (MEMBER_REMOVE_OPS.has(op) || (queued && REMOVE_QUEUE_SUBS.has(sub)))
     return "remove";
@@ -877,8 +898,6 @@ const opOf = (action: string) => action.split(":")[0];
  * tự kể được: tiêu đề "Chuyển hạn sử dụng" / "Xoá do chuyển hạn sử dụng", người
  * thực hiện là admin đã bấm, câu tóm tắt nêu email đầu kia.
  * ------------------------------------------------------------------------- */
-const TRANSFER_OPS = new Set(["MEMBER_EMAIL_CHANGED", "MEMBER_SUBSCRIPTION_TRANSFERRED"]);
-
 export type TransferOrigin = {
   kind: "email_change" | "subscription_transfer";
   /** Nhóm này là lệnh MỜI email mới hay lệnh GỠ email cũ của lần đổi. */
@@ -942,13 +961,20 @@ function transferTitle(o: TransferOrigin): string {
 }
 
 /** Vế nói về ĐẦU KIA của lần đổi, nối sau câu tóm tắt của lệnh. `standalone` =
- *  dòng của admin đứng một mình (lệnh chưa chạy / nằm ngoài cửa sổ) → câu đủ. */
-function transferNote(o: TransferOrigin, standalone: boolean): string {
+ *  nhóm chỉ có dòng của admin (tiện ích chưa nhận lệnh, hoặc các dòng của lệnh nằm
+ *  ngoài cửa sổ) → câu đủ cả hai email. `failed` = lệnh gỡ hỏng: hạn đã sang email
+ *  mới nhưng email cũ chưa rời ChatGPT, không được nói như đã xong. */
+function transferNote(o: TransferOrigin, standalone: boolean, failed = false): string {
   const src = o.source_email ?? "email cũ";
   const dst = o.target_email ?? "email mới";
   if (standalone)
     return `${o.kind === "email_change" ? "Đổi email" : "Chuyển hạn"} ${src} → ${dst}`;
   if (o.leg === "remove") {
+    if (failed) {
+      return o.kind === "email_change"
+        ? `chưa gỡ được, đã đổi email sang ${dst}`
+        : `chưa gỡ được, hạn đã chuyển sang ${dst}`;
+    }
     if (o.kind === "email_change") return `đã đổi email sang ${dst}`;
     return o.mode === "accumulate"
       ? `đã cộng dồn hạn vào ${dst}`
@@ -1231,7 +1257,11 @@ function makeGroup(key: string, evs: Decorated[]): Group {
     code = evs[0].action;
   }
 
-  const impGroup = evs.map((e) => e.impGroup).find((g) => g !== null) ?? null;
+  // Nhóm chỉ có dòng của admin (tiện ích chưa nhận lệnh) vẫn mang màu của lệnh nó
+  // sinh ra — mời xanh, gỡ đỏ — thay vì xám rồi đổi màu khi lệnh chạy.
+  const impGroup =
+    evs.map((e) => e.impGroup).find((g) => g !== null) ??
+    (transferOrigin ? (transferOrigin.leg === "remove" ? "remove" : "invite") : null);
   // Phân tab: 3 chip của "Chính"; không thuộc chip nào → "Khác" + nhóm phụ theo
   // action KHỞI TẠO (nhóm phụ đọc theo việc đã làm, không theo sự kiện mới nhất).
   const buckets = mainBucketsOf(evs);
@@ -1241,7 +1271,7 @@ function makeGroup(key: string, evs: Decorated[]): Group {
   const orderRefs = orderRefsOf(evs);
   // Quan trọng (lên tab "Chính") = có nhóm nghiệp vụ thành viên (mời/gỡ/gia hạn/
   // đổi chủ). Đồng bộ/đăng nhập/cấu hình… không thuộc nhóm nào → tab "Khác".
-  const important = evs.some((e) => e.important);
+  const important = evs.some((e) => e.important) || transferOrigin !== null;
 
   const stamps = evs
     .map((e) => new Date(e.timestamp).getTime())
@@ -1921,7 +1951,7 @@ const DETAIL_LABEL: Record<string, string> = {
   new_months: "Số tháng",
   subscription_months: "Số tháng",
   transferred_seconds: "Hạn còn lại đã chuyển",
-  source_end_at: "Hạn cũ của email cho",
+  source_end_at: "Hạn cũ của email chuyển đi",
   old_target_end_at: "Hạn cũ của email nhận",
   will_invite: "Mời email nhận",
   carried_cycles: "Số kỳ chuyển theo",
@@ -1931,7 +1961,7 @@ const DETAIL_LABEL: Record<string, string> = {
   source_status: "Trạng thái email cũ",
   old_status: "Trạng thái email cũ",
   old_removal_task_type: "Lệnh gỡ email cũ",
-  payment_status: "Thanh toán",
+  payment_status: "Trạng thái thanh toán",
   invite_queue_item_id: "Mã lệnh mời",
   remove_queue_item_id: "Mã lệnh gỡ",
 };
@@ -1941,10 +1971,17 @@ const TRANSFER_EMAIL_LABELS = new Set(["Email cũ", "Email mới", "Email gốc"
 
 /* Giá trị mã hoá của lần chuyển hạn → tiếng Việt. */
 const TRANSFER_VALUE_LABEL: Record<string, string> = {
-  fresh: "bê nguyên hạn sang email mới",
+  fresh: "chuyển nguyên hạn còn lại sang email mới",
   accumulate: "cộng dồn vào email đang dùng",
   unlimited: "vô thời hạn",
   takeover: "email mới tiếp quản",
+};
+
+/* Trạng thái thanh toán kế thừa khi đổi email (đổi tên, không tính lại). */
+const PAYMENT_STATUS_LABEL: Record<string, string> = {
+  paid: "Đã thanh toán",
+  unpaid: "Chưa thanh toán",
+  requested: "Đã yêu cầu thanh toán",
 };
 
 /** Giây → "N ngày M giờ" (phần hạn còn lại đã chuyển đi). */
@@ -2045,6 +2082,8 @@ function fmtScalar(key: string, v: unknown): string {
     if (key === "error_code") return has(ERROR_LABEL, v) ? ERROR_LABEL[v] : v;
     if (key === "mode" || key === "transfer_kind")
       return has(TRANSFER_VALUE_LABEL, v) ? TRANSFER_VALUE_LABEL[v] : v;
+    if (key === "payment_status")
+      return has(PAYMENT_STATUS_LABEL, v) ? PAYMENT_STATUS_LABEL[v] : v;
     if (key === "task_type")
       return SUB_TITLE[v] ?? (has(VALUE_LABEL, v) ? VALUE_LABEL[v] : prettify(v));
     if (key === "status" || key === "result")
@@ -2329,8 +2368,14 @@ export function summarize(g: Group): string | null {
      đứng một mình (lệnh chưa chạy) thì câu đủ cả hai email. */
   const origin = g.transferOrigin;
   if (origin) {
-    const note = transferNote(origin, !g.lifecycle);
-    head = head ? `${head} — ${note}` : ws ? `${note} · ${ws}` : note;
+    /* "Đứng một mình" xét theo nội dung: API mới gắn khoá lệnh cho dòng của admin
+       nên nhóm là vòng đời ngay cả khi tiện ích chưa nhận lệnh — lúc đó chưa có
+       dòng nào của lệnh để "Mời vào…" làm đầu câu, phải nói đủ cả hai email. */
+    const standalone = g.events.every((e) => TRANSFER_OPS.has(opOf(e.action)));
+    const note = transferNote(origin, standalone, isFailed(g));
+    // Chưa có dòng nào của lệnh thì không được mở đầu bằng "Mời vào…"/"Gỡ khỏi…"
+    // (việc đó chưa xảy ra) — chỉ còn câu đủ của lần chuyển.
+    head = standalone || !head ? (ws ? `${note} · ${ws}` : note) : `${head} — ${note}`;
   }
   if (!head) return null;
   return reason ? `${head} — ${reason}` : head;
@@ -2534,8 +2579,17 @@ function ExpandedPanel({ g }: { g: Group }) {
   const origin = g.transferOrigin;
   if (origin) {
     const other = origin.leg === "remove" ? origin.target_email : origin.source_email;
-    if (other)
-      pairs.push({ label: origin.leg === "remove" ? "Đổi sang" : "Email cũ", value: other });
+    // Chuyển hạn: "nhận hạn từ / chuyển hạn sang" (hai người có thể khác nhau);
+    // đổi email kiểu cũ mới là đổi tên: "email cũ / đổi sang".
+    const label =
+      origin.kind === "email_change"
+        ? origin.leg === "remove"
+          ? "Đổi sang"
+          : "Email cũ"
+        : origin.leg === "remove"
+          ? "Chuyển hạn sang"
+          : "Nhận hạn từ";
+    if (other) pairs.push({ label, value: other });
   }
   const gridRows = origin
     ? infoRows.filter((r) => !TRANSFER_EMAIL_LABELS.has(r.label))
