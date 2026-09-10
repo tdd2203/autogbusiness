@@ -16,9 +16,13 @@ import type { SubscriptionRequestNotice } from "../types";
 export function SubscriptionNotificationBell({
   count,
   label,
+  align = "left",
 }: {
   count: number;
   label: string;
+  /** Bảng xổ neo theo mép nào của chuông. Chuông ở topbar điện thoại nằm sát mép
+      phải màn hình nên phải neo "right", neo trái là bảng tràn ra ngoài màn. */
+  align?: "left" | "right";
 }) {
   const t = useT();
   const formatDate = useFormatDate();
@@ -136,7 +140,7 @@ export function SubscriptionNotificationBell({
           style={{
             position: "absolute",
             top: "calc(100% + 8px)",
-            left: 0,
+            ...(align === "right" ? { right: 0 } : { left: 0 }),
             zIndex: 60,
             width: 360,
             maxWidth: "calc(100vw - 32px)",

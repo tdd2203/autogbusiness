@@ -108,7 +108,10 @@ export function TaskBubbleView({
       style={{
         position: "fixed",
         right: 16,
-        bottom: "calc(16px + env(safe-area-inset-bottom, 0px))",
+        // --nav-bottom = chiều cao thanh tab đáy trên điện thoại (0 ở desktop),
+        // xem index.css — bong bóng phải nổi TRÊN thanh đó, không bị che.
+        bottom:
+          "calc(16px + var(--nav-bottom, 0px) + env(safe-area-inset-bottom, 0px))",
         zIndex: 60,
         display: "flex",
         flexDirection: "column",

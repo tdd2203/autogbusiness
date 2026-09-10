@@ -23,6 +23,9 @@ type Branch = "gpt" | "canva";
 type NavEntry = {
   to: string;
   labelKey: string;
+  // Nhãn ngắn cho thanh tab đáy màn hình (điện thoại): 5 ô chia đều ~70px, nhãn
+  // dài như "Mời thành viên" không đủ chỗ. Bỏ trống thì dùng labelKey.
+  shortLabelKey?: string;
   perm?: string;
   icon: ReactNode;
   section: "manage" | "wallet" | "org";
@@ -135,6 +138,15 @@ const ICONS = {
       <path d="M3 17.5 12 22l9-4.5" />
     </svg>
   ),
+  // Nút "Menu" ở thanh đáy điện thoại: 4 ô vuông = "mọi mục còn lại".
+  more: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+      <rect x="4" y="4" width="6" height="6" rx="1.5" />
+      <rect x="14" y="4" width="6" height="6" rx="1.5" />
+      <rect x="4" y="14" width="6" height="6" rx="1.5" />
+      <rect x="14" y="14" width="6" height="6" rx="1.5" />
+    </svg>
+  ),
 };
 
 const NAV: NavEntry[] = [
@@ -144,8 +156,8 @@ const NAV: NavEntry[] = [
   { to: "/dashboard", labelKey: "nav.dashboard", icon: ICONS.dashboard, section: "manage", branch: "gpt" },
   // Trang "Mời thành viên" phía người dùng — hiện cho user có quyền MEMBER_INVITE
   // (super-admin luôn có). Đích workspace do super-admin cấu hình qua nút ⚙️.
-  { to: "/invite", labelKey: "nav.inviteMembers", perm: "MEMBER_INVITE", icon: ICONS.invite, section: "manage", branch: "gpt" },
-  { to: "/added-emails", labelKey: "nav.addedEmails", perm: "MEMBER_VIEW", icon: ICONS.addedEmails, section: "manage", branch: "gpt" },
+  { to: "/invite", labelKey: "nav.inviteMembers", shortLabelKey: "nav.inviteMembersShort", perm: "MEMBER_INVITE", icon: ICONS.invite, section: "manage", branch: "gpt" },
+  { to: "/added-emails", labelKey: "nav.addedEmails", shortLabelKey: "nav.addedEmailsShort", perm: "MEMBER_VIEW", icon: ICONS.addedEmails, section: "manage", branch: "gpt" },
   // "Gia hạn" tách khỏi sub-tab trong "Email đã add" → mục riêng ở sidebar.
   { to: "/renewals", labelKey: "nav.renewals", perm: "MEMBER_VIEW", icon: ICONS.renewals, section: "manage", branch: "gpt" },
   // "Thông báo" (feature 004): kết nối Telegram, người nhận, mẫu nội dung, và trạng
@@ -159,8 +171,8 @@ const NAV: NavEntry[] = [
   // ── Cụm "Quản lý" của nhánh CANVA — ĐÚNG BẤY NHIÊU MỤC như ChatGPT, chỉ khác
   // đường dẫn (/canva/...) nên dữ liệu mỗi nhánh đi một đằng, không lẫn nhau.
   { to: "/canva/dashboard", labelKey: "nav.dashboard", icon: ICONS.dashboard, section: "manage", branch: "canva" },
-  { to: "/canva/invite", labelKey: "nav.inviteMembers", perm: "MEMBER_INVITE", icon: ICONS.invite, section: "manage", branch: "canva" },
-  { to: "/canva/added-emails", labelKey: "nav.addedEmails", perm: "MEMBER_VIEW", icon: ICONS.addedEmails, section: "manage", branch: "canva" },
+  { to: "/canva/invite", labelKey: "nav.inviteMembers", shortLabelKey: "nav.inviteMembersShort", perm: "MEMBER_INVITE", icon: ICONS.invite, section: "manage", branch: "canva" },
+  { to: "/canva/added-emails", labelKey: "nav.addedEmails", shortLabelKey: "nav.addedEmailsShort", perm: "MEMBER_VIEW", icon: ICONS.addedEmails, section: "manage", branch: "canva" },
   { to: "/canva/renewals", labelKey: "nav.renewals", perm: "MEMBER_VIEW", icon: ICONS.renewals, section: "manage", branch: "canva" },
   { to: "/canva/notifications", labelKey: "nav.notifications", icon: ICONS.notifications, section: "manage", branch: "canva" },
   { to: "/canva/audit-logs", labelKey: "nav.auditLog", perm: "AUDIT_LOG_VIEW", icon: ICONS.audit, section: "manage", branch: "canva" },
@@ -261,7 +273,7 @@ export default function Layout() {
     <div
       className={`app-shell min-h-screen${sidebarCollapsed ? " sidebar-collapsed" : ""}`}
     >
-      {/* Nút mũi tên thu/mở sidebar (chỉ desktop; mobile dùng hamburger ở topbar). */}
+      {/* Nút mũi tên thu/mở sidebar (chỉ desktop; điện thoại dùng thanh tab đáy màn hình). */}
       {!isMobile && (
         <button
           type="button"
@@ -303,18 +315,10 @@ export default function Layout() {
         </button>
       )}
 
+      {/* Thanh trên (chỉ điện thoại): tên app + chuông. Nút 3 gạch mở menu đã bỏ —
+          ngăn kéo nay mở từ nút "Menu" ở thanh tab đáy màn hình (user 2026-09-10),
+          ngón cái với tới đáy dễ hơn góc trên. */}
       <header className="app-topbar">
-        <button
-          type="button"
-          className="app-hamburger"
-          aria-label={t("nav.openMenu")}
-          aria-expanded={navOpen}
-          onClick={() => setNavOpen(true)}
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6}>
-            <path d="M3 6h18M3 12h18M3 18h18" />
-          </svg>
-        </button>
         {/* Logo về trang chủ "/" → HomeRedirect định tuyến theo vai trò
             (super → Không gian làm việc, sub-admin → Email đã thêm). */}
         <Link to="/" className="app-topbar-title">
@@ -326,11 +330,13 @@ export default function Layout() {
           <SubscriptionNotificationBell
             count={pendingSubscriptions}
             label={t("subscription.notifTitle")}
+            align="right"
           />
           <NotificationBell
             count={pendingPayments}
             label={t("nav.pendingPayments")}
             onViewAll={() => navigate("/added-emails?filter=requested")}
+            align="right"
           />
         </span>
       </header>
@@ -606,6 +612,19 @@ export default function Layout() {
         <Outlet />
       </main>
 
+      {/* Thanh tab đáy màn hình (chỉ điện thoại, giống app di động): 4 mục dùng nhiều
+          nhất của nhánh đang xem + nút "Menu" mở ngăn kéo chứa đầy đủ phần còn lại
+          (Ví, Tổ chức, đổi nền tảng, đổi ngôn ngữ, đăng xuất). Thiếu quyền mục nào thì
+          mục kế tiếp trong nhóm Quản lý trám vào, thanh luôn đủ 5 ô. */}
+      {isMobile && (
+        <BottomNav
+          items={manageItems.slice(0, 4)}
+          renewalDueCount={renewalDueCount}
+          menuOpen={navOpen}
+          onToggleMenu={() => setNavOpen((v) => !v)}
+        />
+      )}
+
       {/* Bong bóng "đang có lệnh chạy" — nổi ở góc, hiện trên MỌI trang (kể cả điện
           thoại) khi có task đang chờ/chạy. Tự ẩn khi panel hàng đợi cột phải đã hiện.
           Xem RunningTaskBubble.md. */}
@@ -629,10 +648,14 @@ function NotificationBell({
   count,
   label,
   onViewAll,
+  align = "left",
 }: {
   count: number;
   label: string;
   onViewAll: () => void;
+  /** Bảng xổ neo theo mép nào của chuông — topbar điện thoại (chuông sát mép phải)
+      phải neo "right", không thì bảng tràn ra ngoài màn hình. */
+  align?: "left" | "right";
 }) {
   const t = useT();
   const formatDate = useFormatDate();
@@ -746,7 +769,7 @@ function NotificationBell({
           style={{
             position: "absolute",
             top: "calc(100% + 8px)",
-            left: 0,
+            ...(align === "right" ? { right: 0 } : { left: 0 }),
             zIndex: 60,
             width: 340,
             maxWidth: "calc(100vw - 32px)",
@@ -1124,6 +1147,74 @@ function PlatformSwitcher({
           document.body,
         )}
     </div>
+  );
+}
+
+/** Trang đang xem có nằm dưới mục `to` không — cùng luật với NavLink không `end`. */
+function isPathUnder(pathname: string, to: string): boolean {
+  return pathname === to || pathname.startsWith(`${to}/`);
+}
+
+/**
+ * Thanh tab đáy màn hình cho điện thoại: tối đa 4 mục + nút "Menu". Nút "Menu"
+ * sáng khi ngăn kéo đang mở HOẶC trang đang xem không thuộc 4 tab (Cài đặt, Ví,
+ * chi tiết workspace...) — nhìn vào là biết mình đang ở "phần còn lại" của menu.
+ * Style ở index.css (.app-bottom-nav*), chỉ hiện ≤768px.
+ */
+function BottomNav({
+  items,
+  renewalDueCount,
+  menuOpen,
+  onToggleMenu,
+}: {
+  items: NavEntry[];
+  renewalDueCount: number;
+  menuOpen: boolean;
+  onToggleMenu: () => void;
+}) {
+  const t = useT();
+  const location = useLocation();
+  const onTab = items.some((n) => isPathUnder(location.pathname, n.to));
+  const menuActive = menuOpen || !onTab;
+  return (
+    <nav className="app-bottom-nav" aria-label={t("nav.sectionManage")}>
+      {items.map((n) => {
+        const badge = n.labelKey === "nav.renewals" ? renewalDueCount : 0;
+        return (
+          <NavLink
+            key={n.to}
+            to={n.to}
+            className={({ isActive }) =>
+              isActive ? "app-bottom-nav-item active" : "app-bottom-nav-item"
+            }
+          >
+            <span className="app-bottom-nav-icon" aria-hidden>
+              {n.icon}
+              {badge > 0 && (
+                <span className="app-bottom-nav-badge">
+                  {badge > 99 ? "99+" : badge}
+                </span>
+              )}
+            </span>
+            <span className="app-bottom-nav-label">
+              {t(n.shortLabelKey ?? n.labelKey)}
+            </span>
+          </NavLink>
+        );
+      })}
+      <button
+        type="button"
+        className={menuActive ? "app-bottom-nav-item active" : "app-bottom-nav-item"}
+        aria-label={t("nav.openMenu")}
+        aria-expanded={menuOpen}
+        onClick={onToggleMenu}
+      >
+        <span className="app-bottom-nav-icon" aria-hidden>
+          {ICONS.more}
+        </span>
+        <span className="app-bottom-nav-label">{t("nav.more")}</span>
+      </button>
+    </nav>
   );
 }
 

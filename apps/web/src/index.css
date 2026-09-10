@@ -49,6 +49,10 @@
      chia lại cho biến này: `zoom` KHÔNG chia đơn vị viewport, nên ở cỡ 125%
      thì 100vh cao thành 125% màn hình, sidebar và modal tràn khỏi đáy. */
   --ui-scale: 1;
+  /* Chiều cao thanh tab đáy màn hình (điện thoại, xem "App shell" bên dưới). 0 ở
+     desktop. Thứ gì ghim đáy màn hình (bong bóng task, toast) cộng biến này vào
+     để không bị thanh che. */
+  --nav-bottom: 0px;
   --radius: 9px;
   --radius-lg: 14px;
   --shadow-sm: 0 1px 2px rgba(16, 24, 16, 0.05);
@@ -57,6 +61,14 @@
   --font-sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   color-scheme: light;
+}
+/* Điện thoại: thanh tab đáy màn hình có chiều cao (xem .app-bottom-nav). Phải
+   đặt NGOÀI @layer components: rule ngoài layer luôn thắng rule trong layer, nên
+   ghi đè biến này trong layer là vô hiệu dù đứng sau. */
+@media (max-width: 768px) {
+  :root {
+    --nav-bottom: 64px;
+  }
 }
 
 html,
@@ -2860,32 +2872,19 @@ body {
     }
   }
 
-  /* Top bar + hamburger: ẩn trên desktop, chỉ hiện ở mobile */
+  /* Top bar + thanh tab đáy: ẩn trên desktop, chỉ hiện ở mobile */
   .app-topbar {
     display: none;
   }
   .app-backdrop {
     display: none;
   }
-  .app-hamburger {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 40px;
-    height: 40px;
-    margin-left: -8px;
-    border: none;
-    background: transparent;
-    color: var(--ink);
-    cursor: pointer;
-    border-radius: var(--radius);
+  .app-bottom-nav {
+    display: none;
   }
-  .app-hamburger svg {
-    width: 22px;
-    height: 22px;
-  }
-  .app-hamburger:hover {
-    background: var(--surface-2);
+  /* Toast góc dưới: cách đáy 16px, ở điện thoại cộng thêm thanh tab đáy. */
+  .toast-stack-bottom {
+    bottom: calc(16px + var(--nav-bottom) + env(safe-area-inset-bottom, 0px));
   }
   .app-topbar-title {
     font-family: var(--font-display);
@@ -2937,7 +2936,97 @@ body {
       border-bottom: 1px solid var(--border);
     }
     .app-main {
-      padding: 16px 16px 48px;
+      /* Đáy chừa chỗ cho thanh tab đáy màn hình + vùng an toàn của máy. */
+      padding: 16px 16px calc(24px + var(--nav-bottom) + env(safe-area-inset-bottom, 0px));
+    }
+
+    /* ---------- Thanh tab đáy màn hình (giống app di động) ----------
+       5 ô chia đều: 4 mục dùng nhiều nhất + "Menu" mở ngăn kéo. Mục đang chọn =
+       viên thuốc tối sau icon, cùng dấu ấn với sidebar. z-index 40 = dưới lớp
+       backdrop (45) và ngăn kéo (50) nên mở menu thì thanh bị phủ mờ theo.
+       Chiều cao (--nav-bottom) đặt ở :root đầu file, ngoài layer. */
+    .app-bottom-nav {
+      display: grid;
+      grid-auto-flow: column;
+      grid-auto-columns: 1fr;
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 40;
+      height: calc(var(--nav-bottom) + env(safe-area-inset-bottom, 0px));
+      padding: 0 4px env(safe-area-inset-bottom, 0px);
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+    }
+    .app-bottom-nav-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      min-width: 0;
+      padding: 6px 2px 0;
+      border: none;
+      background: transparent;
+      color: var(--ink-3);
+      text-decoration: none;
+      font-family: inherit;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      transition: color 0.12s ease;
+    }
+    .app-bottom-nav-item.active {
+      color: var(--ink);
+    }
+    /* Tỉ lệ theo thanh tab chuẩn của app di động: thanh 64px, icon 24px, viên
+       thuốc 56×32 sau icon, nhãn 12px — cùng cỡ với nhãn nhỏ khắp app. */
+    .app-bottom-nav-icon {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 56px;
+      height: 32px;
+      border-radius: 16px;
+      transition: background 0.12s ease, color 0.12s ease;
+    }
+    .app-bottom-nav-icon svg {
+      width: 24px;
+      height: 24px;
+    }
+    .app-bottom-nav-item.active .app-bottom-nav-icon {
+      background: var(--ink);
+      color: var(--surface);
+    }
+    .app-bottom-nav-label {
+      max-width: 100%;
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 1.2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .app-bottom-nav-item.active .app-bottom-nav-label {
+      font-weight: 600;
+    }
+    /* Huy hiệu số cần gia hạn — đỏ, đè lên góc icon, ẩn khi = 0 (không render). */
+    .app-bottom-nav-badge {
+      position: absolute;
+      top: -5px;
+      right: 6px;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 9px;
+      background: var(--danger);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 18px;
+      text-align: center;
+      box-shadow: 0 0 0 2px var(--surface);
     }
 
     /* Typography co lại cho màn hình nhỏ */
@@ -3266,7 +3355,7 @@ body {
 
   @media (max-width: 480px) {
     .app-main {
-      padding: 14px 12px 40px;
+      padding: 14px 12px calc(24px + var(--nav-bottom) + env(safe-area-inset-bottom, 0px));
     }
     .display-h1 {
       font-size: 21px;

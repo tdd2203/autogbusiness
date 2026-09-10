@@ -338,7 +338,9 @@ function ToastContainer({
   const containerCls =
     position === "top-center"
       ? "fixed top-4 left-1/2 -translate-x-1/2 z-50 flex flex-col items-center gap-2 max-w-[90vw] pointer-events-none"
-      : "fixed bottom-4 right-4 left-4 sm:left-auto z-50 flex flex-col gap-2 max-w-[90vw] sm:max-w-sm sm:ml-auto pointer-events-none";
+      : // toast-stack-bottom (index.css): cách đáy 16px + chiều cao thanh tab đáy ở
+        // điện thoại, kẻo toast lỗi chui xuống dưới thanh.
+        "fixed toast-stack-bottom right-4 left-4 sm:left-auto z-50 flex flex-col gap-2 max-w-[90vw] sm:max-w-sm sm:ml-auto pointer-events-none";
   const enterAnim =
     position === "top-center"
       ? "animate-[toast-in-down_180ms_ease-out]"
