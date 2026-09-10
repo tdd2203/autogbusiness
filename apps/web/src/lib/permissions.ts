@@ -50,21 +50,31 @@ export const GRANTABLE: PermissionKey[] = [
 // add + xem queue task (chỉ task do chính họ tạo) + thu hồi/xoá thành viên
 // (MEMBER_REMOVE — vẫn chỉ xoá được member do chính họ mời, theo visibility
 // filter ở backend). Mọi admin phụ đều có sẵn chức năng thu hồi/xoá.
+//
+// AUDIT_LOG_VIEW cũng nằm trong đây: nhật ký của một tài khoản là việc của chính
+// tài khoản đó nên ai cũng phải đọc được phần của mình. Quyền này KHÔNG mở rộng
+// phạm vi nhìn — backend lọc từng dòng (routers/audit_logs._audit_log_visible),
+// admin phụ chỉ thấy nhật ký về email họ mời và thao tác của họ; super-admin vẫn
+// thấy toàn bộ như cũ.
 export const DEFAULT_SUB_ADMIN_PERMS: PermissionKey[] = [
   "MEMBER_VIEW",
   "MEMBER_INVITE",
   "MEMBER_REMOVE",
   "QUEUE_VIEW",
   "WORKSPACE_SYNC_TRIGGER",
+  "AUDIT_LOG_VIEW",
 ];
 
 // ---------------------------------------------------------------------------
 // Metadata trình bày cho trang "Tài khoản phụ" (chỉ dùng ở FE).
 //
 // Quyền "private": thao tác có sức phá hoại / phạm vi rộng, hoặc lộ thông tin
-// toàn hệ thống (nhật ký hệ thống, thanh toán) — được tô riêng (viền + nền đỏ
-// nhạt) trong form cấp quyền và trong pill trên bảng để super-admin cân nhắc kỹ
-// trước khi cấp.
+// toàn hệ thống (thanh toán) — được tô riêng (viền + nền đỏ nhạt) trong form cấp
+// quyền và trong pill trên bảng để super-admin cân nhắc kỹ trước khi cấp.
+//
+// AUDIT_LOG_VIEW ra khỏi danh sách này khi thành quyền mặc định: nó chỉ mở phần
+// nhật ký của chính tài khoản đó, tô đỏ một quyền ai cũng có thì lời cảnh báo mất
+// nghĩa.
 export const SENSITIVE_PERMS: ReadonlySet<PermissionKey> = new Set<PermissionKey>(
   [
     "MEMBER_REMOVE",
@@ -72,7 +82,6 @@ export const SENSITIVE_PERMS: ReadonlySet<PermissionKey> = new Set<PermissionKey
     "MEMBER_EXPORT_DATA",
     "MEMBER_DELETE_DATA",
     "WORKSPACE_FULL_SYNC",
-    "AUDIT_LOG_VIEW",
     "BILLING_VIEW",
   ],
 );
