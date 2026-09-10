@@ -203,6 +203,46 @@ describe("bài ngày thanh toán — số tiền theo đơn giá của người 
   });
 });
 
+describe("bài sáu gói ChatGPT", () => {
+  const guide = GUIDES.find((g) => g.id === "business-vs-plus")!;
+  const steps = (c: GuideContent) => c.sections.flatMap((s) => s.steps);
+
+  it("bài chỉ có đúng một bảng, không còn số nào theo đơn giá người đọc", () => {
+    // Hết chỗ trống `{tên}` thì cũng không được còn `vars` lẫn ô gõ đơn giá —
+    // ô nhập ở bước không dùng số chỉ tổ đứng đó vô duyên.
+    expect(guide.vars).toBeUndefined();
+    for (const lang of ["vi", "zh-CN"] as const) {
+      expect(steps(guide.content[lang]).length).toBe(1);
+      expect(steps(guide.content[lang])[0].feeInput).toBeUndefined();
+      expect(JSON.stringify(guide.content[lang])).not.toMatch(/\{[A-Za-z0-9_]+\}/);
+    }
+  });
+
+  it("bảng 6 gói: cột tô nền là cột Suất Business, ở cả hai ngôn ngữ", () => {
+    for (const lang of ["vi", "zh-CN"] as const) {
+      const big = steps(guide.content[lang])[0];
+      expect(big.table!.head.length).toBe(7);
+      const hi = big.table!.highlight!;
+      expect(big.table!.head[hi]).toMatch(/Business/);
+      // Mọi hàng đủ 7 ô — thiếu một ô là cột gói lệch sang trái, đọc sai gói.
+      for (const row of big.table!.rows) expect(row.length).toBe(7);
+    }
+  });
+
+  it("Plus KHÔNG bị ghi là không có mô hình Pro — Plus vẫn có trong Work và Codex", () => {
+    const row = steps(guide.content.vi)[0].table!.rows.find((r) => r[0].includes("Pro trong Chat"))!;
+    expect(row[3]).toContain("Work");
+    expect(row[3]).not.toBe("—");
+  });
+
+  it("bản in đánh dấu bảng so sánh rộng và cột tô nền", () => {
+    const html = guidePrintHtml(guide.content.vi, { lang: "vi", notesLabel: "Lưu ý" });
+    expect(html).toContain('<table class="step-table compare wide">');
+    expect(html).toContain('<th class="is-hi">Suất Business</th>');
+    expect(html).toContain(".step-table.compare .is-hi { background");
+  });
+});
+
 describe("readerFeeVnd", () => {
   it("chưa gõ gì thì lấy đơn giá thật của người đọc", () => {
     expect(readerFeeVnd(null, 330_000)).toBe(330_000);

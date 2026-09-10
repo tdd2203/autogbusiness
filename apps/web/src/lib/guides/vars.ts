@@ -46,7 +46,9 @@ function fillStep(step: GuideStep, vars: Record<string, string>): GuideStep {
     body: put(step.body, vars),
   };
   if (step.table) {
+    // Giữ nguyên các trường khác của bảng (`layout`), chỉ điền chữ trong ô.
     next.table = {
+      ...step.table,
       head: step.table.head.map((cell) => put(cell, vars)),
       rows: step.table.rows.map((row) => row.map((cell) => put(cell, vars))),
     };

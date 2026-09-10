@@ -3332,6 +3332,53 @@ body {
   .guide-table tbody tr:hover {
     background: transparent;
   }
+  /* Bảng SO SÁNH (`layout: "compare"`): cột tiêu chí bên trái, hai gói cạnh nhau.
+     Ô nào cũng được xuống dòng — ở đây ô cuối là cả câu chứ không phải một ngày
+     tháng. Cột cuối là gói được khuyên, tô nền nhẹ để mắt so theo cột. */
+  .guide-table-compare thead th:first-child,
+  .guide-table-compare tbody td:first-child {
+    width: 26%;
+    white-space: normal;
+  }
+  .guide-table-compare tbody td:last-child {
+    white-space: normal;
+  }
+  .guide-table-compare .is-hi {
+    background: var(--success-bg);
+  }
+  .guide-table-compare tbody td {
+    vertical-align: top;
+    line-height: 1.5;
+  }
+  /* Bảng RỘNG (quá 3 cột, vd 6 gói ChatGPT): thoát khỏi trần 640px của cột chữ,
+     chữ nhỏ và đệm mỏng hơn; màn hẹp thì cuộn ngang trong khung chứ không ép
+     7 cột vỡ vụn. */
+  .guide-table-wrap-wide {
+    overflow-x: auto;
+  }
+  .guide-table-wide {
+    /* Vừa khít cột chữ ở màn rộng (7 cột × ~110px vẫn đọc được nhờ chữ nhỏ và ô
+       ngắn); hẹp hơn ngưỡng này mới cuộn ngang. Đặt min-width bằng bề ngang cột
+       chữ thì desktop KHÔNG bao giờ phải cuộn — cuộn ngang trong popup là kiểu
+       gì cũng có người bỏ sót cột cuối. */
+    min-width: 640px;
+    table-layout: fixed;
+  }
+  .guide-table-wide thead th {
+    padding: 8px 9px;
+    font-size: 10px;
+    letter-spacing: 0.05em;
+  }
+  .guide-table-wide tbody td {
+    padding: 8px 9px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .guide-table-wide thead th:first-child,
+  .guide-table-wide tbody td:first-child {
+    width: 16%;
+  }
   /* Ô gõ thử đơn giá dưới bước ví dụ: nhãn, ô số, nút quay về giá thật, rồi câu
      nói rõ là chỉ để xem. Nền chìm và bo góc như một mảnh rời — nó là thứ BẤM
      ĐƯỢC nằm giữa bài đọc, trông giống đoạn văn thì không ai biết gõ vào được. */
@@ -3410,6 +3457,22 @@ body {
        chừa lề thừa. Huy hiệu số cũng thu lại để chữ được thêm chỗ. */
     .guide-measure {
       max-width: none;
+    }
+    /* Bảng rộng phải cuộn ngang trên màn hẹp: GHIM cột tiêu chí lại, kẻo cuộn
+       tới cột gói thứ sáu thì không còn biết đang đọc dòng nào. Nền phải ĐỤC,
+       không được trong suốt — cột trôi bên dưới sẽ lộ qua. */
+    .guide-table-wide thead th:first-child,
+    .guide-table-wide tbody td:first-child {
+      position: sticky;
+      left: 0;
+      z-index: 1;
+    }
+    .guide-table-wide thead th:first-child {
+      background: var(--bg);
+    }
+    .guide-table-wide tbody td:first-child {
+      background: var(--surface);
+      border-right: 1px solid var(--border);
     }
     .guide-step {
       gap: 10px;

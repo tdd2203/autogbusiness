@@ -12,12 +12,23 @@ import type { Lang } from "../../i18n";
  *  con số vào (chốt user 8/9/2026). Không phải bảng dữ liệu: chỉ vài dòng cố định
  *  do người viết bài gõ tay.
  *
- *  Giữ TỐI ĐA 3 CỘT — cột chữ của bài chỉ rộng cỡ một trang sách, cột thứ tư là
- *  mọi ô vỡ dòng. Ô nhận cùng cú pháp `**đậm**` và cùng chỗ trống `{tên}` như
- *  `body`, nên số tiền trong bảng cũng theo đơn giá của người đang đọc. */
+ *  Giữ TỐI ĐA 3 CỘT với bảng thường — cột chữ của bài chỉ rộng cỡ một trang
+ *  sách, cột thứ tư là mọi ô vỡ dòng. Ngoại lệ là bảng so sánh gói (`layout:
+ *  "compare"`): quá 3 cột thì thành bảng RỘNG, thoát khỏi cột chữ, chữ nhỏ hơn,
+ *  màn hẹp cuộn ngang — ô phải ngắn (một dấu ✓, một con số, vài chữ). Ô nhận
+ *  cùng cú pháp `**đậm**` và cùng chỗ trống `{tên}` như `body`, nên số tiền
+ *  trong bảng cũng theo đơn giá của người đang đọc. */
 export type GuideTable = {
   head: string[];
   rows: string[][];
+  /** `"compare"` = bảng SO SÁNH kiểu quen mắt: cột đầu là tiêu chí, hai cột sau
+   *  là hai gói đặt cạnh nhau, cột cuối là gói được khuyên (tô nền nhẹ). Ô nào
+   *  cũng được xuống dòng — khác bảng tính tiền mặc định, nơi cột đầu/cuối là
+   *  ngày tháng ngắn nên bị ép một dòng. */
+  layout?: "compare";
+  /** Cột được tô nền trong bảng so sánh, đếm từ 0. Mặc định là cột cuối; đặt
+   *  khi gói được khuyên không đứng cuối (vd Business giữa 6 gói). */
+  highlight?: number;
 };
 
 /** Một bước: tiêu đề + mô tả + bảng/ảnh minh hoạ (tuỳ chọn).

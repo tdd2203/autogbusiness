@@ -53,6 +53,7 @@ import {
   writeState,
   type Guide,
   type GuideStep,
+  type GuideTable,
 } from "../lib/guides";
 import { MoneyInput } from "./priceEditor";
 import AnnouncementSettingsModal from "./AnnouncementSettingsModal";
@@ -503,28 +504,7 @@ function Step({
         {/* Ô nhập đứng GIỮA câu văn và bảng: đọc xong câu "đơn giá của bạn là…"
             là thấy ngay chỗ đổi giá, rồi mới tới bảng số đổi theo. */}
         {feeInput}
-        {step.table && (
-          <div className="guide-table-wrap guide-measure">
-            <table className="data-table guide-table">
-              <thead>
-                <tr>
-                  {step.table.head.map((cell, i) => (
-                    <th key={i}>{renderMarkup(cell)}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {step.table.rows.map((row, r) => (
-                  <tr key={r}>
-                    {row.map((cell, c) => (
-                      <td key={c}>{renderMarkup(cell)}</td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        {step.table && <GuideTableView table={step.table} />}
         {step.image && (
           <figure style={figure}>
             {/* Ảnh chụp màn hình co lại trong popup thì chữ bé; mở tab mới là cách
@@ -554,6 +534,53 @@ function Step({
           </figure>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Bảng của một bước.
+ *
+ *  Bảng so sánh (`layout: "compare"`) tô nền cột được khuyên — `highlight`, mặc
+ *  định cột cuối. Quá 3 cột (vd 6 gói ChatGPT) thì thành bảng RỘNG: thoát khỏi
+ *  trần bề ngang của cột chữ, chữ nhỏ hơn, màn hẹp cuộn ngang trong khung chứ
+ *  không ép 7 cột vỡ vụn. */
+function GuideTableView({ table }: { table: GuideTable }) {
+  const compare = table.layout === "compare";
+  const wide = table.head.length > 3;
+  const hi = compare ? (table.highlight ?? table.head.length - 1) : -1;
+  const cls = [
+    "data-table",
+    "guide-table",
+    compare && "guide-table-compare",
+    wide && "guide-table-wide",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const cellCls = (i: number) => (i === hi ? "is-hi" : undefined);
+  return (
+    <div className={wide ? "guide-table-wrap guide-table-wrap-wide" : "guide-table-wrap guide-measure"}>
+      <table className={cls}>
+        <thead>
+          <tr>
+            {table.head.map((cell, i) => (
+              <th key={i} className={cellCls(i)}>
+                {renderMarkup(cell)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {table.rows.map((row, r) => (
+            <tr key={r}>
+              {row.map((cell, c) => (
+                <td key={c} className={cellCls(c)}>
+                  {renderMarkup(cell)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

@@ -52,11 +52,16 @@ function absUrl(url: string, base?: string): string {
 
 /** Bảng của bước — nằm TRONG cột chữ, để bên cạnh ảnh vẫn còn nguyên cột ảnh. */
 function tableHtml(table: GuideTable): string {
-  const head = table.head.map((cell) => `<th>${markup(cell)}</th>`).join("");
+  const compare = table.layout === "compare";
+  const wide = table.head.length > 3;
+  const hi = compare ? (table.highlight ?? table.head.length - 1) : -1;
+  const cls = ["step-table", compare && "compare", wide && "wide"].filter(Boolean).join(" ");
+  const attr = (i: number) => (i === hi ? ' class="is-hi"' : "");
+  const head = table.head.map((cell, i) => `<th${attr(i)}>${markup(cell)}</th>`).join("");
   const rows = table.rows
-    .map((row) => `<tr>${row.map((cell) => `<td>${markup(cell)}</td>`).join("")}</tr>`)
+    .map((row) => `<tr>${row.map((cell, i) => `<td${attr(i)}>${markup(cell)}</td>`).join("")}</tr>`)
     .join("");
-  return `<table class="step-table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+  return `<table class="${cls}"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function stepHtml(step: GuideStep, index: number, base?: string): string {
@@ -146,6 +151,21 @@ h1 { font-size: 18pt; line-height: 1.25; letter-spacing: -.02em; margin: 3pt 0 6
 .step-table td { border: 1px solid #e2ddd5; padding: 2mm 2.5mm; color: #3f3b36; }
 .step-table td:first-child { color: #1c1a17; font-weight: 600; white-space: nowrap; }
 .step-table td:last-child { white-space: nowrap; }
+/* Bảng so sánh: ô nào cũng xuống dòng được, cột cuối (gói được khuyên) tô nền nhẹ. */
+.step-table.compare th:first-child, .step-table.compare td:first-child { width: 26%; white-space: normal; }
+.step-table.compare td:last-child { white-space: normal; }
+.step-table.compare .is-hi { background: #edf7f1; }
+.step-table.compare td { vertical-align: top; }
+/* Bảng rộng (quá 3 cột, vd 6 gói): chữ nhỏ, đệm mỏng, cột đầu hẹp lại cho các
+   gói chia đều phần còn lại. Cho phép ngắt trang giữa bảng (đầu cột in lại ở
+   trang sau) — bảng 14 dòng mà cấm ngắt là đẩy cả bảng sang trang 2, trang 1
+   còn trơ mỗi tiêu đề. */
+.step-table.wide { font-size: 7.6pt; table-layout: fixed; break-inside: auto; page-break-inside: auto; }
+.step-table.wide thead { display: table-header-group; }
+.step-table.wide tr { break-inside: avoid; page-break-inside: avoid; }
+.step-table.wide th { font-size: 6.6pt; letter-spacing: .03em; padding: 1.2mm 1.4mm; }
+.step-table.wide td { padding: 1.4mm 1.4mm; overflow-wrap: anywhere; }
+.step-table.wide th:first-child, .step-table.wide td:first-child { width: 16%; }
 figure { margin: 0; break-inside: avoid; page-break-inside: avoid; }
 /* Chặn CHIỀU CAO ảnh (vẫn giữ tỉ lệ) — ảnh chụp cao cả trăm mm là thứ làm bản
    in phình ra. Ai cần đọc chữ trong ảnh thì bấm ảnh trong popup xem cỡ đầy đủ. */
