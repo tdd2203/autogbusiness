@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { ApiError } from "../lib/api";
 import { useT } from "../i18n";
@@ -8,7 +8,6 @@ export default function Login() {
   const t = useT();
   const { login } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation() as { state?: { from?: { pathname?: string } } };
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -20,8 +19,9 @@ export default function Login() {
     setBusy(true);
     try {
       await login(identifier.trim(), password);
-      const to = location.state?.from?.pathname ?? "/dashboard";
-      navigate(to, { replace: true });
+      // Đăng nhập xong LUÔN vào "Tổng quan" (user 2026-09-10) — không quay lại trang
+      // đang xem dở lúc hết phiên, để mỗi lần vào app đều bắt đầu từ một chỗ.
+      navigate("/dashboard", { replace: true });
     } catch (err) {
       if (err instanceof ApiError) {
         setError(

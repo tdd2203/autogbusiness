@@ -2974,7 +2974,10 @@ body {
       font-family: inherit;
       cursor: pointer;
       -webkit-tap-highlight-color: transparent;
-      transition: color 0.12s ease;
+      -webkit-user-select: none;
+      user-select: none;
+      touch-action: manipulation;
+      transition: color 0.18s ease;
     }
     .app-bottom-nav-item.active {
       color: var(--ink);
@@ -2989,15 +2992,83 @@ body {
       width: 56px;
       height: 32px;
       border-radius: 16px;
-      transition: background 0.12s ease, color 0.12s ease;
+      transition:
+        background 0.18s ease,
+        color 0.18s ease,
+        transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
     }
     .app-bottom-nav-icon svg {
       width: 24px;
       height: 24px;
     }
+    /* ---------- Hiệu ứng chạm ----------
+       Ấn: viên thuốc co còn 90% và một lớp gợn sóng màu chữ loang từ giữa ra
+       (mờ 14%). Thả tay: gợn sóng mờ dần 0.3s, viên thuốc nở lại theo đường cong
+       giảm tốc. Chuyển sang ô mới: viên thuốc tối nảy nhẹ (82% → 106% → 100%) và
+       icon trồi lên 2px. Lớp .pressed do Layout.tsx đặt theo pointer, không dùng
+       :active (iOS Safari không kích :active khi chạm). */
+    .app-bottom-nav-icon::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-radius: inherit;
+      background: currentColor;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+    .app-bottom-nav-item.pressed .app-bottom-nav-icon {
+      transform: scale(0.9);
+      transition-duration: 0.18s, 0.18s, 0.1s;
+    }
+    .app-bottom-nav-item.pressed .app-bottom-nav-icon::before {
+      opacity: 0.14;
+      transition: opacity 0.06s ease;
+      animation: bnav-ripple 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
     .app-bottom-nav-item.active .app-bottom-nav-icon {
       background: var(--ink);
       color: var(--surface);
+      animation: bnav-pop 0.34s cubic-bezier(0.2, 0.8, 0.2, 1.2);
+    }
+    .app-bottom-nav-item.active .app-bottom-nav-icon svg {
+      animation: bnav-rise 0.34s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+    @keyframes bnav-ripple {
+      from {
+        transform: scale(0.45);
+      }
+      to {
+        transform: scale(1);
+      }
+    }
+    @keyframes bnav-pop {
+      0% {
+        transform: scale(0.82);
+      }
+      60% {
+        transform: scale(1.06);
+      }
+      100% {
+        transform: scale(1);
+      }
+    }
+    @keyframes bnav-rise {
+      from {
+        transform: translateY(2px);
+      }
+      to {
+        transform: translateY(0);
+      }
+    }
+    /* Người dùng tắt chuyển động trong hệ điều hành thì thôi, đổi màu là đủ. */
+    @media (prefers-reduced-motion: reduce) {
+      .app-bottom-nav-icon,
+      .app-bottom-nav-icon::before,
+      .app-bottom-nav-icon svg {
+        animation: none !important;
+        transition: none !important;
+      }
     }
     .app-bottom-nav-label {
       max-width: 100%;

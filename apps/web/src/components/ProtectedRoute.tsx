@@ -1,4 +1,4 @@
-import { Navigate, useLocation } from "react-router-dom";
+import { Navigate } from "react-router-dom";
 import { useState, type ReactNode } from "react";
 import { useAuth } from "../hooks/useAuth";
 import { useT } from "../i18n";
@@ -14,7 +14,6 @@ export default function ProtectedRoute({
 }) {
   const t = useT();
   const { user, loading, authError, hasPermission } = useAuth();
-  const location = useLocation();
 
   if (loading)
     return (
@@ -27,7 +26,8 @@ export default function ProtectedRoute({
   // cho bấm thử lại — trước đây chỗ này treo ở "Đang tải…" vô thời hạn vì `fetch`
   // không có hạn giờ (user 2026-08-30).
   if (!user && authError) return <AuthOffline message={authError} />;
-  if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
+  // Không gửi kèm trang đang xem: đăng nhập xong luôn vào "Tổng quan" (Login.tsx).
+  if (!user) return <Navigate to="/login" replace />;
   if (requireSuperAdmin && !user.is_super_admin) {
     return (
       <div style={{ padding: 32 }}>

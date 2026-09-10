@@ -618,7 +618,7 @@ export default function Layout() {
           mục kế tiếp trong nhóm Quản lý trám vào, thanh luôn đủ 5 ô. */}
       {isMobile && (
         <BottomNav
-          items={manageItems.slice(0, 4)}
+          items={centerInvite(manageItems.slice(0, 4))}
           renewalDueCount={renewalDueCount}
           menuOpen={navOpen}
           onToggleMenu={() => setNavOpen((v) => !v)}
@@ -1150,6 +1150,21 @@ function PlatformSwitcher({
   );
 }
 
+/**
+ * Đưa mục "Mời thành viên" vào Ô GIỮA thanh đáy (ô thứ 3 trong 5, tính cả nút Menu
+ * cuối cùng) — là thao tác chính của đại lý, đặt ngay dưới ngón cái (user
+ * 2026-09-10). Không có mục Mời (thiếu quyền) thì giữ nguyên thứ tự.
+ */
+export function centerInvite<T extends { labelKey: string }>(tabs: T[]): T[] {
+  const i = tabs.findIndex((n) => n.labelKey === "nav.inviteMembers");
+  const mid = Math.min(2, Math.max(0, tabs.length - 1));
+  if (i < 0 || i === mid) return tabs;
+  const next = tabs.slice();
+  const [invite] = next.splice(i, 1);
+  next.splice(mid, 0, invite);
+  return next;
+}
+
 /** Trang đang xem có nằm dưới mục `to` không — cùng luật với NavLink không `end`. */
 function isPathUnder(pathname: string, to: string): boolean {
   return pathname === to || pathname.startsWith(`${to}/`);
@@ -1178,43 +1193,95 @@ function BottomNav({
   const menuActive = menuOpen || !onTab;
   return (
     <nav className="app-bottom-nav" aria-label={t("nav.sectionManage")}>
-      {items.map((n) => {
-        const badge = n.labelKey === "nav.renewals" ? renewalDueCount : 0;
-        return (
-          <NavLink
-            key={n.to}
-            to={n.to}
-            className={({ isActive }) =>
-              isActive ? "app-bottom-nav-item active" : "app-bottom-nav-item"
-            }
-          >
-            <span className="app-bottom-nav-icon" aria-hidden>
-              {n.icon}
-              {badge > 0 && (
-                <span className="app-bottom-nav-badge">
-                  {badge > 99 ? "99+" : badge}
-                </span>
-              )}
-            </span>
-            <span className="app-bottom-nav-label">
-              {t(n.shortLabelKey ?? n.labelKey)}
-            </span>
-          </NavLink>
-        );
-      })}
-      <button
-        type="button"
-        className={menuActive ? "app-bottom-nav-item active" : "app-bottom-nav-item"}
-        aria-label={t("nav.openMenu")}
-        aria-expanded={menuOpen}
+      {items.map((n) => (
+        <BottomTab
+          key={n.to}
+          to={n.to}
+          icon={n.icon}
+          badge={n.labelKey === "nav.renewals" ? renewalDueCount : 0}
+          label={t(n.shortLabelKey ?? n.labelKey)}
+        />
+      ))}
+      <BottomTab
+        active={menuActive}
+        icon={ICONS.more}
+        label={t("nav.more")}
+        ariaLabel={t("nav.openMenu")}
+        ariaExpanded={menuOpen}
         onClick={onToggleMenu}
-      >
-        <span className="app-bottom-nav-icon" aria-hidden>
-          {ICONS.more}
-        </span>
-        <span className="app-bottom-nav-label">{t("nav.more")}</span>
-      </button>
+      />
     </nav>
+  );
+}
+
+/**
+ * Một ô trên thanh đáy: có `to` là link chuyển trang, không thì là nút bấm.
+ *
+ * Trạng thái "đang ấn" (.pressed) đặt theo pointer chứ không dùng `:active`:
+ * iOS Safari không chạy `:active` khi chạm nếu thiếu touch listener, Chrome
+ * Android thì chờ một nhịp mới hiện — hiệu ứng phải nổi NGAY lúc ngón tay đặt
+ * xuống mới thấy "ăn". Thả tay, huỷ chạm hay trượt ra ngoài ô là nhả. Bản thân
+ * hiệu ứng (co, gợn sóng, nảy) nằm ở index.css (.app-bottom-nav-item.pressed /
+ * .active).
+ */
+function BottomTab({
+  to,
+  active = false,
+  onClick,
+  ariaLabel,
+  ariaExpanded,
+  icon,
+  badge = 0,
+  label,
+}: {
+  to?: string;
+  /** Chỉ dùng cho nút (link tự biết mình đang chọn qua NavLink). */
+  active?: boolean;
+  onClick?: () => void;
+  ariaLabel?: string;
+  ariaExpanded?: boolean;
+  icon: ReactNode;
+  badge?: number;
+  label: string;
+}) {
+  const [pressed, setPressed] = useState(false);
+  const press = {
+    onPointerDown: () => setPressed(true),
+    onPointerUp: () => setPressed(false),
+    onPointerCancel: () => setPressed(false),
+    onPointerLeave: () => setPressed(false),
+  };
+  const classes = (isActive: boolean) =>
+    `app-bottom-nav-item${isActive ? " active" : ""}${pressed ? " pressed" : ""}`;
+  const body = (
+    <>
+      <span className="app-bottom-nav-icon" aria-hidden>
+        {icon}
+        {badge > 0 && (
+          <span className="app-bottom-nav-badge">{badge > 99 ? "99+" : badge}</span>
+        )}
+      </span>
+      <span className="app-bottom-nav-label">{label}</span>
+    </>
+  );
+  if (to) {
+    return (
+      <NavLink to={to} className={({ isActive }) => classes(isActive)} {...press}>
+        {body}
+      </NavLink>
+    );
+  }
+  return (
+    <button
+      type="button"
+      className={classes(active)}
+      aria-label={ariaLabel}
+      aria-expanded={ariaExpanded}
+      onClick={onClick}
+      {...press}
+    >
+      {body}
+    </button>
   );
 }
 
