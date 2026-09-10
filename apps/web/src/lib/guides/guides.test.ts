@@ -288,6 +288,18 @@ describe("bài sáu gói ChatGPT", () => {
     }
   });
 
+  it("lưu ý Work/Codex có ở mọi ngôn ngữ và nói rõ suất Business bằng Plus", () => {
+    // Khách dùng Codex nặng phải được biết trước chỗ này — thiếu bản dịch nào là
+    // khách đọc ngôn ngữ đó mua nhầm.
+    for (const lang of GUIDE_LANGS) {
+      const notes = guide.content[lang].notes!;
+      expect(notes.length).toBe(2);
+      expect(notes[1]).toMatch(/Codex/);
+      expect(notes[1]).toMatch(/Plus/);
+      expect(notes[1]).toMatch(/Business/);
+    }
+  });
+
   it("bản in đánh dấu bảng so sánh rộng, cột được khuyên và cột đối chiếu", () => {
     const html = guidePrintHtml(guide.content.vi, { lang: "vi", notesLabel: "Lưu ý" });
     expect(html).toContain('<table class="step-table compare wide">');

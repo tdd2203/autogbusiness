@@ -56,6 +56,13 @@
  *    đậm cột Business: hai bên như nhau, khoe ở đó là nói quá.
  *  Khác biệt thật chỉ nằm trong KHUNG CHAT — đó mới là chỗ đáng in đậm.
  *
+ *  LƯU Ý WORK/CODEX (chốt user 10/9/2026): bài "Managing usage with GPT-6 Astra in
+ *  Work and Codex" của OpenAI (cập nhật 9/9/2026) cho bảng số tin ước tính mỗi cửa
+ *  sổ 5 giờ — Plus và Business Standard GIỐNG HỆT nhau từng model (Astra 5–45), Pro
+ *  5x gấp 5, Pro 20x gấp 20. Đưa vào mục Lưu ý chứ không vào ô bảng: số là ước
+ *  lượng, trần tuần lại không có số, ghi vào bảng là hứa thứ không giữ được. Nói
+ *  thẳng chỗ Business chỉ bằng Plus để khách dùng Codex nặng khỏi mua nhầm.
+ *
  *  BÀI CHỈ CÓ ĐÚNG MỘT BẢNG (chốt user 10/9/2026): bản trước còn bước "đặt giá
  *  cạnh nhau" rồi bước "tiết kiệm được bao nhiêu"; user bỏ cả hai. Bài in đưa
  *  khách không nên khoe giá bán, và một bảng đã nói đủ.
@@ -129,6 +136,7 @@ const businessVsPlus: Guide = {
       ],
       notes: [
         `ChatGPT chỉ bán Business từ 2 suất trở lên, tức ít nhất ${bizMin}/tháng — mua lẻ qua đại lý thì chỉ trả đúng suất mình dùng.`,
+        "Work và Codex dùng chung một hạn mức, tính theo cửa sổ 5 giờ và theo tuần. Suất Business có hạn mức bằng Plus, gói Pro gấp 5 đến 20 lần. Đây là ngân sách tính toán chứ không phải số tin cố định: tin càng dài, nấc suy luận càng cao thì càng tốn.",
       ],
     },
     en: {
@@ -171,6 +179,7 @@ const businessVsPlus: Guide = {
       ],
       notes: [
         `ChatGPT sells Business from 2 seats up, so at least ${bizMin} a month — buying a single seat from a reseller means you pay only for the seat you use.`,
+        "Work and Codex share one allowance, measured over a 5-hour window and a weekly window. A Business seat gets the same allowance as Plus; Pro gets 5 to 20 times more. It is a compute budget, not a fixed number of messages: longer requests and higher reasoning levels use more of it.",
       ],
     },
     "zh-CN": {
@@ -212,6 +221,7 @@ const businessVsPlus: Guide = {
       ],
       notes: [
         `ChatGPT 的 Business 至少要买 2 个席位，即每月至少 ${bizMin}——通过代理零买则只付自己用的那一个。`,
+        "Work 与 Codex 共用同一额度，按 5 小时窗口和每周窗口计算。Business 席位的额度与 Plus 相同，Pro 为其 5 到 20 倍。这是算力预算而非固定条数：请求越长、推理档位越高，消耗越多。",
       ],
     },
   },
