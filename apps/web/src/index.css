@@ -3339,7 +3339,12 @@ body {
   }
   /* Bảng SO SÁNH (`layout: "compare"`): cột tiêu chí bên trái, hai gói cạnh nhau.
      Ô nào cũng được xuống dòng — ở đây ô cuối là cả câu chứ không phải một ngày
-     tháng. Cột cuối là gói được khuyên, tô nền nhẹ để mắt so theo cột. */
+     tháng. Cột được khuyên (`is-hi`) tô xanh lá, ĐÓNG KHUNG xanh cả cột và gắn
+     nhãn "Nên chọn" trên đầu — kiểu cột nổi bật của bảng giá ai cũng quen; cột
+     đối chiếu (`is-base`, vd Plus) chỉ tô vàng nhạt, sắc "có giới hạn". Hai cột
+     cùng nổi khỏi phần còn lại nhưng thứ bậc rõ: khách nhìn vào là thấy Business
+     hơn hẳn Plus. Đầu hai cột đậm, chữ thường (không hoa hết như đầu cột mặc
+     định) — nền nhạt một mình thì lướt qua là mất. */
   .guide-table-compare thead th:first-child,
   .guide-table-compare tbody td:first-child {
     width: 26%;
@@ -3350,6 +3355,57 @@ body {
   }
   .guide-table-compare .is-hi {
     background: var(--success-bg);
+    /* Khung cột vẽ bằng bóng lõm — viền ô trong bảng collapse thì góc nối và
+       cột ghim hai bên không cho vẽ viền đứng liền mạch. */
+    box-shadow:
+      inset 1.5px 0 0 var(--success),
+      inset -1.5px 0 0 var(--success);
+  }
+  .guide-table-compare .is-base {
+    background: var(--warning-bg);
+  }
+  .guide-table-compare tbody td.is-hi {
+    color: var(--ink);
+  }
+  .guide-table-compare thead th.is-hi,
+  .guide-table-compare thead th.is-base {
+    font-weight: 700;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 12.5px;
+    vertical-align: bottom;
+  }
+  .guide-table-compare thead th.is-hi {
+    color: var(--success);
+    box-shadow:
+      inset 1.5px 0 0 var(--success),
+      inset -1.5px 0 0 var(--success),
+      inset 0 2px 0 var(--success);
+  }
+  .guide-table-compare thead th.is-base {
+    color: var(--warning);
+  }
+  .guide-table-compare tbody tr:last-child td.is-hi {
+    box-shadow:
+      inset 1.5px 0 0 var(--success),
+      inset -1.5px 0 0 var(--success),
+      inset 0 -2px 0 var(--success);
+  }
+  .guide-table-badge {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    margin-bottom: 4px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: var(--success);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 15px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .guide-table-compare tbody td {
     vertical-align: top;
@@ -3373,6 +3429,10 @@ body {
     padding: 8px 9px;
     font-size: 10px;
     letter-spacing: 0.05em;
+  }
+  .guide-table-wide thead th.is-hi,
+  .guide-table-wide thead th.is-base {
+    font-size: 11.5px;
   }
   .guide-table-wide tbody td {
     padding: 8px 9px;

@@ -246,12 +246,20 @@ describe("bài sáu gói ChatGPT", () => {
     }
   });
 
-  it("bảng 6 gói: cột tô nền là cột Suất Business, ở cả hai ngôn ngữ", () => {
+  it("bảng 6 gói: cột được khuyên là Suất Business, cột đối chiếu là Plus, ở mọi ngôn ngữ", () => {
     for (const lang of GUIDE_LANGS) {
       const big = steps(guide.content[lang])[0];
       expect(big.table!.head.length).toBe(7);
       const hi = big.table!.highlight!;
       expect(big.table!.head[hi]).toMatch(/Business/);
+      // Plus là gói khách hay đem ra so, phải nổi cùng Business nhưng bằng màu
+      // khác — hai cột không được trùng chỉ số, kẻo một lớp đè mất lớp kia.
+      const base = big.table!.baseline!;
+      expect(big.table!.head[base]).toBe("Plus");
+      expect(base).not.toBe(hi);
+      // Nhãn "Nên chọn" phải có ở mọi ngôn ngữ — thiếu là bản tiếng Anh in ra
+      // cột Business trơ khung không chữ.
+      expect(big.table!.highlightLabel).toBeTruthy();
       // Mọi hàng đủ 7 ô — thiếu một ô là cột gói lệch sang trái, đọc sai gói.
       for (const row of big.table!.rows) expect(row.length).toBe(7);
     }
@@ -280,11 +288,16 @@ describe("bài sáu gói ChatGPT", () => {
     }
   });
 
-  it("bản in đánh dấu bảng so sánh rộng và cột tô nền", () => {
+  it("bản in đánh dấu bảng so sánh rộng, cột được khuyên và cột đối chiếu", () => {
     const html = guidePrintHtml(guide.content.vi, { lang: "vi", notesLabel: "Lưu ý" });
     expect(html).toContain('<table class="step-table compare wide">');
-    expect(html).toContain('<th class="is-hi">Suất Business</th>');
+    expect(html).toContain('<th class="is-hi"><span class="badge">Nên chọn</span>Suất Business</th>');
+    expect(html).toContain('<th class="is-base">Plus</th>');
     expect(html).toContain(".step-table.compare .is-hi { background");
+    expect(html).toContain(".step-table.compare .is-base { background");
+    // Hai cột phải khác màu nền — cùng màu thì khách tưởng cả hai đều được khuyên.
+    const bg = (cls: string) => html.match(new RegExp(`\\.step-table\\.compare \\.${cls} \\{ background: (#[0-9a-f]+)`))![1];
+    expect(bg("is-hi")).not.toBe(bg("is-base"));
   });
 });
 

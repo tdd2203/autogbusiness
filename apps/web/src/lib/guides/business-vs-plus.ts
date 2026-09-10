@@ -18,6 +18,15 @@
  *  dòng được và tô nền cột `highlight` (cột suất Business, đứng thứ năm chứ không
  *  đứng cuối). Quá 3 cột thì khung tự chuyển sang bảng rộng, màn hẹp cuộn ngang.
  *
+ *  PLUS CŨNG PHẢI NỔI, NHƯNG THẤP HƠN BUSINESS (chốt user 10/9/2026): cả bài là
+ *  câu trả lời cho "sao không mua Plus", nên cột Plus là cột `baseline` — tô
+ *  vàng nhạt, sắc "có giới hạn"; còn Business tô xanh lá, đóng khung cả cột và
+ *  gắn nhãn "Nên chọn" (`highlightLabel`) như cột nổi bật của bảng giá — bản
+ *  tiếng Anh ghi "Top pick" chứ không "Recommended": cột gói chỉ rộng cỡ 90px ở
+ *  màn hẹp và trên giấy, chữ dài hơn là nhãn bị cắt thành "Recommen…". Sáu gói
+ *  mà chỉ tô một cột thì khách vẫn phải tự lần sang Plus để so; hai cột hai màu
+ *  có thứ bậc thì nhìn vào là thấy Business hơn hẳn, bốn gói kia lùi làm nền.
+ *
  *  GIÁ BUSINESS ĐÃ GỒM VAT (user chỉnh 10/9/2026): 649.000 ₫/tháng là giá trả
  *  hàng tháng, 519.000 ₫/tháng là giá khi trả trước cả năm. ĐỪNG cộng thêm 10%
  *  VAT vào nữa — bản trước làm vậy và ra con số sai.
@@ -95,6 +104,8 @@ const businessVsPlus: Guide = {
               table: {
                 layout: "compare",
                 highlight: 5,
+                baseline: 3,
+                highlightLabel: "Nên chọn",
                 head: ["Tiêu chí", "Free", "Go", "Plus", "Pro", "Suất Business", "Enterprise"],
                 rows: [
                   ["Giá mỗi tháng", "0 ₫", go, plus, `từ ${pro}`, bizStd, "Liên hệ"],
@@ -134,6 +145,8 @@ const businessVsPlus: Guide = {
               table: {
                 layout: "compare",
                 highlight: 5,
+                baseline: 3,
+                highlightLabel: "Top pick",
                 head: ["Item", "Free", "Go", "Plus", "Pro", "Business seat", "Enterprise"],
                 rows: [
                   ["Account type", "Personal, self sign-up", "Personal, self sign-up", "Personal, self sign-up", "Personal, self sign-up", "A seat in a company workspace, run by the reseller", "Company workspace"],
@@ -174,6 +187,8 @@ const businessVsPlus: Guide = {
               table: {
                 layout: "compare",
                 highlight: 5,
+                baseline: 3,
+                highlightLabel: "推荐",
                 head: ["项目", "Free", "Go", "Plus", "Pro", "Business 席位", "Enterprise"],
                 rows: [
                   ["每月价格", "0 ₫", go, plus, `${pro} 起`, bizStd, "联系销售"],

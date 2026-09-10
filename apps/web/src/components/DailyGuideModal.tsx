@@ -594,14 +594,17 @@ function Step({
 
 /** Bảng của một bước.
  *
- *  Bảng so sánh (`layout: "compare"`) tô nền cột được khuyên — `highlight`, mặc
- *  định cột cuối. Quá 3 cột (vd 6 gói ChatGPT) thì thành bảng RỘNG: thoát khỏi
+ *  Bảng so sánh (`layout: "compare"`) đóng khung cột được khuyên — `highlight`,
+ *  mặc định cột cuối — kèm nhãn `highlightLabel`, và tô vàng nhạt cột đối chiếu
+ *  `baseline`, để khách thấy ngay Business hơn hẳn Plus. Quá 3 cột (vd 6 gói
+ *  ChatGPT) thì thành bảng RỘNG: thoát khỏi
  *  trần bề ngang của cột chữ, chữ nhỏ hơn, màn hẹp cuộn ngang trong khung chứ
  *  không ép 7 cột vỡ vụn. */
 function GuideTableView({ table }: { table: GuideTable }) {
   const compare = table.layout === "compare";
   const wide = table.head.length > 3;
   const hi = compare ? (table.highlight ?? table.head.length - 1) : -1;
+  const base = compare ? (table.baseline ?? -1) : -1;
   const cls = [
     "data-table",
     "guide-table",
@@ -610,7 +613,8 @@ function GuideTableView({ table }: { table: GuideTable }) {
   ]
     .filter(Boolean)
     .join(" ");
-  const cellCls = (i: number) => (i === hi ? "is-hi" : undefined);
+  const cellCls = (i: number) =>
+    i === hi ? "is-hi" : i === base ? "is-base" : undefined;
   return (
     <div className={wide ? "guide-table-wrap guide-table-wrap-wide" : "guide-table-wrap guide-measure"}>
       <table className={cls}>
@@ -618,6 +622,9 @@ function GuideTableView({ table }: { table: GuideTable }) {
           <tr>
             {table.head.map((cell, i) => (
               <th key={i} className={cellCls(i)}>
+                {i === hi && table.highlightLabel && (
+                  <span className="guide-table-badge">{table.highlightLabel}</span>
+                )}
                 {renderMarkup(cell)}
               </th>
             ))}

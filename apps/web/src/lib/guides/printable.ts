@@ -65,9 +65,15 @@ function tableHtml(table: GuideTable): string {
   const compare = table.layout === "compare";
   const wide = table.head.length > 3;
   const hi = compare ? (table.highlight ?? table.head.length - 1) : -1;
+  const base = compare ? (table.baseline ?? -1) : -1;
   const cls = ["step-table", compare && "compare", wide && "wide"].filter(Boolean).join(" ");
-  const attr = (i: number) => (i === hi ? ' class="is-hi"' : "");
-  const head = table.head.map((cell, i) => `<th${attr(i)}>${markup(cell)}</th>`).join("");
+  const attr = (i: number) =>
+    i === hi ? ' class="is-hi"' : i === base ? ' class="is-base"' : "";
+  const badge = (i: number) =>
+    i === hi && table.highlightLabel ? `<span class="badge">${esc(table.highlightLabel)}</span>` : "";
+  const head = table.head
+    .map((cell, i) => `<th${attr(i)}>${badge(i)}${markup(cell)}</th>`)
+    .join("");
   const rows = table.rows
     .map((row) => `<tr>${row.map((cell, i) => `<td${attr(i)}>${markup(cell)}</td>`).join("")}</tr>`)
     .join("");
@@ -161,10 +167,20 @@ h1 { font-size: 18pt; line-height: 1.25; letter-spacing: -.02em; margin: 3pt 0 6
 .step-table td { border: 1px solid #e2ddd5; padding: 2mm 2.5mm; color: #3f3b36; }
 .step-table td:first-child { color: #1c1a17; font-weight: 600; white-space: nowrap; }
 .step-table td:last-child { white-space: nowrap; }
-/* Bảng so sánh: ô nào cũng xuống dòng được, cột cuối (gói được khuyên) tô nền nhẹ. */
+/* Bảng so sánh: ô nào cũng xuống dòng được. Cột được khuyên tô xanh lá, đóng
+   khung xanh cả cột và gắn nhãn trên đầu — kiểu cột "nên chọn" của bảng giá;
+   cột đối chiếu (vd Plus) chỉ tô vàng nhạt, sắc "có giới hạn". Khung và nhãn
+   giữ được thứ bậc cả khi in đen trắng làm nền phai. */
 .step-table.compare th:first-child, .step-table.compare td:first-child { width: 26%; white-space: normal; }
 .step-table.compare td:last-child { white-space: normal; }
-.step-table.compare .is-hi { background: #edf7f1; }
+.step-table.compare .is-hi { background: #edf7f1; border-left: 1.5pt solid #0f7b57; border-right: 1.5pt solid #0f7b57; }
+.step-table.compare .is-base { background: #fdf6e3; }
+.step-table.compare td.is-hi { color: #1c1a17; }
+.step-table.compare th.is-hi, .step-table.compare th.is-base { font-weight: 700; text-transform: none; letter-spacing: 0; font-size: 8.5pt; vertical-align: bottom; }
+.step-table.compare th.is-hi { color: #0f7b57; border-top: 2pt solid #0f7b57; }
+.step-table.compare th.is-base { color: #a06a12; }
+.step-table.compare tr:last-child td.is-hi { border-bottom: 2pt solid #0f7b57; }
+.step-table.compare .badge { display: block; width: fit-content; max-width: 100%; margin-bottom: 1mm; padding: 0 1.8mm; border-radius: 999px; background: #0f7b57; color: #fff; font-size: 6.5pt; font-weight: 700; line-height: 4.2mm; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .step-table.compare td { vertical-align: top; }
 /* Bảng rộng (quá 3 cột, vd 6 gói): chữ nhỏ, đệm mỏng, cột đầu hẹp lại cho các
    gói chia đều phần còn lại. Cho phép ngắt trang giữa bảng (đầu cột in lại ở
@@ -174,6 +190,7 @@ h1 { font-size: 18pt; line-height: 1.25; letter-spacing: -.02em; margin: 3pt 0 6
 .step-table.wide thead { display: table-header-group; }
 .step-table.wide tr { break-inside: avoid; page-break-inside: avoid; }
 .step-table.wide th { font-size: 6.6pt; letter-spacing: .03em; padding: 1.2mm 1.4mm; }
+.step-table.wide th.is-hi, .step-table.wide th.is-base { font-size: 7.2pt; }
 .step-table.wide td { padding: 1.4mm 1.4mm; overflow-wrap: anywhere; }
 .step-table.wide th:first-child, .step-table.wide td:first-child { width: 16%; }
 figure { margin: 0; break-inside: avoid; page-break-inside: avoid; }
