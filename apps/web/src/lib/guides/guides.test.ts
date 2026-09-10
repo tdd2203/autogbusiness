@@ -229,10 +229,21 @@ describe("bài sáu gói ChatGPT", () => {
     }
   });
 
-  it("Plus KHÔNG bị ghi là không có mô hình Pro — Plus vẫn có trong Work và Codex", () => {
+  it("Plus: mô hình Pro trong Chat là KHOÁ, không phải không có", () => {
+    // Ảnh chụp thật: nấc Pro của Plus hiện ổ khoá; gạch ngang là nói quá.
     const row = steps(guide.content.vi)[0].table!.rows.find((r) => r[0].includes("Pro trong Chat"))!;
-    expect(row[3]).toContain("Work");
-    expect(row[3]).not.toBe("—");
+    expect(row[3]).toBe("Khoá");
+    expect(row[5]).toContain("Mở");
+  });
+
+  it("Codex & Work: Plus và Business như nhau nên KHÔNG in đậm cột Business", () => {
+    for (const lang of ["vi", "zh-CN"] as const) {
+      const row = steps(guide.content[lang])[0].table!.rows.find((r) =>
+        r[0].includes("Codex"),
+      )!;
+      expect(row[5]).toBe(row[3]);
+      expect(row[5]).not.toContain("**");
+    }
   });
 
   it("bản in đánh dấu bảng so sánh rộng và cột tô nền", () => {

@@ -29,16 +29,20 @@
  *  mãi tháng đầu của Plus, và KHÔNG kể chuyện ai đứng ra thanh toán (chốt user
  *  10/9/2026) — bảng nói quyền lợi khách nhận được, không nói đường đi của tiền.
  *
- *  ĐIỂM HƠN THẬT NẰM Ở MÔ HÌNH VÀ HẠN MỨC: Plus không có Extra High, không dùng
- *  được mô hình Pro trong khung chat, và trang giá ghi rõ Plus "Limits apply"
- *  trong khi thẻ Business ghi "Unlimited subject to abuse guardrails". Suất
- *  Business Standard còn có 15 tin mô hình Pro mỗi tháng.
+ *  ĐIỂM HƠN THẬT NẰM Ở KHUNG CHAT: Plus không có Extra High, mô hình Pro bị khoá,
+ *  và trang giá ghi rõ Plus "Limits apply" trong khi thẻ Business ghi "Unlimited
+ *  subject to abuse guardrails". Suất Business Standard có 15 tin mô hình Pro mỗi
+ *  tháng.
  *
- *  Ô "Mô hình Pro trong Chat" của Plus ghi **Chỉ trong Work, Codex** chứ KHÔNG
- *  gạch ngang (chốt user 10/9/2026): bài GPT-5.6 nói rõ Plus vẫn dùng được GPT-6
- *  Astra trong Work và Codex, chỉ là không dùng được trong khung chat. Gạch ngang
- *  ở đó là nói quá — khách tra lại trang OpenAI là thấy mình nói sai. Business ở
- *  Work và Codex thì OpenAI KHÔNG nói gì, nên đừng điền đoán vào.
+ *  BA DÒNG MÔ HÌNH LẤY TỪ ẢNH CHỤP MÀN HÌNH THẬT của user (10/9/2026), không chỉ
+ *  từ tài liệu — tài liệu nói theo tên nội bộ, giao diện lại nói theo thanh trượt:
+ *  - Thanh "Thinking effort" ở Plus chỉ tới **Instant, Medium, High**; nấc Pro
+ *    hiện ổ KHOÁ. Ở suất Business thanh chạy hết, nấc cuối là **6 Pro** mở sẵn,
+ *    và có cả Extra High. Nên ô Plus ghi "Khoá", không phải gạch ngang.
+ *  - Trong tab **Work**, tài khoản Plus chọn được **GPT-6 Astra Max** y như suất
+ *    Business (user đối chiếu hai tài khoản). Vì vậy dòng Codex & Work KHÔNG in
+ *    đậm cột Business: hai bên như nhau, khoe ở đó là nói quá.
+ *  Khác biệt thật chỉ nằm trong KHUNG CHAT — đó mới là chỗ đáng in đậm.
  *
  *  BÀI CHỈ CÓ ĐÚNG MỘT BẢNG (chốt user 10/9/2026): bản trước còn bước "đặt giá
  *  cạnh nhau" rồi bước "tiết kiệm được bao nhiêu"; user bỏ cả hai. Bài in đưa
@@ -93,11 +97,11 @@ const businessVsPlus: Guide = {
                   ["Giá mỗi tháng", "0 ₫", go, plus, `từ ${pro}`, bizStd, "Liên hệ"],
                   ["Mua tối thiểu", "1", "1", "1", "1", "2 suất — qua đại lý mua lẻ **1 suất**", "Theo hợp đồng"],
                   ["Mô hình trong Chat", "GPT-5.6 Luna", "GPT-5.6 Luna", "GPT-5.6 Sol", "GPT-5.6 Sol", "**GPT-5.6 Sol**", "GPT-5.6 Sol"],
-                  ["Mức suy luận", "Think (Luna)", "Think (Luna)", "Medium, High", "Thêm Extra High", "**Thêm Extra High**", "Thêm Extra High"],
-                  ["Mô hình Pro trong Chat", "—", "—", "Chỉ trong Work, Codex", "50–200 tin/tuần", "**15 tin/tháng**", "Do workspace đặt"],
+                  ["Mức suy luận trong Chat", "Instant, Think", "Instant, Think", "Instant, Medium, High", "Thêm Extra High", "**Thêm Extra High**", "Thêm Extra High"],
+                  ["Mô hình Pro trong Chat", "—", "—", "Khoá", "50–200 tin/tuần", "**Mở, 15 tin/tháng**", "Do workspace đặt"],
                   ["Chat thường", "Không giới hạn", "Không giới hạn", "Có hạn mức", "Không giới hạn", "**Không giới hạn**", "Không giới hạn"],
                   ["Tạo ảnh", "Ít và chậm", "Nhiều hơn", "Nhiều, đẹp hơn", "Không giới hạn", "**Như Plus**", "Như Plus"],
-                  ["Codex & Work", "Hạn chế", "Hạn chế", "Mở rộng", "Tối đa", "**Mở rộng**", "Mở rộng"],
+                  ["Codex & Work", "Hạn chế", "Hạn chế", "Có GPT-6 Astra", "Có GPT-6 Astra, tối đa", "Có GPT-6 Astra", "Có GPT-6 Astra"],
                   ["Deep research", "Hạn chế", "Hạn chế", "Mở rộng", "Tối đa", "**Mở rộng**", "Mở rộng"],
                   ["Bộ nhớ & ngữ cảnh", "Hạn chế", "Dài hơn", "Mở rộng", "Tối đa", "**Mở rộng**", "Rộng nhất"],
                   ["Quảng cáo trong app", "Có", "Có thể có", "Không", "Không", "**Không**", "Không"],
@@ -132,11 +136,11 @@ const businessVsPlus: Guide = {
                   ["每月价格", "0 ₫", go, plus, `${pro} 起`, bizStd, "联系销售"],
                   ["最低购买", "1", "1", "1", "1", "2 个席位——通过代理零买 **1 个席位**", "按合同"],
                   ["Chat 中的模型", "GPT-5.6 Luna", "GPT-5.6 Luna", "GPT-5.6 Sol", "GPT-5.6 Sol", "**GPT-5.6 Sol**", "GPT-5.6 Sol"],
-                  ["推理档位", "Think（Luna）", "Think（Luna）", "Medium、High", "增加 Extra High", "**增加 Extra High**", "增加 Extra High"],
-                  ["Chat 中的 Pro 模型", "—", "—", "仅在 Work、Codex", "每周 50–200 条", "**每月 15 条**", "由工作区设定"],
+                  ["Chat 推理档位", "Instant、Think", "Instant、Think", "Instant、Medium、High", "增加 Extra High", "**增加 Extra High**", "增加 Extra High"],
+                  ["Chat 中的 Pro 模型", "—", "—", "锁定", "每周 50–200 条", "**开放，每月 15 条**", "由工作区设定"],
                   ["普通聊天", "不限量", "不限量", "有额度限制", "不限量", "**不限量**", "不限量"],
                   ["图片生成", "少且慢", "更多", "更多更精细", "不限量", "**与 Plus 相同**", "与 Plus 相同"],
-                  ["Codex 与 Work", "受限", "受限", "扩展", "最高", "**扩展**", "扩展"],
+                  ["Codex 与 Work", "受限", "受限", "有 GPT-6 Astra", "有 GPT-6 Astra，最高", "有 GPT-6 Astra", "有 GPT-6 Astra"],
                   ["深度研究", "受限", "受限", "扩展", "最高", "**扩展**", "扩展"],
                   ["记忆与上下文", "受限", "更长", "扩展", "最高", "**扩展**", "最大"],
                   ["应用内广告", "有", "可能有", "无", "无", "**无**", "无"],
