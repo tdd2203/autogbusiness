@@ -162,6 +162,10 @@ def _order_id_of(log: AuditLog) -> str | None:
 # nhận hạn từ hungcuong128). Nối lúc ĐỌC, hai chiều — xem `_transfer_leg_queue_id`
 # và `_transfer_origin_of`; áp được cho cả nhật ký cũ, không sửa dòng đã ghi.
 _TRANSFER_ACTIONS = ("MEMBER_EMAIL_CHANGED", "MEMBER_SUBSCRIPTION_TRANSFERRED")
+# Lệnh gỡ XẾP LẠI khi email cũ vẫn còn trên ChatGPT sau lần đổi (hệ thống ghi, xem
+# `reconcile._retry_stuck_email_change_removals` và tick hết hạn ở `main.py`). Không
+# dòng chuyển hạn nào trỏ tới mã lệnh này, nên phải nối qua chính dòng xếp lại.
+_RETRY_ACTION = "MEMBER_EMAIL_CHANGE_REMOVE_RETRY"
 
 
 def _transfer_leg_queue_id(log: AuditLog) -> str | None:
@@ -200,7 +204,41 @@ def _transfer_origin_of(log: AuditLog, leg: str) -> dict:
         "actor_label": log.actor_label,
         "log_id": str(log.id),
         "at": log.timestamp.isoformat() if log.timestamp else None,
+        # Lệnh gỡ đầu tiên của lần đổi; lệnh gỡ XẾP LẠI mang `retry=True` (xem dưới).
+        "retry": False,
+        "transfer_actor_label": None,
     }
+
+
+def _retry_origin_of(retry: AuditLog, transfer: AuditLog | None) -> dict:
+    """Ngữ cảnh cho lệnh gỡ XẾP LẠI: email cũ → mới lấy từ chính dòng xếp lại (đủ
+    kể cả khi không tìm thấy lần đổi gốc), loại đổi email / chuyển hạn và admin đã
+    bấm lấy từ dòng gốc nếu có.
+
+    Người thực hiện của lệnh này là HỆ THỐNG (nó tự xếp lại), không phải admin — web
+    giữ "Tự động · hệ thống" và chỉ ghi admin ở panel ("Lần chuyển hạn của …").
+    """
+    d = retry.data or {}
+    if transfer is not None:
+        o = _transfer_origin_of(transfer, "remove")
+    else:
+        o = {
+            "kind": "email_change",
+            "leg": "remove",
+            "source_email": None,
+            "target_email": None,
+            "mode": None,
+            "log_id": None,
+            "at": None,
+        }
+    o["source_email"] = o.get("source_email") or d.get("email")
+    o["target_email"] = o.get("target_email") or d.get("changed_to")
+    o["retry"] = True
+    o["transfer_actor_label"] = transfer.actor_label if transfer is not None else None
+    o["actor_type"] = retry.actor_type
+    o["actor_label"] = retry.actor_label
+    o["retry_log_id"] = str(retry.id)
+    return o
 
 
 def _own_queue_item_ids(db: Session, user_id: UUID, logs: list[AuditLog]) -> set[str]:
@@ -803,6 +841,44 @@ def list_audit_logs(
                 if isinstance(q, str) and q in leg_qids:
                     transfer_by_leg[q] = (t, leg)
 
+    # LỆNH GỠ XẾP LẠI (email cũ vẫn còn trên ChatGPT sau lần đổi). Dòng
+    # `MEMBER_EMAIL_CHANGE_REMOVE_RETRY` mang mã lệnh mới + email cũ/mới; lần đổi
+    # gốc tìm theo id thành viên cũ (`old_member_id` / `source_member_id`) để lấy
+    # loại và admin đã bấm. Chỉ tra những mã lệnh chưa nối được ở bước trên.
+    retry_by_leg: dict[str, dict] = {}
+    retry_qids = leg_qids - set(transfer_by_leg)
+    if retry_qids:
+        retries = list(
+            db.execute(
+                select(AuditLog).where(
+                    AuditLog.action == _RETRY_ACTION,
+                    AuditLog.data["queue_item_id"].astext.in_(retry_qids),
+                )
+            ).scalars()
+        )
+        old_ids = {r.target_id for r in retries if r.target_id}
+        origin_by_old: dict[str, AuditLog] = {}
+        if old_ids:
+            for t in db.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.action.in_(_TRANSFER_ACTIONS),
+                    or_(
+                        AuditLog.data["old_member_id"].astext.in_(old_ids),
+                        AuditLog.data["source_member_id"].astext.in_(old_ids),
+                    ),
+                )
+                .order_by(AuditLog.timestamp)
+            ).scalars():
+                td = t.data or {}
+                mid = td.get("old_member_id") or td.get("source_member_id")
+                if isinstance(mid, str):
+                    origin_by_old[mid] = t  # cùng một email cũ: lần đổi mới nhất thắng
+        for r in retries:
+            q = (r.data or {}).get("queue_item_id")
+            if isinstance(q, str) and q in retry_qids:
+                retry_by_leg[q] = _retry_origin_of(r, origin_by_old.get(r.target_id or ""))
+
     out: list[AuditLogOut] = []
     for r in rows:
         o = AuditLogOut.model_validate(r)
@@ -823,6 +899,9 @@ def list_audit_logs(
         elif row_qid and row_qid in transfer_by_leg:
             t, leg = transfer_by_leg[row_qid]
             d["transfer_origin"] = _transfer_origin_of(t, leg)
+            mutated = True
+        elif row_qid and row_qid in retry_by_leg:
+            d["transfer_origin"] = dict(retry_by_leg[row_qid])
             mutated = True
         row_order = _fee_order_id(r)
         if row_order and not d.get("order_id"):

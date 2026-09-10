@@ -282,6 +282,64 @@ def test_legacy_change_email_row_joins_invite_task(
     )
 
 
+def test_retried_removal_rows_carry_origin(client: TestClient, auth_header: dict) -> None:
+    """Lệnh gỡ hỏng → đồng bộ thấy email cũ vẫn còn → hệ thống XẾP LẠI lệnh gỡ. Lệnh
+    mới không được dòng chuyển hạn trỏ tới, nhưng vẫn phải kể được nó gỡ email cũ của
+    lần chuyển hạn nào (user 10/9/2026)."""
+    ws = _create_workspace(client, auth_header)
+    _upsert_active(client, ws, ["linger@example.com"])
+    src = _members(client, ws["id"], auth_header)["linger@example.com"]
+    _set_subscription(client, ws["id"], src["id"], 2, auth_header)
+    resp = client.post(
+        f"/api/v1/workspaces/{ws['id']}/members/{src['id']}/transfer-subscription",
+        json={"target_email": "fresh@example.com"},
+        headers=auth_header,
+    )
+    assert resp.status_code == 201, resp.text
+    first = _task(client, ws["id"], auth_header, "REMOVE_MEMBER", "linger@example.com")
+    resp = client.patch(
+        f"/api/v1/queue/{first['id']}",
+        json={"status": "FAILED", "error_code": "VERIFY_FAILED"},
+        headers={"X-API-KEY": ws["extension_api_key"]},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Đồng bộ báo email cũ VẪN ở trong team → hệ thống xếp lại lệnh gỡ.
+    _upsert_active(client, ws, ["linger@example.com"])
+    retries = [
+        t
+        for t in client.get(
+            f"/api/v1/queue?workspace_id={ws['id']}&limit=50", headers=auth_header
+        ).json()
+        if t["type"] == "REMOVE_MEMBER"
+        and t["payload"]["email"] == "linger@example.com"
+        and t["id"] != first["id"]
+    ]
+    assert len(retries) == 1, retries
+    retry = retries[0]
+
+    logs = _audit(client, auth_header)
+    admin = _row(logs, "MEMBER_SUBSCRIPTION_TRANSFERRED")["actor_label"]
+    o = _row(logs, "MEMBER_EMAIL_CHANGE_REMOVE_RETRY", retry["id"])["data"]["transfer_origin"]
+    assert o["retry"] is True
+    assert o["leg"] == "remove"
+    assert o["kind"] == "subscription_transfer"
+    assert o["source_email"] == "linger@example.com"
+    assert o["target_email"] == "fresh@example.com"
+    # Lệnh xếp lại là việc của hệ thống; admin của lần chuyển gốc ghi riêng.
+    assert o["actor_type"] == "SYSTEM"
+    assert o["transfer_actor_label"] == admin
+    # Lệnh gỡ ĐẦU vẫn là ngữ cảnh thường (không phải xếp lại).
+    first_o = _row(logs, "QUEUE_UPDATED:REMOVE_MEMBER", first["id"])["data"]["transfer_origin"]
+    assert first_o["retry"] is False
+
+    _finish(client, ws, retry["id"], {"result": {"data": {"verified": True}}})
+    logs = _audit(client, auth_header)
+    for action in ("MEMBER_REMOVED_SYNCED", "QUEUE_UPDATED:REMOVE_MEMBER"):
+        o = _row(logs, action, retry["id"])["data"]["transfer_origin"]
+        assert o["retry"] is True and o["target_email"] == "fresh@example.com", action
+
+
 def test_plain_invite_carries_no_origin(client: TestClient, auth_header: dict) -> None:
     """Lệnh mời thường không được gán bừa ngữ cảnh đổi email."""
     ws = _create_workspace(client, auth_header)

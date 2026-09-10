@@ -342,6 +342,89 @@ describe("lệnh gỡ email cũ THẤT BẠI", () => {
   });
 });
 
+describe("lệnh gỡ XẾP LẠI vì email cũ vẫn còn trên ChatGPT", () => {
+  const RETRY_QID = "7277b8e7-7c58-45e9-8f34-2e99b6d61353";
+  const retryOrigin = origin("remove", {
+    retry: true,
+    actor_type: "SYSTEM",
+    actor_label: null,
+    transfer_actor_label: ADMIN,
+  });
+  const rows: RawEvent[] = [
+    {
+      id: "y3",
+      timestamp: "2026-09-10T03:00:40.000Z",
+      actor_type: "EXTENSION",
+      actor_label: `workspace:${WS}`,
+      action: "QUEUE_UPDATED:REMOVE_MEMBER",
+      result: "COMPLETED",
+      target_type: "QUEUE_ITEM",
+      target_id: RETRY_QID,
+      data: { status: "COMPLETED", emails: [OLD_EMAIL], email: OLD_EMAIL, transfer_origin: retryOrigin },
+    },
+    {
+      id: "y2",
+      timestamp: "2026-09-10T03:00:39.000Z",
+      actor_type: "EXTENSION",
+      actor_label: `workspace:${WS}`,
+      action: "MEMBER_REMOVED_SYNCED",
+      result: "COMPLETED",
+      target_type: "MEMBER",
+      target_id: OLD_MID,
+      data: {
+        email: OLD_EMAIL,
+        workspace_id: WS_ID,
+        queue_item_id: RETRY_QID,
+        removal_reason: "subscription_transferred",
+        transfer_origin: retryOrigin,
+      },
+    },
+    {
+      id: "y1",
+      timestamp: "2026-09-10T03:00:00.000Z",
+      actor_type: "SYSTEM",
+      actor_label: null,
+      action: "MEMBER_EMAIL_CHANGE_REMOVE_RETRY",
+      result: "PENDING",
+      target_type: "MEMBER",
+      target_id: OLD_MID,
+      data: {
+        email: OLD_EMAIL,
+        changed_to: NEW_EMAIL,
+        workspace_id: WS_ID,
+        queue_item_id: RETRY_QID,
+        task_type: "REMOVE_MEMBER",
+        source: "scheduler",
+        transfer_origin: retryOrigin,
+      },
+    },
+  ];
+
+  it("mang tên gỡ lại, vẫn là việc của hệ thống, nói rõ đã chuyển hạn sang đâu", () => {
+    const [g] = buildGroups(decorate(rows));
+    expect(g.events).toHaveLength(3);
+    expect(g.title).toBe("Gỡ lại do chuyển hạn sử dụng");
+    expect(g.actorType).toBe("SYSTEM");
+    expect(g.actorLabel).toBe("hệ thống");
+    expect(g.emails).toEqual([OLD_EMAIL]);
+    expect(g.stages.queued).toBe(true);
+    expect(g.gstatus).toBe("done");
+    expect(g.memberSub).toBe("remove");
+    expect(summarize(g)).toBe(`Gỡ khỏi ${WS} — đã chuyển hạn sang ${NEW_EMAIL}`);
+  });
+
+  it("không có ngữ cảnh (nhật ký rất cũ) thì giữ tên gộp như trước", () => {
+    const bare = rows.map((r) => {
+      const d = { ...(r.data ?? {}) };
+      delete d.transfer_origin;
+      return { ...r, data: d };
+    });
+    const [g] = buildGroups(decorate(bare));
+    expect(g.title).toBe("Xoá do đổi email/chuyển hạn sử dụng");
+    expect(g.actorLabel).toBe("hệ thống");
+  });
+});
+
 describe("dòng của admin nằm ngoài cửa sổ đang tải", () => {
   it("lệnh mời vẫn tự kể được nhờ ngữ cảnh bơm vào từng dòng", () => {
     const [g] = buildGroups(decorate(newestFirst(INVITE_LEG)));

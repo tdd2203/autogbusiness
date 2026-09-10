@@ -908,6 +908,10 @@ export type TransferOrigin = {
   mode: string | null;
   actor_type: string | null;
   actor_label: string | null;
+  /** Lệnh gỡ XẾP LẠI vì email cũ vẫn còn trên ChatGPT sau lần đổi (hệ thống làm). */
+  retry: boolean;
+  /** Admin đã bấm lần đổi gốc — chỉ có ở lệnh xếp lại (người thực hiện là hệ thống). */
+  transfer_actor_label: string | null;
 };
 
 const str = (v: unknown): string | null =>
@@ -932,6 +936,8 @@ function transferOriginOf(evs: Decorated[], key: string): TransferOrigin | null 
       mode: str(t.mode),
       actor_type: str(t.actor_type),
       actor_label: str(t.actor_label),
+      retry: t.retry === true,
+      transfer_actor_label: str(t.transfer_actor_label),
     };
   }
   for (const e of evs) {
@@ -947,6 +953,8 @@ function transferOriginOf(evs: Decorated[], key: string): TransferOrigin | null 
       mode: str(d.mode),
       actor_type: e.actor_type,
       actor_label: e.actor_label,
+      retry: false,
+      transfer_actor_label: null,
     };
   }
   return null;
@@ -955,8 +963,11 @@ function transferOriginOf(evs: Decorated[], key: string): TransferOrigin | null 
 /** Tiêu đề nhóm theo VIỆC admin đã làm, không theo lệnh máy chạy — cùng lý do
  *  "Xoá do hết hạn" khác "Gỡ thành viên". */
 function transferTitle(o: TransferOrigin): string {
-  if (o.leg === "remove")
-    return o.kind === "email_change" ? "Xoá do đổi email" : "Xoá do chuyển hạn sử dụng";
+  if (o.leg === "remove") {
+    const why = o.kind === "email_change" ? "đổi email" : "chuyển hạn sử dụng";
+    // Lệnh gỡ đầu hỏng, hệ thống xếp lại: vẫn cùng nguyên nhân, chỉ là lần sau.
+    return o.retry ? `Gỡ lại do ${why}` : `Xoá do ${why}`;
+  }
   return o.kind === "email_change" ? "Đổi email" : "Chuyển hạn sử dụng";
 }
 
@@ -2590,6 +2601,12 @@ function ExpandedPanel({ g }: { g: Group }) {
           ? "Chuyển hạn sang"
           : "Nhận hạn từ";
     if (other) pairs.push({ label, value: other });
+    // Lệnh xếp lại là việc của hệ thống; admin của lần đổi gốc ghi riêng ở đây.
+    if (origin.retry && origin.transfer_actor_label)
+      pairs.push({
+        label: origin.kind === "email_change" ? "Lần đổi email của" : "Lần chuyển hạn của",
+        value: adminDisplayName(origin.transfer_actor_label),
+      });
   }
   const gridRows = origin
     ? infoRows.filter((r) => !TRANSFER_EMAIL_LABELS.has(r.label))
