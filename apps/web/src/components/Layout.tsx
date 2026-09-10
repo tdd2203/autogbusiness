@@ -2,6 +2,7 @@ import { createPortal } from "react-dom";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { RunningTaskBubble } from "./RunningTaskBubble";
 import DailyGuideModal from "./DailyGuideModal";
+import ErrorBoundary from "./ErrorBoundary";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../hooks/useAuth";
 import {
@@ -609,7 +610,11 @@ export default function Layout() {
       </aside>
 
       <main className="app-main">
-        <Outlet />
+        {/* Trang vẽ hỏng chỉ thay bằng thẻ báo lỗi, khung app vẫn đứng; đổi trang là
+            gỡ lỗi cũ. Xem ErrorBoundary.tsx. */}
+        <ErrorBoundary resetKey={location.pathname}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
 
       {/* Thanh tab đáy màn hình (chỉ điện thoại, giống app di động): 4 mục dùng nhiều

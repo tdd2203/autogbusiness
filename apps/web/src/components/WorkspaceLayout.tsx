@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useParams } from "react-router-dom";
+import ErrorBoundary from "./ErrorBoundary";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../lib/api";
 import { queuePollInterval } from "../lib/queuePolling";
@@ -316,7 +317,10 @@ export default function WorkspaceLayout() {
       {/* Panel billing đã chuyển sang tab riêng "Thanh toán"
           (pages/WorkspaceBilling.tsx) — không còn chèn trên đầu các tab khác. */}
       <div>
-        <Outlet context={{ openBulkUpdate }} />
+        {/* Tab con vẽ hỏng thì chỉ tab đó báo lỗi, dải tab workspace vẫn bấm được. */}
+        <ErrorBoundary resetKey={pathname}>
+          <Outlet context={{ openBulkUpdate }} />
+        </ErrorBoundary>
       </div>
 
       {showInviteModal && workspaceId && (

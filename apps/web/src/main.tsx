@@ -6,6 +6,7 @@ import App from "./App";
 import { AuthProvider } from "./hooks/useAuth";
 import { I18nProvider } from "./i18n";
 import { ToastProvider } from "./components/Toast";
+import ErrorBoundary, { RootCrash } from "./components/ErrorBoundary";
 import { initUiScale } from "./lib/ui-scale";
 import "./index.css";
 
@@ -51,16 +52,20 @@ initUiScale();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <I18nProvider>
-        <ToastProvider>
-          <BrowserRouter>
-            <AuthProvider>
-              <App />
-            </AuthProvider>
-          </BrowserRouter>
-        </ToastProvider>
-      </I18nProvider>
-    </QueryClientProvider>
+    {/* Rào chắn cuối cùng: provider hay Layout hỏng cũng còn một thẻ báo lỗi kèm
+        nút tải lại, không để trang trắng. Lỗi từng trang bắt ở Layout (gần hơn). */}
+    <ErrorBoundary fallback={RootCrash}>
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider>
+          <ToastProvider>
+            <BrowserRouter>
+              <AuthProvider>
+                <App />
+              </AuthProvider>
+            </BrowserRouter>
+          </ToastProvider>
+        </I18nProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   </React.StrictMode>,
 );

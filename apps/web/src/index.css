@@ -2898,6 +2898,11 @@ body {
   @media (max-width: 768px) {
     .app-shell {
       grid-template-columns: 1fr;
+      /* Khai báo hàng: thanh trên co theo nội dung, phần còn lại là main. Không khai
+         báo thì grid chia đều chiều cao thừa (min-height 100vh) cho MỌI hàng, nên
+         trang ngắn (đang tải, thẻ báo lỗi, ít dữ liệu) bị đẩy xuống giữa màn hình
+         rồi mới nhảy lên khi dữ liệu về (user 2026-09-10). */
+      grid-template-rows: auto 1fr;
     }
     /* Sidebar trở thành drawer trượt từ trái */
     .app-sidebar {
