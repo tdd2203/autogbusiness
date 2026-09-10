@@ -56,24 +56,26 @@
  *    đậm cột Business: hai bên như nhau, khoe ở đó là nói quá.
  *  Khác biệt thật chỉ nằm trong KHUNG CHAT — đó mới là chỗ đáng in đậm.
  *
- *  LƯU Ý WORK/CODEX (chốt user 10/9/2026): bài "Managing usage with GPT-6 Astra in
- *  Work and Codex" của OpenAI (cập nhật 9/9/2026) cho bảng số tin ước tính mỗi cửa
- *  sổ 5 giờ — Plus và Business Standard GIỐNG HỆT nhau từng model (Astra 5–45), Pro
- *  5x gấp 5, Pro 20x gấp 20. Đưa vào mục Lưu ý chứ không vào ô bảng: số là ước
- *  lượng, trần tuần lại không có số, ghi vào bảng là hứa thứ không giữ được. Nói
+ *  BƯỚC 2 — BẢNG HẠN MỨC WORK/CODEX CỦA SUẤT BUSINESS (chốt user 10/9/2026): nguồn
+ *  là bài "Managing usage with GPT-6 Astra in Work and Codex" (cập nhật 9/9/2026)
+ *  và bài "ChatGPT Business models and limits" (cập nhật 10/9/2026). Plus và
+ *  Business Standard GIỐNG HỆT nhau từng model (Astra 5–45 tin mỗi cửa sổ 5 giờ),
+ *  Pro 5x gấp 5, Pro 20x gấp 20; Premium gấp 5 lần Standard, dùng trọn hạn mức cho
+ *  Astra và KHÔNG có trần 5 giờ; hết hạn mức thì chờ kỳ hoặc credits của workspace
+ *  nếu đã nạp và spending control cho phép. Bản đầu nhét hết vào mục Lưu ý thành
+ *  hai câu dài, user đổi sang BẢNG cho dễ xem: cột tiêu chí, cột Standard, cột
+ *  Premium. Dùng `layout: "compare"` chứ không phải bảng thường: bảng thường ép
+ *  cột đầu và cột cuối một dòng (nó sinh ra cho cột ngày tháng), trên điện thoại
+ *  ô Premium bị cắt mất chữ. Cột Standard đóng khung xanh (`highlight: 1`) vì đó
+ *  là suất khách đang mua — cùng nghĩa với cột "Suất Business" của bảng trên.
+ *  Số luôn kèm dấu "~" và đoạn mở đầu nói rõ là ước tính: đây là ngân sách tính
+ *  toán, trần tuần lại không có số, ghi như số cứng là hứa thứ không giữ được. Nói
  *  thẳng chỗ Business chỉ bằng Plus để khách dùng Codex nặng khỏi mua nhầm.
  *
- *  DÒNG LƯU Ý RIÊNG CHO SUẤT BUSINESS (chốt user 10/9/2026): lấy từ bài "ChatGPT
- *  Business models and limits" (cập nhật 10/9/2026). Standard: bảng ước tính mỗi
- *  cửa sổ 5 giờ (Astra 5–45, Sol 10–100, Terra 25–200, Luna 250–2.000), phần dùng
- *  Astra "limited within the allowance"; chạy trên cloud tốn hơn tại máy. Premium:
- *  gấp 5 lần Standard, dùng trọn hạn mức cho Astra, KHÔNG có trần 5 giờ. Hết hạn
- *  mức: chờ kỳ, hoặc credits của workspace nếu đã nạp và spending control cho phép.
- *  Số ghi kèm chữ "ước tính" và chỉ nằm ở Lưu ý, cùng lý do như đoạn trên.
- *
- *  BÀI CHỈ CÓ ĐÚNG MỘT BẢNG (chốt user 10/9/2026): bản trước còn bước "đặt giá
- *  cạnh nhau" rồi bước "tiết kiệm được bao nhiêu"; user bỏ cả hai. Bài in đưa
- *  khách không nên khoe giá bán, và một bảng đã nói đủ.
+ *  KHÔNG CÓ BẢNG GIÁ (chốt user 10/9/2026): bản trước còn bước "đặt giá cạnh
+ *  nhau" rồi bước "tiết kiệm được bao nhiêu"; user bỏ cả hai. Bài in đưa khách
+ *  không nên khoe giá bán. Bảng hạn mức ở bước 2 là chuyện khác: nó nói quyền lợi,
+ *  không nói tiền.
  *
  *  KHÔNG CÒN `vars` LẪN Ô GÕ ĐƠN GIÁ: bài hết chỗ trống `{tên}` nên không còn số
  *  nào tính theo đơn giá người đọc. Ô gõ giá đặt ở bước không dùng số thì đứng đó
@@ -139,13 +141,28 @@ const businessVsPlus: Guide = {
                 ],
               },
             },
+            {
+              title: "Hạn mức Work/Codex của suất Business",
+              body: "Work và Codex dùng chung một hạn mức, tính theo cửa sổ 5 giờ và theo tuần. Suất Business Standard có hạn mức bằng Plus, gói Pro gấp 5 đến 20 lần. Số dưới đây là ước tính của OpenAI, không phải số tin cố định: tin càng dài, nấc suy luận càng cao thì càng tốn, chạy trên cloud tốn hơn chạy tại máy.",
+              table: {
+                layout: "compare",
+                highlight: 1,
+                head: ["Tiêu chí", "Suất Standard", "Suất Premium"],
+                rows: [
+                  ["GPT-6 Astra", "~5–45 tin mỗi 5 giờ, phần dùng Astra bị giới hạn", "Gấp 5 lần, dùng trọn"],
+                  ["GPT-5.6 Sol", "~10–100 tin mỗi 5 giờ", "Gấp 5 lần"],
+                  ["GPT-5.6 Terra", "~25–200 tin mỗi 5 giờ", "Gấp 5 lần"],
+                  ["GPT-5.6 Luna", "~250–2.000 tin mỗi 5 giờ", "Gấp 5 lần"],
+                  ["Trần 5 giờ", "Có", "Không, chỉ trần tuần"],
+                  ["Hết hạn mức", "Chờ tới kỳ, hoặc credits của workspace nếu có nạp và cho phép", "Như Standard"],
+                ],
+              },
+            },
           ],
         },
       ],
       notes: [
         `ChatGPT chỉ bán Business từ 2 suất trở lên, tức ít nhất ${bizMin}/tháng — mua lẻ qua đại lý thì chỉ trả đúng suất mình dùng.`,
-        "Work và Codex dùng chung một hạn mức, tính theo cửa sổ 5 giờ và theo tuần. Suất Business Standard có hạn mức bằng Plus, gói Pro gấp 5 đến 20 lần. Đây là ngân sách tính toán chứ không phải số tin cố định: tin càng dài, nấc suy luận càng cao thì càng tốn, việc chạy trên cloud tốn hơn chạy tại máy.",
-        "Chi tiết cho suất Business: với Standard, OpenAI ước tính mỗi cửa sổ 5 giờ được khoảng 5–45 tin GPT-6 Astra, 10–100 tin GPT-5.6 Sol, 25–200 tin Terra, 250–2.000 tin Luna, trong đó phần dùng Astra bị giới hạn. Premium gấp 5 lần Standard, dùng trọn hạn mức cho Astra và không có trần 5 giờ, chỉ còn trần tuần. Hết hạn mức thì chờ tới kỳ, hoặc chạy tiếp bằng credits nếu workspace có nạp và cho phép.",
       ],
     },
     en: {
@@ -183,13 +200,28 @@ const businessVsPlus: Guide = {
                 ],
               },
             },
+            {
+              title: "Work/Codex allowance for Business seats",
+              body: "Work and Codex share one allowance, measured over a 5-hour window and a weekly window. A Business Standard seat gets the same allowance as Plus; Pro gets 5 to 20 times more. The figures below are OpenAI's estimates, not fixed message counts: longer requests and higher reasoning levels use more, and cloud runs use more than local ones.",
+              table: {
+                layout: "compare",
+                highlight: 1,
+                head: ["Item", "Standard seat", "Premium seat"],
+                rows: [
+                  ["GPT-6 Astra", "~5–45 messages per 5 hours, Astra limited to part of the allowance", "5x, full allowance"],
+                  ["GPT-5.6 Sol", "~10–100 messages per 5 hours", "5x"],
+                  ["GPT-5.6 Terra", "~25–200 messages per 5 hours", "5x"],
+                  ["GPT-5.6 Luna", "~250–2,000 messages per 5 hours", "5x"],
+                  ["5-hour cap", "Yes", "No, weekly cap only"],
+                  ["When used up", "Wait for the reset, or workspace credits if bought and allowed", "Same as Standard"],
+                ],
+              },
+            },
           ],
         },
       ],
       notes: [
         `ChatGPT sells Business from 2 seats up, so at least ${bizMin} a month — buying a single seat from a reseller means you pay only for the seat you use.`,
-        "Work and Codex share one allowance, measured over a 5-hour window and a weekly window. A Business Standard seat gets the same allowance as Plus; Pro gets 5 to 20 times more. It is a compute budget, not a fixed number of messages: longer requests and higher reasoning levels use more of it, and cloud runs use more than local ones.",
-        "Business seat details: for Standard, OpenAI estimates roughly 5–45 GPT-6 Astra, 10–100 GPT-5.6 Sol, 25–200 Terra and 250–2,000 Luna messages per 5-hour window, with Astra limited to part of that allowance. Premium has 5 times the Standard allowance, can spend all of it on Astra, and has no 5-hour cap, only the weekly one. Once the allowance is used up, wait for the reset, or keep going on workspace credits if the workspace has bought them and allows it.",
       ],
     },
     "zh-CN": {
@@ -226,13 +258,28 @@ const businessVsPlus: Guide = {
                 ],
               },
             },
+            {
+              title: "Business 席位的 Work/Codex 额度",
+              body: "Work 与 Codex 共用同一额度，按 5 小时窗口和每周窗口计算。Business Standard 席位的额度与 Plus 相同，Pro 为其 5 到 20 倍。下表为 OpenAI 的估算，不是固定条数：请求越长、推理档位越高，消耗越多；云端运行比本机更耗。",
+              table: {
+                layout: "compare",
+                highlight: 1,
+                head: ["项目", "Standard 席位", "Premium 席位"],
+                rows: [
+                  ["GPT-6 Astra", "每 5 小时约 5–45 条，Astra 只能占额度的一部分", "5 倍，可用全部额度"],
+                  ["GPT-5.6 Sol", "每 5 小时约 10–100 条", "5 倍"],
+                  ["GPT-5.6 Terra", "每 5 小时约 25–200 条", "5 倍"],
+                  ["GPT-5.6 Luna", "每 5 小时约 250–2,000 条", "5 倍"],
+                  ["5 小时上限", "有", "无，只有每周上限"],
+                  ["额度用完", "等待重置，或在工作区已购买并允许时用 credits", "与 Standard 相同"],
+                ],
+              },
+            },
           ],
         },
       ],
       notes: [
         `ChatGPT 的 Business 至少要买 2 个席位，即每月至少 ${bizMin}——通过代理零买则只付自己用的那一个。`,
-        "Work 与 Codex 共用同一额度，按 5 小时窗口和每周窗口计算。Business Standard 席位的额度与 Plus 相同，Pro 为其 5 到 20 倍。这是算力预算而非固定条数：请求越长、推理档位越高，消耗越多；云端运行比本机更耗。",
-        "Business 席位详情：Standard 按 OpenAI 估算，每 5 小时窗口约可发 5–45 条 GPT-6 Astra、10–100 条 GPT-5.6 Sol、25–200 条 Terra、250–2,000 条 Luna，其中 Astra 只能占该额度的一部分。Premium 为 Standard 的 5 倍，可将全部额度用于 Astra，且没有 5 小时上限，只有每周上限。额度用完后等待重置，或在工作区已购买并允许的情况下用工作区 credits 继续。",
       ],
     },
   },

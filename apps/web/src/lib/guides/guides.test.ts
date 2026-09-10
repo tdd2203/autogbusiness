@@ -235,13 +235,13 @@ describe("bài sáu gói ChatGPT", () => {
   const guide = GUIDES.find((g) => g.id === "business-vs-plus")!;
   const steps = (c: GuideContent) => c.sections.flatMap((s) => s.steps);
 
-  it("bài chỉ có đúng một bảng, không còn số nào theo đơn giá người đọc", () => {
+  it("bài có hai bước (bảng gói + bảng hạn mức), không còn số nào theo đơn giá", () => {
     // Hết chỗ trống `{tên}` thì cũng không được còn `vars` lẫn ô gõ đơn giá —
     // ô nhập ở bước không dùng số chỉ tổ đứng đó vô duyên.
     expect(guide.vars).toBeUndefined();
     for (const lang of GUIDE_LANGS) {
-      expect(steps(guide.content[lang]).length).toBe(1);
-      expect(steps(guide.content[lang])[0].feeInput).toBeUndefined();
+      expect(steps(guide.content[lang]).length).toBe(2);
+      for (const step of steps(guide.content[lang])) expect(step.feeInput).toBeUndefined();
       expect(JSON.stringify(guide.content[lang])).not.toMatch(/\{[A-Za-z0-9_]+\}/);
     }
   });
@@ -288,21 +288,29 @@ describe("bài sáu gói ChatGPT", () => {
     }
   });
 
-  it("lưu ý Work/Codex có ở mọi ngôn ngữ và nói rõ suất Business bằng Plus", () => {
+  it("bước 2 là bảng hạn mức Work/Codex của suất Business, ở mọi ngôn ngữ", () => {
     // Khách dùng Codex nặng phải được biết trước chỗ này — thiếu bản dịch nào là
-    // khách đọc ngôn ngữ đó mua nhầm.
+    // khách đọc ngôn ngữ đó mua nhầm. Bảng thường 3 cột: tiêu chí / Standard /
+    // Premium; mục Lưu ý chỉ còn câu mua tối thiểu 2 suất.
     for (const lang of GUIDE_LANGS) {
-      const notes = guide.content[lang].notes!;
-      expect(notes.length).toBe(3);
-      expect(notes[1]).toMatch(/Codex/);
-      expect(notes[1]).toMatch(/Plus/);
-      expect(notes[1]).toMatch(/Business/);
-      // Dòng riêng cho suất Business: số ước tính của Standard theo bảng OpenAI,
-      // Premium khác chỗ nào, và hết hạn mức thì đi đường nào.
-      expect(notes[2]).toMatch(/5–45/);
-      expect(notes[2]).toMatch(/250–2[.,]000/);
-      expect(notes[2]).toMatch(/Premium/);
-      expect(notes[2]).toMatch(/credits/);
+      const c = guide.content[lang];
+      expect(c.notes!.length).toBe(1);
+      const step = steps(c)[1];
+      expect(step.body).toMatch(/Plus/);
+      expect(step.body).toMatch(/Codex/);
+      const t = step.table!;
+      // Kiểu so sánh để mọi ô xuống dòng được trên điện thoại; khung xanh ở cột
+      // Standard vì đó là suất khách mua, cùng nghĩa với cột Business bảng trên.
+      expect(t.layout).toBe("compare");
+      expect(t.highlight).toBe(1);
+      expect(t.head.length).toBe(3);
+      expect(t.head[1]).toMatch(/Standard/);
+      expect(t.head[2]).toMatch(/Premium/);
+      for (const row of t.rows) expect(row.length).toBe(3);
+      const flat = JSON.stringify(t.rows);
+      expect(flat).toMatch(/5–45/);
+      expect(flat).toMatch(/250–2[.,]000/);
+      expect(flat).toMatch(/credits/);
     }
   });
 
@@ -311,6 +319,9 @@ describe("bài sáu gói ChatGPT", () => {
     expect(html).toContain('<table class="step-table compare wide">');
     expect(html).toContain('<th class="is-hi"><span class="badge">Nên chọn</span>Suất Business</th>');
     expect(html).toContain('<th class="is-base">Plus</th>');
+    // Bảng hạn mức ở bước 2 là bảng so sánh 3 cột (không rộng), khung ở cột Standard.
+    expect((html.match(/<table class="step-table compare">/g) ?? []).length).toBe(1);
+    expect(html).toContain('<th class="is-hi">Suất Standard</th>');
     expect(html).toContain(".step-table.compare .is-hi { background");
     expect(html).toContain(".step-table.compare .is-base { background");
     // Hai cột phải khác màu nền — cùng màu thì khách tưởng cả hai đều được khuyên.
