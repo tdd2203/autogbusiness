@@ -153,6 +153,56 @@ def _order_id_of(log: AuditLog) -> str | None:
     return None
 
 
+# ĐỔI EMAIL / CHUYỂN HẠN SỬ DỤNG = một thao tác của admin đẻ ra HAI lệnh hàng đợi
+# (gỡ email cũ + mời email mới). Dòng nhật ký của thao tác đó KHÔNG mang
+# `queue_item_id` — chỉ có `invite_queue_item_id` / `remove_queue_item_id` — còn hai
+# lệnh kia thì chỉ có dòng cấp hàng đợi do extension ghi. Trang nhật ký gom nhóm
+# theo `queue_item_id`, nên lệnh mời email mới hiện là "Mời thành viên · Tự động"
+# mà không một chữ nào nói nó sinh ra từ lần đổi email (user 10/9/2026, ca cuongnh
+# nhận hạn từ hungcuong128). Nối lúc ĐỌC, hai chiều — xem `_transfer_leg_queue_id`
+# và `_transfer_origin_of`; áp được cho cả nhật ký cũ, không sửa dòng đã ghi.
+_TRANSFER_ACTIONS = ("MEMBER_EMAIL_CHANGED", "MEMBER_SUBSCRIPTION_TRANSFERRED")
+
+
+def _transfer_leg_queue_id(log: AuditLog) -> str | None:
+    """Lệnh hàng đợi mà dòng đổi email / chuyển hạn đứng chung nhóm.
+
+    Ưu tiên lệnh MỜI email mới (đó là việc người đọc thấy); chuyển hạn kiểu cộng
+    dồn không mời ai nên về lệnh GỠ email cũ. Dòng không phải đổi email → None.
+    """
+    if log.action not in _TRANSFER_ACTIONS:
+        return None
+    d = log.data or {}
+    for key in ("invite_queue_item_id", "remove_queue_item_id"):
+        qid = d.get(key)
+        if isinstance(qid, str) and qid:
+            return qid
+    return None
+
+
+def _transfer_origin_of(log: AuditLog, leg: str) -> dict:
+    """Ngữ cảnh "lệnh này sinh ra từ lần đổi email nào" — gắn lên MỌI dòng của cả
+    lệnh gỡ lẫn lệnh mời, để khi dòng khởi tạo (của admin) nằm ngoài cửa sổ trang
+    đang tải thì lệnh vẫn tự kể được nó từ đâu ra và ai bấm.
+
+    `leg`: 'invite' (lệnh mời email mới) hay 'remove' (lệnh gỡ email cũ).
+    """
+    d = log.data or {}
+    kind = "email_change" if log.action == "MEMBER_EMAIL_CHANGED" else "subscription_transfer"
+    return {
+        "kind": kind,
+        "leg": leg,
+        "source_email": d.get("old_email") or d.get("source_email"),
+        "target_email": d.get("new_email") or d.get("target_email"),
+        # fresh / accumulate / unlimited — chỉ có ở chuyển hạn; đổi email không có.
+        "mode": d.get("mode"),
+        "actor_type": log.actor_type,
+        "actor_label": log.actor_label,
+        "log_id": str(log.id),
+        "at": log.timestamp.isoformat() if log.timestamp else None,
+    }
+
+
 def _own_queue_item_ids(db: Session, user_id: UUID, logs: list[AuditLog]) -> set[str]:
     """queue_item.id (str) mà CHÍNH user này tạo, trong số task được nhắc ở `logs`."""
     ids: set[UUID] = set()
@@ -661,12 +711,15 @@ def list_audit_logs(
         return None
 
     def _resolved_queue_id(log: AuditLog) -> str | None:
-        """queue_item_id của dòng log — kể cả khi chỉ suy ra được qua hoá đơn."""
+        """queue_item_id của dòng log — kể cả khi chỉ suy ra được qua hoá đơn, hoặc
+        khi đó là dòng đổi email / chuyển hạn (đứng chung nhóm với lệnh mời)."""
         qid = _queue_item_id_of(log)
         if qid:
             return qid
         oid = _order_id_of(log)
-        return order_queue.get(oid) if oid else None
+        if oid and oid in order_queue:
+            return order_queue[oid]
+        return _transfer_leg_queue_id(log)
 
     # MÃ HOÁ ĐƠN cho cả cụm sự kiện của lệnh. Trang nhật ký hiện mã này cạnh tên
     # workspace thay cho mã hàng đợi — người đối soát tra được thẳng sang khối "Hoá
@@ -720,6 +773,36 @@ def list_audit_logs(
             if resolved:
                 queue_emails[str(qid)] = resolved
 
+    # LỆNH GỠ / LỆNH MỜI ← LẦN ĐỔI EMAIL SINH RA NÓ. Tra ngược theo id lệnh (liên kết
+    # THẬT ghi lúc đổi email, không đoán theo thời gian); một truy vấn cho cả trang,
+    # rẻ nhờ index `action` (chỉ vài chục dòng đổi email trong toàn bộ nhật ký).
+    leg_qids: set[str] = set()
+    for r in rows:
+        if r.action in _TRANSFER_ACTIONS:
+            continue
+        qid = _resolved_queue_id(r)
+        if qid:
+            leg_qids.add(qid)
+    transfer_by_leg: dict[str, tuple[AuditLog, str]] = {}
+    if leg_qids:
+        for t in db.execute(
+            select(AuditLog).where(
+                AuditLog.action.in_(_TRANSFER_ACTIONS),
+                or_(
+                    AuditLog.data["invite_queue_item_id"].astext.in_(leg_qids),
+                    AuditLog.data["remove_queue_item_id"].astext.in_(leg_qids),
+                ),
+            )
+        ).scalars():
+            td = t.data or {}
+            for key, leg in (
+                ("invite_queue_item_id", "invite"),
+                ("remove_queue_item_id", "remove"),
+            ):
+                q = td.get(key)
+                if isinstance(q, str) and q in leg_qids:
+                    transfer_by_leg[q] = (t, leg)
+
     out: list[AuditLogOut] = []
     for r in rows:
         o = AuditLogOut.model_validate(r)
@@ -730,6 +813,16 @@ def list_audit_logs(
         row_qid = _resolved_queue_id(r)
         if row_qid and not _queue_item_id_of(r):
             d["queue_item_id"] = row_qid
+            mutated = True
+        if row_qid and r.action in _TRANSFER_ACTIONS:
+            # Chính dòng đổi email: tự mang ngữ cảnh của mình, cùng một dạng với các
+            # dòng của lệnh để web đọc MỘT chỗ.
+            leg = "invite" if row_qid == d.get("invite_queue_item_id") else "remove"
+            d["transfer_origin"] = _transfer_origin_of(r, leg)
+            mutated = True
+        elif row_qid and row_qid in transfer_by_leg:
+            t, leg = transfer_by_leg[row_qid]
+            d["transfer_origin"] = _transfer_origin_of(t, leg)
             mutated = True
         row_order = _fee_order_id(r)
         if row_order and not d.get("order_id"):

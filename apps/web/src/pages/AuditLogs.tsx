@@ -500,6 +500,7 @@ const ACT_TITLE: Record<string, string> = {
   MEMBER_EMAIL_CHANGE_REMOVE_FAILED: "Đổi email — gỡ email cũ thất bại",
   MEMBER_EMAIL_CHANGE_REMOVE_RETRY: "Xoá do đổi email/chuyển hạn sử dụng",
   MEMBER_EMAIL_CHANGED: "Đổi email thành viên",
+  MEMBER_SUBSCRIPTION_TRANSFERRED: "Chuyển hạn sử dụng",
   MEMBER_ADD_DATE_CORRECTED: "Sửa ngày thêm",
   MEMBER_EXPIRY_BULK_SET: "Đặt hạn hàng loạt",
   MEMBER_ROLE_SYNCED: "Đồng bộ vai trò",
@@ -854,9 +855,127 @@ type Group = {
   singleStatus: StatusKey;
   // Loại chủ thể khởi tạo (ADMIN người / SYSTEM tự động / EXTENSION tiện ích).
   actorType: string;
+  /** Lệnh này sinh ra từ một lần đổi email / chuyển hạn (null = lệnh thường). */
+  transferOrigin: TransferOrigin | null;
 };
 
 const opOf = (action: string) => action.split(":")[0];
+
+/* ── ĐỔI EMAIL / CHUYỂN HẠN SỬ DỤNG ─────────────────────────────────────────
+ *
+ * Một cú bấm "Chuyển hạn sử dụng đến" (hay "Đổi email" cũ) của admin đẻ ra HAI
+ * lệnh hàng đợi: gỡ email cũ + mời email mới. Dòng nhật ký của cú bấm đó
+ * (`MEMBER_SUBSCRIPTION_TRANSFERRED` / `MEMBER_EMAIL_CHANGED`) chỉ mang
+ * `invite_queue_item_id` / `remove_queue_item_id`, còn hai lệnh kia chỉ có dòng
+ * cấp hàng đợi do tiện ích ghi. Gom theo `queue_item_id` như cũ thì lệnh mời email
+ * mới hiện "Mời thành viên · Tự động", không một chữ nào nói nó từ đâu ra (ảnh
+ * user 10/9/2026, ca cuongnh nhận hạn từ hungcuong128).
+ *
+ * API nay (a) gắn `queue_item_id` cho dòng của admin để nó về chung nhóm với lệnh
+ * mời (không mời thì lệnh gỡ) và (b) bơm `data.transfer_origin` vào MỌI dòng của
+ * cả hai lệnh — nhờ (b), dòng của admin có nằm ngoài cửa sổ 200 dòng thì lệnh vẫn
+ * tự kể được: tiêu đề "Chuyển hạn sử dụng" / "Xoá do chuyển hạn sử dụng", người
+ * thực hiện là admin đã bấm, câu tóm tắt nêu email đầu kia.
+ * ------------------------------------------------------------------------- */
+const TRANSFER_OPS = new Set(["MEMBER_EMAIL_CHANGED", "MEMBER_SUBSCRIPTION_TRANSFERRED"]);
+
+export type TransferOrigin = {
+  kind: "email_change" | "subscription_transfer";
+  /** Nhóm này là lệnh MỜI email mới hay lệnh GỠ email cũ của lần đổi. */
+  leg: "invite" | "remove";
+  source_email: string | null;
+  target_email: string | null;
+  /** fresh / accumulate / unlimited — chỉ có ở chuyển hạn. */
+  mode: string | null;
+  actor_type: string | null;
+  actor_label: string | null;
+};
+
+const str = (v: unknown): string | null =>
+  typeof v === "string" && v.trim() ? v : null;
+
+/** Ngữ cảnh đổi email của một nhóm: ưu tiên `transfer_origin` API bơm sẵn; API cũ
+ *  chưa bơm thì đọc thẳng dòng của admin nếu nó nằm trong nhóm. `key` là khoá gom
+ *  ("q:<id lệnh>") để biết nhóm là lệnh mời hay lệnh gỡ của lần đổi đó. */
+function transferOriginOf(evs: Decorated[], key: string): TransferOrigin | null {
+  for (const e of evs) {
+    const o = e.data?.transfer_origin;
+    if (!o || typeof o !== "object") continue;
+    const t = o as Record<string, unknown>;
+    const source_email = str(t.source_email);
+    const target_email = str(t.target_email);
+    if (!source_email && !target_email) continue;
+    return {
+      kind: t.kind === "email_change" ? "email_change" : "subscription_transfer",
+      leg: t.leg === "remove" ? "remove" : "invite",
+      source_email,
+      target_email,
+      mode: str(t.mode),
+      actor_type: str(t.actor_type),
+      actor_label: str(t.actor_label),
+    };
+  }
+  for (const e of evs) {
+    const op = opOf(e.action);
+    if (!TRANSFER_OPS.has(op)) continue;
+    const d = e.data ?? {};
+    const removeQ = str(d.remove_queue_item_id);
+    return {
+      kind: op === "MEMBER_EMAIL_CHANGED" ? "email_change" : "subscription_transfer",
+      leg: removeQ && key === `q:${removeQ}` ? "remove" : "invite",
+      source_email: str(d.old_email) ?? str(d.source_email),
+      target_email: str(d.new_email) ?? str(d.target_email),
+      mode: str(d.mode),
+      actor_type: e.actor_type,
+      actor_label: e.actor_label,
+    };
+  }
+  return null;
+}
+
+/** Tiêu đề nhóm theo VIỆC admin đã làm, không theo lệnh máy chạy — cùng lý do
+ *  "Xoá do hết hạn" khác "Gỡ thành viên". */
+function transferTitle(o: TransferOrigin): string {
+  if (o.leg === "remove")
+    return o.kind === "email_change" ? "Xoá do đổi email" : "Xoá do chuyển hạn sử dụng";
+  return o.kind === "email_change" ? "Đổi email" : "Chuyển hạn sử dụng";
+}
+
+/** Vế nói về ĐẦU KIA của lần đổi, nối sau câu tóm tắt của lệnh. `standalone` =
+ *  dòng của admin đứng một mình (lệnh chưa chạy / nằm ngoài cửa sổ) → câu đủ. */
+function transferNote(o: TransferOrigin, standalone: boolean): string {
+  const src = o.source_email ?? "email cũ";
+  const dst = o.target_email ?? "email mới";
+  if (standalone)
+    return `${o.kind === "email_change" ? "Đổi email" : "Chuyển hạn"} ${src} → ${dst}`;
+  if (o.leg === "remove") {
+    if (o.kind === "email_change") return `đã đổi email sang ${dst}`;
+    return o.mode === "accumulate"
+      ? `đã cộng dồn hạn vào ${dst}`
+      : `đã chuyển hạn sang ${dst}`;
+  }
+  return o.kind === "email_change"
+    ? `thay cho email cũ ${src}`
+    : `nhận hạn chuyển từ ${src}`;
+}
+
+/** Nhóm của lệnh MỜI kể về email mới, nhóm của lệnh GỠ kể về email cũ — email
+ *  còn lại đi vào câu tóm tắt, không chen vào cột email để một lần đổi email
+ *  không hoá thành "2 email thành viên". */
+function dropOtherEnd(emails: string[], o: TransferOrigin): string[] {
+  const other = (o.leg === "remove" ? o.target_email : o.source_email)?.toLowerCase();
+  if (!other) return emails;
+  const kept = emails.filter((em) => em.toLowerCase() !== other);
+  // Không được lọc tới rỗng: nhóm chỉ có đúng email kia thì cứ giữ để còn tên.
+  return kept.length ? kept : emails;
+}
+
+/** Tên hiển thị của admin từ `actor_label` (bỏ phần @domain) — cùng cách với lúc
+ *  trang trí từng dòng. */
+function adminDisplayName(label: string): string {
+  const at = label.indexOf("@");
+  return at > 0 ? label.slice(0, at) : label;
+}
 
 /** Tiêu đề nhóm vòng đời (gom queue) theo sự kiện KHỞI TẠO — tránh mọi gỡ đều
  * hiện chung "Gỡ thành viên" dù là xoá tay hay xoá tự động do hết hạn. */
@@ -880,9 +999,11 @@ const LIFECYCLE_TITLE_BY_INIT: Record<string, string> = {
 function groupInitiator(evs: Decorated[]): Decorated {
   const oldestFirst = [...evs].reverse();
   return (
-    oldestFirst.find(
-      (e) => /_QUEUED$/.test(opOf(e.action)) || opOf(e.action) === "QUEUE_CREATED",
-    ) ?? oldestFirst[0]
+    oldestFirst.find((e) => {
+      const op = opOf(e.action);
+      // Dòng đổi email / chuyển hạn của admin là cú bấm sinh ra lệnh — nó khởi tạo.
+      return /_QUEUED$/.test(op) || op === "QUEUE_CREATED" || TRANSFER_OPS.has(op);
+    }) ?? oldestFirst[0]
   );
 }
 
@@ -1045,17 +1166,23 @@ function glueToNearbyCommand(
 function makeGroup(key: string, evs: Decorated[]): Group {
   const lifecycle = key.startsWith("q:");
   const has = (pred: (e: Decorated) => boolean) => evs.some(pred);
+  const transferOrigin = transferOriginOf(evs, key);
   const stages: Stages = {
-    queued: has(
-      (e) => /_QUEUED$/.test(opOf(e.action)) || opOf(e.action) === "QUEUE_CREATED",
-    ),
+    // Lệnh sinh ra từ lần đổi email: cú bấm của admin chính là bước XẾP HÀNG, kể
+    // cả khi dòng đó nằm ngoài cửa sổ đang tải (ngữ cảnh đã bơm vào từng dòng).
+    queued:
+      transferOrigin !== null ||
+      has(
+        (e) => /_QUEUED$/.test(opOf(e.action)) || opOf(e.action) === "QUEUE_CREATED",
+      ),
     running: has((e) => opOf(e.action) === "QUEUE_PICKED"),
     done: has(eventMarksDone),
     failed: has(eventMarksFailed),
   };
-  const emails: string[] = [];
+  const rawEmails: string[] = [];
   for (const e of evs)
-    for (const em of e.targetEmails) if (!emails.includes(em)) emails.push(em);
+    for (const em of e.targetEmails) if (!rawEmails.includes(em)) rawEmails.push(em);
+  const emails = transferOrigin ? dropOtherEnd(rawEmails, transferOrigin) : rawEmails;
 
   // Hỏng cấp task rồi được đồng bộ cứu sau đó → KHÔNG phải nhóm hỏng.
   const rescued = stages.failed && rescuedAfterFail(evs, emails);
@@ -1073,7 +1200,11 @@ function makeGroup(key: string, evs: Decorated[]): Group {
 
   let title: string;
   let code: string;
-  const mappedTitle = lifecycle ? lifecycleTitleForGroup(evs, initOp) : null;
+  const mappedTitle = lifecycle
+    ? transferOrigin
+      ? transferTitle(transferOrigin)
+      : lifecycleTitleForGroup(evs, initOp)
+    : null;
   if (lifecycle && mappedTitle) {
     // Số email của lệnh: mẻ đồng bộ chỉ ghi `count`, các lệnh khác gắn danh sách —
     // lấy số lớn hơn để một mẻ 42 email vẫn là "hàng loạt" dù chỉ 1 email đổi trạng
@@ -1118,6 +1249,14 @@ function makeGroup(key: string, evs: Decorated[]): Group {
   const runMs =
     stamps.length > 1 ? Math.max(...stamps) - Math.min(...stamps) : null;
 
+  /* Người thực hiện: lệnh sinh ra từ lần đổi email là việc của ADMIN đã bấm — kể
+     cả khi dòng của admin nằm ngoài cửa sổ và nhóm chỉ còn các dòng tiện ích ghi
+     (trước đây hiện "workspace:… · Tự động" như thể máy tự mời). */
+  const borrowedActor =
+    transferOrigin && initiator.actor_type !== "ADMIN" && transferOrigin.actor_label
+      ? adminDisplayName(transferOrigin.actor_label)
+      : null;
+
   return {
     key,
     lifecycle,
@@ -1139,15 +1278,20 @@ function makeGroup(key: string, evs: Decorated[]): Group {
     emails,
     // Tên workspace của nhóm (mọi event cùng nhóm chung 1 workspace) — lấy giá trị đầu tiên có.
     workspaceName: evs.map((e) => e.workspace_name).find((w) => !!w) ?? null,
-    actorLabel: initiator.actorName,
+    actorLabel: borrowedActor ?? initiator.actorName,
     actorSub: initiator.actorSub,
-    actorInitial: initiator.actorInitial,
-    avatarBg: initiator.avatarBg,
+    actorInitial: borrowedActor
+      ? borrowedActor.charAt(0).toUpperCase()
+      : initiator.actorInitial,
+    avatarBg: borrowedActor ? "var(--ink)" : initiator.avatarBg,
     gstatus,
     stages,
     rescued,
     singleStatus: evs[0].status,
-    actorType: initiator.actor_type,
+    actorType: borrowedActor
+      ? (transferOrigin?.actor_type ?? "ADMIN")
+      : initiator.actor_type,
+    transferOrigin,
   };
 }
 
@@ -1769,7 +1913,47 @@ const DETAIL_LABEL: Record<string, string> = {
   credits: "Credit",
   seat_used: "Ghế đã dùng",
   seat_total: "Tổng ghế",
+  // Đổi email / chuyển hạn sử dụng (dòng của admin).
+  source_email: "Email cũ",
+  origin_email: "Email gốc",
+  mode: "Kiểu chuyển hạn",
+  transfer_kind: "Cách chuyển",
+  new_months: "Số tháng",
+  subscription_months: "Số tháng",
+  transferred_seconds: "Hạn còn lại đã chuyển",
+  source_end_at: "Hạn cũ của email cho",
+  old_target_end_at: "Hạn cũ của email nhận",
+  will_invite: "Mời email nhận",
+  carried_cycles: "Số kỳ chuyển theo",
+  repeat_transfer: "Chuyển lần nữa",
+  source_member_id: "Mã thành viên cũ",
+  old_member_id: "Mã thành viên cũ",
+  source_status: "Trạng thái email cũ",
+  old_status: "Trạng thái email cũ",
+  old_removal_task_type: "Lệnh gỡ email cũ",
+  payment_status: "Thanh toán",
+  invite_queue_item_id: "Mã lệnh mời",
+  remove_queue_item_id: "Mã lệnh gỡ",
 };
+
+/** Nhãn email của lần đổi đã có cặp riêng trong lưới THÔNG TIN (xem ExpandedPanel). */
+const TRANSFER_EMAIL_LABELS = new Set(["Email cũ", "Email mới", "Email gốc"]);
+
+/* Giá trị mã hoá của lần chuyển hạn → tiếng Việt. */
+const TRANSFER_VALUE_LABEL: Record<string, string> = {
+  fresh: "bê nguyên hạn sang email mới",
+  accumulate: "cộng dồn vào email đang dùng",
+  unlimited: "vô thời hạn",
+  takeover: "email mới tiếp quản",
+};
+
+/** Giây → "N ngày M giờ" (phần hạn còn lại đã chuyển đi). */
+function fmtDaysHours(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  return hours ? `${days} ngày ${hours} giờ` : `${days} ngày`;
+}
 
 /* Trường đã hiển thị ở khối cấu trúc (Kết quả/Phạm vi) hoặc cột khác
    (email/workspace), hoặc chỉ là mảng id nội bộ → không lặp lại ở phần thô. */
@@ -1792,6 +1976,8 @@ const DETAIL_HIDDEN = new Set([
   // sau"). Ẩn khỏi lưới thông tin & chi tiết kỹ thuật.
   "balance_after",
   "held_after",
+  // Ngữ cảnh đổi email API bơm cho web (đã thể hiện ở tiêu đề / tóm tắt / lưới).
+  "transfer_origin",
 ]);
 
 const MONEY_KEYS = new Set(["fee", "fee_vnd", "invite_fee_vnd", "amount"]);
@@ -1849,10 +2035,16 @@ const has = (m: Record<string, string>, k: string) =>
 function fmtScalar(key: string, v: unknown): string {
   if (v === null || v === undefined) return "—";
   if (typeof v === "boolean") return v ? "Có" : "Không";
-  if (typeof v === "number") return MONEY_KEYS.has(key) ? fmtMoney(v) : String(v);
+  if (typeof v === "number") {
+    if (MONEY_KEYS.has(key)) return fmtMoney(v);
+    if (key === "transferred_seconds") return fmtDaysHours(v);
+    return String(v);
+  }
   if (typeof v === "string") {
     if (ISO_RE.test(v)) return fmtDateTime(v);
     if (key === "error_code") return has(ERROR_LABEL, v) ? ERROR_LABEL[v] : v;
+    if (key === "mode" || key === "transfer_kind")
+      return has(TRANSFER_VALUE_LABEL, v) ? TRANSFER_VALUE_LABEL[v] : v;
     if (key === "task_type")
       return SUB_TITLE[v] ?? (has(VALUE_LABEL, v) ? VALUE_LABEL[v] : prettify(v));
     if (key === "status" || key === "result")
@@ -2132,6 +2324,14 @@ export function summarize(g: Group): string | null {
     default:
       head = null;
   }
+  /* Lệnh sinh ra từ lần đổi email: nói luôn đầu kia — "Mời vào CHATGPT PRO — nhận
+     hạn chuyển từ a@…", "Gỡ khỏi GPT1 — đã chuyển hạn sang b@…". Dòng của admin
+     đứng một mình (lệnh chưa chạy) thì câu đủ cả hai email. */
+  const origin = g.transferOrigin;
+  if (origin) {
+    const note = transferNote(origin, !g.lifecycle);
+    head = head ? `${head} — ${note}` : ws ? `${note} · ${ws}` : note;
+  }
   if (!head) return null;
   return reason ? `${head} — ${reason}` : head;
 }
@@ -2278,6 +2478,15 @@ function ExpandedPanel({ g }: { g: Group }) {
     // Id nội bộ, không tra được ở đâu ngoài hệ thống — "Mã hoá đơn" ngay bên cạnh
     // mới là thứ đối soát được (user 2026-08-29). Vẫn còn ở "Chi tiết kỹ thuật".
     "Mã hàng đợi",
+    // Thông số máy của lần đổi email / chuyển hạn — id lệnh, cờ nội bộ, số kỳ.
+    "Mã lệnh mời",
+    "Mã lệnh gỡ",
+    "Mã thành viên cũ",
+    "Mời email nhận",
+    "Chuyển lần nữa",
+    "Số kỳ chuyển theo",
+    "Trạng thái email cũ",
+    "Lệnh gỡ email cũ",
   ]);
   // Loại MỌI dòng tiền (₫) khỏi lưới THÔNG TIN — tiền đã hiển thị ở hộp phí (tổng
   // đúng). Trước đây chỉ loại `moneyRow` (dòng ₫ đầu) nên dòng "Số tiền" thứ hai (cũng
@@ -2319,7 +2528,19 @@ function ExpandedPanel({ g }: { g: Group }) {
   } else if (scope.object) {
     pairs.push({ label: t("audit.panel.affect"), value: scope.object });
   }
-  for (const r of infoRows.slice(0, 4)) pairs.push(r);
+  // Đổi email / chuyển hạn: đầu kia của lần đổi đứng ngay cạnh email của lệnh.
+  // Các dòng "Email cũ / Email mới / Email gốc" trích từ payload thô bỏ khỏi lưới
+  // (đã có ở đây), vẫn còn trong "Chi tiết kỹ thuật".
+  const origin = g.transferOrigin;
+  if (origin) {
+    const other = origin.leg === "remove" ? origin.target_email : origin.source_email;
+    if (other)
+      pairs.push({ label: origin.leg === "remove" ? "Đổi sang" : "Email cũ", value: other });
+  }
+  const gridRows = origin
+    ? infoRows.filter((r) => !TRANSFER_EMAIL_LABELS.has(r.label))
+    : infoRows;
+  for (const r of gridRows.slice(0, 4)) pairs.push(r);
 
   const heading: CSSProperties = {
     fontSize: 10.5,
