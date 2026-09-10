@@ -6,12 +6,22 @@
  *  Không kể chuyện bên trong (mua/hạ suất, đợt gỡ chạy ra sao) — xem
  *  `routers/members/EXPIRY_RULES.md` §3.6 nếu cần bản đầy đủ cho người làm.
  *
- *  NÓI RÕ LÝ DO LÀ THEO LỊCH CỦA CHATGPT (chốt user 9/9/2026): hai luật khó chịu
- *  nhất — mua sát mốc phải cộng một tháng, và gỡ đúng giờ không ân hạn — đọc như
- *  ta bày ra để ép khách. Sự thật là ChatGPT thu trọn tháng cho mỗi suất còn nằm
- *  trong không gian lúc hoá đơn chạy, nên nói thẳng chỗ đó thì đại lý hiểu và
- *  thông cảm, thay vì tưởng mình khó tính. Đây là LÝ DO KINH DOANH khách nhìn
- *  thấy trên hoá đơn, khác với cơ chế nội bộ vẫn phải giấu.
+ *  NÓI RÕ LÝ DO LÀ THEO LỊCH CỦA CHATGPT (chốt user 9/9/2026): luật khó chịu nhất
+ *  — mua sát mốc phải cộng một tháng — đọc như ta bày ra để ép khách. Nói thẳng
+ *  rằng tiền của mỗi suất chạy theo lịch thu tiền của ChatGPT thì đại lý hiểu và
+ *  thông cảm, thay vì tưởng mình khó tính. Đây là LÝ DO KINH DOANH khách nhìn thấy
+ *  trên hoá đơn, khác với cơ chế nội bộ vẫn phải giấu.
+ *
+ *  ⚠️ CHATGPT ĐÃ ĐỔI CHÍNH SÁCH (10/9/2026): thêm suất giữa kỳ thì hoá đơn tính
+ *  giảm theo số ngày còn lại, KHÔNG còn thu trọn tháng cho suất mới nữa. Nên bước
+ *  "mua sát ngày thanh toán" đừng lấy khoản trọn tháng đó ra biện minh lần nữa —
+ *  lý do thật là quãng còn lại quá ngắn, bán ra thì vừa mua đã hết hạn (ngưỡng
+ *  `cycle_force_extra_from_day`, EXPIRY_RULES §3.6.6).
+ *
+ *  BỎ BƯỚC "KHÔNG CÓ ÂN HẠN" (chốt user 10/9/2026): bước đó doạ đại lý bằng chuyện
+ *  gỡ đúng 10 giờ và lấy khoản trọn tháng ra làm cớ, trong khi cớ ấy vừa hết đúng.
+ *  Đợt gỡ vẫn chạy như cũ trong `EXPIRY_RULES`, chỉ là bài này thôi nói về nó —
+ *  đừng thêm lại.
  *
  *  NGẮN LÀ CỐ Ý (chốt user 8/9/2026): bản đầu dài gấp ba, đủ ý nhưng không ai đọc
  *  hết. Thêm ý mới thì phải bỏ bớt ý cũ, đừng để bài dài lại.
@@ -86,15 +96,11 @@ const cycleBilling: Guide = {
             },
             {
               title: "Dùng bao nhiêu ngày thì trả bấy nhiêu",
-              body: "Giá một ngày = **đơn giá tháng chia cho số ngày trong tháng**. Mua giữa tháng chỉ trả từ hôm mua tới ngày thanh toán. Gia hạn sớm thì tính tiếp từ hạn cũ, không mất ngày nào. **Bảng mời hiện sẵn tổng tiền** trước khi bạn bấm gửi.",
+              body: "Giá một ngày = **đơn giá tháng chia cho số ngày trong tháng**. Mua giữa tháng chỉ trả từ hôm mua tới ngày thanh toán. Gia hạn sớm thì tính tiếp từ hạn cũ, không mất ngày nào.",
             },
             {
               title: "Mua sát ngày thanh toán thì trả thêm một tháng",
-              body: "ChatGPT thu **trọn một tháng** cho mỗi suất, kể cả suất chỉ dùng mấy ngày cuối kỳ. Nên mua trong **tuần cuối** trước ngày thanh toán thì trả **số ngày còn lại cộng một tháng**, đổi lại khách dùng thẳng tới ngày thanh toán tháng sau.",
-            },
-            {
-              title: "Không có ân hạn",
-              body: "Đúng **10 giờ sáng** ngày thanh toán là hoá đơn ChatGPT chạy: suất nào còn trong không gian lúc đó thì mình phải trả trọn tháng cho suất ấy. Nên email chưa gia hạn **bị gỡ đúng giờ**. Nhắc khách trước một hai hôm.",
+              body: "ChatGPT đã đổi cách tính: thêm suất giữa kỳ thì hoá đơn **giảm theo số ngày còn lại**, nên tiền của mỗi suất chạy theo **lịch thanh toán của không gian đó**. Mua trong **tuần cuối** thì quãng còn lại quá ngắn, vừa mua đã hết hạn — nên tính **số ngày còn lại cộng một tháng**, khách dùng thẳng tới ngày thanh toán tháng sau.",
             },
             {
               title: "Ví dụ",
@@ -129,15 +135,11 @@ const cycleBilling: Guide = {
             },
             {
               title: "用几天就付几天的钱",
-              body: "每天单价 = **月单价 ÷ 当月天数**。月中购买只付从购买当天到结算日这几天。提前续费从原到期日接着算，一天也不会重复收。**邀请面板会先显示总金额**，你再点发送。",
+              body: "每天单价 = **月单价 ÷ 当月天数**。月中购买只付从购买当天到结算日这几天。提前续费从原到期日接着算，一天也不会重复收。",
             },
             {
               title: "临近结算日购买要多付一个月",
-              body: "ChatGPT 对每个席位都按**整月**收费，哪怕这个席位只用了月末几天。所以在结算日前**最后一周**购买要付**剩余天数加一个月**，客户则可以直接用到下个月的结算日。",
-            },
-            {
-              title: "没有宽限期",
-              body: "结算日**上午 10 点**（越南时间）一到，ChatGPT 的账单就出：席位还留在工作区里，我们就得为它付满一个月。所以未续费的邮箱**准点被移出**。请提前一两天提醒客户。",
+              body: "ChatGPT 改了计费方式：周期中途加席位，账单**按剩余天数折算**，所以每个席位的价格都跟着**该工作区的结算日**走。在结算日前**最后一周**购买，剩下的天数太少，刚买就到期，因此按**剩余天数加一个月**计算，客户可以直接用到下个月的结算日。",
             },
             {
               title: "示例",
