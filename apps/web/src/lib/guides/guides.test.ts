@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   GUIDES,
+  GUIDE_LANGS,
+  PRINT_NOTES_LABEL,
   fillGuideVars,
   guidePrintHtml,
   pickGuideId,
@@ -72,7 +74,7 @@ describe("shouldOpen", () => {
 });
 
 describe("nội dung các bài", () => {
-  const LANGS = ["vi", "zh-CN"] as const;
+  const LANGS = GUIDE_LANGS;
 
   it("id không trùng nhau — bài ghim theo ngày tra bằng id", () => {
     const ids = GUIDES.map((g) => g.id);
@@ -102,6 +104,32 @@ describe("nội dung các bài", () => {
       }
     },
   );
+});
+
+describe("bài hướng dẫn đủ ba ngôn ngữ", () => {
+  it("mọi bài đều có tiếng Việt, tiếng Trung và tiếng Anh", () => {
+    expect(GUIDE_LANGS).toEqual(["vi", "zh-CN", "en"]);
+    for (const guide of GUIDES) {
+      for (const lang of GUIDE_LANGS) {
+        const c = guide.content[lang];
+        expect(c?.title?.trim(), `${guide.id}/${lang}`).toBeTruthy();
+        expect(c.sections.flatMap((sec) => sec.steps).length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("bản in có nhãn Lưu ý theo ĐÚNG ngôn ngữ bài, không lẫn tiếng Việt", () => {
+    // Bản tiếng Anh mà mục cuối đề "Lưu ý" là bản in nửa nạc nửa mỡ.
+    for (const lang of GUIDE_LANGS) expect(PRINT_NOTES_LABEL[lang]).toBeTruthy();
+    const guide = GUIDES.find((g) => g.id === "business-vs-plus")!;
+    const html = guidePrintHtml(guide.content.en, {
+      lang: "en",
+      notesLabel: PRINT_NOTES_LABEL.en,
+    });
+    expect(html).toContain('lang="en"');
+    expect(html).toContain("Notes");
+    expect(html).not.toContain("Lưu ý");
+  });
 });
 
 describe("fillGuideVars", () => {
@@ -211,7 +239,7 @@ describe("bài sáu gói ChatGPT", () => {
     // Hết chỗ trống `{tên}` thì cũng không được còn `vars` lẫn ô gõ đơn giá —
     // ô nhập ở bước không dùng số chỉ tổ đứng đó vô duyên.
     expect(guide.vars).toBeUndefined();
-    for (const lang of ["vi", "zh-CN"] as const) {
+    for (const lang of GUIDE_LANGS) {
       expect(steps(guide.content[lang]).length).toBe(1);
       expect(steps(guide.content[lang])[0].feeInput).toBeUndefined();
       expect(JSON.stringify(guide.content[lang])).not.toMatch(/\{[A-Za-z0-9_]+\}/);
@@ -219,7 +247,7 @@ describe("bài sáu gói ChatGPT", () => {
   });
 
   it("bảng 6 gói: cột tô nền là cột Suất Business, ở cả hai ngôn ngữ", () => {
-    for (const lang of ["vi", "zh-CN"] as const) {
+    for (const lang of GUIDE_LANGS) {
       const big = steps(guide.content[lang])[0];
       expect(big.table!.head.length).toBe(7);
       const hi = big.table!.highlight!;
@@ -231,13 +259,16 @@ describe("bài sáu gói ChatGPT", () => {
 
   it("Plus: mô hình Pro trong Chat là KHOÁ, không phải không có", () => {
     // Ảnh chụp thật: nấc Pro của Plus hiện ổ khoá; gạch ngang là nói quá.
-    const row = steps(guide.content.vi)[0].table!.rows.find((r) => r[0].includes("Pro trong Chat"))!;
+    const row = steps(guide.content.vi)[0].table!.rows.find((r) => r[0].includes("6 Pro"))!;
     expect(row[3]).toBe("Khoá");
-    expect(row[5]).toContain("Mở");
+    expect(row[5]).toContain("Có");
+    // 6 Pro có ở Pro, suất Business và Enterprise — chỉ Plus trở xuống là không.
+    expect(row[4]).toContain("Có");
+    expect(row[6]).toContain("Có");
   });
 
   it("Codex & Work: Plus và Business như nhau nên KHÔNG in đậm cột Business", () => {
-    for (const lang of ["vi", "zh-CN"] as const) {
+    for (const lang of GUIDE_LANGS) {
       const row = steps(guide.content[lang])[0].table!.rows.find((r) =>
         r[0].includes("Codex"),
       )!;

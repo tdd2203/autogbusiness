@@ -38,7 +38,9 @@
  *  từ tài liệu — tài liệu nói theo tên nội bộ, giao diện lại nói theo thanh trượt:
  *  - Thanh "Thinking effort" ở Plus chỉ tới **Instant, Medium, High**; nấc Pro
  *    hiện ổ KHOÁ. Ở suất Business thanh chạy hết, nấc cuối là **6 Pro** mở sẵn,
- *    và có cả Extra High. Nên ô Plus ghi "Khoá", không phải gạch ngang.
+ *    và có cả Extra High. Nên ô Plus ghi "Khoá", không phải gạch ngang. Gói Pro
+ *    và Enterprise cũng có 6 Pro (user xác nhận 10/9/2026) — chỉ Plus trở xuống
+ *    là không.
  *  - Trong tab **Work**, tài khoản Plus chọn được **GPT-6 Astra Max** y như suất
  *    Business (user đối chiếu hai tài khoản). Vì vậy dòng Codex & Work KHÔNG in
  *    đậm cột Business: hai bên như nhau, khoe ở đó là nói quá.
@@ -98,7 +100,7 @@ const businessVsPlus: Guide = {
                   ["Mua tối thiểu", "1", "1", "1", "1", "2 suất — qua đại lý mua lẻ **1 suất**", "Theo hợp đồng"],
                   ["Mô hình trong Chat", "GPT-5.6 Luna", "GPT-5.6 Luna", "GPT-5.6 Sol", "GPT-5.6 Sol", "**GPT-5.6 Sol**", "GPT-5.6 Sol"],
                   ["Mức suy luận trong Chat", "Instant, Think", "Instant, Think", "Instant, Medium, High", "Thêm Extra High", "**Thêm Extra High**", "Thêm Extra High"],
-                  ["Mô hình Pro trong Chat", "—", "—", "Khoá", "50–200 tin/tuần", "**Mở, 15 tin/tháng**", "Do workspace đặt"],
+                  ["Mô hình Pro (6 Pro) trong Chat", "—", "—", "Khoá", "Có, 50–200 tin/tuần", "**Có, 15 tin/tháng**", "Có, do workspace đặt"],
                   ["Chat thường", "Không giới hạn", "Không giới hạn", "Có hạn mức", "Không giới hạn", "**Không giới hạn**", "Không giới hạn"],
                   ["Tạo ảnh", "Ít và chậm", "Nhiều hơn", "Nhiều, đẹp hơn", "Không giới hạn", "**Như Plus**", "Như Plus"],
                   ["Codex & Work", "Hạn chế", "Hạn chế", "Có GPT-6 Astra", "Có GPT-6 Astra, tối đa", "Có GPT-6 Astra", "Có GPT-6 Astra"],
@@ -115,6 +117,46 @@ const businessVsPlus: Guide = {
       ],
       notes: [
         `ChatGPT chỉ bán Business từ 2 suất trở lên, tức ít nhất ${bizMin}/tháng — mua lẻ qua đại lý thì chỉ trả đúng suất mình dùng.`,
+      ],
+    },
+    en: {
+      eyebrow: "Guide · plan comparison",
+      title: "Six ChatGPT plans and the Business seat",
+      intro:
+        "ChatGPT sells six plans: four **personal** ones (Free, Go, Plus, Pro), the **Business** plan billed per seat, and **Enterprise**, which is sales-only. What you buy from a reseller is **one Business seat** — the same benefits a company gets when it buys the whole workspace, but you pay for a single place.",
+      sections: [
+        {
+          steps: [
+            {
+              title: "Six plans side by side",
+              body: "Prices from chatgpt.com in Vietnam, models from OpenAI's help pages, both as of 10 Sep 2026. All prices include VAT.",
+              table: {
+                layout: "compare",
+                highlight: 5,
+                head: ["Item", "Free", "Go", "Plus", "Pro", "Business seat", "Enterprise"],
+                rows: [
+                  ["Account type", "Personal, self sign-up", "Personal, self sign-up", "Personal, self sign-up", "Personal, self sign-up", "A seat in a company workspace, run by the reseller", "Company workspace"],
+                  ["Price per month", "0 ₫", go, plus, `from ${pro}`, bizStd, "Contact sales"],
+                  ["Minimum purchase", "1", "1", "1", "1", "2 seats — from a reseller you buy **1 seat**", "By contract"],
+                  ["Model in Chat", "GPT-5.6 Luna", "GPT-5.6 Luna", "GPT-5.6 Sol", "GPT-5.6 Sol", "**GPT-5.6 Sol**", "GPT-5.6 Sol"],
+                  ["Reasoning levels in Chat", "Instant, Think", "Instant, Think", "Instant, Medium, High", "Plus Extra High", "**Plus Extra High**", "Plus Extra High"],
+                  ["Pro models (6 Pro) in Chat", "—", "—", "Locked", "Yes, 50–200 msgs/week", "**Yes, 15 msgs/month**", "Yes, set by workspace"],
+                  ["Everyday chat", "Unlimited", "Unlimited", "Limits apply", "Unlimited", "**Unlimited**", "Unlimited"],
+                  ["Image creation", "Few and slow", "More", "More and better", "Unlimited", "**Same as Plus**", "Same as Plus"],
+                  ["Codex & Work", "Limited", "Limited", "GPT-6 Astra", "GPT-6 Astra, maximum", "GPT-6 Astra", "GPT-6 Astra"],
+                  ["Deep research", "Limited", "Limited", "Expanded", "Maximum", "**Expanded**", "Expanded"],
+                  ["Memory & context", "Limited", "Longer", "Expanded", "Maximum", "**Expanded**", "Largest"],
+                  ["Ads in the app", "Yes", "Possibly", "No", "No", "**No**", "No"],
+                  ["Chat data used for AI training", "On by default", "On by default", "On by default", "On by default", "**No**", "No"],
+                  ["Terms", "Personal", "Personal", "Personal", "Personal", "**Business**", "Business"],
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      notes: [
+        `ChatGPT sells Business from 2 seats up, so at least ${bizMin} a month — buying a single seat from a reseller means you pay only for the seat you use.`,
       ],
     },
     "zh-CN": {
@@ -137,7 +179,7 @@ const businessVsPlus: Guide = {
                   ["最低购买", "1", "1", "1", "1", "2 个席位——通过代理零买 **1 个席位**", "按合同"],
                   ["Chat 中的模型", "GPT-5.6 Luna", "GPT-5.6 Luna", "GPT-5.6 Sol", "GPT-5.6 Sol", "**GPT-5.6 Sol**", "GPT-5.6 Sol"],
                   ["Chat 推理档位", "Instant、Think", "Instant、Think", "Instant、Medium、High", "增加 Extra High", "**增加 Extra High**", "增加 Extra High"],
-                  ["Chat 中的 Pro 模型", "—", "—", "锁定", "每周 50–200 条", "**开放，每月 15 条**", "由工作区设定"],
+                  ["Chat 中的 Pro 模型（6 Pro）", "—", "—", "锁定", "有，每周 50–200 条", "**有，每月 15 条**", "有，由工作区设定"],
                   ["普通聊天", "不限量", "不限量", "有额度限制", "不限量", "**不限量**", "不限量"],
                   ["图片生成", "少且慢", "更多", "更多更精细", "不限量", "**与 Plus 相同**", "与 Plus 相同"],
                   ["Codex 与 Work", "受限", "受限", "有 GPT-6 Astra", "有 GPT-6 Astra，最高", "有 GPT-6 Astra", "有 GPT-6 Astra"],

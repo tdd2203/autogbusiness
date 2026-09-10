@@ -3329,6 +3329,11 @@ body {
   }
   /* Bảng minh hoạ vài dòng, không phải bảng dữ liệu bấm được — sáng lên khi rê
      chuột chỉ khiến người đọc tưởng bấm được. */
+  /* Mục trong menu ngôn ngữ của nút Xuất PDF — sáng lên khi rê chuột để thấy rõ
+     đang chọn dòng nào. Kiểu dáng còn lại nằm inline trong DailyGuideModal. */
+  .guide-pdf-lang:hover {
+    background: var(--bg);
+  }
   .guide-table tbody tr:hover {
     background: transparent;
   }

@@ -4,7 +4,16 @@
  *  nhiều đoạn văn dài kèm ảnh; nhồi vào từ điển phẳng thì vừa khó đọc vừa dễ lệch
  *  thứ tự bước. Từ điển i18n chỉ giữ phần khung popup (nút, ô tick).
  */
-import type { Lang } from "../../i18n";
+/** Ngôn ngữ của BÀI HƯỚNG DẪN — tách hẳn khỏi `Lang` của dashboard.
+ *
+ *  Dashboard mới có tiếng Việt và tiếng Trung, nhưng bài hướng dẫn phải có cả
+ *  tiếng Anh (chốt user 10/9/2026): đại lý in bài đưa cho khách nước ngoài, mà
+ *  dịch cả dashboard sang tiếng Anh là việc khác, lớn hơn nhiều. Người đọc tự
+ *  chọn ngôn ngữ bài ngay trong popup; mặc định theo ngôn ngữ dashboard. */
+export type GuideLang = "vi" | "zh-CN" | "en";
+
+/** Ngôn ngữ bài mặc định cho một ngôn ngữ dashboard. */
+export const GUIDE_LANGS: GuideLang[] = ["vi", "zh-CN", "en"];
 
 /** Bảng nhỏ trong một bước — dùng cho phần TÍNH TIỀN.
  *
@@ -80,9 +89,9 @@ export type GuideVarContext = {
 
 /** Một bài hướng dẫn, có bản dịch cho MỌI ngôn ngữ dashboard đang hỗ trợ.
  *
- *  `Record<Lang, ...>` là cố ý: thêm ngôn ngữ mới cho dashboard mà quên dịch bài
- *  hướng dẫn thì TypeScript báo đỏ ngay, không để user thấy popup tiếng Việt lẫn
- *  giữa giao diện tiếng Trung. */
+ *  `Record<GuideLang, ...>` là cố ý: thêm ngôn ngữ mới mà quên dịch một bài thì
+ *  TypeScript báo đỏ ngay, không để người đọc bấm sang tiếng Anh rồi nhận về một
+ *  bài tiếng Việt. */
 export type Guide = {
   id: string;
   /** Giá trị cho các chỗ `{tên}` trong nội dung (vd đơn giá của người đang đọc).
@@ -90,5 +99,5 @@ export type Guide = {
    *  Trả về thiếu key nào thì CÂU chứa key đó bị bỏ khỏi bài — xem
    *  `fillGuideVars`. Thà mất một câu còn hơn hiện một con số sai về tiền. */
   vars?: (ctx: GuideVarContext) => Record<string, string>;
-  content: Record<Lang, GuideContent>;
+  content: Record<GuideLang, GuideContent>;
 };

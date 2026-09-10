@@ -40,6 +40,8 @@ import {
 } from "./walletUi";
 import {
   GUIDES,
+  GUIDE_LANGS,
+  PRINT_NOTES_LABEL,
   fillGuideVars,
   findGuide,
   openGuidePrint,
@@ -52,6 +54,7 @@ import {
   vnDayKey,
   writeState,
   type Guide,
+  type GuideLang,
   type GuideStep,
   type GuideTable,
 } from "../lib/guides";
@@ -113,6 +116,9 @@ export default function DailyGuideModal() {
   // "đã đọc hôm nay" lên server và không tắt popup của ngày.
   const [preview, setPreview] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
+  // Menu ngôn ngữ của nút Xuất PDF. Mở khi rê chuột, và mở/đóng được bằng bấm —
+  // trên điện thoại không có chuột để rê.
+  const [pdfOpen, setPdfOpen] = useState(false);
   const locked = lockLeft !== null && lockLeft > 0;
   // Bản sao của `locked` cho `openNow` — hàm đó đăng ký một lần vào `openHandler`
   // nên closure của nó không thấy state mới, phải soi qua ref.
@@ -285,15 +291,21 @@ export default function DailyGuideModal() {
 
   // Bản in dựng lại nội dung ở trang riêng (xem `lib/guides/printable.ts`), chứ
   // in thẳng popup thì ra bản cụt: popup cuộn trong khung, ảnh còn lazy-load.
-  function exportPdf() {
-    if (!content) return;
-    // In ra phải là bài NGƯỜI ĐỌC đang thấy — đúng những con số trên màn hình,
-    // kể cả đơn giá họ vừa gõ tay. In bản thô là ra giấy đầy chỗ trống "{donGia}".
-    const printed = openGuidePrint(content, {
-      lang,
-      notesLabel: t("guide.notes"),
-      baseUrl: window.location.href,
-    });
+  function exportPdf(target: GuideLang) {
+    if (!guide) return;
+    // In ra phải mang đúng những con số trên màn hình, kể cả đơn giá người đọc
+    // vừa gõ tay — in bản thô là ra giấy đầy chỗ trống "{donGia}". Nhưng NGÔN NGỮ
+    // thì lấy theo nút họ vừa bấm, không theo bài đang đọc: đại lý in bản tiếng
+    // Anh đưa khách nước ngoài trong khi mình vẫn đọc tiếng Việt.
+    const printed = openGuidePrint(
+      fillGuideVars(guide.content[target], guide.vars?.({ feeVnd }) ?? {}),
+      {
+        lang: target,
+        notesLabel: PRINT_NOTES_LABEL[target] ?? t("guide.notes"),
+        baseUrl: window.location.href,
+      },
+    );
+    setPdfOpen(false);
     if (!printed) toast.warning(t("guide.exportPdfBlocked"));
   }
 
@@ -334,14 +346,40 @@ export default function DailyGuideModal() {
                 <GearIcon />
               </button>
             )}
-            <button
-              onClick={exportPdf}
-              style={pdfBtn}
-              title={t("guide.exportPdfTitle")}
+            {/* Rê chuột vào là hiện ba ngôn ngữ, bấm một cái là in luôn — không
+                hỏi thêm bước nào. Bấm vào chính nút thì mở/đóng menu, vì màn cảm
+                ứng không rê chuột được. */}
+            <div
+              style={{ position: "relative" }}
+              onMouseEnter={() => setPdfOpen(true)}
+              onMouseLeave={() => setPdfOpen(false)}
             >
-              <DownloadIcon />
-              {t("guide.exportPdf")}
-            </button>
+              <button
+                onClick={() => setPdfOpen((v) => !v)}
+                style={pdfBtn}
+                title={t("guide.exportPdfTitle")}
+                aria-haspopup="menu"
+                aria-expanded={pdfOpen}
+              >
+                <DownloadIcon />
+                {t("guide.exportPdf")}
+              </button>
+              {pdfOpen && (
+                <div style={pdfMenu} role="menu">
+                  {GUIDE_LANGS.map((code) => (
+                    <button
+                      key={code}
+                      role="menuitem"
+                      onClick={() => exportPdf(code)}
+                      style={pdfMenuItem}
+                      className="guide-pdf-lang"
+                    >
+                      {GUIDE_LANG_LABEL[code]}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               onClick={close}
               style={locked ? closeBtnLocked : closeBtn}
@@ -661,8 +699,20 @@ const eyebrow: React.CSSProperties = { ...cardKicker, ...SANS, height: "auto", c
 // Thông báo hệ thống mang màu cảnh báo, khác hẳn màu xanh của bài đọc thường.
 const forcedEyebrow: React.CSSProperties = { ...eyebrow, color: "var(--warning)", fontWeight: 700 };
 const titleStyle: React.CSSProperties = { ...cardTitle, fontSize: 22, marginBottom: 0, lineHeight: 1.3 };
+/** Tên ngôn ngữ viết bằng CHÍNH ngôn ngữ đó — người cần bản tiếng Trung nhận ra
+ *  chữ 中文 nhanh hơn là đọc dòng "Tiếng Trung" trong giao diện tiếng Việt. */
+const GUIDE_LANG_LABEL: Record<GuideLang, string> = {
+  vi: "Tiếng Việt",
+  "zh-CN": "中文",
+  en: "English",
+};
+
 const headerActions: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, flexShrink: 0 };
 const pdfBtn: React.CSSProperties = { ...secondaryBtn, padding: "6px 11px", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", flexShrink: 0 };
+// Menu ngôn ngữ thả xuống ngay dưới nút Xuất PDF. Không chừa khoảng hở giữa nút
+// và menu (`top: "100%"`) — hở một hai pixel là chuột đi qua đó làm menu đóng.
+const pdfMenu: React.CSSProperties = { position: "absolute", top: "100%", right: 0, marginTop: 4, minWidth: 132, padding: 4, borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--surface)", boxShadow: "0 10px 28px -8px rgba(28,26,23,0.28)", zIndex: 3, display: "flex", flexDirection: "column", gap: 2 };
+const pdfMenuItem: React.CSSProperties = { padding: "7px 10px", borderRadius: 7, border: "none", background: "transparent", color: "var(--ink)", fontSize: 12.5, fontFamily: "inherit", textAlign: "left", cursor: "pointer", whiteSpace: "nowrap" };
 const closeBtn: React.CSSProperties = { width: 30, height: 30, borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--ink-3)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
 // Nút vẫn ĐỨNG NGUYÊN CHỖ lúc còn khoá, chỉ mờ đi: giấu rồi hiện lại thì hàng nút
 // nhảy một cái đúng lúc người ta đang định bấm.

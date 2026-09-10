@@ -19,15 +19,17 @@ import chatgptResetLimit from "./chatgpt-reset-limit";
 import cycleBilling from "./cycle-billing";
 import businessVsPlus from "./business-vs-plus";
 
+export { GUIDE_LANGS } from "./types";
 export type {
   Guide,
   GuideContent,
+  GuideLang,
   GuideSection,
   GuideStep,
   GuideTable,
   GuideVarContext,
 } from "./types";
-export { guidePrintHtml, openGuidePrint } from "./printable";
+export { guidePrintHtml, openGuidePrint, PRINT_NOTES_LABEL } from "./printable";
 export { fillGuideVars, readerFeeVnd } from "./vars";
 
 /** Thêm bài mới: viết file nội dung rồi đẩy vào đây, không phải sửa gì thêm. */

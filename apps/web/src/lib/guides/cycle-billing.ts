@@ -121,6 +121,45 @@ const cycleBilling: Guide = {
         "Ngày lẻ **trên 12 tiếng tính tròn một ngày, dưới 12 tiếng tính nửa ngày** — tiền cũng chỉ một nửa.",
       ],
     },
+    en: {
+      eyebrow: "Guide · how billing works now",
+      title: "Expiry follows the workspace billing day",
+      intro:
+        "From **8 Sep 2026**, every email in one ChatGPT workspace expires on **a single day each month** — the day **ChatGPT charges that workspace**. We pay on their schedule, so your customers' expiry follows it too. In return, you pay for exactly the days used.",
+      sections: [
+        {
+          steps: [
+            {
+              title: "Each workspace has its own billing day",
+              body: "The billing day is the day **ChatGPT charges that particular workspace**, and we cannot move it — every workspace has a different one. It repeats monthly at **10 in the morning**, and all emails in the same workspace expire together. Anyone still on an older expiry date keeps it, and only joins the shared day at their next renewal.",
+            },
+            {
+              title: "Pay for the days you use",
+              body: "The price of one day = **the monthly price divided by the number of days in the month**. Buy mid-month and you pay only from the day of purchase to the billing day. Renew early and it continues from the old expiry, so no day is lost.",
+            },
+            {
+              title: "Buying close to the billing day costs one extra month",
+              body: "ChatGPT changed how it charges: adding a seat mid-cycle is **prorated over the days left**, so every seat now follows **that workspace's billing schedule**. Buy in the **final week** and the remaining stretch is too short — the seat would expire almost as soon as it is sold — so we charge **the remaining days plus one month**, and the customer runs straight through to next month's billing day.",
+            },
+            {
+              title: "Example",
+              body: "Your price is **{donGia}/month** and the billing day is the 1st. August has 31 days, so one day costs about **{giaNgay}**.",
+              feeInput: true,
+              table: {
+                head: ["Purchase date", "You pay", "Runs until"],
+                rows: [
+                  ["10 Aug", "22 days · **{vdSom}**", "1 Sep"],
+                  ["25 Aug", "7 days + 1 month · **{vdSat}**", "1 Oct"],
+                ],
+              },
+            },
+          ],
+        },
+      ],
+      notes: [
+        "A part day **over 12 hours counts as a full day, under 12 hours counts as half a day** — and costs half as much.",
+      ],
+    },
     "zh-CN": {
       eyebrow: "使用指南 · 新的计算方式",
       title: "按工作区结算日计算到期时间",

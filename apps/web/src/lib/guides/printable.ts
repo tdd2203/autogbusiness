@@ -13,6 +13,16 @@
  */
 import type { GuideContent, GuideStep, GuideTable } from "./types";
 
+/** Nhãn mục "Lưu ý" trên bản in, theo ngôn ngữ BÀI.
+ *
+ *  Không lấy từ `t("guide.notes")` nữa: bài có tiếng Anh còn dashboard thì không,
+ *  đọc bài tiếng Anh mà in ra thấy chữ "Lưu ý" là bản in nửa nạc nửa mỡ. */
+export const PRINT_NOTES_LABEL: Record<string, string> = {
+  vi: "Lưu ý",
+  "zh-CN": "注意",
+  en: "Notes",
+};
+
 export type GuidePrintOptions = {
   /** Ngôn ngữ đang xem, đặt vào `<html lang>` cho ngắt dòng đúng tiếng Trung. */
   lang: string;
