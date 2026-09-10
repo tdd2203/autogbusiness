@@ -59,6 +59,7 @@ import {
   type GuideTable,
 } from "../lib/guides";
 import { MoneyInput } from "./priceEditor";
+import { createHoverMenu, hoverMenuWrap } from "./hoverMenu";
 import AnnouncementSettingsModal from "./AnnouncementSettingsModal";
 import {
   ANNOUNCEMENT_KEY,
@@ -117,8 +118,11 @@ export default function DailyGuideModal() {
   const [preview, setPreview] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   // Menu ngôn ngữ của nút Xuất PDF. Mở khi rê chuột, và mở/đóng được bằng bấm —
-  // trên điện thoại không có chuột để rê.
+  // trên điện thoại không có chuột để rê. Đóng có TRỄ (xem `hoverMenu.ts`): đóng
+  // ngay khi chuột vừa qua mép là không ai bấm kịp mục cuối.
   const [pdfOpen, setPdfOpen] = useState(false);
+  const pdfHover = useRef(createHoverMenu(setPdfOpen));
+  useEffect(() => () => pdfHover.current.dispose(), []);
   const locked = lockLeft !== null && lockLeft > 0;
   // Bản sao của `locked` cho `openNow` — hàm đó đăng ký một lần vào `openHandler`
   // nên closure của nó không thấy state mới, phải soi qua ref.
@@ -305,21 +309,28 @@ export default function DailyGuideModal() {
         baseUrl: window.location.href,
       },
     );
-    setPdfOpen(false);
+    pdfHover.current.closeNow();
     if (!printed) toast.warning(t("guide.exportPdfBlocked"));
   }
 
   useEffect(() => {
     if (!guide) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
+      if (e.key !== "Escape") return;
+      // Menu đang mở thì Esc chỉ thu menu lại — đóng luôn cả bài là mất chỗ đọc
+      // chỉ vì lỡ mở nhầm một menu nhỏ.
+      if (pdfOpen) {
+        pdfHover.current.closeNow();
+        return;
+      }
+      close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // Nghe lại khi `mute`/`locked` đổi để `close` trong closure thấy giá trị mới
     // nhất — thiếu `locked` thì hết giờ giữ rồi Esc vẫn câm, vì handler đăng ký từ
     // lúc còn khoá.
-  }, [guide, mute, locked]);
+  }, [guide, mute, locked, pdfOpen]);
 
   if (!guide || !content) return null;
 
@@ -351,8 +362,8 @@ export default function DailyGuideModal() {
                 ứng không rê chuột được. */}
             <div
               style={{ position: "relative" }}
-              onMouseEnter={() => setPdfOpen(true)}
-              onMouseLeave={() => setPdfOpen(false)}
+              onMouseEnter={() => pdfHover.current.enter()}
+              onMouseLeave={() => pdfHover.current.leave()}
             >
               <button
                 onClick={() => setPdfOpen((v) => !v)}
@@ -365,18 +376,23 @@ export default function DailyGuideModal() {
                 {t("guide.exportPdf")}
               </button>
               {pdfOpen && (
-                <div style={pdfMenu} role="menu">
-                  {GUIDE_LANGS.map((code) => (
-                    <button
-                      key={code}
-                      role="menuitem"
-                      onClick={() => exportPdf(code)}
-                      style={pdfMenuItem}
-                      className="guide-pdf-lang"
-                    >
-                      {GUIDE_LANG_LABEL[code]}
-                    </button>
-                  ))}
+                // Lớp bọc TRONG SUỐT ôm cả khe hở dưới nút: khoảng cách là
+                // `padding` của nó chứ không phải `margin` của menu, nên chuột đi
+                // từ nút xuống menu không bao giờ rơi ra ngoài vùng hover.
+                <div style={hoverMenuWrap}>
+                  <div style={pdfMenu} role="menu">
+                    {GUIDE_LANGS.map((code) => (
+                      <button
+                        key={code}
+                        role="menuitem"
+                        onClick={() => exportPdf(code)}
+                        style={pdfMenuItem}
+                        className="guide-pdf-lang"
+                      >
+                        {GUIDE_LANG_LABEL[code]}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -709,9 +725,9 @@ const GUIDE_LANG_LABEL: Record<GuideLang, string> = {
 
 const headerActions: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, flexShrink: 0 };
 const pdfBtn: React.CSSProperties = { ...secondaryBtn, padding: "6px 11px", fontSize: 12.5, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", flexShrink: 0 };
-// Menu ngôn ngữ thả xuống ngay dưới nút Xuất PDF. Không chừa khoảng hở giữa nút
-// và menu (`top: "100%"`) — hở một hai pixel là chuột đi qua đó làm menu đóng.
-const pdfMenu: React.CSSProperties = { position: "absolute", top: "100%", right: 0, marginTop: 4, minWidth: 132, padding: 4, borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--surface)", boxShadow: "0 10px 28px -8px rgba(28,26,23,0.28)", zIndex: 3, display: "flex", flexDirection: "column", gap: 2 };
+// Hình dáng hộp menu. Phần định vị và khe hở nằm ở `hoverMenuWrap` trong
+// `hoverMenu.ts` — chỗ đó có test khoá, đừng chuyển khoảng cách về đây.
+const pdfMenu: React.CSSProperties = { minWidth: 132, padding: 4, borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--surface)", boxShadow: "0 10px 28px -8px rgba(28,26,23,0.28)", display: "flex", flexDirection: "column", gap: 2 };
 const pdfMenuItem: React.CSSProperties = { padding: "7px 10px", borderRadius: 7, border: "none", background: "transparent", color: "var(--ink)", fontSize: 12.5, fontFamily: "inherit", textAlign: "left", cursor: "pointer", whiteSpace: "nowrap" };
 const closeBtn: React.CSSProperties = { width: 30, height: 30, borderRadius: "var(--radius)", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--ink-3)", fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 };
 // Nút vẫn ĐỨNG NGUYÊN CHỖ lúc còn khoá, chỉ mờ đi: giấu rồi hiện lại thì hàng nút
