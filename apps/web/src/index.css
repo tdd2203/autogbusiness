@@ -3518,4 +3518,475 @@ body {
       flex-shrink: 0;
     }
   }
+
+  /* ---------- Khối "cách tính phí" (RenewCalcRows) ----------
+     Thẻ kiểu biên lai: tiêu đề nhỏ in hoa, mỗi dòng "nhãn trái · chấm dẫn · số phải",
+     dòng tổng in đậm màu xanh tách bằng vạch trên. Chấm dẫn nối nhãn với số nên thẻ
+     có rộng bằng cả bảng thì mắt vẫn không phải nhảy 400px để ghép cặp. */
+  .calc-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px 11px;
+    max-width: 480px;
+    box-shadow: var(--shadow-sm);
+  }
+  .calc-title {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 4px;
+  }
+  .calc-rows {
+    display: flex;
+    flex-direction: column;
+  }
+  .calc-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 8px;
+    padding: 3px 0;
+  }
+  .calc-row-label {
+    font-size: 12.5px;
+    color: var(--ink-2);
+  }
+  /* Ô rỗng nên đường gạch dưới nằm đúng đường chân chữ — kiểu mục lục sách. */
+  .calc-row-leader {
+    flex: 1 1 16px;
+    min-width: 16px;
+    border-bottom: 1px dotted var(--ink-4);
+  }
+  .calc-row-value {
+    margin-left: auto;
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .calc-row-hint {
+    font-family: var(--font-sans);
+    font-size: 11.5px;
+    font-weight: 400;
+    color: var(--ink-3);
+  }
+  .calc-sep {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 0;
+  }
+  .calc-row.is-strong {
+    margin-top: 4px;
+    padding-top: 7px;
+    border-top: 1px solid var(--border);
+  }
+  .calc-row.is-strong .calc-row-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .calc-row.is-strong .calc-row-leader {
+    border-bottom: none;
+  }
+  .calc-row.is-strong .calc-row-value {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--success);
+  }
+  /* Mũi tên bung/thu: ô vuông nhỏ có viền, xoay 90° và ngả xanh khi khối đang mở
+     (phần tử cha mang class `is-open`). */
+  .calc-chev {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--ink-3);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    transition:
+      transform 0.15s ease,
+      color 0.12s,
+      border-color 0.12s,
+      background 0.12s;
+  }
+  .calc-chev svg {
+    width: 12px;
+    height: 12px;
+  }
+  .is-open .calc-chev {
+    transform: rotate(90deg);
+    color: var(--success);
+    border-color: var(--success-border);
+    background: var(--success-bg);
+  }
+  .calc-chev-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 0;
+    border: none;
+    background: none;
+    cursor: pointer;
+  }
+  .calc-chev-btn:hover .calc-chev {
+    color: var(--ink);
+    border-color: var(--border-strong);
+  }
+
+  /* ---------- Popup gia hạn hàng loạt (RenewalsPanel) ---------- */
+  .renew-backdrop {
+    background: rgba(23, 26, 23, 0.45);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+  }
+  .renew-modal {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    box-shadow:
+      0 24px 70px -18px rgba(28, 26, 23, 0.4),
+      0 2px 8px rgba(28, 26, 23, 0.08);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    animation: fade-in-up 0.18s ease;
+  }
+  .renew-modal-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 18px 22px 14px;
+  }
+  .renew-modal-title {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+  }
+  .renew-modal-sub {
+    margin-top: 3px;
+    font-size: 12.5px;
+    line-height: 1.45;
+    color: var(--ink-2);
+  }
+  .renew-close {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--ink-3);
+    font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.12s ease;
+  }
+  .renew-close:hover:not(:disabled) {
+    color: var(--ink);
+    background: var(--surface-2);
+    border-color: var(--border-strong);
+  }
+  .renew-close:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  /* Băng thông số của cả mẻ: kín bề ngang, các ô chia đều phần dư (flex 1 nhưng
+     không co dưới nội dung) và ngăn bằng vạch mảnh — nhìn cân, không phải mấy hộp
+     lệch cỡ dồn về trái. LUÔN MỘT DÒNG (user chốt 10/9/2026): màn hẹp quá thì kéo
+     ngang trong băng, thanh cuộn giấu đi. */
+  .renew-stats {
+    display: flex;
+    flex-wrap: nowrap;
+    background: var(--surface-2);
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .renew-stats::-webkit-scrollbar {
+    display: none;
+  }
+  .renew-stat {
+    flex: 1 1 0;
+    min-width: max-content;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 11px 18px 12px;
+    border-left: 1px solid var(--border);
+  }
+  .renew-stat:first-child {
+    border-left: none;
+    padding-left: 22px;
+  }
+  .renew-stat:last-child {
+    padding-right: 22px;
+  }
+  .renew-stat-label {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+  .renew-stat-value {
+    font-family: var(--font-mono);
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .renew-modal-body {
+    overflow: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  /* Bảng trong popup: đầu cột ghim trên khi cuộn, dòng mở đổi nền + vạch xanh mép
+     trái nối liền xuống khối cách tính của chính nó. */
+  .renew-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    table-layout: fixed;
+  }
+  .renew-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 9px 12px;
+    background: var(--surface);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    text-align: left;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--border);
+  }
+  .renew-table thead th:first-child,
+  .renew-table tbody td:first-child {
+    padding-left: 22px;
+  }
+  .renew-table thead th:last-child,
+  .renew-table tbody td:last-child {
+    padding-right: 22px;
+  }
+  .renew-table tbody td {
+    padding: 10px 12px;
+    vertical-align: middle;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+  }
+  .renew-table tbody tr.can-open {
+    cursor: pointer;
+  }
+  .renew-table tbody tr.can-open:hover td {
+    background: var(--surface-2);
+  }
+  .renew-table tbody tr.is-open td {
+    background: var(--surface-2);
+    border-bottom-color: transparent;
+  }
+  .renew-table tbody tr.is-open td:first-child,
+  .renew-table tbody td.renew-calc-cell {
+    box-shadow: inset 3px 0 0 var(--success);
+  }
+  .renew-table tbody td.renew-calc-cell {
+    background: var(--surface-2);
+    padding: 0 22px 14px 50px;
+    white-space: normal;
+  }
+  .renew-email-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .renew-email-btn:disabled {
+    cursor: default;
+  }
+  .renew-email-btn:hover:not(:disabled) .calc-chev {
+    color: var(--ink);
+    border-color: var(--border-strong);
+  }
+  .renew-email {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .renew-date,
+  .renew-table tbody td.renew-date {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    color: var(--ink-2);
+  }
+  .renew-date-next,
+  .renew-table tbody td.renew-date-next {
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--success);
+  }
+  .renew-fee,
+  .renew-table tbody td.renew-fee {
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  /* Dòng tổng ghim đáy vùng cuộn: nền trắng + vạch trên đậm + bóng hắt nhẹ để tách
+     khỏi dòng đang trôi phía sau nó. */
+  .renew-total {
+    position: sticky;
+    bottom: 0;
+    z-index: 1;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 22px;
+    background: var(--surface);
+    border-top: 1px solid var(--border-strong);
+    box-shadow: 0 -8px 16px -10px rgba(16, 24, 16, 0.14);
+  }
+  .renew-total-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .renew-total-label em {
+    font-style: normal;
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .renew-total-value {
+    font-family: var(--font-mono);
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--ink);
+  }
+  .renew-modal-foot {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 12px 22px 14px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  /* Mobile: mỗi email một thẻ, cả thẻ là một nút. */
+  .renew-card {
+    border-bottom: 1px solid var(--border);
+    transition: background 0.1s;
+  }
+  .renew-card.is-open {
+    background: var(--surface-2);
+    box-shadow: inset 3px 0 0 var(--success);
+  }
+  .renew-card-btn {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    width: 100%;
+    padding: 12px 16px;
+    border: none;
+    background: none;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .renew-card-btn:disabled {
+    cursor: default;
+  }
+  .renew-card-email {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    word-break: break-all;
+  }
+  .renew-card-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .renew-card-row-label {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    white-space: nowrap;
+  }
+  .renew-card-calc {
+    padding: 0 16px 14px;
+  }
+  @media (max-width: 640px) {
+    .renew-modal {
+      border-radius: 14px;
+    }
+    .renew-modal-head,
+    .renew-total,
+    .renew-modal-foot {
+      padding-left: 16px;
+      padding-right: 16px;
+    }
+    /* Ô thông số co lại để ba ô thường gặp (thành viên, số tháng, đơn giá) vừa
+       một dòng ở màn 375px. */
+    .renew-stat {
+      padding: 9px 12px 10px;
+    }
+    .renew-stat:first-child {
+      padding-left: 16px;
+    }
+    .renew-stat:last-child {
+      padding-right: 16px;
+    }
+    .renew-stat-label {
+      font-size: 9.5px;
+      letter-spacing: 0.06em;
+    }
+    .renew-stat-value {
+      font-size: 12.5px;
+    }
+  }
 }

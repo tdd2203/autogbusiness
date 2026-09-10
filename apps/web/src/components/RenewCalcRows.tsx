@@ -7,21 +7,66 @@
  * thẳng tại chỗ; hai màn hình dùng CHUNG khối này để không có nơi nào giải thích
  * theo kiểu riêng.
  *
+ * Kiểu dáng: thẻ "biên lai" (`.calc-card` ở index.css) — tiêu đề nhỏ in hoa, mỗi
+ * dòng nhãn trái · chấm dẫn · số phải, dòng tổng in đậm màu xanh. Chấm dẫn là để
+ * thẻ có rộng bằng cả bảng thì nhãn và số vẫn đọc thành một cặp.
+ *
  * ⚠️ KHÔNG tính lại tiền ở đây. Mọi con số đến từ `renew-preview`: phần lẻ
  * (`fee_prorated`), các chu kỳ trọn (`fee_whole`), tổng (`fee`) — server đã tách sẵn
  * và luôn cộng khít. Nhân chia lại ở web là dựng nguồn sự thật thứ hai cho tiền.
  */
+import type { ReactNode } from "react";
 import { useI18n, useT } from "../i18n";
 import { formatVnd } from "../lib/wallet";
 import { formatVnDate, formatVnMoment } from "../lib/cycle-time";
 import type { RenewPreviewItem } from "../hooks/useRenewPreview";
 
 /**
- * Một dòng "nhãn trái — số phải".
+ * Mũi tên bung/thu. Tự xoay 90° và ngả xanh khi một phần tử cha mang class
+ * `is-open` — nơi gọi chỉ việc gắn class lên hàng/thẻ đang mở.
+ */
+export function CalcChevron() {
+  return (
+    <span className="calc-chev" aria-hidden>
+      <svg
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="M6 4l4 4-4 4" />
+      </svg>
+    </span>
+  );
+}
+
+/** Thẻ bọc khối cách tính: tiêu đề nhỏ in hoa + các dòng bên trong. */
+export function CalcCard({
+  title,
+  children,
+  className,
+}: {
+  title?: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={className ? `calc-card ${className}` : "calc-card"}>
+      {title && <div className="calc-title">{title}</div>}
+      <div className="calc-rows">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Một dòng "nhãn trái — chấm dẫn — số phải".
  *
  * Dùng flex + wrap chứ không phải hai cột cứng: trên điện thoại (~360px) nhãn kiểu
  * "12,5 ngày lẻ tới 30/09/2026" dài hơn nửa khối, cột cứng thì số bị đẩy tràn ra
- * ngoài và bị cắt. Wrap thì số tự rơi xuống dòng dưới mà vẫn canh phải.
+ * ngoài và bị cắt. Wrap thì số tự rơi xuống dòng dưới mà vẫn canh phải; chấm dẫn
+ * co lại còn tối thiểu rồi nhường chỗ.
  */
 export function CalcRow({
   label,
@@ -36,40 +81,12 @@ export function CalcRow({
   strong?: boolean;
 }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        flexWrap: "wrap",
-        alignItems: "baseline",
-        justifyContent: "space-between",
-        gap: "2px 10px",
-      }}
-    >
-      <span
-        style={{
-          fontSize: strong ? 13 : 12.5,
-          color: strong ? "var(--ink)" : "var(--ink-3)",
-          fontWeight: strong ? 600 : 400,
-        }}
-      >
-        {label}
-      </span>
-      <span
-        style={{ marginLeft: "auto", textAlign: "right", overflowWrap: "anywhere" }}
-      >
-        <span
-          style={{
-            fontFamily: "var(--font-mono)",
-            fontSize: strong ? 15 : 12.5,
-            fontWeight: strong ? 700 : 500,
-            color: "var(--ink)",
-          }}
-        >
-          {value}
-        </span>
-        {hint && (
-          <span style={{ fontSize: 11.5, color: "var(--ink-3)" }}> ({hint})</span>
-        )}
+    <div className={strong ? "calc-row is-strong" : "calc-row"}>
+      <span className="calc-row-label">{label}</span>
+      <span className="calc-row-leader" aria-hidden />
+      <span className="calc-row-value">
+        {value}
+        {hint && <span className="calc-row-hint"> ({hint})</span>}
       </span>
     </div>
   );
@@ -182,9 +199,7 @@ export function RenewCalcRows({
           })}
         />
       )}
-      {feeLines.length > 0 && (
-        <div style={{ height: 1, background: "var(--border)", margin: "2px 0" }} />
-      )}
+      {feeLines.length > 0 && <div className="calc-sep" />}
       {feeLines.map((line) => (
         <CalcRow key={line.key} label={line.label} value={formatVnd(line.value)} />
       ))}

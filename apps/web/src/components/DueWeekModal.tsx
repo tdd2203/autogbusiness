@@ -30,7 +30,7 @@ import { getQrOrder, type OrderQr } from "../lib/wallet";
 import { money, shortDay } from "../lib/dashboard";
 import { nextEndAfterRenew } from "./RenewalsPanel";
 import { useRenewPreview } from "../hooks/useRenewPreview";
-import { RenewCalcRows } from "./RenewCalcRows";
+import { CalcCard, CalcChevron, RenewCalcRows } from "./RenewCalcRows";
 import { useT } from "../i18n";
 
 export type DueMember = {
@@ -231,7 +231,7 @@ export default function DueWeekModal({
             const item = preview.data?.byMember.get(r.member_id);
             const open = openCalc.has(r.member_id);
             return (
-            <div key={r.member_id}>
+            <div key={r.member_id} className={open ? "is-open" : undefined}>
             <label style={rowStyle}>
               <input
                 type="checkbox"
@@ -306,36 +306,28 @@ export default function DueWeekModal({
                   title={
                     open ? t("invite.feeDetailHide") : t("invite.feeDetailShow")
                   }
-                  style={{
-                    background: "none",
-                    border: "none",
-                    padding: "0 2px",
-                    cursor: "pointer",
-                    color: "var(--ink-3)",
-                    fontSize: 11,
-                  }}
+                  className="calc-chev-btn"
                 >
-                  {open ? "▾" : "▸"}
+                  <CalcChevron />
                 </button>
               )}
             </label>
             {open && item && (
               <div
                 style={{
-                  padding: "8px 20px 12px 44px",
+                  padding: "6px 20px 12px 44px",
                   background: "var(--surface-2)",
                   borderBottom: "1px solid var(--border)",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 3,
-                  maxWidth: 460,
+                  boxShadow: "inset 3px 0 0 var(--success)",
                 }}
               >
-                <RenewCalcRows
-                  item={item}
-                  months={months}
-                  totalLabel={t("invite.feeDetailFee")}
-                />
+                <CalcCard title={t("subscription.calcTitle")}>
+                  <RenewCalcRows
+                    item={item}
+                    months={months}
+                    totalLabel={t("invite.feeDetailFee")}
+                  />
+                </CalcCard>
               </div>
             )}
             </div>
