@@ -316,6 +316,7 @@ def perform_subscription_core(
             actor_id=user.id,
             now=now,
             prorated_half_days=quote.prorated_half_days,
+            cycle_days=quote.cycle_days,
         )
     elif old_end is not None and target_end > old_end:
         ext_months = (

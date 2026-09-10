@@ -57,6 +57,7 @@ def _append_unpaid_cycle(
     end_at: datetime | None,
     months: int | None,
     prorated_half_days: int | None = None,
+    cycle_days: int | None = None,
 ) -> None:
     """Nối MỘT chu kỳ CHƯA THANH TOÁN phủ [start_at → end_at].
 
@@ -78,6 +79,7 @@ def _append_unpaid_cycle(
             cycle_number=next_number,
             months=months,
             prorated_half_days=prorated_half_days,
+            cycle_days=cycle_days,
             start_at=start_at,
             end_at=end_at,
             payment_status="unpaid",
@@ -92,9 +94,9 @@ def _manual_window(
     *,
     current_end: datetime | None,
     settings_row,
-) -> tuple[datetime, datetime, datetime | None, int | None, int | None]:
+) -> tuple[datetime, datetime, datetime | None, int | None, int | None, int | None]:
     """Cửa sổ SẼ ghi cho một email thêm tay:
-    `(mốc neo, đầu kỳ, hạn, số tháng kỳ, nửa ngày lẻ)`.
+    `(mốc neo, đầu kỳ, hạn, số tháng kỳ, nửa ngày lẻ, số ngày chu kỳ)`.
 
     Thêm tay không trừ ví, nhưng kỳ nó sinh ra là kỳ CÒN NỢ — tab "Email đã add" thu
     tiền đúng theo kỳ đó (`added_members._cycle_fee`). Vì thế cửa sổ phải dựng bằng
@@ -115,14 +117,14 @@ def _manual_window(
     con_han = current_end is not None and current_end > now
     joint = current_end if con_han else now
     if months is None or months <= 0:
-        return now, joint, None, months, None
+        return now, joint, None, months, None, None
     if not is_cycle_aligned(ws):
         end = (
             _extend_subscription_end(joint, months)
             if con_han
             else _end_from_purchase(now, months)
         )
-        return now, joint, end, months, None
+        return now, joint, end, months, None, None
     quote = quote_cycle(
         ws,
         now,
@@ -136,6 +138,7 @@ def _manual_window(
         quote.end_at,
         quote.whole_months,
         quote.prorated_half_days,
+        quote.cycle_days,
     )
 
 
@@ -235,7 +238,7 @@ def manual_add_members(
         existing = existing_map.get(email)
         if existing is not None and existing.status in ("active", "pending"):
             # Đã trong workspace → CỘNG DỒN 1 chu kỳ mới (giống gia hạn, không phí).
-            anchor, base_end, new_end, cycle_months, prorated = _manual_window(
+            anchor, base_end, new_end, cycle_months, prorated, cycle_days = _manual_window(
                 ws,
                 now,
                 months,
@@ -249,6 +252,7 @@ def manual_add_members(
                 end_at=new_end,
                 months=cycle_months,
                 prorated_half_days=prorated,
+                cycle_days=cycle_days,
             )
             existing.subscription_months = months
             existing.subscription_purchased_at = anchor
@@ -261,7 +265,7 @@ def manual_add_members(
             # Mới hoàn toàn hoặc kích hoạt lại `removed` → chu kỳ tham gia mới từ now.
             # Không có hạn cũ để nối (record `removed` coi như đợt mới) nên điểm nối
             # chính là now ở cả hai chế độ; hạn thì vẫn phải theo luật của không gian.
-            anchor, _start, end, cycle_months, prorated = _manual_window(
+            anchor, _start, end, cycle_months, prorated, cycle_days = _manual_window(
                 ws, now, months, current_end=None, settings_row=cycle_cfg
             )
             if existing is not None:
@@ -302,6 +306,7 @@ def manual_add_members(
                 end_at=end,
                 months=cycle_months,
                 prorated_half_days=prorated,
+                cycle_days=cycle_days,
             )
             _mark_member_unpaid(member)
             added.append(member)

@@ -810,6 +810,16 @@ class MemberSubscriptionCycle(Base):
     # ngày) nên không nhét vào số tháng nguyên được. `months` chỉ đếm số MỐC chu kỳ.
     # Xem EXPIRY_RULES.md §3.6.4 và §3.6.7.
     prorated_half_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ĐỘ DÀI LỊCH (28–31) của chu kỳ hoá đơn CHỨA ĐIỂM NỐI — mẫu số của công thức
+    # tiền phần lẻ (EXPIRY_RULES §3.6.5). Ghi lúc BÁN vì đây là số duy nhất trong
+    # công thức mà không suy lại được từ bản ghi: báo cáo từng suy ngược nó từ
+    # `end_at` với giả định `end_at` là một mốc chốt, nên chỉ cần ai đó rút ngắn hạn
+    # là mẫu số nhảy sang tháng khác và tiền của một kỳ ĐÃ BÁN XONG tự đổi.
+    #
+    # NULL = dòng bán trước khi có cột này → báo cáo suy ngược như cũ, số liệu lịch
+    # sử không đổi một đồng. Đường cắt kỳ tự đóng băng giá trị vào đây TRƯỚC khi
+    # đụng `end_at` (xem `_shared._trim_cycles_to_end`).
+    cycle_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Mốc bắt đầu/kết thúc chu kỳ (tới giây, UTC). start_at = hạn cũ (nếu còn hiệu
     # lực) hoặc thời điểm gia hạn; end_at = start_at + months×30.
     start_at: Mapped[datetime | None] = mapped_column(

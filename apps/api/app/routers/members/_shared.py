@@ -275,6 +275,7 @@ def _append_paid_cycle(
     actor_id: UUID | None,
     now: datetime,
     prorated_half_days: int | None = None,
+    cycle_days: int | None = None,
 ) -> None:
     """Nối MỘT chu kỳ ĐÃ THANH TOÁN phủ [start_at → end_at].
 
@@ -285,7 +286,11 @@ def _append_paid_cycle(
     max hiện có. No-op nếu khoảng rỗng. Xem [[subscription-cycle-model]].
 
     `prorated_half_days` chỉ có ở chế độ `cycle_aligned`: kỳ đầu thường lẻ ngày nên
-    không nhét vào `months` nguyên được (EXPIRY_RULES §3.6.7). Chế độ cũ để None."""
+    không nhét vào `months` nguyên được (EXPIRY_RULES §3.6.7). Chế độ cũ để None.
+
+    `cycle_days` = độ dài lịch của chu kỳ chứa ĐIỂM NỐI, tức mẫu số của công thức
+    tiền phần lẻ. Ghi lúc bán để về sau không ai phải suy ngược nó từ `end_at` —
+    xem `MemberSubscriptionCycle.cycle_days`."""
     if start_at is None or end_at is None or end_at <= start_at:
         return
     next_number = (
@@ -296,6 +301,7 @@ def _append_paid_cycle(
             cycle_number=next_number,
             months=months if months is not None else _months_between(start_at, end_at),
             prorated_half_days=prorated_half_days,
+            cycle_days=cycle_days,
             start_at=start_at,
             end_at=end_at,
             payment_status="paid",
@@ -347,10 +353,11 @@ def _ensure_cycles_materialized(
     start_at = _first_cycle_anchor(member, now)
     months: int | None = None
     prorated: int | None = None
+    cycle_days: int | None = None
     ws = getattr(member, "workspace", None)
     if ws is not None and is_cycle_aligned(ws) and start_at is not None:
         try:
-            prorated, _cycle_days, months = sold_window(
+            prorated, cycle_days, months = sold_window(
                 ws,
                 join_at=start_at,
                 end_at=member.subscription_end_at,
@@ -358,13 +365,14 @@ def _ensure_cycles_materialized(
             )
         except HTTPException:
             # Chưa có mốc chu kỳ → để nguyên đường cũ, đừng chặn lượt gia hạn.
-            months, prorated = None, None
+            months, prorated, cycle_days = None, None, None
     _append_paid_cycle(
         member,
         start_at=start_at,
         end_at=member.subscription_end_at,
         months=months,  # None ⇒ suy từ cửa sổ (chế độ 30-ngày)
         prorated_half_days=prorated,
+        cycle_days=cycle_days,
         actor_id=actor_id,
         now=now,
     )
@@ -387,28 +395,102 @@ def _trim_cycles_to_end(
             if c.end_at is not None and c.end_at <= now
         ]
         return
+    ws = getattr(member, "workspace", None)
+    anchor_day, _cutoff, _force = cycle_params(ws, None) if ws is not None else (None, None, None)
     kept: list[MemberSubscriptionCycle] = []
     for c in member.subscription_cycles:
         if c.start_at is not None and c.start_at >= end_at:
             continue
         if c.end_at is not None and c.end_at > end_at:
+            # ĐÓNG BĂNG mẫu số TRƯỚC khi đụng `end_at`: dòng bán trước khi có cột
+            # `cycle_days` vẫn để báo cáo suy ngược từ `end_at`, mà ngay dưới đây
+            # `end_at` thôi là mốc chốt. Chốt nó lại lúc phép suy còn đúng.
+            _freeze_cycle_days(c, anchor_day)
+            _retime_cycle(c, end_at, ws)
             c.end_at = end_at
-            # Cắt kỳ → cập nhật lại số tháng cho khớp cửa sổ mới.
-            #
-            # ⚠️ DÒNG CÓ `prorated_half_days` (chế độ neo theo chu kỳ) ĐANG BỊ ĐẾM
-            # THỪA ở đây: `_months_between` có SÀN 1 tháng, nên kỳ khai "0 tháng +
-            # N nửa ngày" bị cắt NGẮN ĐI lại thành "1 tháng + N nửa ngày", mà
-            # `report.cycle_units` cộng cả hai khoản. Chưa vá vì mọi cách vá tại chỗ
-            # đều bị `report._cycle_length_days` đánh bại: mẫu số của phần lẻ được
-            # suy NGƯỢC từ `end_at` với giả định đó là một mốc chốt, mà cắt kỳ thì
-            # `end_at` thành ngày bất kỳ ⇒ mẫu số nhảy 28/29/30/31 và tiền vẫn TĂNG
-            # được dù cửa sổ ngắn đi. Chữa tận gốc phải đụng cách định giá của MỌI
-            # dòng kỳ lịch sử (hoặc thêm cột `cycle_days` lúc bán) — việc đó làm đổi
-            # số liệu doanh thu đã báo, phải hỏi trước.
-            if c.start_at is not None:
-                c.months = _months_between(c.start_at, end_at)
         kept.append(c)
     member.subscription_cycles = kept
+
+
+def _freeze_cycle_days(c: MemberSubscriptionCycle, anchor_day: int | None) -> None:
+    """Ghi lại độ dài chu kỳ vào dòng kỳ nếu nó chưa có — gọi khi `end_at` còn nguyên.
+
+    Chỉ có nghĩa với dòng MANG phần lẻ (chế độ neo theo chu kỳ); dòng chế độ 30 ngày
+    không dùng mẫu số này. Lỗi ở đây không được làm hỏng lượt đổi hạn: thiếu mốc chu
+    kỳ thì cứ để NULL, báo cáo vẫn chạy đường suy ngược như trước."""
+    if not c.prorated_half_days or c.cycle_days:
+        return
+    try:
+        from app.routers.wallet.report import _cycle_length_days
+
+        c.cycle_days = _cycle_length_days(c, int(c.months or 0), anchor_day)
+    except Exception:  # noqa: BLE001 — mẫu số là phần phụ, đổi hạn là phần chính
+        pass
+
+
+def _retime_cycle(
+    c: MemberSubscriptionCycle, end_at: datetime, ws: Workspace | None
+) -> None:
+    """Viết lại "kỳ này bán bao nhiêu" sau khi cửa sổ bị CẮT NGẮN về `end_at`.
+
+    Dòng KHÔNG có phần lẻ (chế độ 30 ngày) giữ nguyên đường cũ — đổi ở đó là lệch
+    toàn bộ số liệu lịch sử.
+
+    Dòng CÓ phần lẻ thì ghi đè mỗi `months` là hỏng nặng: `_months_between` có SÀN
+    1 tháng, nên kỳ đang khai "0 tháng + 31 nửa ngày" bị cắt cho NGẮN ĐI lại thành
+    "1 tháng + 31 nửa ngày" — báo cáo cộng cả hai khoản và ghi NHIỀU HƠN cả lúc chưa
+    cắt. Ở đây cắt theo đúng hình dạng của kỳ: cửa sổ = [phần lẻ tới mốc chốt đầu
+    tiên][các chu kỳ trọn], cắt từ ĐUÔI nên ăn vào phần trọn trước, hết phần trọn
+    mới tới phần lẻ.
+
+    Số chu kỳ trọn còn lại ĐẾM MỐC như `sold_window`, không chia cho một độ dài cố
+    định: các chu kỳ dài 28/29/30/31 ngày khác nhau, lấy chu kỳ đầu làm thước đo cho
+    cả cửa sổ là cửa sổ trải qua tháng 2 bị đếm THIẾU một tháng (cắt bỏ đúng một
+    mốc mà sổ mất hai). Kết quả vẫn bị chặn trên bởi số cũ.
+
+    Hai ô chỉ được GIỮ hoặc GIẢM, không bao giờ tăng — cộng với mẫu số đã đóng băng ở
+    `_freeze_cycle_days`, số tiền của kỳ sau khi cắt không thể lớn hơn trước khi cắt.
+    """
+    if c.start_at is None:
+        return
+    if not c.prorated_half_days:
+        c.months = _months_between(c.start_at, end_at)
+        return
+    con_lai = max(0, half_days_between(c.start_at, end_at))
+    le = int(c.prorated_half_days)
+    if con_lai <= le:
+        # Cắt ăn vào cả phần lẻ ⇒ không còn chu kỳ trọn nào.
+        c.prorated_half_days = con_lai
+        c.months = 0
+        return
+    c.months = min(int(c.months or 0), _whole_cycles_within(c, end_at, ws))
+
+
+def _whole_cycles_within(
+    c: MemberSubscriptionCycle, end_at: datetime, ws: Workspace | None
+) -> int:
+    """Số chu kỳ TRỌN nằm gọn sau mốc chốt đầu tiên của kỳ, tính tới `end_at`.
+
+    Cùng cách đếm với `sold_window`: đi từng mốc chốt bằng `next_boundary`, mỗi mốc
+    đi qua là một chu kỳ (mốc bắt đầu sau `end_at` cũng tính, khớp quy ước bán là
+    "đã chạm chu kỳ nào thì tính chu kỳ đó" — số cũ vẫn chặn trên nên không phình).
+    Không gian thiếu mốc chu kỳ thì lùi về chia theo độ dài chu kỳ đầu: kém chính
+    xác nhưng vẫn không tăng."""
+    con_lai = max(0, half_days_between(c.start_at, end_at))
+    le = int(c.prorated_half_days or 0)
+    if ws is not None:
+        try:
+            _start, boundary = workspace_cycle(ws, c.start_at)
+            end_utc = _as_utc(end_at)
+            months = 0
+            while boundary < end_utc:
+                boundary = next_boundary(ws, boundary)
+                months += 1
+            return months
+        except HTTPException:
+            pass
+    mot_ky = 2 * int(c.cycle_days) if c.cycle_days else 0
+    return (con_lai - le) // mot_ky if mot_ky > 0 else 0
 
 
 def _rebuild_paid_cycles(
@@ -473,7 +555,7 @@ def _apply_invite_paid_cycle(
     # phân rã thật của lần bán. Kỳ đầu thường lẻ (vd 20,5 ngày) nên phải ghi cả phần
     # lẻ, không thì lịch sử kỳ nói khách mua trọn một tháng cho quãng chưa tới ba
     # tuần — và đó chính là con số người ta mở ra đối soát. Xem EXPIRY_RULES §3.6.7.
-    cycle_months, prorated = months, None
+    cycle_months, prorated, cycle_days = months, None, None
     ws = getattr(member, "workspace", None)
     if (
         ws is not None
@@ -482,7 +564,7 @@ def _apply_invite_paid_cycle(
         and member.subscription_end_at is not None
     ):
         try:
-            prorated, _days, cycle_months = sold_window(
+            prorated, cycle_days, cycle_months = sold_window(
                 ws,
                 join_at=start_at,
                 end_at=member.subscription_end_at,
@@ -490,13 +572,14 @@ def _apply_invite_paid_cycle(
             )
         except HTTPException:
             # Chưa có mốc chu kỳ → giữ đường cũ, đừng chặn lượt mời.
-            cycle_months, prorated = months, None
+            cycle_months, prorated, cycle_days = months, None, None
     _append_paid_cycle(
         member,
         start_at=start_at,
         end_at=member.subscription_end_at,
         months=cycle_months,
         prorated_half_days=prorated,
+        cycle_days=cycle_days,
         actor_id=actor_id,
         now=now,
     )

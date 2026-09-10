@@ -404,8 +404,16 @@ def cycle_units(
     months = int(cycle.months or 0)
     if half_days <= 0:
         return _CycleUnits(max(1, months), 0, _DAYS_PER_MONTH)
+    # Có số ĐÃ GHI LÚC BÁN thì dùng thẳng, khỏi suy ngược. Suy ngược chỉ đúng chừng
+    # nào `end_at` còn là một mốc chốt, mà cắt kỳ (rút ngắn hạn) biến nó thành ngày
+    # bất kỳ — từ đó mẫu số nhảy 28/29/30/31 và tiền của một kỳ đã bán xong tự đổi.
+    # NULL = dòng bán trước khi có cột này, giữ nguyên đường suy ngược để số liệu
+    # lịch sử không xê dịch. Xem `MemberSubscriptionCycle.cycle_days`.
+    stored = int(cycle.cycle_days) if cycle.cycle_days else 0
     return _CycleUnits(
-        max(0, months), half_days, _cycle_length_days(cycle, months, anchor_day)
+        max(0, months),
+        half_days,
+        stored if stored > 0 else _cycle_length_days(cycle, months, anchor_day),
     )
 
 

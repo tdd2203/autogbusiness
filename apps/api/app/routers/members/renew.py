@@ -194,6 +194,7 @@ def perform_renew_core(
         end_at=new_end,
         months=quote.whole_months if quote is not None else months,
         prorated_half_days=quote.prorated_half_days if quote is not None else None,
+        cycle_days=quote.cycle_days if quote is not None else None,
         actor_id=user.id,
         now=now,
     )
