@@ -55,7 +55,10 @@ vi.mock("../../human", () => ({
   waitFor: vi.fn(async () => null),
 }));
 vi.mock("../../progress", () => ({ reportProgress: vi.fn(async () => {}) }));
-vi.mock("../member-row", () => ({ findRowMenuButton: () => null }));
+vi.mock("../member-row", () => ({
+  findMemberRow: () => null,
+  findRowMenuButton: () => null,
+}));
 vi.mock("../../../shared/ui-labels", () => ({
   dbLabelsFor: () => [],
   reportLabelMismatch: vi.fn(),
@@ -71,12 +74,11 @@ vi.mock("../menu-guard", () => ({
   sanitizeRemoveLabels: (x: string[]) => x,
 }));
 vi.mock("../dialog-commit", () => ({
-  confirmDialogBusy: () => false,
   confirmDialogOpen: () => false,
-  openDialogText: () => "",
+  keepPaidSeatIfAsked: vi.fn(async () => "none"),
   paidSeatDialogOpen: () => false,
-  waitForConfirmDialogClosed: vi.fn(async () => true),
-  waitForModalLockGone: vi.fn(async () => true),
+  visibleDialogEl: () => null,
+  waitForModalLockGone: vi.fn(async () => {}),
 }));
 vi.mock("../revoke/pending-tab", () => ({
   ensurePendingInvitesTab: () => ensurePendingInvitesTab(),
@@ -141,6 +143,14 @@ describe("executeRemove — chữ ký `absent` đòi bằng chứng từ CẢ HA
   });
 
   it("đã tra CẢ HAI tab và đều không có → mới được ký absent", async () => {
+    waitForPendingListLoaded.mockResolvedValue({
+      loaded: true,
+      emails: ["ai-do@example.com"],
+      waitedMs: 10,
+      ticks: 1,
+      reason: "",
+    });
+
     const r = await executeRemove("t1", EMAIL);
 
     expect(r.ok).toBe(true);
@@ -148,7 +158,26 @@ describe("executeRemove — chữ ký `absent` đòi bằng chứng từ CẢ HA
     expect(revokeInvite).toHaveBeenCalledWith(EMAIL);
   });
 
+  it("tab Lời mời nạp xong mà RỖNG → ký absent luôn, khỏi tra từng dòng", async () => {
+    // Danh sách rỗng KHÔNG bao giờ "đầy lại" sau khi xoá ô tìm kiếm, nên phép
+    // chứng minh vắng mặt của `lookupPendingRow` luôn ra `pending_search_dead`
+    // — lệnh gỡ hỏng vĩnh viễn dù ChatGPT đã gỡ xong (ca khaialphauni003
+    // 10/9/2026). Rỗng-đã-nạp-xong tự nó là bằng chứng vắng mặt rồi.
+    const r = await executeRemove("t1", EMAIL);
+
+    expect(r.ok).toBe(true);
+    expect(dataOf(r)).toMatchObject({ email: EMAIL, verified: true, absent: true });
+    expect(revokeInvite).not.toHaveBeenCalled();
+  });
+
   it("có lời mời chờ và thu hồi được → COMPLETED qua đường thu hồi, KHÔNG absent", async () => {
+    waitForPendingListLoaded.mockResolvedValue({
+      loaded: true,
+      emails: [EMAIL],
+      waitedMs: 10,
+      ticks: 1,
+      reason: "",
+    });
     revokeInvite.mockResolvedValue({ email: EMAIL, ok: true, notInPending: false });
 
     const r = await executeRemove("t1", EMAIL);
@@ -159,6 +188,13 @@ describe("executeRemove — chữ ký `absent` đòi bằng chứng từ CẢ HA
   });
 
   it("tra được tab nhưng CÚ TRA không phân xử được → FAILED, không ký absent", async () => {
+    waitForPendingListLoaded.mockResolvedValue({
+      loaded: true,
+      emails: [EMAIL],
+      waitedMs: 10,
+      ticks: 1,
+      reason: "",
+    });
     // `lookupPendingRow` không chứng minh được vắng mặt (không có ô tìm kiếm, hoặc
     // ô tìm kiếm chết) — xem `revoke/locate-pending-row.test.ts`.
     revokeInvite.mockResolvedValue({
@@ -176,6 +212,13 @@ describe("executeRemove — chữ ký `absent` đòi bằng chứng từ CẢ HA
   });
 
   it("có lời mời chờ nhưng thu hồi hỏng → FAILED, không ký absent", async () => {
+    waitForPendingListLoaded.mockResolvedValue({
+      loaded: true,
+      emails: [EMAIL],
+      waitedMs: 10,
+      ticks: 1,
+      reason: "",
+    });
     revokeInvite.mockResolvedValue({
       email: EMAIL,
       ok: false,

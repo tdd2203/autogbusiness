@@ -29,11 +29,47 @@
 import { humanClick, sleep } from "../human";
 import { decidePaidSeatDialog } from "./paid-seat-guard";
 
-/** Dialog đang mở (phần tử), `null` nếu không có. */
+/**
+ * Hộp thoại này còn SỐNG không — đang hiện trên trang và có nội dung.
+ *
+ * ChatGPT (Radix) để lại trong DOM cả những khung `role="dialog"` đã chết: hộp
+ * vừa đóng còn chờ hiệu ứng chạy nốt (`data-state="closed"`), khung portal dựng
+ * sẵn còn rỗng, hộp bị ẩn bằng `aria-hidden`. Chúng không phải hộp thoại đang
+ * chờ ai bấm gì cả.
+ */
+function dialogAlive(el: HTMLElement): boolean {
+  if (el.getAttribute("aria-hidden") === "true") return false;
+  if (el.hasAttribute("hidden")) return false;
+  if (el.getAttribute("data-state") === "closed") return false;
+  // CỐ Ý không đo hình học (`offsetParent` / `getClientRects`): lệnh chạy trong
+  // TAB NỀN, mà tab nền thì Chrome không vẽ layout — mọi toạ độ về 0 và hộp
+  // thoại thật cũng bị chấm là "ẩn" (đã dính đúng bẫy này ở luồng hoá đơn
+  // Stripe). Hộp thật luôn có chữ hoặc có nút; khung ma thì rỗng không.
+  return (el.textContent ?? "").trim() !== "" || el.querySelector("button") !== null;
+}
+
+/**
+ * Dialog đang mở (phần tử), `null` nếu không có.
+ *
+ * ⚠️ KHÔNG dùng `querySelector` trơn: nó lấy CÁI ĐẦU TIÊN theo thứ tự DOM, nên
+ * chỉ cần một khung ma nằm trước là "dialog chưa đóng" đúng MÃI MÃI — lệnh gỡ
+ * chờ hết 30s rồi báo `VERIFY_FAILED` với lý do đoán mò "ChatGPT hỏi OTP/2FA",
+ * trong khi member ĐÃ bị gỡ xong (ca khaialphauni003 10/9/2026: dialog "đứng
+ * im", đọc text ra rỗng, không một cái nút nào).
+ *
+ * Nhiều hộp cùng sống thì lấy hộp SAU CÙNG: hộp mở sau nằm ở portal cuối, và nó
+ * mới là hộp đang phủ lên trên (vd hộp "Gỡ suất trả phí?" bồi sau hộp xác nhận).
+ */
 function openDialogEl(): HTMLElement | null {
-  return document.querySelector<HTMLElement>(
-    '[role="alertdialog"], [role="dialog"]',
-  );
+  const alive = Array.from(
+    document.querySelectorAll<HTMLElement>('[role="alertdialog"], [role="dialog"]'),
+  ).filter(dialogAlive);
+  return alive.length > 0 ? alive[alive.length - 1] : null;
+}
+
+/** Hộp thoại đang mở — cho các action tự tìm nút bên trong nó. */
+export function visibleDialogEl(): HTMLElement | null {
+  return openDialogEl();
 }
 
 /** Dialog xác nhận (bất kỳ) đang mở không? */
