@@ -1,15 +1,17 @@
 /**
- * BẤM XOÁ XONG THÌ Ô TÌM KIẾM LÀ QUAN TOÀ, KHÔNG PHẢI CÁI HỘP THOẠI.
+ * BẤM XOÁ XONG: CHỜ DÒNG ĐÓ BIẾN MẤT, RỒI Ô TÌM KIẾM PHÂN XỬ ĐÚNG MỘT LẦN.
  *
- * Luật user chốt 10/9/2026: *"bấm xoá xong chờ thấy nó mất là xoá rồi, search là
- * đã kiểm tra rồi nên không thể failed được"*, *"chỉ cần 3s chờ thôi, search mà
- * không ra cái gì thì confirm luôn"*.
+ * Luật user: *"bấm xoá xong chờ thấy nó mất là xoá rồi, search mà không ra cái gì
+ * thì confirm luôn"* (10/9/2026) và *"xoá xong chờ nó biến mất rồi tìm kiếm đúng 1
+ * lần cho chắc chắn"* (11/9/2026).
  *
- * Vì sao phải khoá bằng test: bản cũ chờ hộp thoại tắt trong 30s, không tắt là
- * `VERIFY_FAILED` kèm lý do đoán mò "ChatGPT hỏi OTP/2FA". Ca thật
- * khaialphauni003@gmail.com 10/9/2026 — ChatGPT gỡ xong nhưng bỏ lại một khung
- * `role="dialog"` rỗng — lệnh báo hỏng, tick sau xếp lại, tới lượt ba thì hệ
- * thống bỏ cuộc và kêu "cần gỡ thủ công" cho một email đã rời workspace.
+ * Vì sao phải khoá bằng test, hai lần sai theo hai chiều:
+ *   · bản chờ hộp thoại tắt trong 30s — ChatGPT gỡ xong nhưng bỏ lại một khung
+ *     `role="dialog"` rỗng thì lệnh báo `VERIFY_FAILED`, tick sau xếp lại, tới
+ *     lượt ba hệ thống bỏ cuộc cho một email đã rời workspace;
+ *   · bản chờ 3 giây — hộp xác nhận còn quay đã bị ESC và ô lọc gõ ngay khi
+ *     ChatGPT chưa gỡ xong, nên lệnh gỡ nào cũng báo "vẫn thấy dòng" và phải chạy
+ *     lại lượt hai.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -26,9 +28,15 @@ const FAKE_EL = { textContent: "Gỡ bỏ khỏi không gian làm việc" };
 const filterOutcomes: Array<Record<string, unknown>> = [];
 const filterOnceAndResolve = vi.fn(async () => filterOutcomes.shift() ?? {});
 const confirmDialogOpen = vi.fn(() => false);
+const confirmDialogBusy = vi.fn(() => false);
+const paidSeatDialogOpen = vi.fn(() => false);
+/** Dòng của email trong danh sách đang lọc — mặc định đã biến mất. */
+const findMemberRow = vi.fn((_email: string): unknown => null);
 const answerPaidSeatDialog = vi.fn(
   async (_log: string, _opts?: { release?: boolean }) => "none" as string,
 );
+/** Mọi cú ESC đi qua `document.dispatchEvent`. */
+const dispatchEvent = vi.fn((_e: unknown) => true);
 
 vi.mock("../../human", () => ({
   humanClick: vi.fn(async () => {}),
@@ -41,7 +49,7 @@ vi.mock("../../human", () => ({
 }));
 vi.mock("../../progress", () => ({ reportProgress: vi.fn(async () => {}) }));
 vi.mock("../member-row", () => ({
-  findMemberRow: () => null,
+  findMemberRow: (email: string) => findMemberRow(email),
   findRowMenuButton: () => FAKE_EL,
 }));
 vi.mock("../../../shared/ui-labels", () => ({
@@ -61,8 +69,10 @@ vi.mock("../menu-guard", () => ({
 vi.mock("../dialog-commit", () => ({
   answerPaidSeatDialog: (log: string, opts?: { release?: boolean }) =>
     answerPaidSeatDialog(log, opts),
+  confirmDialogBusy: () => confirmDialogBusy(),
   confirmDialogOpen: () => confirmDialogOpen(),
   openDialogText: () => "",
+  paidSeatDialogOpen: () => paidSeatDialogOpen(),
   visibleDialogEl: () => null,
   waitForModalLockGone: vi.fn(async () => {}),
 }));
@@ -100,7 +110,7 @@ vi.mock("../invite/scan-pending-page", () => ({
 
 vi.stubGlobal("location", { pathname: "/admin/members", search: "", href: "x" });
 vi.stubGlobal("document", {
-  dispatchEvent: () => true,
+  dispatchEvent: (e: unknown) => dispatchEvent(e),
   querySelector: () => null,
   querySelectorAll: () => [],
 });
@@ -115,18 +125,47 @@ const { executeRemove } = await import("./execute-remove");
 
 const EMAIL = "hethan@example.com";
 const FOUND = { outcome: "found", row: FAKE_EL, rows_before: 1 };
+const ABSENT = { outcome: "absent", rows_before: 0 };
 
 beforeEach(() => {
   filterOutcomes.length = 0;
-  filterOnceAndResolve.mockClear();
+  filterOnceAndResolve.mockReset().mockImplementation(async () => filterOutcomes.shift() ?? {});
   confirmDialogOpen.mockReset().mockReturnValue(false);
+  confirmDialogBusy.mockReset().mockReturnValue(false);
+  paidSeatDialogOpen.mockReset().mockReturnValue(false);
+  findMemberRow.mockReset().mockReturnValue(null);
   answerPaidSeatDialog.mockReset().mockResolvedValue("none");
+  dispatchEvent.mockClear();
 });
 
 describe("executeRemove — sau khi bấm xoá", () => {
-  it("hộp thoại LÌ nhưng tra lại không ra dòng nào → COMPLETED, không VERIFY_FAILED", async () => {
+  it("hộp xác nhận còn quay quá 3 giây → không ESC, không tra sớm; dòng biến mất rồi mới tra", async () => {
+    const SPIN = 40; // ~12 giây ChatGPT còn đang gỡ
+    const GONE_AT = SPIN + 5; // hộp tắt rồi danh sách mới vẽ lại
+    let ticks = 0;
+    confirmDialogOpen.mockImplementation(() => ticks < SPIN);
+    confirmDialogBusy.mockImplementation(() => ticks < SPIN);
+    findMemberRow.mockImplementation(() => (++ticks < GONE_AT ? FAKE_EL : null));
+    let ticksAtRecheck = -1;
+    filterOnceAndResolve
+      .mockImplementationOnce(async () => FOUND)
+      .mockImplementationOnce(async () => {
+        ticksAtRecheck = ticks;
+        return ABSENT;
+      });
+
+    const r = await executeRemove("t1", EMAIL);
+
+    expect(r.ok).toBe(true);
+    expect(dataOf(r)).toMatchObject({ verified: true, row_gone: true, dialog_stuck: false });
+    expect(ticksAtRecheck).toBeGreaterThanOrEqual(GONE_AT);
+    expect(dispatchEvent).not.toHaveBeenCalled();
+    expect(filterOnceAndResolve).toHaveBeenCalledTimes(2);
+  });
+
+  it("hộp thoại LÌ (không quay) nhưng dòng đã mất, tra lại không ra → dẹp hộp, COMPLETED", async () => {
     confirmDialogOpen.mockReturnValue(true);
-    filterOutcomes.push(FOUND, { outcome: "absent", rows_before: 0 });
+    filterOutcomes.push(FOUND, ABSENT);
 
     const r = await executeRemove("t1", EMAIL);
 
@@ -134,9 +173,10 @@ describe("executeRemove — sau khi bấm xoá", () => {
     expect(dataOf(r)).toMatchObject({ email: EMAIL, verified: true, dialog_stuck: true });
     // Hộp lì thì phải dẹp đi (giữ suất / ESC) chứ không ngồi chờ hết giờ.
     expect(answerPaidSeatDialog).toHaveBeenCalled();
+    expect(dispatchEvent).toHaveBeenCalled();
   });
 
-  it("ô lọc không tự chứng minh được (inconclusive) mà không ra dòng → vẫn COMPLETED", async () => {
+  it("dòng đã biến mất, ô lọc không tự chứng minh được (inconclusive) → vẫn COMPLETED", async () => {
     filterOutcomes.push(FOUND, {
       outcome: "inconclusive",
       reason: "no_filter_input",
@@ -159,8 +199,34 @@ describe("executeRemove — sau khi bấm xoá", () => {
     expect(dataOf(r)).toBeUndefined();
   });
 
+  it("dòng nằm lì suốt trần chờ → vẫn chỉ tra lại một lần, thấy dòng thì báo hỏng", async () => {
+    findMemberRow.mockReturnValue(FAKE_EL);
+    filterOutcomes.push(FOUND, FOUND);
+
+    const r = await executeRemove("t1", EMAIL);
+
+    expect(r.ok).toBe(false);
+    expect(failOf(r).error_code).toBe("REMOVE_VERIFY_FAILED");
+    expect(filterOnceAndResolve).toHaveBeenCalledTimes(2);
+  });
+
+  it("dòng nằm lì và ô lọc không tra lại được → chưa có bằng chứng, không báo xong", async () => {
+    findMemberRow.mockReturnValue(FAKE_EL);
+    filterOutcomes.push(FOUND, {
+      outcome: "inconclusive",
+      reason: "no_filter_input",
+      rows_before: 12,
+    });
+
+    const r = await executeRemove("t1", EMAIL);
+
+    expect(r.ok).toBe(false);
+    expect(failOf(r).error_code).toBe("REMOVE_VERIFY_FAILED");
+    expect(failOf(r).error_message).toContain("no_filter_input");
+  });
+
   it("chỉ tra lại ĐÚNG MỘT LẦN sau khi bấm", async () => {
-    filterOutcomes.push(FOUND, { outcome: "absent", rows_before: 0 });
+    filterOutcomes.push(FOUND, ABSENT);
 
     await executeRemove("t1", EMAIL);
 
@@ -169,48 +235,45 @@ describe("executeRemove — sau khi bấm xoá", () => {
 });
 
 describe("executeRemove — hộp \"Gỡ suất trả phí?\" theo ngày chốt chu kỳ", () => {
-  /** Hộp suất bồi sau xác nhận: lượt đầu còn hộp, trả lời xong thì hết. */
-  function paidSeatDialogOnce(): void {
+  /** Hộp suất bồi sau xác nhận: còn hộp tới khi được trả lời. */
+  function paidSeatDialogOnce(answer: string): void {
     let open = true;
     confirmDialogOpen.mockImplementation(() => open);
+    paidSeatDialogOpen.mockImplementation(() => open);
     answerPaidSeatDialog.mockImplementation(async () => {
       open = false;
-      return "kept";
+      return answer;
     });
   }
 
-  it("KHÔNG có mốc trả suất (giữa kỳ) → hỏi giữ suất", async () => {
-    paidSeatDialogOnce();
-    filterOutcomes.push(FOUND, { outcome: "absent", rows_before: 0 });
+  it("KHÔNG có mốc trả suất (giữa kỳ) → hỏi giữ suất, đúng một lần", async () => {
+    paidSeatDialogOnce("kept");
+    filterOutcomes.push(FOUND, ABSENT);
 
     const r = await executeRemove("t1", EMAIL);
 
     expect(r.ok).toBe(true);
     expect(answerPaidSeatDialog).toHaveBeenCalledTimes(1);
     expect(answerPaidSeatDialog.mock.calls[0][1]).toEqual({ release: false });
-    expect(dataOf(r)).toMatchObject({ paid_seat: "kept" });
+    expect(dataOf(r)).toMatchObject({ paid_seat: "kept", dialog_stuck: false });
   });
 
   it("mốc trả suất còn ở tương lai (ngày chốt) → hỏi GỠ suất, báo released", async () => {
-    let open = true;
-    confirmDialogOpen.mockImplementation(() => open);
-    answerPaidSeatDialog.mockImplementation(async () => {
-      open = false;
-      return "released";
-    });
-    filterOutcomes.push(FOUND, { outcome: "absent", rows_before: 0 });
+    paidSeatDialogOnce("released");
+    filterOutcomes.push(FOUND, ABSENT);
     const until = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
     const r = await executeRemove("t1", EMAIL, { releasePaidSeatUntil: until });
 
     expect(r.ok).toBe(true);
+    expect(answerPaidSeatDialog).toHaveBeenCalledTimes(1);
     expect(answerPaidSeatDialog.mock.calls[0][1]).toEqual({ release: true });
     expect(dataOf(r)).toMatchObject({ paid_seat: "released", verified: true });
   });
 
   it("mốc trả suất ĐÃ QUA (chạy trễ qua giờ hoá đơn) → lại giữ suất như giữa kỳ", async () => {
-    paidSeatDialogOnce();
-    filterOutcomes.push(FOUND, { outcome: "absent", rows_before: 0 });
+    paidSeatDialogOnce("kept");
+    filterOutcomes.push(FOUND, ABSENT);
     const until = new Date(Date.now() - 60 * 1000).toISOString();
 
     const r = await executeRemove("t1", EMAIL, { releasePaidSeatUntil: until });
@@ -220,7 +283,7 @@ describe("executeRemove — hộp \"Gỡ suất trả phí?\" theo ngày chốt 
   });
 
   it("ChatGPT không hỏi gì (không có hộp) → paid_seat = none, không gọi trả lời", async () => {
-    filterOutcomes.push(FOUND, { outcome: "absent", rows_before: 0 });
+    filterOutcomes.push(FOUND, ABSENT);
     const until = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
     const r = await executeRemove("t1", EMAIL, { releasePaidSeatUntil: until });

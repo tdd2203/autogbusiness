@@ -20,12 +20,12 @@ import {
 } from "../menu-guard";
 import {
   answerPaidSeatDialog,
+  confirmDialogBusy,
   confirmDialogOpen,
   openDialogText,
   paidSeatDialogOpen,
   visibleDialogEl,
   waitForModalLockGone,
-  type PaidSeatOutcome,
 } from "../dialog-commit";
 import { releaseWindowOpen } from "../paid-seat-guard";
 import { ensurePendingInvitesTab } from "../revoke/pending-tab";
@@ -36,15 +36,9 @@ import {
   waitForPendingListLoaded,
 } from "../invite/pending-list-loaded";
 import { emailsInListRegion } from "../invite/scan-pending-page";
+import { waitForRowGone } from "./wait-row-gone";
 
 const LOG = "[autogpt-remove]";
-
-/**
- * Bấm xác nhận xong thì chờ TỐI ĐA ngần này cho ChatGPT chốt (hộp thoại tắt +
- * dòng rơi khỏi danh sách) rồi tra lại. User chốt 10/9/2026: 3 giây là đủ, mất
- * sớm thì đi sớm — chỗ phân xử là ô tìm kiếm chứ không phải cái hộp thoại.
- */
-const CONFIRM_SETTLE_MS = 3_000;
 
 /**
  * Mọi phần tử "item" trong menu "..." đang mở. ChatGPT (Radix UI) KHÔNG luôn gắn
@@ -587,53 +581,70 @@ export async function executeRemove(
   await randomDelay();
   await humanClick(confirmBtn);
 
-  // ---- XÁC MINH: bấm xong, chờ nó mất, tra lại một lần là chốt ----
-  // LUẬT (user 10/9/2026): *"bấm xoá xong chờ thấy nó mất là xoá rồi, search là
-  // đã kiểm tra rồi nên không thể failed được"* + *"chỉ cần 3s chờ thôi, nếu nó
-  // mất luôn thì khỏi chờ, search mà không ra cái gì thì confirm luôn"*.
+  // ---- XÁC MINH: chờ dòng đó biến mất, rồi tra lại ĐÚNG MỘT LẦN ----
+  // LUẬT (user 11/9/2026): *"xoá xong chờ nó biến mất rồi tìm kiếm đúng 1 lần cho
+  // chắc chắn. như thế là nó xoá rồi. không cần phải tìm kiếm thêm"*.
   //
-  // Trước đây HỘP THOẠI là quan tòa: nó không tắt trong 30s là báo `VERIFY_FAILED`
-  // kèm lý do đoán mò "ChatGPT hỏi OTP/2FA". Sai cả hai đầu — ChatGPT bồi thêm hộp
-  // "Gỡ suất trả phí?" (nội dung ghi rõ *đã gỡ xong*), và có lần nó bỏ lại một
-  // khung `role="dialog"` rỗng không bao giờ mất (ca khaialphauni003 10/9/2026:
-  // gỡ xong vẫn báo hỏng, tick sau xếp lại, tới lượt ba thì hệ thống bỏ cuộc và
-  // kêu "cần gỡ thủ công"). Nay hộp thoại chỉ còn là thứ phải dẹp cho khuất ô lọc;
-  // QUAN TÒA LÀ Ô TÌM KIẾM.
+  // Hộp thoại KHÔNG phải quan toà: nó có thể nằm lì (khung `role="dialog"` bỏ
+  // lại, hộp "Gỡ suất trả phí?" bồi thêm), nên chờ nó tắt trong 30s rồi báo hỏng
+  // là sai. Nhưng chờ 3 giây rồi dẹp hộp cũng sai theo chiều ngược lại: ChatGPT
+  // còn quay hộp xác nhận chục giây mới gỡ xong, tra ngay lúc đó thì lần nào cũng
+  // còn thấy dòng và lệnh gỡ nào cũng phải chạy lượt hai. Thứ cần chờ là DÒNG rời
+  // danh sách đang lọc (xem `wait-row-gone.ts`), rồi ô tìm kiếm phân xử.
   await reportProgress(
     taskId,
-    { phase: "verifying", message: `Chờ ${email} rơi khỏi danh sách...` },
+    { phase: "verifying", message: `Chờ ${email} biến mất khỏi danh sách...` },
     true,
   );
-  // Chờ TỐI ĐA 3s cho ChatGPT chốt — hộp thoại tắt VÀ dòng rơi khỏi danh sách.
-  // Xong sớm thì đi sớm, không ngồi hết giờ.
-  const settled = await waitFor(
-    () => (!confirmDialogOpen() && !findMemberRow(email) ? true : null),
-    CONFIRM_SETTLE_MS,
-    200,
-  ).catch(() => false);
-  const dialogStuck = confirmDialogOpen();
-  let paidSeat: PaidSeatOutcome = "none";
-  if (dialogStuck) {
-    // Còn hộp thoại thì mọi cú gõ ô lọc rơi vào lớp phủ. Nhận ra hộp "Gỡ suất trả
-    // phí?" thì trả lời nó — GIỮ giữa kỳ, GỠ trong ngày chốt chu kỳ (xem
-    // `RemoveOptions.releasePaidSeatUntil`); hộp khác/không nhận ra nút thì ESC
-    // cho nó biến đi (ESC = không chọn gì = suất giữ nguyên). Đây KHÔNG còn là lý
-    // do báo hỏng.
+  // Hộp "Gỡ suất trả phí?": GIỮ giữa kỳ, GỠ trong ngày chốt chu kỳ (xem
+  // `RemoveOptions.releasePaidSeatUntil`). So đồng hồ đúng lúc hộp hiện ra.
+  const releaseNow = (): boolean => {
     const release = releaseWindowOpen(releasePaidSeatUntil);
     if (releasePaidSeatUntil && !release) {
       console.log(
         `${LOG} ${email}: lệnh mang mốc trả suất ${releasePaidSeatUntil} nhưng đã qua giờ → giữ suất`,
       );
     }
-    paidSeat = await answerPaidSeatDialog(LOG, { release });
-    if (paidSeat === "none" || paidSeat === "unknown") await escapeDialog();
-    await waitForModalLockGone(2000, LOG);
+    return release;
+  };
+  const waited = await waitForRowGone({
+    read: () => ({
+      dialog: confirmDialogOpen(),
+      busy: confirmDialogBusy(),
+      paidSeat: paidSeatDialogOpen(),
+      row: findMemberRow(email) !== null,
+    }),
+    answerPaidSeat: () => answerPaidSeatDialog(LOG, { release: releaseNow() }),
+    beat: (ms) =>
+      reportProgress(
+        taskId,
+        {
+          phase: "verifying",
+          message: `Chờ ${email} biến mất khỏi danh sách (${Math.round(ms / 1000)}s)...`,
+        },
+        true,
+      ),
+    sleep,
+  });
+  const waitedS = Math.round(waited.waitedMs / 1000);
+
+  let paidSeat = waited.paidSeat;
+  const dialogStuck = confirmDialogOpen();
+  if (dialogStuck) {
+    // Còn hộp thoại thì mọi cú gõ ô lọc rơi vào lớp phủ → dẹp trước khi tra. Hộp
+    // suất chưa được trả lời thì trả lời; hộp khác / không nhận ra nút thì ESC
+    // (không chọn gì = suất giữ nguyên). Đây KHÔNG phải lý do báo hỏng.
+    if (paidSeat === "none") {
+      paidSeat = await answerPaidSeatDialog(LOG, { release: releaseNow() });
+      if (paidSeat === "none" || paidSeat === "unknown") await escapeDialog();
+      await waitForModalLockGone(2000, LOG);
+    }
     if (confirmDialogOpen()) {
-      // Trả lời xong mà vẫn còn hộp (ChatGPT hỏi thêm một lượt nữa?) → ghi nguyên
-      // văn để bổ sung nhãn, rồi ESC cho khuất ô lọc. ESC = không chọn gì = suất
-      // giữ nguyên, nên có nhầm cũng chỉ mất một lượt trả suất chứ không mất tiền.
+      // Vẫn còn hộp (ChatGPT hỏi thêm một lượt sau hộp suất?) → ghi nguyên văn để
+      // bổ sung nhãn, rồi ESC cho khuất ô lọc. ESC = không chọn gì = suất giữ
+      // nguyên, nên có nhầm cũng chỉ mất một lượt trả suất chứ không mất tiền.
       console.warn(
-        `${LOG} ${email}: đã trả lời hộp suất (${paidSeat}) mà vẫn còn hộp thoại → ESC. ` +
+        `${LOG} ${email}: dẹp hộp thoại xong (suất: ${paidSeat}) mà vẫn còn hộp → ESC. ` +
           `Hộp: ${JSON.stringify(openDialogText().slice(0, 200))}`,
       );
       await escapeDialog();
@@ -641,27 +652,29 @@ export async function executeRemove(
     }
   }
   console.log(
-    `${LOG} ${email}: sau khi bấm xoá → ${settled ? "dòng đã rơi khỏi danh sách" : "chưa thấy rơi"}` +
+    `${LOG} ${email}: sau khi bấm xoá → ` +
+      (waited.gone
+        ? `dòng đã biến mất sau ~${waitedS}s`
+        : `chờ ${waitedS}s dòng vẫn chưa biến mất`) +
       `${dialogStuck ? `, hộp thoại còn nằm lại (đã dẹp, suất: ${paidSeat})` : ""} → tra lại bằng ô lọc`,
   );
 
-  // TRA ĐÚNG MỘT LẦN (user 6/9/2026: *"sau khi xoá xong chỉ cần tìm 1 lần, không
-  // cần chờ, chẳng cần tìm lại"*).
-  //
-  // `requireStableList: false`: danh sách vừa bị CHÍNH cú xoá làm đổi nên đòi nó
-  // đứng yên trước khi gõ chỉ tổ đốt giờ. `confirmRounds: 1`: đã có cú bấm xác
-  // nhận làm bằng chứng, ô lọc chỉ còn việc xác nhận.
+  // TRA ĐÚNG MỘT LẦN, rồi thôi. `requireStableList: false`: danh sách vừa bị
+  // CHÍNH cú xoá làm đổi nên đòi nó đứng yên trước khi gõ chỉ tổ đốt giờ.
+  // `confirmRounds: 1`: đã có cú bấm xác nhận và dòng biến mất làm bằng chứng, ô
+  // lọc chỉ còn việc xác nhận.
   const check = await filterOnceAndResolve(email, {
     requireStableList: false,
     confirmRounds: 1,
   });
-  // KHÔNG RA DÒNG NÀO ⇒ ĐÃ XOÁ. Kể cả khi ô lọc không tự chứng minh được là nó
-  // còn sống (`inconclusive`): ở đây ta ĐÃ bấm nút xác nhận đỏ, nên "tra không
-  // thấy" là bằng chứng cộng thêm chứ không phải bằng chứng duy nhất — khác hẳn
-  // nhánh KHÔNG hề bấm xoá phía trên, nơi `absent` là chữ ký nhả ghế và vẫn đòi
-  // bằng chứng ngặt. Lỡ sai thì lần đồng bộ kế tiếp trả member về `active`, còn
-  // báo hỏng oan thì lệnh cứ xếp lại tới khi hệ thống bỏ cuộc.
-  const gone = check.outcome !== "found";
+  // KHÔNG RA DÒNG NÀO ⇒ ĐÃ XOÁ. Ô lọc không tự chứng minh được là nó còn sống
+  // (`inconclusive`) thì chỉ tính là xong khi đã thấy dòng biến mất: bấm xác nhận
+  // xong mà dòng nằm lì suốt trần chờ, lại tra không được, thì chưa có bằng chứng
+  // nào là đã gỡ — báo hỏng để lượt sau tra kỹ lại, còn hơn ký "đã rời" cho người
+  // có thể vẫn đang ăn ghế. Khác hẳn nhánh KHÔNG hề bấm xoá phía trên, nơi
+  // `absent` là chữ ký nhả ghế và luôn đòi bằng chứng ngặt.
+  const gone =
+    check.outcome === "absent" || (check.outcome === "inconclusive" && waited.gone);
   console.log(
     `${LOG} ${email}: tra lại sau khi xoá → ${check.outcome}` +
       (check.outcome === "inconclusive" ? ` (${check.reason})` : ""),
@@ -670,13 +683,21 @@ export async function executeRemove(
   await clearMemberFilter();
 
   if (!gone) {
+    const why =
+      check.outcome === "found"
+        ? `tra lại VẪN thấy dòng đó ở tab "Người dùng"` +
+          (waited.gone
+            ? " (dòng đã biến mất rồi hiện lại)"
+            : ` (chờ ${waitedS}s dòng không biến mất)`) +
+          ` → xoá chưa có hiệu lực, hoặc ChatGPT còn trả về dòng cũ`
+        : `chờ ${waitedS}s dòng không biến mất, và ô lọc không tra lại được` +
+          (check.outcome === "inconclusive" ? ` (${check.reason})` : "") +
+          ` → chưa có bằng chứng đã gỡ`;
     return {
       ok: false,
       error_code: "REMOVE_VERIFY_FAILED",
       error_message:
-        `Đã bấm xoá ${email} nhưng tra lại VẪN thấy dòng đó ở tab "Người dùng" → ` +
-        `xoá chưa có hiệu lực, hoặc ChatGPT còn trả về dòng cũ. Giữ nguyên (không ` +
-        `đánh dấu removed), sẽ thử lại.`,
+        `Đã bấm xoá ${email} nhưng ${why}. Giữ nguyên (không đánh dấu removed), sẽ thử lại.`,
     };
   }
 
@@ -693,6 +714,8 @@ export async function executeRemove(
       verified: true,
       pending_sweep: pendingSweep,
       dialog_stuck: dialogStuck,
+      // Có tận mắt thấy dòng rời danh sách trước khi tra lại hay không.
+      row_gone: waited.gone,
       // Backend ghi vào audit MEMBER_REMOVED_SYNCED để đếm "kỳ này trả được bao
       // nhiêu suất" mà không phải đoán từ hoá đơn.
       paid_seat: paidSeat,
