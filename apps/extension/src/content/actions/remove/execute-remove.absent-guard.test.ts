@@ -74,9 +74,9 @@ vi.mock("../menu-guard", () => ({
   sanitizeRemoveLabels: (x: string[]) => x,
 }));
 vi.mock("../dialog-commit", () => ({
+  answerPaidSeatDialog: vi.fn(async () => "none"),
   confirmDialogOpen: () => false,
-  keepPaidSeatIfAsked: vi.fn(async () => "none"),
-  paidSeatDialogOpen: () => false,
+  openDialogText: () => "",
   visibleDialogEl: () => null,
   waitForModalLockGone: vi.fn(async () => {}),
 }));

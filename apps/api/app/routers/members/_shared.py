@@ -30,6 +30,7 @@ from app.models import (
     BILLING_MODE_CYCLE_ALIGNED,
     CYCLE_CUTOFF_UTC_DEFAULT,
     CYCLE_FORCE_EXTRA_FROM_DAY_DEFAULT,
+    CYCLE_INVOICE_UTC_DEFAULT,
     PLATFORM_GPT,
     Member,
     MemberSubscriptionCycle,
@@ -990,6 +991,60 @@ def next_boundary(
     anchor_day, cutoff, _ = _require_anchor_day(ws, settings_row)
     y, m = _shift_month(boundary.year, boundary.month, 1)
     return _boundary_on(anchor_day, cutoff, y, m)
+
+
+def _invoice_moment_of(boundary: datetime, invoice_at: dtime) -> datetime:
+    """Giờ ChatGPT chốt hoá đơn cho mốc `boundary` — lần `invoice_at` ĐẦU TIÊN kể từ mốc.
+
+    Giờ hoá đơn cấu hình sớm hơn giờ chốt (vd chốt 23:00 UTC, hoá đơn 09:00 UTC) thì
+    hoá đơn rơi sang ngày hôm sau, không phải "đã qua từ sáng".
+    """
+    moment = datetime.combine(boundary.date(), invoice_at, tzinfo=timezone.utc)
+    if moment < boundary:
+        moment += _DAY
+    return moment
+
+
+def paid_seat_release_deadline(
+    ws: Workspace, now: datetime, *, settings_row: PaymentSettings | None = None
+) -> datetime | None:
+    """Đang trong NGÀY CHỐT chu kỳ không — nếu có, trả giờ hoá đơn của mốc đó.
+
+    Dùng cho lệnh gỡ member: ChatGPT bồi hộp "Gỡ suất trả phí?" sau khi gỡ, và gỡ
+    suất ở đó chỉ có hiệu lực tại lần gia hạn KẾ TIẾP. Giữa kỳ thì vô ích (suất đã
+    trả tiền tới ngày gia hạn) nên extension luôn chọn GIỮ; riêng ngày chốt thì gỡ
+    suất là hoá đơn kỳ mới nhẹ đi đúng bằng số người vừa gỡ — đây chính là bước
+    "hạ seat_total" của EXPIRY_RULES §6.1, làm ngay trong từng lệnh gỡ thay vì mở
+    hộp "Quản lý suất" hạ tay sau.
+
+    NGÀY CHỐT = 24 giờ cuối của chu kỳ (trước mốc chốt) + khoảng từ mốc chốt tới
+    giờ hoá đơn (`payment_settings.cycle_invoice_utc`, quan sát ~09:00 UTC). Sau giờ
+    hoá đơn thì ChatGPT đã tính đủ ghế cũ, gỡ suất lúc đó lại rơi về kỳ sau ⇒ None.
+
+    Trả về ĐÚNG giờ hoá đơn chứ không phải True/False: lệnh được chọn lúc này nhưng
+    có thể chạy tới hộp thoại muộn hơn (mẻ 5 lệnh chạy tuần tự), extension so lại
+    với đồng hồ ngay lúc hộp hiện ra. Chỉ áp cho `cycle_aligned` (chốt user
+    8/9/2026: "chỉ tới ngày cuối chu kỳ, sau khi gom hết người về một hoá đơn");
+    chưa biết mốc chu kỳ cũng trả None — không đoán.
+    """
+    if not is_cycle_aligned(ws):
+        return None
+    try:
+        start, end = workspace_cycle(ws, now, settings_row=settings_row)
+    except HTTPException:
+        return None
+    invoice_at = (
+        getattr(settings_row, "cycle_invoice_utc", None) or CYCLE_INVOICE_UTC_DEFAULT
+    )
+    now = _as_utc(now)
+    # Vừa qua mốc mở kỳ (đợt gỡ tại mốc đang chạy) mà hoá đơn chưa chạy → còn kịp.
+    opening_invoice = _invoice_moment_of(start, invoice_at)
+    if now < opening_invoice:
+        return opening_invoice
+    # Ngày cuối của kỳ đang chạy: gỡ suất có hiệu lực ngay ở mốc chốt sắp tới.
+    if now >= end - _DAY:
+        return _invoice_moment_of(end, invoice_at)
+    return None
 
 
 def half_days_between(start: datetime, end: datetime) -> int:

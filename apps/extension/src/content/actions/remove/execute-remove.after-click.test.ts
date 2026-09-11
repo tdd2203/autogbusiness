@@ -26,7 +26,9 @@ const FAKE_EL = { textContent: "Gỡ bỏ khỏi không gian làm việc" };
 const filterOutcomes: Array<Record<string, unknown>> = [];
 const filterOnceAndResolve = vi.fn(async () => filterOutcomes.shift() ?? {});
 const confirmDialogOpen = vi.fn(() => false);
-const keepPaidSeatIfAsked = vi.fn(async () => "none" as const);
+const answerPaidSeatDialog = vi.fn(
+  async (_log: string, _opts?: { release?: boolean }) => "none" as string,
+);
 
 vi.mock("../../human", () => ({
   humanClick: vi.fn(async () => {}),
@@ -57,12 +59,21 @@ vi.mock("../menu-guard", () => ({
   sanitizeRemoveLabels: (x: string[]) => ({ safe: x, blocked: [] }),
 }));
 vi.mock("../dialog-commit", () => ({
+  answerPaidSeatDialog: (log: string, opts?: { release?: boolean }) =>
+    answerPaidSeatDialog(log, opts),
   confirmDialogOpen: () => confirmDialogOpen(),
-  keepPaidSeatIfAsked: () => keepPaidSeatIfAsked(),
-  paidSeatDialogOpen: () => false,
+  openDialogText: () => "",
   visibleDialogEl: () => null,
   waitForModalLockGone: vi.fn(async () => {}),
 }));
+vi.mock("../paid-seat-guard", async () => {
+  const real = await vi.importActual<typeof import("../paid-seat-guard")>(
+    "../paid-seat-guard",
+  );
+  // Chỉ cần `releaseWindowOpen` thật (thuần, so đồng hồ) — phần nhận nút đã có
+  // test riêng ở paid-seat-guard.test.ts.
+  return { releaseWindowOpen: real.releaseWindowOpen };
+});
 vi.mock("../revoke/pending-tab", () => ({
   ensurePendingInvitesTab: vi.fn(async () => true),
 }));
@@ -109,7 +120,7 @@ beforeEach(() => {
   filterOutcomes.length = 0;
   filterOnceAndResolve.mockClear();
   confirmDialogOpen.mockReset().mockReturnValue(false);
-  keepPaidSeatIfAsked.mockReset().mockResolvedValue("none");
+  answerPaidSeatDialog.mockReset().mockResolvedValue("none");
 });
 
 describe("executeRemove — sau khi bấm xoá", () => {
@@ -122,7 +133,7 @@ describe("executeRemove — sau khi bấm xoá", () => {
     expect(r.ok).toBe(true);
     expect(dataOf(r)).toMatchObject({ email: EMAIL, verified: true, dialog_stuck: true });
     // Hộp lì thì phải dẹp đi (giữ suất / ESC) chứ không ngồi chờ hết giờ.
-    expect(keepPaidSeatIfAsked).toHaveBeenCalled();
+    expect(answerPaidSeatDialog).toHaveBeenCalled();
   });
 
   it("ô lọc không tự chứng minh được (inconclusive) mà không ra dòng → vẫn COMPLETED", async () => {
@@ -154,5 +165,68 @@ describe("executeRemove — sau khi bấm xoá", () => {
     await executeRemove("t1", EMAIL);
 
     expect(filterOnceAndResolve).toHaveBeenCalledTimes(2); // 1 lần tìm + 1 lần tra lại
+  });
+});
+
+describe("executeRemove — hộp \"Gỡ suất trả phí?\" theo ngày chốt chu kỳ", () => {
+  /** Hộp suất bồi sau xác nhận: lượt đầu còn hộp, trả lời xong thì hết. */
+  function paidSeatDialogOnce(): void {
+    let open = true;
+    confirmDialogOpen.mockImplementation(() => open);
+    answerPaidSeatDialog.mockImplementation(async () => {
+      open = false;
+      return "kept";
+    });
+  }
+
+  it("KHÔNG có mốc trả suất (giữa kỳ) → hỏi giữ suất", async () => {
+    paidSeatDialogOnce();
+    filterOutcomes.push(FOUND, { outcome: "absent", rows_before: 0 });
+
+    const r = await executeRemove("t1", EMAIL);
+
+    expect(r.ok).toBe(true);
+    expect(answerPaidSeatDialog).toHaveBeenCalledTimes(1);
+    expect(answerPaidSeatDialog.mock.calls[0][1]).toEqual({ release: false });
+    expect(dataOf(r)).toMatchObject({ paid_seat: "kept" });
+  });
+
+  it("mốc trả suất còn ở tương lai (ngày chốt) → hỏi GỠ suất, báo released", async () => {
+    let open = true;
+    confirmDialogOpen.mockImplementation(() => open);
+    answerPaidSeatDialog.mockImplementation(async () => {
+      open = false;
+      return "released";
+    });
+    filterOutcomes.push(FOUND, { outcome: "absent", rows_before: 0 });
+    const until = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+    const r = await executeRemove("t1", EMAIL, { releasePaidSeatUntil: until });
+
+    expect(r.ok).toBe(true);
+    expect(answerPaidSeatDialog.mock.calls[0][1]).toEqual({ release: true });
+    expect(dataOf(r)).toMatchObject({ paid_seat: "released", verified: true });
+  });
+
+  it("mốc trả suất ĐÃ QUA (chạy trễ qua giờ hoá đơn) → lại giữ suất như giữa kỳ", async () => {
+    paidSeatDialogOnce();
+    filterOutcomes.push(FOUND, { outcome: "absent", rows_before: 0 });
+    const until = new Date(Date.now() - 60 * 1000).toISOString();
+
+    const r = await executeRemove("t1", EMAIL, { releasePaidSeatUntil: until });
+
+    expect(r.ok).toBe(true);
+    expect(answerPaidSeatDialog.mock.calls[0][1]).toEqual({ release: false });
+  });
+
+  it("ChatGPT không hỏi gì (không có hộp) → paid_seat = none, không gọi trả lời", async () => {
+    filterOutcomes.push(FOUND, { outcome: "absent", rows_before: 0 });
+    const until = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+    const r = await executeRemove("t1", EMAIL, { releasePaidSeatUntil: until });
+
+    expect(r.ok).toBe(true);
+    expect(answerPaidSeatDialog).not.toHaveBeenCalled();
+    expect(dataOf(r)).toMatchObject({ paid_seat: "none" });
   });
 });

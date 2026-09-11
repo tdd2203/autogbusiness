@@ -162,6 +162,7 @@ export function splitResponseForTask(
           verified: row.verified === true,
           ...(row.absent === true ? { absent: true } : {}),
           ...(row.via_revoke === true ? { via_revoke: true } : {}),
+          ...(typeof row.paid_seat === "string" ? { paid_seat: row.paid_seat } : {}),
           merged_batch: true,
         },
       };

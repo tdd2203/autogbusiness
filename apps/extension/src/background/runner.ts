@@ -1153,6 +1153,16 @@ async function reportRunnerProgress(
   }
 }
 
+/**
+ * NGÀY CHỐT CHU KỲ: backend đính `release_paid_seat_until` (ISO giờ hoá đơn) vào
+ * lệnh gỡ/thu hồi được chọn trong ngày chốt. Chỉ chuyển tiếp chuỗi; content so
+ * với đồng hồ lúc hộp "Gỡ suất trả phí?" hiện ra. Hình dạng lạ ⇒ bỏ (giữ suất).
+ */
+function releasePaidSeatUntilOf(p: Record<string, unknown>): string | undefined {
+  const raw = p.release_paid_seat_until;
+  return typeof raw === "string" && raw !== "" ? raw : undefined;
+}
+
 function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
   const p = task.payload;
   switch (task.type) {
@@ -1236,11 +1246,13 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
       const emails = Array.isArray(rawEmails)
         ? rawEmails.filter((e): e is string => typeof e === "string")
         : [];
+      const releasePaidSeatUntil = releasePaidSeatUntilOf(p);
       return {
         kind: "REMOVE_MEMBER",
         taskId: task.id,
         email: String(p.email ?? emails[0] ?? ""),
         ...(emails.length > 1 ? { emails } : {}),
+        ...(releasePaidSeatUntil ? { releasePaidSeatUntil } : {}),
       };
     }
     case "EXPORT_MEMBER_DATA":
@@ -1319,7 +1331,13 @@ function taskToRequest(task: QueueItem): ExecuteActionRequest | null {
       const emails = Array.isArray(rawEmails)
         ? rawEmails.filter((e): e is string => typeof e === "string")
         : [];
-      return { kind: "REVOKE_INVITES", taskId: task.id, emails };
+      const releasePaidSeatUntil = releasePaidSeatUntilOf(p);
+      return {
+        kind: "REVOKE_INVITES",
+        taskId: task.id,
+        emails,
+        ...(releasePaidSeatUntil ? { releasePaidSeatUntil } : {}),
+      };
     }
     case "HARVEST_LABELS": {
       const rawLocale = String(task.payload?.locale ?? "").toLowerCase();

@@ -2113,6 +2113,15 @@ def update_task(
                     remove_data["absence_reason"] = ext_result_data.get("absence_reason")
                 else:
                     remove_data["removal_evidence"] = "clicked_and_verified"
+                # Hộp "Gỡ suất trả phí?" của ChatGPT sau khi gỡ: extension trả lời ra
+                # sao — `kept` (giữa kỳ, giữ suất) / `released` (ngày chốt, trả suất
+                # cho hoá đơn kỳ mới nhẹ đi) / `unknown` (không nhận ra nút, để
+                # nguyên) / `none` (ChatGPT không hỏi). Ghi lại để tra "kỳ này hạ được
+                # bao nhiêu suất" mà không phải đoán từ hoá đơn.
+                if isinstance(ext_result_data, dict) and isinstance(
+                    ext_result_data.get("paid_seat"), str
+                ):
+                    remove_data["paid_seat"] = ext_result_data["paid_seat"]
                 expired_init = db.execute(
                     select(AuditLog.id)
                     .where(

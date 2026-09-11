@@ -132,6 +132,13 @@ export type ExecuteActionRequest =
        * TỪNG LỆNH (mỗi lệnh vẫn tự chốt số phận của mình ở backend).
        */
       emails?: string[];
+      /**
+       * NGÀY CHỐT CHU KỲ: giờ hoá đơn của mốc (ISO), backend đính vào lệnh khi
+       * lệnh được chọn trong ngày chốt (`payload.release_paid_seat_until`). Hộp
+       * "Gỡ suất trả phí?" hiện ra TRƯỚC giờ này thì bấm gỡ suất để hoá đơn kỳ
+       * mới bớt ghế; thiếu hoặc đã qua thì giữ suất như giữa kỳ.
+       */
+      releasePaidSeatUntil?: string;
     }
   | {
       /** 2 mục MỚI trong menu "..." của member ĐÃ THAM GIA (ChatGPT 2026-08):
@@ -199,7 +206,14 @@ export type ExecuteActionRequest =
       expectedLocale?: "vi" | "en" | "zh" | null;
     }
   | { kind: "SYNC_BILLING"; taskId: string }
-  | { kind: "REVOKE_INVITES"; taskId: string; emails: string[] }
+  | {
+      kind: "REVOKE_INVITES";
+      taskId: string;
+      emails: string[];
+      /** Như `REMOVE_MEMBER.releasePaidSeatUntil` — đường lui của thu hồi gỡ ở tab
+       * "Người dùng" nên cũng gặp hộp "Gỡ suất trả phí?". */
+      releasePaidSeatUntil?: string;
+    }
   | { kind: "HARVEST_LABELS"; taskId: string; locale: "vi" | "en" | "zh" }
   | {
       kind: "PURCHASE_SEAT";

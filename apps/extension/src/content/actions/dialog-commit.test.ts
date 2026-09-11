@@ -19,8 +19,14 @@ vi.mock("../human", () => ({
     s.toLowerCase().replace(/\s+/g, " ").trim(),
 }));
 
-const { confirmDialogOpen, openDialogText, paidSeatDialogOpen, visibleDialogEl } =
-  await import("./dialog-commit");
+const { humanClick } = await import("../human");
+const {
+  answerPaidSeatDialog,
+  confirmDialogOpen,
+  openDialogText,
+  paidSeatDialogOpen,
+  visibleDialogEl,
+} = await import("./dialog-commit");
 
 type DialogSpec = {
   text?: string;
@@ -94,5 +100,42 @@ describe("visibleDialogEl — chỉ đếm hộp thoại còn sống", () => {
 
     expect(openDialogText()).toContain("Remove the paid seat?");
     expect(paidSeatDialogOpen()).toBe(true);
+  });
+});
+
+describe("answerPaidSeatDialog — giữ giữa kỳ, gỡ trong ngày chốt", () => {
+  const clickedText = () =>
+    (vi.mocked(humanClick).mock.calls.at(-1)?.[0] as { textContent: string }).textContent;
+
+  it("mặc định (giữa kỳ) → bấm Giữ suất", async () => {
+    vi.mocked(humanClick).mockClear();
+    stubDialogs(PAID_SEAT);
+
+    await expect(answerPaidSeatDialog("[t]")).resolves.toBe("kept");
+    expect(clickedText()).toBe("Keep paid seat");
+  });
+
+  it("release:true (ngày chốt) → bấm Gỡ suất, báo released", async () => {
+    vi.mocked(humanClick).mockClear();
+    stubDialogs(PAID_SEAT);
+
+    await expect(answerPaidSeatDialog("[t]", { release: true })).resolves.toBe("released");
+    expect(clickedText()).toBe("Remove paid seat");
+  });
+
+  it("release:true mà ChatGPT đổi nhãn nút gỡ → rơi về Giữ, không bấm bừa", async () => {
+    vi.mocked(humanClick).mockClear();
+    stubDialogs({ ...PAID_SEAT, buttons: ["Keep paid seat", "Bỏ qua"] });
+
+    await expect(answerPaidSeatDialog("[t]", { release: true })).resolves.toBe("kept");
+    expect(clickedText()).toBe("Keep paid seat");
+  });
+
+  it("hộp xác nhận gỡ member thường → none, không bấm gì kể cả release:true", async () => {
+    vi.mocked(humanClick).mockClear();
+    stubDialogs(CONFIRM);
+
+    await expect(answerPaidSeatDialog("[t]", { release: true })).resolves.toBe("none");
+    expect(humanClick).not.toHaveBeenCalled();
   });
 });

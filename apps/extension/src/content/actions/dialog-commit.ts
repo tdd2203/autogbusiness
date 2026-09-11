@@ -22,7 +22,7 @@
  *   3. Quét lại nguồn sự thật (ô lọc / ô search) — xem từng action.
  *
  * Xen giữa bước 1 và 2 còn một nhánh: ChatGPT có thể bồi thêm hộp thoại "Gỡ suất
- * trả phí?" sau khi thao tác đã chạy xong — xem `keepPaidSeatIfAsked` và
+ * trả phí?" sau khi thao tác đã chạy xong — xem `answerPaidSeatDialog` và
  * [`paid-seat-guard.ts`](./paid-seat-guard.ts).
  */
 
@@ -135,32 +135,38 @@ export function paidSeatDialogOpen(): boolean {
 export type PaidSeatOutcome =
   /** Không có hộp đó (trường hợp thường). */
   | "none"
-  /** Đã bấm "Giữ suất". */
+  /** Đã bấm "Giữ suất" (giữa kỳ, hoặc ngày chốt mà không thấy nút gỡ). */
   | "kept"
-  /** Đúng là nó nhưng không nhận ra nút giữ suất → KHÔNG bấm gì. */
+  /** Đã bấm "Gỡ suất" — ngày chốt chu kỳ, hoá đơn kỳ mới bớt một ghế. */
+  | "released"
+  /** Đúng là nó nhưng không nhận ra nút nào → KHÔNG bấm gì. */
   | "unknown";
 
 /**
  * ChatGPT bồi hộp "Gỡ suất trả phí?" sau khi thao tác gỡ đã chạy xong (ảnh user
- * 8/9/2026) → bấm "Giữ suất" cho hộp tắt đi, thao tác chính coi như xong.
+ * 8/9/2026) → trả lời cho hộp tắt đi, thao tác chính coi như xong.
  *
- * MẶC ĐỊNH LÀ GIỮ và hiện chưa có đường nào khác: suất đã trả tiền tới ngày gia
- * hạn nên gỡ giữa kỳ không hoàn lại gì, mà mất luôn chỗ trống để chuyển người
- * sang. Lý do đầy đủ + chỗ sẽ thêm công tắc "gỡ suất ngày chốt chu kỳ" xem
+ * MẶC ĐỊNH LÀ GIỮ: suất đã trả tiền tới ngày gia hạn nên gỡ giữa kỳ không hoàn
+ * lại gì, mà mất luôn chỗ trống để chuyển người sang. `release: true` chỉ được
+ * truyền khi lệnh gỡ chạy trong NGÀY CHỐT chu kỳ (backend đính giờ hoá đơn kèm
+ * lệnh, `executeRemove` so đồng hồ lúc hộp hiện ra) → bấm "Gỡ suất" để hoá đơn
+ * kỳ mới bớt đúng ghế vừa gỡ. Lý do đầy đủ xem
  * [`paid-seat-guard.ts`](./paid-seat-guard.ts).
  *
- * Không nhận ra nút giữ suất thì KHÔNG bấm bừa: nút còn lại là nút đỏ gỡ suất,
- * bấm nhầm là workspace tụt suất đã mua. Trả `"unknown"` và để lệnh hết giờ —
- * người dùng bấm tay, chậm một nhịp còn hơn mất suất.
+ * Không nhận ra nút cần bấm thì KHÔNG bấm bừa: trả `"unknown"` và để caller ESC
+ * (không chọn gì = suất giữ nguyên) — chậm một nhịp còn hơn mất suất.
  */
-export async function keepPaidSeatIfAsked(
+export async function answerPaidSeatDialog(
   log = "[autogpt]",
+  opts: { release?: boolean } = {},
 ): Promise<PaidSeatOutcome> {
   const d = openDialogEl();
   if (!d) return "none";
   const btns = openDialogButtons();
   const texts = btns.map((b) => (b.textContent ?? "").trim());
-  const decision = decidePaidSeatDialog(d.textContent ?? "", texts);
+  const decision = decidePaidSeatDialog(d.textContent ?? "", texts, {
+    release: opts.release === true,
+  });
   if (decision.kind === "not_paid_seat") return "none";
   if (decision.kind === "unknown_labels") {
     console.warn(
@@ -170,16 +176,30 @@ export async function keepPaidSeatIfAsked(
     );
     return "unknown";
   }
-  const keepBtn = btns[decision.index];
-  if (!keepBtn) return "unknown";
+  const btn = btns[decision.index];
+  if (!btn) return "unknown";
+  if (decision.kind === "release") {
+    console.log(
+      `${log} hộp "Gỡ suất trả phí?" → NGÀY CHỐT CHU KỲ, bấm gỡ suất: ` +
+        JSON.stringify(texts[decision.index]),
+    );
+    await humanClick(btn);
+    return "released";
+  }
+  if (opts.release) {
+    console.warn(
+      `${log} hộp "Gỡ suất trả phí?" → ngày chốt nhưng không thấy nút gỡ suất, ` +
+        `rơi về giữ suất. Nút trong hộp: ${JSON.stringify(texts)}`,
+    );
+  }
   console.log(
     `${log} hộp "Gỡ suất trả phí?" → bấm giữ suất: ${JSON.stringify(texts[decision.index])}`,
   );
-  await humanClick(keepBtn);
+  await humanClick(btn);
   return "kept";
 }
 
-/** Số lần tối đa bấm "Giữ suất" trong MỘT lượt chờ (chống bấm liên hồi). */
+/** Số lần tối đa trả lời hộp suất trong MỘT lượt chờ (chống bấm liên hồi). */
 const MAX_PAID_SEAT_KEEPS = 3;
 
 /** Poll 300ms; đòi 4 nhịp LIÊN TIẾP không thấy dialog mới coi là "tắt hẳn". */
@@ -212,7 +232,7 @@ export async function waitForConfirmDialogClosed(
       // thì nó đứng đó tới hết hạn và lệnh báo hỏng oan. Chỉ bấm khi hộp KHÔNG
       // còn quay, và tối đa vài lần (mỗi member gỡ đi kèm một hộp).
       if (keeps < MAX_PAID_SEAT_KEEPS && !confirmDialogBusy()) {
-        if ((await keepPaidSeatIfAsked(log)) === "kept") keeps += 1;
+        if ((await answerPaidSeatDialog(log)) === "kept") keeps += 1;
       }
     } else {
       clearHits += 1;

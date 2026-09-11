@@ -19,12 +19,15 @@ import {
   sanitizeRemoveLabels,
 } from "../menu-guard";
 import {
+  answerPaidSeatDialog,
   confirmDialogOpen,
-  keepPaidSeatIfAsked,
+  openDialogText,
   paidSeatDialogOpen,
   visibleDialogEl,
   waitForModalLockGone,
+  type PaidSeatOutcome,
 } from "../dialog-commit";
+import { releaseWindowOpen } from "../paid-seat-guard";
 import { ensurePendingInvitesTab } from "../revoke/pending-tab";
 import { revokeInvite } from "../revoke/revoke-invite";
 import {
@@ -117,7 +120,7 @@ function findConfirmRemoveButton(texts: readonly string[]): HTMLElement | null {
   // Hộp "Gỡ suất trả phí?" (bồi sau khi gỡ xong) cũng có nút đỏ, khớp cả
   // `button[data-variant="destructive"]` lẫn nhãn lỏng "Remove" kiểu `startsWith`
   // → quét ở đây là bấm trúng "Remove paid seat", workspace tụt suất đã mua.
-  // Hộp đó do `keepPaidSeatIfAsked` lo, tuyệt đối không phải việc của hàm này.
+  // Hộp đó do `answerPaidSeatDialog` lo, tuyệt đối không phải việc của hàm này.
   if (dialog && paidSeatDialogOpen()) return null;
   const root: ParentNode = dialog ?? document;
   const sel = querySelectorFirst<HTMLElement>(SELECTORS.confirmRemoveButton, root);
@@ -322,15 +325,31 @@ async function sweepPendingAfterRemove(
   return "failed";
 }
 
+/** Tuỳ chọn của một lệnh gỡ. */
+export type RemoveOptions = {
+  /**
+   * Không thấy ở tab "Người dùng" thì sang tab "Lời mời đang chờ xử lý" thu hồi
+   * (thứ tự user chốt 2026-08-21). Tắt khi CHÍNH revoke gọi vào đây làm fallback
+   * ngược — bật sẽ thành ping-pong 2 tab vô ích. Mặc định bật.
+   */
+  allowPendingFallback?: boolean;
+  /**
+   * NGÀY CHỐT CHU KỲ — giờ hoá đơn của mốc (ISO) do backend đính vào lệnh
+   * (`payload.release_paid_seat_until`). Hộp "Gỡ suất trả phí?" hiện ra TRƯỚC giờ
+   * này thì bấm GỠ SUẤT: gỡ ở đó có hiệu lực ngay hoá đơn kỳ mới, bớt đúng ghế
+   * vừa gỡ — cùng lý lẽ với đợt gỡ tại mốc 10h (giờ VN). Thiếu hoặc đã qua ⇒ giữ
+   * suất như giữa kỳ. So đồng hồ LÚC HỘP HIỆN RA chứ không phải lúc nhận lệnh: mẻ
+   * 5 lệnh chạy tuần tự, lệnh cuối có thể rơi qua giờ hoá đơn.
+   */
+  releasePaidSeatUntil?: string | null;
+};
+
 export async function executeRemove(
   taskId: string,
   email: string,
-  opts: { allowPendingFallback?: boolean } = {},
+  opts: RemoveOptions = {},
 ): Promise<ExecuteActionResponse> {
-  // `allowPendingFallback`: không thấy ở tab "Người dùng" thì sang tab "Lời mời
-  // đang chờ xử lý" thu hồi (thứ tự user chốt 2026-08-21). Tắt khi CHÍNH revoke
-  // gọi vào đây làm fallback ngược — bật sẽ thành ping-pong 2 tab vô ích.
-  const { allowPendingFallback = true } = opts;
+  const { allowPendingFallback = true, releasePaidSeatUntil = null } = opts;
   if (!location.pathname.includes("/admin")) {
     return {
       ok: false,
@@ -593,16 +612,37 @@ export async function executeRemove(
     200,
   ).catch(() => false);
   const dialogStuck = confirmDialogOpen();
+  let paidSeat: PaidSeatOutcome = "none";
   if (dialogStuck) {
     // Còn hộp thoại thì mọi cú gõ ô lọc rơi vào lớp phủ. Nhận ra hộp "Gỡ suất trả
-    // phí?" thì bấm GIỮ SUẤT, không thì ESC cho nó biến đi (ESC = không chọn gì =
-    // suất giữ nguyên). Đây KHÔNG còn là lý do báo hỏng.
-    if ((await keepPaidSeatIfAsked(LOG)) !== "kept") await escapeDialog();
+    // phí?" thì trả lời nó — GIỮ giữa kỳ, GỠ trong ngày chốt chu kỳ (xem
+    // `RemoveOptions.releasePaidSeatUntil`); hộp khác/không nhận ra nút thì ESC
+    // cho nó biến đi (ESC = không chọn gì = suất giữ nguyên). Đây KHÔNG còn là lý
+    // do báo hỏng.
+    const release = releaseWindowOpen(releasePaidSeatUntil);
+    if (releasePaidSeatUntil && !release) {
+      console.log(
+        `${LOG} ${email}: lệnh mang mốc trả suất ${releasePaidSeatUntil} nhưng đã qua giờ → giữ suất`,
+      );
+    }
+    paidSeat = await answerPaidSeatDialog(LOG, { release });
+    if (paidSeat === "none" || paidSeat === "unknown") await escapeDialog();
     await waitForModalLockGone(2000, LOG);
+    if (confirmDialogOpen()) {
+      // Trả lời xong mà vẫn còn hộp (ChatGPT hỏi thêm một lượt nữa?) → ghi nguyên
+      // văn để bổ sung nhãn, rồi ESC cho khuất ô lọc. ESC = không chọn gì = suất
+      // giữ nguyên, nên có nhầm cũng chỉ mất một lượt trả suất chứ không mất tiền.
+      console.warn(
+        `${LOG} ${email}: đã trả lời hộp suất (${paidSeat}) mà vẫn còn hộp thoại → ESC. ` +
+          `Hộp: ${JSON.stringify(openDialogText().slice(0, 200))}`,
+      );
+      await escapeDialog();
+      await waitForModalLockGone(2000, LOG);
+    }
   }
   console.log(
     `${LOG} ${email}: sau khi bấm xoá → ${settled ? "dòng đã rơi khỏi danh sách" : "chưa thấy rơi"}` +
-      `${dialogStuck ? ", hộp thoại còn nằm lại (đã dẹp)" : ""} → tra lại bằng ô lọc`,
+      `${dialogStuck ? `, hộp thoại còn nằm lại (đã dẹp, suất: ${paidSeat})` : ""} → tra lại bằng ô lọc`,
   );
 
   // TRA ĐÚNG MỘT LẦN (user 6/9/2026: *"sau khi xoá xong chỉ cần tìm 1 lần, không
@@ -648,6 +688,14 @@ export async function executeRemove(
     : "skipped";
   return {
     ok: true,
-    data: { email, verified: true, pending_sweep: pendingSweep, dialog_stuck: dialogStuck },
+    data: {
+      email,
+      verified: true,
+      pending_sweep: pendingSweep,
+      dialog_stuck: dialogStuck,
+      // Backend ghi vào audit MEMBER_REMOVED_SYNCED để đếm "kỳ này trả được bao
+      // nhiêu suất" mà không phải đoán từ hoá đơn.
+      paid_seat: paidSeat,
+    },
   };
 }

@@ -426,6 +426,26 @@ def pick_next(
     settings = db.get(WorkspaceSettings, workspace.id)
     if settings is not None and settings.dry_run_mode:
         response_payload = {**(response_payload or item.payload or {}), "dry_run": True}
+    # ---- NGÀY CHỐT CHU KỲ: lệnh gỡ được TRẢ SUẤT TRẢ PHÍ (EXPIRY_RULES §6.1) ----
+    # ChatGPT bồi hộp "Gỡ suất trả phí?" sau mỗi lệnh gỡ. Giữa kỳ extension luôn
+    # GIỮ; riêng ngày chốt thì gỡ suất để hoá đơn kỳ mới bớt đúng số người vừa gỡ.
+    # Gửi GIỜ HOÁ ĐƠN chứ không phải cờ đúng/sai: mẻ 5 lệnh chạy tuần tự, hộp của
+    # lệnh cuối có thể hiện sau giờ hoá đơn, extension so lại đồng hồ lúc đó.
+    # `REVOKE_INVITES` cũng nhận vì đường lui của nó gỡ ở tab "Người dùng".
+    if item.type in ("REMOVE_MEMBER", "REVOKE_INVITES"):
+        from app.routers.members._shared import (
+            cycle_settings,
+            paid_seat_release_deadline,
+        )
+
+        release_until = paid_seat_release_deadline(
+            workspace, picked_at, settings_row=cycle_settings(db)
+        )
+        if release_until is not None:
+            response_payload = {
+                **(response_payload or item.payload or {}),
+                "release_paid_seat_until": release_until.isoformat(),
+            }
     if response_payload is not None:
         item.payload = response_payload
         db.expunge(item)

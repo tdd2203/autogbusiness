@@ -1,6 +1,6 @@
 import type { ExecuteActionResponse } from "../../../shared/messages";
 import { reportProgress } from "../../progress";
-import { executeRemove } from "./execute-remove";
+import { executeRemove, type RemoveOptions } from "./execute-remove";
 
 const LOG = "[autogpt-remove-batch]";
 
@@ -14,6 +14,8 @@ export type BatchRemoveResult = {
   absent?: boolean;
   /** Gỡ được nhờ thu hồi lời mời chờ (fallback tab "Lời mời"). */
   via_revoke?: boolean;
+  /** Trả lời hộp "Gỡ suất trả phí?": kept / released / unknown / none. */
+  paid_seat?: string;
   error_code?: string;
   error_message?: string;
 };
@@ -42,6 +44,7 @@ const PAGE_LEVEL_ERRORS = new Set(["PAGE_NOT_ADMIN", "NOT_LOGGED_IN_CHATGPT"]);
 export async function executeRemoveBatch(
   taskId: string,
   emails: string[],
+  opts: Pick<RemoveOptions, "releasePaidSeatUntil"> = {},
 ): Promise<ExecuteActionResponse> {
   const list = emails.map((e) => e.trim().toLowerCase()).filter(Boolean);
   if (list.length === 0) {
@@ -67,7 +70,9 @@ export async function executeRemoveBatch(
     );
     let resp: ExecuteActionResponse;
     try {
-      resp = await executeRemove(taskId, email);
+      resp = await executeRemove(taskId, email, {
+        releasePaidSeatUntil: opts.releasePaidSeatUntil,
+      });
     } catch (e) {
       resp = {
         ok: false,
@@ -83,6 +88,7 @@ export async function executeRemoveBatch(
         verified: data.verified === true,
         absent: data.absent === true,
         via_revoke: data.via_revoke === true,
+        ...(typeof data.paid_seat === "string" ? { paid_seat: data.paid_seat } : {}),
       });
       console.log(`${LOG} ${email}: OK (${i + 1}/${list.length})`);
       continue;

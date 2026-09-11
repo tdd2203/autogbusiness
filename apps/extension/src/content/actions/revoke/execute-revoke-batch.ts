@@ -20,6 +20,9 @@ import type { RevokeResult } from "./revoke-invite";
 export async function executeRevokeInvites(
   taskId: string,
   emails: string[],
+  // `releasePaidSeatUntil`: ngày chốt chu kỳ — chỉ đường lui gỡ ở tab "Người
+  // dùng" mới gặp hộp "Gỡ suất trả phí?", nên chuyển tiếp nguyên cho `executeRemove`.
+  opts: { releasePaidSeatUntil?: string } = {},
 ): Promise<ExecuteActionResponse> {
   if (emails.length === 0) {
     return { ok: true, data: { revoked: 0, failed: 0, results: [] } };
@@ -95,7 +98,10 @@ export async function executeRevokeInvites(
       );
       // `allowPendingFallback:false`: chính ta VỪA đứng ở tab Lời mời, đừng để
       // executeRemove quay lại đó tra thêm lần nữa (ping-pong 2 tab vô ích).
-      const rm = await executeRemove(taskId, email, { allowPendingFallback: false });
+      const rm = await executeRemove(taskId, email, {
+        allowPendingFallback: false,
+        releasePaidSeatUntil: opts.releasePaidSeatUntil,
+      });
       const idx = results.findIndex((r) => r.email === email);
       let merged: RevokeResult;
       if (rm.ok) {

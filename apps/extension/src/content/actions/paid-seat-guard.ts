@@ -24,10 +24,20 @@ import { normalizeMatchText } from "../human";
  *      lỏng "Remove" và so khớp kiểu `startsWith` → "Remove paid seat" khớp.
  *      Bấm nhầm là workspace tụt suất đã mua, phải mua lại.
  *
- * Chính sách hiện tại (user chốt 8/9/2026): **luôn bấm "Giữ suất"**. Suất đã trả
- * tiền tới ngày gia hạn nên gỡ giữa kỳ không hoàn lại đồng nào, mà lại mất chỗ
- * trống để chuyển người sang. Chỉ tới ngày cuối chu kỳ (sau khi gom hết người về
- * một hoá đơn) mới bấm nút gỡ suất — khi đó sẽ thêm công tắc riêng ở đây.
+ * Chính sách (user chốt 8/9 + 11/9/2026):
+ *
+ *   · GIỮA KỲ → **"Giữ suất"**. Suất đã trả tiền tới ngày gia hạn nên gỡ giữa kỳ
+ *     không hoàn lại đồng nào, mà lại mất chỗ trống để chuyển người sang.
+ *   · NGÀY CHỐT CHU KỲ → **"Gỡ suất"**. Gỡ suất ở hộp này có hiệu lực tại lần gia
+ *     hạn kế tiếp — tức ngay hoá đơn kỳ mới — nên bớt đúng số người vừa gỡ, cùng
+ *     một lý lẽ với đợt gỡ tại mốc 10h (giờ VN) của backend. Backend là nơi biết
+ *     "hôm nay có phải ngày chốt": nó đính `release_paid_seat_until` (= giờ hoá
+ *     đơn của mốc) vào lệnh gỡ, extension so lại đồng hồ đúng lúc hộp hiện ra
+ *     (`releaseWindowOpen`). Không có mốc hoặc đã quá giờ ⇒ giữ như giữa kỳ.
+ *
+ * Nhãn nút gỡ suất vẫn là DENY-LIST đối với lệnh gỡ member (`confirmRemoveButton`
+ * không bao giờ được khớp vào nó); chỉ `decidePaidSeatDialog` với `release: true`
+ * mới chỉ vào nút đó, và chỉ khi nhận diện chắc chắn đây là hộp suất trả phí.
  *
  * Module thuần hàm (không đụng DOM) để test được bằng vitest — xem
  * [`paid-seat-guard.test.ts`](./paid-seat-guard.test.ts). Phần đọc/bấm DOM nằm ở
@@ -54,8 +64,9 @@ export const KEEP_PAID_SEAT_TEXTS = [
 ] as const;
 
 /**
- * Nhãn nút GỠ suất — DENY-LIST cứng. Không bao giờ được bấm, và cũng không được
- * lọt vào `confirmRemoveButton` của lệnh gỡ member.
+ * Nhãn nút GỠ suất — DENY-LIST đối với lệnh gỡ member (không được lọt vào
+ * `confirmRemoveButton`). Chỉ được bấm qua `decidePaidSeatDialog(..., {release})`
+ * trong ngày chốt chu kỳ. Nhãn đầy đủ xếp TRƯỚC nhãn ngắn, như danh sách giữ.
  */
 export const REMOVE_PAID_SEAT_TEXTS = [
   "Remove paid seat",
@@ -150,12 +161,46 @@ export function pickKeepPaidSeatIndex(buttonTexts: readonly string[]): number {
   return -1;
 }
 
+/**
+ * Vị trí nút "Gỡ suất" — chỉ dùng khi ĐƯỢC PHÉP trả suất (ngày chốt). Khớp CHÍNH
+ * XÁC trước rồi mới "chứa chuỗi", cùng cách với nút giữ.
+ */
+export function pickRemovePaidSeatIndex(buttonTexts: readonly string[]): number {
+  for (const label of REMOVE_PAID_SEAT_TEXTS) {
+    const needle = normalizeMatchText(label);
+    if (!needle) continue;
+    for (let i = 0; i < buttonTexts.length; i += 1) {
+      if (normalizeMatchText(buttonTexts[i]) === needle) return i;
+    }
+  }
+  for (let i = 0; i < buttonTexts.length; i += 1) {
+    if (isRemovePaidSeatText(buttonTexts[i])) return i;
+  }
+  return -1;
+}
+
+/**
+ * Còn trong cửa sổ trả suất không — `until` là giờ hoá đơn backend gửi kèm lệnh
+ * (ISO), so với đồng hồ NGAY LÚC hộp hiện ra. Thiếu, hỏng, hoặc đã qua ⇒ false
+ * (giữ suất — hướng an toàn).
+ */
+export function releaseWindowOpen(
+  until: string | null | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (typeof until !== "string" || until === "") return false;
+  const deadline = Date.parse(until);
+  return Number.isFinite(deadline) && now < deadline;
+}
+
 /** Kết luận cho một dialog đang mở. */
 export type PaidSeatDecision =
   /** Không phải hộp thoại suất trả phí — caller cứ chờ như cũ. */
   | { kind: "not_paid_seat" }
   /** Đúng là nó, và đã tìm ra nút giữ suất ở vị trí `index` → bấm nút đó. */
   | { kind: "keep"; index: number }
+  /** Đúng là nó, ĐANG NGÀY CHỐT, và đã tìm ra nút gỡ suất ở vị trí `index`. */
+  | { kind: "release"; index: number }
   /**
    * Đúng là nó nhưng KHÔNG nhận ra nút giữ suất (ChatGPT đổi nhãn) → TUYỆT ĐỐI
    * không bấm bừa. Caller để lệnh hết giờ và báo nguyên văn dialog ra ngoài, để
@@ -168,14 +213,23 @@ export type PaidSeatDecision =
  *
  * Nhận là "đúng nó" khi thân chữ nói suất + tiền, HOẶC dialog có sẵn nút khớp
  * deny-list (ChatGPT đổi thân chữ nhưng giữ nhãn nút thì vẫn bắt được).
+ *
+ * `release: true` (ngày chốt chu kỳ) → chỉ vào nút GỠ suất. Không thấy nút gỡ thì
+ * rơi về GIỮ chứ không bấm bừa: giữ oan một suất là trả thêm một tháng cho một
+ * ghế, còn bấm nhầm nút lạ thì không biết hậu quả.
  */
 export function decidePaidSeatDialog(
   dialogText: string,
   buttonTexts: readonly string[],
+  opts: { release?: boolean } = {},
 ): PaidSeatDecision {
   const looks =
     isPaidSeatDialogText(dialogText) || buttonTexts.some(isRemovePaidSeatText);
   if (!looks) return { kind: "not_paid_seat" };
+  if (opts.release) {
+    const removeIndex = pickRemovePaidSeatIndex(buttonTexts);
+    if (removeIndex >= 0) return { kind: "release", index: removeIndex };
+  }
   const index = pickKeepPaidSeatIndex(buttonTexts);
   if (index >= 0) return { kind: "keep", index };
   return { kind: "unknown_labels", buttons: [...buttonTexts] };

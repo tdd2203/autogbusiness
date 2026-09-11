@@ -131,8 +131,12 @@ async function dispatch(
       // `execute-remove-batch.ts`). Một email → giữ nguyên đường lệnh lẻ để kết
       // quả trả về đúng hình dạng cũ (`data.verified/absent`).
       return msg.emails && msg.emails.length > 1
-        ? executeRemoveBatch(msg.taskId, msg.emails)
-        : executeRemove(msg.taskId, msg.emails?.[0] ?? msg.email);
+        ? executeRemoveBatch(msg.taskId, msg.emails, {
+            releasePaidSeatUntil: msg.releasePaidSeatUntil,
+          })
+        : executeRemove(msg.taskId, msg.emails?.[0] ?? msg.email, {
+            releasePaidSeatUntil: msg.releasePaidSeatUntil,
+          });
     case "EXPORT_MEMBER_DATA":
       return executeMemberData(msg.taskId, msg.email, "export");
     case "DELETE_MEMBER_DATA":
@@ -165,7 +169,9 @@ async function dispatch(
     case "SYNC_BILLING":
       return executeSyncBilling(msg.taskId);
     case "REVOKE_INVITES":
-      return executeRevokeInvites(msg.taskId, msg.emails);
+      return executeRevokeInvites(msg.taskId, msg.emails, {
+        releasePaidSeatUntil: msg.releasePaidSeatUntil,
+      });
     case "HARVEST_LABELS":
       return executeHarvestLabels(msg.taskId, msg.locale);
     case "PURCHASE_SEAT":

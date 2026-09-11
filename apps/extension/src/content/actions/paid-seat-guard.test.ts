@@ -10,6 +10,8 @@ import {
   isPaidSeatDialogText,
   isRemovePaidSeatText,
   pickKeepPaidSeatIndex,
+  pickRemovePaidSeatIndex,
+  releaseWindowOpen,
 } from "./paid-seat-guard";
 
 /** Thân hộp thoại thật (ảnh user, bản en). */
@@ -154,5 +156,75 @@ describe("decidePaidSeatDialog", () => {
     if (d.kind === "unknown_labels") {
       expect(d.buttons).toEqual(["Not now", "Remove paid seat"]);
     }
+  });
+});
+
+describe("ngày chốt chu kỳ — được phép GỠ suất (user 11/9/2026)", () => {
+  it("release:true → chỉ vào nút gỡ suất, cả ba locale", () => {
+    expect(
+      decidePaidSeatDialog(BODY_EN, ["Keep paid seat", "Remove paid seat"], {
+        release: true,
+      }),
+    ).toEqual({ kind: "release", index: 1 });
+    expect(
+      decidePaidSeatDialog(BODY_VI, ["Giữ suất trả phí", "Gỡ suất trả phí"], {
+        release: true,
+      }),
+    ).toEqual({ kind: "release", index: 1 });
+    expect(
+      decidePaidSeatDialog(BODY_ZH, ["保留付费席位", "移除付费席位"], { release: true }),
+    ).toEqual({ kind: "release", index: 1 });
+  });
+
+  it("release:true mà KHÔNG thấy nút gỡ → rơi về giữ suất, không bấm bừa", () => {
+    expect(
+      decidePaidSeatDialog(BODY_EN, ["Keep paid seat", "Bỏ qua"], { release: true }),
+    ).toEqual({ kind: "keep", index: 0 });
+  });
+
+  it("release:false (giữa kỳ) → vẫn giữ suất như cũ", () => {
+    expect(
+      decidePaidSeatDialog(BODY_EN, ["Keep paid seat", "Remove paid seat"], {
+        release: false,
+      }),
+    ).toEqual({ kind: "keep", index: 0 });
+  });
+
+  it("release:true nhưng KHÔNG phải hộp suất trả phí → không đụng vào", () => {
+    // Nút đỏ của hộp xác nhận gỡ member thường tuyệt đối không được coi là "gỡ suất".
+    expect(
+      decidePaidSeatDialog(
+        BODY_CONFIRM_REMOVE,
+        ["Hủy bỏ", "Gỡ bỏ khỏi không gian làm việc"],
+        { release: true },
+      ),
+    ).toEqual({ kind: "not_paid_seat" });
+  });
+
+  it("pickRemovePaidSeatIndex: khớp chính xác trước, nhãn ngắn sau", () => {
+    expect(pickRemovePaidSeatIndex(["Remove paid seat", "Keep paid seat"])).toBe(0);
+    expect(pickRemovePaidSeatIndex(["Gỡ suất cho người khác", "Gỡ suất"])).toBe(1);
+    expect(pickRemovePaidSeatIndex(["Keep paid seat", "Not now"])).toBe(-1);
+    expect(pickRemovePaidSeatIndex([])).toBe(-1);
+  });
+});
+
+describe("releaseWindowOpen — so đồng hồ lúc hộp hiện ra", () => {
+  const NOW = Date.parse("2026-09-11T02:53:00Z"); // 09:53 giờ VN ngày chốt
+
+  it("giờ hoá đơn còn ở phía trước → mở", () => {
+    expect(releaseWindowOpen("2026-09-11T09:00:00+00:00", NOW)).toBe(true);
+  });
+
+  it("đúng giờ hoá đơn hoặc đã qua → đóng", () => {
+    expect(releaseWindowOpen("2026-09-11T02:53:00Z", NOW)).toBe(false);
+    expect(releaseWindowOpen("2026-09-10T09:00:00Z", NOW)).toBe(false);
+  });
+
+  it("thiếu / rỗng / hỏng → đóng (giữ suất là hướng an toàn)", () => {
+    expect(releaseWindowOpen(undefined, NOW)).toBe(false);
+    expect(releaseWindowOpen(null, NOW)).toBe(false);
+    expect(releaseWindowOpen("", NOW)).toBe(false);
+    expect(releaseWindowOpen("hôm nay", NOW)).toBe(false);
   });
 });
