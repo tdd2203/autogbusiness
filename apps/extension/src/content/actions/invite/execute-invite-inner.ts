@@ -33,6 +33,7 @@ import {
   isInviteDialogOpen,
 } from "./invite-success-toast";
 import { checkInviteLanded } from "./landed-check";
+import { findSeatChangeReview, seatsAddedInReview, type SeatChangeNote } from "./seat-change-review";
 import { setRole } from "./set-role";
 import {
   SILENT_RETRY_AFTER_MS,
@@ -490,7 +491,7 @@ export async function executeInviteInner(
   }
 
   await humanClick(enabledBtn);
-  const submittedAt = Date.now();
+  let submittedAt = Date.now();
   // Trần chờ CO GIÃN theo số email — 15s cố định là nguyên nhân ca 26/8/2026 báo
   // hỏng oan cả một mẻ 5 email đã gửi được. Xem `verify-wait.ts`.
   const verifyTimeoutMs = inviteVerifyTimeoutMs(emails.length);
@@ -525,8 +526,14 @@ export async function executeInviteInner(
   let submitEvidence: "toast" | "dialog_closed" = "dialog_closed";
   let toastText: string | null = null;
   let dialogClosedAt = 0;
-  try {
-    await waitFor(() => {
+  // Hộp "Review seat changes" chen giữa cú bấm Gửi và lúc lời mời đi thật (workspace
+  // đang treo lệnh hạ suất) — bấm đúng MỘT lần. Xem `seat-change-review.ts`.
+  let seatReview: SeatChangeNote | null = null;
+  const waitSubmitSettled = () =>
+    waitFor<"review" | "settled">(() => {
+      // Hộp đó cũng là `[role="dialog"]` — soi TRƯỚC, kẻo vòng chờ tưởng hộp mời
+      // còn đang gửi rồi đứng tới hết giờ.
+      if (!seatReview && findSeatChangeReview()) return "review";
       // Toast là thứ CHỚP TẮT — đọc được lần nào thì giữ luôn, đừng đọc lại ở
       // vòng poll sau rồi kết luận "không có".
       if (!toastText) toastText = findInviteSuccessToastText();
@@ -535,8 +542,18 @@ export async function executeInviteInner(
       if (!toastText && Date.now() - dialogClosedAt < VERIFY_TOAST_GRACE_MS) {
         return null; // đóng rồi nhưng nán thêm để lấy bằng chứng MẠNH
       }
-      return document.body;
+      return "settled";
     }, verifyTimeoutMs + VERIFY_TOAST_GRACE_MS);
+  try {
+    if ((await waitSubmitSettled()) === "review") {
+      seatReview = await confirmSeatChangeReview(taskId, emails.length);
+      // Không bấm được thì chờ thêm cũng vô ích — rơi thẳng xuống nhánh im lặng.
+      if (!seatReview.clicked) throw new Error("seat change review not confirmed");
+      // Lời mời chỉ thật sự đi từ cú bấm này — tính giờ chờ lại từ đây.
+      submittedAt = Date.now();
+      dialogClosedAt = 0;
+      await waitSubmitSettled();
+    }
     submitEvidence = toastText ? "toast" : "dialog_closed";
   } catch {
     // Hộp chưa đóng nhưng ChatGPT ĐÃ nói "đã mời" → lời mời đi rồi, hộp chỉ chậm
@@ -565,6 +582,7 @@ export async function executeInviteInner(
           awaiting_reload_verify: true,
           submit_evidence: "toast",
           dialog_still_open: true,
+          ...(seatReview ? { seat_change_review: seatReview } : {}),
         },
       };
     }
@@ -657,8 +675,56 @@ export async function executeInviteInner(
       ...(landedBefore.length > 0
         ? { pending_members: landedBefore, reinvite_attempts: attempt }
         : {}),
+      // Số suất ChatGPT vừa thêm để lời mời đi được — admin soát suất thừa ở đây.
+      ...(seatReview ? { seat_change_review: seatReview } : {}),
     },
   };
+}
+
+/**
+ * Bấm "Update seats and send invites" của hộp "Review seat changes".
+ *
+ * Luôn bấm (user chốt 11/9/2026: ưu tiên bán hàng, cần suất thì cứ thêm); số suất
+ * ChatGPT thêm được ghi lại để soát. Nút có thể còn mờ trong lúc ChatGPT tính
+ * tiền — chờ tới khi bấm được. Không bấm được thì trả `clicked: false`, caller
+ * rơi về nhánh im lặng như trước.
+ */
+async function confirmSeatChangeReview(
+  taskId: string,
+  invited: number,
+): Promise<SeatChangeNote> {
+  const review = findSeatChangeReview();
+  const added = review ? seatsAddedInReview(review.text) : null;
+  const note: SeatChangeNote = { added, invited, clicked: false };
+  console.log(
+    `[autogpt-invite] ChatGPT bật hộp "Review seat changes": thêm ${added ?? "?"} suất cho ${invited} email.`,
+  );
+  if (added !== null && added > invited) {
+    console.warn(
+      `[autogpt-invite] ChatGPT thêm ${added} suất, nhiều hơn ${invited} email đang mời — vẫn bấm, ghi lại để soát.`,
+    );
+  }
+  await reportProgress(
+    taskId,
+    {
+      phase: "verifying",
+      message: `ChatGPT cần thêm ${added ?? "?"} suất để gửi ${invited} lời mời — đang xác nhận cập nhật suất...`,
+    },
+    true,
+  );
+  const btn = await waitFor(() => {
+    const b = findSeatChangeReview()?.button;
+    return b && !isControlDisabled(b) ? b : null;
+  }, 10_000).catch(() => null);
+  // Nhãn lẫn chữ mua suất thì để lớp chặn mua-kèm-mời quyết như cũ.
+  if (!btn || isBuyAndInviteButton(btn)) {
+    const label = btn ? `"${(btn.textContent ?? "").trim().slice(0, 80)}"` : "nút vẫn mờ";
+    console.warn(`[autogpt-invite] KHÔNG bấm nút cập nhật suất (${label}).`);
+    return note;
+  }
+  await humanClick(btn);
+  note.clicked = true;
+  return note;
 }
 
 /** Ngủ mà VẪN nhả nhịp — im lặng quá 8 phút là backend chốt lệnh treo. */
