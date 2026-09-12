@@ -50,6 +50,38 @@ export type GuideTable = {
   highlightLabel?: string;
 };
 
+/** Một cột được gắn nhãn trong hình "hoá đơn giảm dần theo ngày". */
+export type GuideChartMark = {
+  /** Ngày thứ mấy tính từ ngày chốt ĐẦU TIÊN trong hình (1 = ngày chốt). Lớn hơn
+   *  `days` là đã sang chu kỳ sau — dùng để chỉ vào cột cao trở lại. */
+  day: number;
+  /** Chữ dưới trục, là ngày tháng của ví dụ (vd "10/8"). Giữ NGẮN: nhãn dài thì
+   *  hai cột cạnh nhau đè chữ lên nhau. */
+  tick: string;
+  /** Dòng nhỏ trên đầu cột, vd "còn 22/31 ngày". Phần trăm thì hình TỰ tính từ
+   *  chiều cao cột, không gõ tay — gõ tay là có ngày hình một đằng chữ một nẻo. */
+  note?: string;
+};
+
+/** Hình minh hoạ cách ChatGPT tính tiền suất thêm giữa kỳ: mỗi ngày một cột,
+ *  càng gần ngày chốt cột càng thấp, qua ngày chốt thì cao trở lại trọn tháng.
+ *
+ *  Vẽ bằng SVG dựng tại chỗ (toạ độ ở `chart.ts`) chứ không phải ảnh chụp: hình
+ *  này toàn chữ và đường kẻ, để thành ảnh thì mỗi ngôn ngữ một file, sửa một chữ
+ *  phải xuất lại cả ba, mà in ra giấy thì nhoè.
+ *
+ *  KHÔNG có số tiền trong hình: đây là hoá đơn CHATGPT thu không gian, còn đơn
+ *  giá trong bài là giá bán của đại lý — dán tiền của người đọc lên đây là nói
+ *  sai. Hình chỉ nói hình dạng (phần trăm), tiền thật nằm ở bảng ví dụ. */
+export type GuideChart = {
+  kind: "prorate";
+  /** Số ngày của chu kỳ trong hình (31 = ví dụ 1/8 → 1/9 của bài). */
+  days: number;
+  marks: GuideChartMark[];
+  /** Câu chú thích dưới hình. */
+  caption?: string;
+};
+
 /** Một bước: tiêu đề + mô tả + bảng/ảnh minh hoạ (tuỳ chọn).
  *
  *  `body` nhận cú pháp `**đậm**` — xem `renderMarkup` trong DailyGuideModal. Đây là
@@ -59,6 +91,8 @@ export type GuideStep = {
   body: string;
   /** Bảng ngay dưới `body`, trước ảnh nếu có cả hai. */
   table?: GuideTable;
+  /** Hình vẽ tại chỗ, đặt sau bảng. */
+  chart?: GuideChart;
   /** URL ảnh do Vite sinh khi `import` file trong `src/assets/guides/...`. */
   image?: string;
   imageAlt?: string;

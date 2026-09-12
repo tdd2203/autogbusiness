@@ -11,7 +11,8 @@
  *
  *  `guidePrintHtml` là hàm thuần để test được — xem `guides.test.ts`.
  */
-import type { GuideContent, GuideStep, GuideTable } from "./types";
+import { markLabelY, prorateModel } from "./chart";
+import type { GuideChart, GuideContent, GuideStep, GuideTable } from "./types";
 
 /** Nhãn mục "Lưu ý" trên bản in, theo ngôn ngữ BÀI.
  *
@@ -80,6 +81,66 @@ function tableHtml(table: GuideTable): string {
   return `<table class="${cls}"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+/** Hình "hoá đơn giảm dần theo ngày" — vẽ thẳng bằng SVG trong trang in.
+ *
+ *  Màu gán vào từng thẻ chứ không qua CSS: trang in không có biến theme, mà một
+ *  cái `fill` hỏng thì cả hình thành khối đen trên giấy. Mực chọn theo tông của
+ *  bản in (xanh lá của tiêu đề, xám của chữ phụ) và vẫn đọc được khi in đen
+ *  trắng — cột được chỉ tên đậm hơn hẳn cột thường. */
+function chartHtml(chart: GuideChart): string {
+  const m = prorateModel(chart);
+  const n = (v: number) => Math.round(v * 10) / 10;
+  const bars = m.bars
+    .map((b) => {
+      const fill = b.next
+        ? b.marked
+          ? "#79b099"
+          : "#dde8e2"
+        : b.marked
+          ? "#0f7b57"
+          : "#bfdfd0";
+      return `<rect x="${n(b.x)}" y="${n(b.y)}" width="${n(b.w)}" height="${n(
+        b.h,
+      )}" rx="2" fill="${fill}"/>`;
+    })
+    .join("");
+  const labels = m.marks
+    .map((k) => {
+      const y = markLabelY(k.barTop);
+      const note = k.note
+        ? `<text x="${n(k.x)}" y="${n(y.note)}" text-anchor="${k.anchor}" font-size="11" fill="#6c655c">${esc(
+            k.note,
+          )}</text>`
+        : "";
+      return `${note}<text x="${n(k.x)}" y="${n(
+        y.percent,
+      )}" text-anchor="${k.anchor}" font-size="14" font-weight="700" fill="#0f7b57">${esc(
+        k.percent,
+      )}</text><text x="${n(k.x)}" y="${n(
+        m.tickY,
+      )}" text-anchor="${k.anchor}" font-size="12" fill="#3f3b36">${esc(k.tick)}</text>`;
+    })
+    .join("");
+  const cap = chart.caption
+    ? `<figcaption>${esc(chart.caption)}</figcaption>`
+    : "";
+  return `<figure class="step-chart"><svg viewBox="0 0 ${m.width} ${
+    m.height
+  }" role="img" aria-label="${esc(chart.caption ?? "")}" xmlns="http://www.w3.org/2000/svg">
+<line x1="${n(m.left)}" y1="${n(m.topY)}" x2="${n(m.right)}" y2="${n(
+    m.topY,
+  )}" stroke="#d8d2c9" stroke-width="1" stroke-dasharray="4 4"/>
+${bars}
+<line x1="${n(m.left)}" y1="${n(m.axisY)}" x2="${n(m.right)}" y2="${n(
+    m.axisY,
+  )}" stroke="#b9b2a7" stroke-width="1"/>
+<line x1="${n(m.boundaryX)}" y1="${n(m.topY - 34)}" x2="${n(m.boundaryX)}" y2="${n(
+    m.axisY + 8,
+  )}" stroke="#b9b2a7" stroke-width="1" stroke-dasharray="3 3"/>
+${labels}
+</svg>${cap}</figure>`;
+}
+
 function stepHtml(step: GuideStep, index: number, base?: string): string {
   const num = String(index).padStart(2, "0");
   // Có ảnh thì xếp hai cột (chữ trái, ảnh phải) — xếp dọc thì bài 9 bước ra 6
@@ -90,6 +151,7 @@ function stepHtml(step: GuideStep, index: number, base?: string): string {
     `<div class="step-text"><div class="step-title">${markup(step.title)}</div>`,
     `<p class="step-body">${markup(step.body)}</p>`,
     step.table ? tableHtml(step.table) : "",
+    step.chart ? chartHtml(step.chart) : "",
     `</div></div>`,
   ];
   if (step.image) {
@@ -193,6 +255,11 @@ h1 { font-size: 18pt; line-height: 1.25; letter-spacing: -.02em; margin: 3pt 0 6
 .step-table.wide th.is-hi, .step-table.wide th.is-base { font-size: 7.2pt; }
 .step-table.wide td { padding: 1.4mm 1.4mm; overflow-wrap: anywhere; }
 .step-table.wide th:first-child, .step-table.wide td:first-child { width: 16%; }
+/* Hình vẽ tại chỗ (hoá đơn theo ngày): giữ trong cột chữ, chặn bề ngang để trên
+   giấy A4 nó không thành cái áp phích chiếm nửa trang. */
+.step-chart { margin: 3mm 0 0; break-inside: avoid; page-break-inside: avoid; }
+.step-chart svg { display: block; width: 100%; max-width: 150mm; height: auto; }
+.step-chart figcaption { margin-top: 1mm; font-size: 8pt; color: #6c655c; }
 figure { margin: 0; break-inside: avoid; page-break-inside: avoid; }
 /* Chặn CHIỀU CAO ảnh (vẫn giữ tỉ lệ) — ảnh chụp cao cả trăm mm là thứ làm bản
    in phình ra. Ai cần đọc chữ trong ảnh thì bấm ảnh trong popup xem cỡ đầy đủ. */

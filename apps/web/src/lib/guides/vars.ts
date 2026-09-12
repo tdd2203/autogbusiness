@@ -38,6 +38,15 @@ function unresolved(text: string): boolean {
   return SLOT.test(text);
 }
 
+/** Mọi câu chữ trong HÌNH của bước — nhãn trục, ghi chú, câu chú thích. */
+function chartTexts(step: GuideStep): string[] {
+  if (!step.chart) return [];
+  return [
+    step.chart.caption ?? "",
+    ...step.chart.marks.flatMap((mark) => [mark.tick, mark.note ?? ""]),
+  ];
+}
+
 /** Điền cả bảng của bước, không riêng câu chữ: số tiền ví dụ nằm trong ô bảng. */
 function fillStep(step: GuideStep, vars: Record<string, string>): GuideStep {
   const next: GuideStep = {
@@ -45,6 +54,20 @@ function fillStep(step: GuideStep, vars: Record<string, string>): GuideStep {
     title: put(step.title, vars),
     body: put(step.body, vars),
   };
+  if (step.chart) {
+    // Hình cũng là chữ trên nền vẽ: bỏ qua thì một cái "{donGia}" lọt thẳng lên
+    // hình, mà hình thì không ai ngờ tới lúc soát bài.
+    next.chart = {
+      ...step.chart,
+      marks: step.chart.marks.map((mark) => ({
+        ...mark,
+        tick: put(mark.tick, vars),
+        note: mark.note === undefined ? undefined : put(mark.note, vars),
+      })),
+      caption:
+        step.chart.caption === undefined ? undefined : put(step.chart.caption, vars),
+    };
+  }
   if (step.table) {
     // Giữ nguyên các trường khác của bảng (`layout`), chỉ điền chữ trong ô.
     next.table = {
@@ -61,9 +84,9 @@ function fillStep(step: GuideStep, vars: Record<string, string>): GuideStep {
  *  Bảng thiếu một ô tiền trông còn hỏng hơn câu văn thiếu số: hàng vẫn đứng đó
  *  với một ô trắng, người đọc tưởng chưa tính ra. */
 function stepUnresolved(step: GuideStep): boolean {
-  if (unresolved(step.title) || unresolved(step.body)) return true;
-  if (!step.table) return false;
-  return [...step.table.head, ...step.table.rows.flat()].some(unresolved);
+  const texts = [step.title, step.body, ...chartTexts(step)];
+  if (step.table) texts.push(...step.table.head, ...step.table.rows.flat());
+  return texts.some(unresolved);
 }
 
 export function fillGuideVars(

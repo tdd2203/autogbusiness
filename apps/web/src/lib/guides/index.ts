@@ -22,6 +22,8 @@ import businessVsPlus from "./business-vs-plus";
 export { GUIDE_LANGS } from "./types";
 export type {
   Guide,
+  GuideChart,
+  GuideChartMark,
   GuideContent,
   GuideLang,
   GuideSection,
@@ -29,6 +31,7 @@ export type {
   GuideTable,
   GuideVarContext,
 } from "./types";
+export { markLabelY, prorateModel } from "./chart";
 export { guidePrintHtml, openGuidePrint, PRINT_NOTES_LABEL } from "./printable";
 export { fillGuideVars, readerFeeVnd } from "./vars";
 

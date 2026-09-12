@@ -3445,6 +3445,68 @@ body {
   .guide-table-wide tbody td:first-child {
     width: 16%;
   }
+  /* HÌNH trong bài (SVG dựng tại chỗ, xem `lib/guides/chart.ts`). Màu lấy từ token
+     màu của app chứ không gõ mã màu, nên đổi bảng màu là hình đi theo. Cột thường
+     chìm, cột được chỉ tên nổi hẳn lên, cột của chu kỳ SAU mờ đi để đọc ra là
+     "tháng sau, không phải kỳ này" — ba mức đậm nhạt đều pha từ MỘT màu xanh, thêm
+     màu thứ hai vào là hình bắt đầu trông như biểu đồ báo cáo. Chữ trong SVG tính
+     theo đơn vị khung vẽ nên nó co giãn cùng hình. */
+  .guide-chart {
+    margin: 14px 0 0;
+  }
+  .guide-chart svg {
+    display: block;
+    width: 100%;
+    height: auto;
+    overflow: visible;
+  }
+  .guide-chart figcaption {
+    margin-top: 7px;
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--ink-4);
+  }
+  .guide-chart-bar {
+    fill: var(--success);
+    opacity: 0.32;
+  }
+  .guide-chart-bar.on {
+    opacity: 1;
+  }
+  .guide-chart-bar.next {
+    opacity: 0.14;
+  }
+  .guide-chart-bar.next.on {
+    opacity: 0.45;
+  }
+  .guide-chart-level {
+    stroke: var(--border-strong);
+    stroke-width: 1;
+    stroke-dasharray: 4 4;
+  }
+  .guide-chart-axis {
+    stroke: var(--border-strong);
+    stroke-width: 1;
+  }
+  .guide-chart-split {
+    stroke: var(--ink-4);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+    opacity: 0.7;
+  }
+  .guide-chart-val {
+    fill: var(--success);
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .guide-chart-note {
+    fill: var(--ink-3);
+    font-size: 11px;
+  }
+  .guide-chart-tick {
+    fill: var(--ink-2);
+    font-size: 12px;
+  }
   /* Ô gõ thử đơn giá dưới bước ví dụ: nhãn, ô số, nút quay về giá thật, rồi câu
      nói rõ là chỉ để xem. Nền chìm và bo góc như một mảnh rời — nó là thứ BẤM
      ĐƯỢC nằm giữa bài đọc, trông giống đoạn văn thì không ai biết gõ vào được. */
@@ -3539,6 +3601,17 @@ body {
     .guide-table-wide tbody td:first-child {
       background: var(--surface);
       border-right: 1px solid var(--border);
+    }
+    /* Hình co theo bề ngang màn hình: chữ trong SVG phải to lên theo đơn vị khung
+       vẽ, không thì trên điện thoại nó nhỏ cỡ 7px, nhìn ra nét chứ không ra chữ. */
+    .guide-chart-val {
+      font-size: 24px;
+    }
+    .guide-chart-note {
+      font-size: 19px;
+    }
+    .guide-chart-tick {
+      font-size: 19px;
     }
     .guide-step {
       gap: 10px;

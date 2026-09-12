@@ -53,7 +53,10 @@ import {
   shouldOpen,
   vnDayKey,
   writeState,
+  markLabelY,
+  prorateModel,
   type Guide,
+  type GuideChart,
   type GuideLang,
   type GuideStep,
   type GuideTable,
@@ -559,6 +562,7 @@ function Step({
             là thấy ngay chỗ đổi giá, rồi mới tới bảng số đổi theo. */}
         {feeInput}
         {step.table && <GuideTableView table={step.table} />}
+        {step.chart && <GuideChartView chart={step.chart} />}
         {step.image && (
           <figure style={figure}>
             {/* Ảnh chụp màn hình co lại trong popup thì chữ bé; mở tab mới là cách
@@ -589,6 +593,79 @@ function Step({
         )}
       </div>
     </div>
+  );
+}
+
+/** Hình "hoá đơn giảm dần theo ngày" của một bước.
+ *
+ *  Vẽ tại chỗ bằng SVG chứ không dùng ảnh: hình toàn chữ và đường kẻ, để thành
+ *  ảnh thì mỗi ngôn ngữ một file và in ra giấy thì nhoè. Toạ độ lấy từ
+ *  `lib/guides/chart.ts` — bản in dùng chung đúng hàm đó nên hai nơi không thể
+ *  lệch hình. Màu đặt qua class trong `index.css` (token màu của app) chứ không
+ *  gõ mã màu vào thẻ.
+ *
+ *  Không có nhãn nào ở trục dọc: hình nói HÌNH DẠNG (trọn tháng → còn vài phần
+ *  trăm → trọn tháng lại), còn số tiền thật thì bảng ví dụ ngay dưới đã có. */
+function GuideChartView({ chart }: { chart: GuideChart }) {
+  const m = prorateModel(chart);
+  return (
+    <figure className="guide-chart guide-measure">
+      <svg
+        viewBox={`0 0 ${m.width} ${m.height}`}
+        role="img"
+        aria-label={chart.caption ?? ""}
+        preserveAspectRatio="xMidYMid meet"
+      >
+        {/* Mức "trọn tháng" kẻ ngang suốt hình: không có nó thì cột của chu kỳ
+            sau chỉ là một cột cao, có nó mới thấy nó CAO BẰNG cột đầu kỳ. */}
+        <line
+          className="guide-chart-level"
+          x1={m.left}
+          y1={m.topY}
+          x2={m.right}
+          y2={m.topY}
+        />
+        {m.bars.map((b) => (
+          <rect
+            key={b.day}
+            className={`guide-chart-bar${b.next ? " next" : ""}${b.marked ? " on" : ""}`}
+            x={b.x}
+            y={b.y}
+            width={b.w}
+            height={b.h}
+            rx={2}
+          />
+        ))}
+        <line className="guide-chart-axis" x1={m.left} y1={m.axisY} x2={m.right} y2={m.axisY} />
+        {/* Vạch ngăn hai chu kỳ — bên phải nó là tháng sau, không phải cùng kỳ. */}
+        <line
+          className="guide-chart-split"
+          x1={m.boundaryX}
+          y1={m.topY - 34}
+          x2={m.boundaryX}
+          y2={m.axisY + 8}
+        />
+        {m.marks.map((k, i) => {
+          const y = markLabelY(k.barTop);
+          return (
+            <g key={i}>
+              {k.note && (
+                <text className="guide-chart-note" x={k.x} y={y.note} textAnchor={k.anchor}>
+                  {k.note}
+                </text>
+              )}
+              <text className="guide-chart-val" x={k.x} y={y.percent} textAnchor={k.anchor}>
+                {k.percent}
+              </text>
+              <text className="guide-chart-tick" x={k.x} y={m.tickY} textAnchor={k.anchor}>
+                {k.tick}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      {chart.caption && <figcaption>{chart.caption}</figcaption>}
+    </figure>
   );
 }
 

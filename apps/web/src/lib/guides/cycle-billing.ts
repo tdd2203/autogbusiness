@@ -40,8 +40,17 @@
  *  khách theo một mức khác mức của chính mình, gõ vào là cả bài lẫn bản PDF tính
  *  lại theo giá đó. Chỉ để xem, không lưu — giá bán thật vẫn nằm ở trang giá.
  *
- *  Không có ảnh: đây là bài về cách tính, ảnh chụp màn hình không nói thêm được gì
- *  mà lại cũ đi mỗi lần giao diện đổi.
+ *  KHÔNG có ảnh chụp màn hình: đây là bài về cách tính, ảnh chụp không nói thêm
+ *  được gì mà lại cũ đi mỗi lần giao diện đổi. Thay vào đó bước "ChatGPT tính
+ *  tiền theo ngày" có một HÌNH VẼ tại chỗ (`GuideStep.chart`, toạ độ ở
+ *  `chart.ts`): mỗi ngày một cột, cột thấp dần tới ngày chốt rồi vọt lại trọn
+ *  tháng. Một câu văn nói "giảm dần theo số ngày còn lại" ai cũng gật, nhưng
+ *  nhìn hình mới thấy giảm nhanh cỡ nào và vì sao tuần cuối gần như không còn gì
+ *  để bán (chốt user 12/9/2026).
+ *
+ *  Hình KHÔNG ghi tiền: nó vẽ hoá đơn CHATGPT thu không gian, còn đơn giá trong
+ *  bài là giá bán của đại lý — dán tiền của người đọc lên hình là nói sai. Hình
+ *  nói hình dạng, tiền thật để bảng ví dụ ngay dưới lo.
  */
 import { formatVnd } from "../wallet";
 import type { Guide } from "./types";
@@ -95,12 +104,28 @@ const cycleBilling: Guide = {
               body: "Ngày thanh toán là ngày **ChatGPT thu tiền của chính không gian đó**, mình không dời được — mỗi không gian một ngày khác nhau. Ngày đó lặp lại hàng tháng, lúc **10 giờ sáng**, và mọi email trong cùng không gian hết hạn cùng lúc. Ai đang còn hạn cũ thì giữ nguyên hạn đó, tới lần gia hạn sau mới về chung ngày.",
             },
             {
+              title: "ChatGPT cũng tính tiền theo ngày",
+              body: "Đúng ngày thanh toán, không gian trả **trọn tháng cho mọi suất đang có**. Thêm suất vào giữa kỳ thì hoá đơn **chỉ tính phần ngày còn lại** tới ngày đó — thêm càng muộn càng rẻ, sát ngày thanh toán thì chỉ còn vài phần trăm của một tháng. Qua ngày thanh toán, suất đó lại tính trọn tháng như mọi suất khác.",
+              chart: {
+                kind: "prorate",
+                days: VD_CYCLE_DAYS,
+                marks: [
+                  { day: 1, tick: "1/8", note: "cả 31 ngày" },
+                  { day: 1 + VD_CYCLE_DAYS - VD_SOM_DAYS, tick: "10/8", note: "còn 22 ngày" },
+                  { day: 1 + VD_CYCLE_DAYS - VD_SAT_DAYS, tick: "25/8", note: "còn 7 ngày" },
+                  { day: VD_CYCLE_DAYS + 1, tick: "1/9", note: "kỳ mới" },
+                ],
+                caption:
+                  "Tiền ChatGPT thu cho một suất, theo ngày thêm suất vào — chu kỳ 1/8 → 1/9.",
+              },
+            },
+            {
               title: "Dùng bao nhiêu ngày thì trả bấy nhiêu",
-              body: "Giá một ngày = **đơn giá tháng chia cho số ngày trong tháng**. Mua giữa tháng chỉ trả từ hôm mua tới ngày thanh toán. Gia hạn sớm thì tính tiếp từ hạn cũ, không mất ngày nào.",
+              body: "Giá bán của mình chạy theo đúng hoá đơn đó: giá một ngày = **đơn giá tháng chia cho số ngày trong tháng**, mua giữa tháng chỉ trả từ hôm mua tới ngày thanh toán. Gia hạn sớm thì tính tiếp từ hạn cũ, không mất ngày nào.",
             },
             {
               title: "Mua sát ngày thanh toán thì trả thêm một tháng",
-              body: "ChatGPT đã đổi cách tính: thêm suất giữa kỳ thì hoá đơn **giảm theo số ngày còn lại**, nên tiền của mỗi suất chạy theo **lịch thanh toán của không gian đó**. Mua trong **tuần cuối** thì quãng còn lại quá ngắn, vừa mua đã hết hạn — nên tính **số ngày còn lại cộng một tháng**, khách dùng thẳng tới ngày thanh toán tháng sau.",
+              body: "Nhìn hình trên: mua trong **tuần cuối** thì quãng còn lại quá ngắn, vừa mua đã hết hạn. Nên với mấy ngày đó mình tính **số ngày còn lại cộng một tháng**, khách dùng thẳng tới ngày thanh toán tháng sau.",
             },
             {
               title: "Ví dụ",
@@ -134,12 +159,28 @@ const cycleBilling: Guide = {
               body: "The billing day is the day **ChatGPT charges that particular workspace**, and we cannot move it — every workspace has a different one. It repeats monthly at **10 in the morning**, and all emails in the same workspace expire together. Anyone still on an older expiry date keeps it, and only joins the shared day at their next renewal.",
             },
             {
+              title: "ChatGPT charges by the day as well",
+              body: "On the billing day the workspace pays **a full month for every seat it holds**. Add a seat mid-cycle and the invoice **only covers the days left** until that date — the later it is added, the cheaper it gets, and just before the billing day it is down to a few percent of a month. Past the billing day that seat goes back to a full month like every other one.",
+              chart: {
+                kind: "prorate",
+                days: VD_CYCLE_DAYS,
+                marks: [
+                  { day: 1, tick: "1 Aug", note: "all 31 days" },
+                  { day: 1 + VD_CYCLE_DAYS - VD_SOM_DAYS, tick: "10 Aug", note: "22 days left" },
+                  { day: 1 + VD_CYCLE_DAYS - VD_SAT_DAYS, tick: "25 Aug", note: "7 days left" },
+                  { day: VD_CYCLE_DAYS + 1, tick: "1 Sep", note: "new cycle" },
+                ],
+                caption:
+                  "What ChatGPT charges for one seat, by the day it is added — cycle 1 Aug → 1 Sep.",
+              },
+            },
+            {
               title: "Pay for the days you use",
-              body: "The price of one day = **the monthly price divided by the number of days in the month**. Buy mid-month and you pay only from the day of purchase to the billing day. Renew early and it continues from the old expiry, so no day is lost.",
+              body: "Our price follows that same invoice: the price of one day = **the monthly price divided by the number of days in the month**, so buying mid-month you pay only from the day of purchase to the billing day. Renew early and it continues from the old expiry, so no day is lost.",
             },
             {
               title: "Buying close to the billing day costs one extra month",
-              body: "ChatGPT changed how it charges: adding a seat mid-cycle is **prorated over the days left**, so every seat now follows **that workspace's billing schedule**. Buy in the **final week** and the remaining stretch is too short — the seat would expire almost as soon as it is sold — so we charge **the remaining days plus one month**, and the customer runs straight through to next month's billing day.",
+              body: "Look at the chart: buy in the **final week** and the remaining stretch is too short — the seat would expire almost as soon as it is sold. For those days we charge **the remaining days plus one month**, and the customer runs straight through to next month's billing day.",
             },
             {
               title: "Example",
@@ -173,12 +214,27 @@ const cycleBilling: Guide = {
               body: "结算日就是 **ChatGPT 向这个工作区收费的日子**，我们改不了，每个工作区各不相同。它每月重复一次，时间是**上午 10 点**，同一个工作区里的邮箱同时到期。此前仍在有效期内的客户保持原到期日，下次续费时才并入结算日。",
             },
             {
+              title: "ChatGPT 也是按天计费",
+              body: "到了结算日，工作区要为**当前所有席位付一整个月的钱**。周期中途加席位，账单**只算到结算日之前剩下的天数**——加得越晚越便宜，临近结算日只剩一个月的百分之几。过了结算日，这个席位又和其他席位一样按整月计费。",
+              chart: {
+                kind: "prorate",
+                days: VD_CYCLE_DAYS,
+                marks: [
+                  { day: 1, tick: "8月1日", note: "整整 31 天" },
+                  { day: 1 + VD_CYCLE_DAYS - VD_SOM_DAYS, tick: "8月10日", note: "还剩 22 天" },
+                  { day: 1 + VD_CYCLE_DAYS - VD_SAT_DAYS, tick: "8月25日", note: "还剩 7 天" },
+                  { day: VD_CYCLE_DAYS + 1, tick: "9月1日", note: "新周期" },
+                ],
+                caption: "ChatGPT 对一个席位的收费，按加入当天计算——周期 8月1日 → 9月1日。",
+              },
+            },
+            {
               title: "用几天就付几天的钱",
-              body: "每天单价 = **月单价 ÷ 当月天数**。月中购买只付从购买当天到结算日这几天。提前续费从原到期日接着算，一天也不会重复收。",
+              body: "我们的售价就跟着这张账单走：每天单价 = **月单价 ÷ 当月天数**，月中购买只付从购买当天到结算日这几天。提前续费从原到期日接着算，一天也不会重复收。",
             },
             {
               title: "临近结算日购买要多付一个月",
-              body: "ChatGPT 改了计费方式：周期中途加席位，账单**按剩余天数折算**，所以每个席位的价格都跟着**该工作区的结算日**走。在结算日前**最后一周**购买，剩下的天数太少，刚买就到期，因此按**剩余天数加一个月**计算，客户可以直接用到下个月的结算日。",
+              body: "看上面这张图：在**最后一周**购买，剩下的天数太少，刚买就到期。所以这几天按**剩余天数加一个月**计算，客户可以直接用到下个月的结算日。",
             },
             {
               title: "示例",

@@ -11,6 +11,7 @@ import {
   vnDayKey,
   type GuideState,
 } from "./index";
+import { prorateModel } from "./chart";
 import type { Guide, GuideContent } from "./types";
 
 const guide = (id: string): Guide => ({ id, content: {} as Guide["content"] });
@@ -228,6 +229,112 @@ describe("bài ngày thanh toán — số tiền theo đơn giá của người 
     expect(steps(blank)).toBe(steps(full) - 1);
     // Không còn chỗ trống nào lọt ra màn hình dưới dạng "{donGia}".
     expect(JSON.stringify(blank)).not.toMatch(/\{[A-Za-z0-9_]+\}/);
+  });
+});
+
+describe("hình hoá đơn giảm dần theo ngày", () => {
+  const chart = {
+    kind: "prorate" as const,
+    days: 31,
+    marks: [
+      { day: 1, tick: "1/8" },
+      { day: 10, tick: "10/8" },
+      { day: 25, tick: "25/8" },
+      { day: 32, tick: "1/9" },
+    ],
+  };
+
+  it("cột thấp dần suốt chu kỳ rồi vọt lại trọn tháng ở ngày chốt sau", () => {
+    const m = prorateModel(chart);
+    const cao = (day: number) => m.bars[day - 1].h;
+    // Trong một chu kỳ: hôm sau luôn thấp hơn hôm trước, không có chỗ nào bằng.
+    for (let day = 2; day <= 31; day += 1) expect(cao(day)).toBeLessThan(cao(day - 1));
+    // Ngày cuối kỳ chỉ còn một ngày tiền; qua ngày chốt thì cao BẰNG ngày đầu —
+    // đây mới là ý của hình, cột cao lại mà thấp hơn là vẽ sai chu kỳ.
+    expect(cao(31)).toBeCloseTo(cao(1) / 31, 5);
+    expect(cao(32)).toBeCloseTo(cao(1), 5);
+    // Có vẽ thêm phần chu kỳ sau, và phần đó được đánh dấu để vẽ nhạt.
+    expect(m.bars.length).toBeGreaterThan(31);
+    expect(m.bars[31].next).toBe(true);
+    expect(m.bars[30].next).toBe(false);
+  });
+
+  it("phần trăm trên nhãn tính từ chính chiều cao cột", () => {
+    const m = prorateModel(chart);
+    expect(m.marks.map((k) => k.percent)).toEqual(["100%", "71%", "23%", "100%"]);
+    // 22/31 và 7/31 — đúng hai ca mua của bảng ví dụ bên dưới bài.
+    expect(m.marks[1].percent).toBe(`${Math.round((22 / 31) * 100)}%`);
+    expect(m.marks[2].percent).toBe(`${Math.round((7 / 31) * 100)}%`);
+  });
+
+  it("nhãn sát mép hình thì canh vào trong, không tràn ra ngoài khung", () => {
+    const m = prorateModel(chart);
+    expect(m.marks[0].anchor).toBe("start");
+    expect(m.marks[0].x).toBeGreaterThanOrEqual(0);
+    for (const k of m.marks) expect(k.x).toBeLessThanOrEqual(m.width);
+  });
+});
+
+describe("bài ngày thanh toán — hình minh hoạ", () => {
+  const guide = GUIDES.find((g) => g.id === "cycle-billing")!;
+  const charts = (c: GuideContent) =>
+    c.sections.flatMap((s) => s.steps).flatMap((step) => step.chart ?? []);
+
+  it("mọi ngôn ngữ đều có ĐÚNG một hình, cùng chu kỳ và cùng số mốc", () => {
+    for (const lang of GUIDE_LANGS) {
+      const found = charts(guide.content[lang]);
+      expect(found.length, lang).toBe(1);
+      expect(found[0].days).toBe(31);
+      // Mốc lệch nhau giữa các bản dịch là mỗi ngôn ngữ một hình khác nhau.
+      expect(found[0].marks.map((m) => m.day)).toEqual([1, 10, 25, 32]);
+      for (const mark of found[0].marks) expect(mark.tick.trim()).not.toBe("");
+      expect(found[0].caption?.trim()).toBeTruthy();
+    }
+  });
+
+  it("hình không ghi tiền: đó là hoá đơn ChatGPT, không phải giá bán của đại lý", () => {
+    for (const lang of GUIDE_LANGS) {
+      const text = JSON.stringify(charts(guide.content[lang]));
+      expect(text).not.toContain("₫");
+      expect(text).not.toMatch(/\{[A-Za-z0-9_]+\}/);
+    }
+  });
+
+  it("bản in vẽ đủ cột, mức trọn tháng và nhãn phần trăm", () => {
+    const html = guidePrintHtml(guide.content.vi, { lang: "vi", notesLabel: "Lưu ý" });
+    expect(html).toContain('<figure class="step-chart">');
+    const m = prorateModel(charts(guide.content.vi)[0]);
+    expect((html.match(/<rect /g) ?? []).length).toBe(m.bars.length);
+    expect(html).toContain(">100%</text>");
+    expect(html).toContain(">71%</text>");
+    expect(html).toContain(">23%</text>");
+    expect(html).toContain("còn 22 ngày");
+  });
+
+  it("chỗ trống trong nhãn hình cũng làm mất cả bước, không lọt lên hình", () => {
+    const withSlot: GuideContent = {
+      eyebrow: "e",
+      title: "t",
+      intro: "i",
+      sections: [
+        {
+          steps: [
+            {
+              title: "Có hình",
+              body: "Không cần số",
+              chart: {
+                kind: "prorate",
+                days: 31,
+                marks: [{ day: 1, tick: "1/8", note: "{donGia}" }],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    expect(fillGuideVars(withSlot, {}).sections).toHaveLength(0);
+    const filled = fillGuideVars(withSlot, { donGia: "330.000 ₫" });
+    expect(filled.sections[0].steps[0].chart!.marks[0].note).toBe("330.000 ₫");
   });
 });
 
