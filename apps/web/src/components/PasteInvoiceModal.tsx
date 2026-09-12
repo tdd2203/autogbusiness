@@ -3,13 +3,16 @@
  * renew". Người dùng dán toàn bộ text chi tiết hoá đơn Stripe → parse phía web
  * (invoice-parse.ts) → xem trước → Lưu (POST /billing-paste) → panel cập nhật.
  *
+ * DÁN LIÊN TIẾP (chốt user 2026-09-12): lưu xong modal KHÔNG đóng — ô dán tự trống
+ * và lấy lại con trỏ để dán hoá đơn kế tiếp ngay. Hết hoá đơn thì bấm Đóng.
+ *
  * HOÁ ĐƠN QUYẾT ĐỊNH NGÀY CHỐT (chốt user 2026-09-08): với không gian neo hạn theo
  * chu kỳ hoá đơn, bản dán của kỳ đang chạy/sắp tới tự đặt lại ngày chốt, hoá đơn cũ
  * thì chỉ lưu vào danh sách. API không còn từ chối bản dán lệch ngày nữa nên modal
  * cũng không còn ô tích xác nhận — chỉ dán và lưu.
  */
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useT, useFormatDate } from "../i18n";
 import { api } from "../lib/api";
@@ -33,6 +36,8 @@ export function PasteInvoiceModal({
   const formatDate = useFormatDate();
   const qc = useQueryClient();
   const [raw, setRaw] = useState("");
+  const [savedCount, setSavedCount] = useState(0);
+  const boxRef = useRef<HTMLTextAreaElement>(null);
 
   const parsed = useMemo(() => (raw.trim() ? parseInvoiceText(raw) : null), [raw]);
   const usable = parsed !== null && isParsedInvoiceUsable(parsed);
@@ -51,7 +56,9 @@ export function PasteInvoiceModal({
       toast.success(t("billing.pasteSaved"));
       qc.invalidateQueries({ queryKey: ["workspace", workspaceId] });
       qc.invalidateQueries({ queryKey: ["workspaces"] });
-      onClose();
+      setSavedCount((n) => n + 1);
+      setRaw("");
+      boxRef.current?.focus();
     },
     onError: (e) => {
       toast.error(e instanceof Error ? e.message : String(e));
@@ -108,7 +115,7 @@ export function PasteInvoiceModal({
             type="button"
             onClick={onClose}
             disabled={save.isPending}
-            aria-label={t("common.cancel")}
+            aria-label={savedCount > 0 ? t("common.close") : t("common.cancel")}
             style={{
               width: 32,
               height: 32,
@@ -127,8 +134,20 @@ export function PasteInvoiceModal({
         <div style={{ padding: 22, overflowY: "auto" }}>
           <textarea
             autoFocus
+            ref={boxRef}
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
+            onKeyDown={(e) => {
+              if (
+                (e.metaKey || e.ctrlKey) &&
+                e.key === "Enter" &&
+                usable &&
+                !save.isPending
+              ) {
+                e.preventDefault();
+                save.mutate();
+              }
+            }}
             placeholder={t("billing.pastePlaceholder")}
             className="form-input"
             style={{
@@ -209,27 +228,35 @@ export function PasteInvoiceModal({
             padding: "14px 22px",
             borderTop: "1px solid var(--border)",
             display: "flex",
-            justifyContent: "flex-end",
+            alignItems: "center",
+            justifyContent: "space-between",
             gap: 10,
             flexShrink: 0,
           }}
         >
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={save.isPending}
-            className="btn btn-ghost"
-          >
-            {t("common.cancel")}
-          </button>
-          <button
-            type="button"
-            onClick={() => save.mutate()}
-            disabled={!usable || save.isPending}
-            className="btn btn-primary"
-          >
-            {save.isPending ? t("billing.pasteSaving") : t("billing.pasteSave")}
-          </button>
+          <div style={{ fontSize: 12, color: "var(--ink-3)", minWidth: 0 }}>
+            {savedCount > 0
+              ? t("billing.pasteSavedCount", { n: savedCount })
+              : t("billing.pasteQuickHint")}
+          </div>
+          <div style={{ display: "flex", gap: 10, flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={save.isPending}
+              className="btn btn-ghost"
+            >
+              {savedCount > 0 ? t("common.close") : t("common.cancel")}
+            </button>
+            <button
+              type="button"
+              onClick={() => save.mutate()}
+              disabled={!usable || save.isPending}
+              className="btn btn-primary"
+            >
+              {save.isPending ? t("billing.pasteSaving") : t("billing.pasteSave")}
+            </button>
+          </div>
         </div>
       </div>
     </div>

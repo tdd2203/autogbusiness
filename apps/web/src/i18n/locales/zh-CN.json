@@ -486,6 +486,8 @@
   "billing.pasteSave": "保存",
   "billing.pasteSaving": "保存中…",
   "billing.pasteSaved": "已保存账单明细",
+  "billing.pasteSavedCount": "已保存 {n} 张发票 — 可继续粘贴，或点击关闭",
+  "billing.pasteQuickHint": "提示：Ctrl/⌘ + Enter 可快速保存",
   "billing.syncBusy": "正在更新...",
   "billing.syncTooltip": "创建 SYNC_BILLING 任务 — 扩展从 chatgpt.com/admin/billing 抓取席位单价与续期日",
   "billing.syncCooldownToast": "刚刚于 {time} 已更新 — 每小时仅需同步 1 次。如需强制重试,请等待 {wait} 分钟。",

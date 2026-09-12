@@ -486,6 +486,8 @@
   "billing.pasteSave": "Lưu",
   "billing.pasteSaving": "Đang lưu…",
   "billing.pasteSaved": "Đã lưu chi tiết hoá đơn",
+  "billing.pasteSavedCount": "Đã lưu {n} hoá đơn — dán tiếp hoặc bấm Đóng",
+  "billing.pasteQuickHint": "Mẹo: Ctrl/⌘ + Enter để lưu nhanh",
   "billing.syncBusy": "Đang cập nhật...",
   "billing.syncTooltip": "Tạo task SYNC_BILLING — Extension scrape giá per-slot và ngày renew từ chatgpt.com/admin/billing",
   "billing.syncCooldownToast": "Vừa cập nhật lúc {time} — chỉ cần đồng bộ 1 lần/giờ. Nếu cần force, sync lại sau {wait} phút.",
