@@ -1604,6 +1604,8 @@
   "inviteMembers.wsUsedMonths": "Đã dùng {n} tháng",
   "inviteMembers.wsUsedDays": "Đã dùng {n} ngày",
   "inviteMembers.wsOption": "{name} · {used}",
+  "inviteMembers.wsPinned": "{name} · email đang ở không gian này nên mời lại vào đúng đây",
+  "inviteMembers.batchWsHint": "Cả danh sách email trong lần mời này vào chung không gian đang chọn.",
   "inviteMembers.inviteBlockedTitle": "Tạm ngưng mời",
   "inviteMembers.inviteBlockedRow": "{name} · mở lại lúc {time}",
   "inviteMembers.inviteBlockedHint": "ChatGPT đang lỗi khi mở quyền mời email ngoài tên miền. Chưa email nào được gửi lời mời. Mời lại ngay chỉ khiến bị khoá thêm — chờ hết giờ, hoặc nhờ quản trị viên mở lại sớm.",

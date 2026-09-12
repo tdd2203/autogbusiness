@@ -57,6 +57,9 @@ export type EmailWorkspaceUsage = {
   usage_days: number | null;
   /** Workspace ĐANG GIỮ HẠN của email — backend xếp lên đầu để làm mặc định. */
   holds_subscription?: boolean;
+  /** Email ĐANG NGỒI ở workspace này (`active`/`pending`) ⇒ chỉ mời lại được vào
+   *  đúng đây, kéo sang không gian khác là backend từ chối cả lô. */
+  holds_seat?: boolean;
 };
 export type EmailHistoryEntry = {
   default_workspace_id: string;
@@ -66,6 +69,11 @@ export type EmailHistoryEntry = {
 export type EmailHistory = Record<string, EmailHistoryEntry>;
 
 /**
+ * ĐỔI VAI TỪ 2026-09-12: cả mẻ email đi chung một không gian chọn ở dải suất, nên
+ * trang Mời không còn dùng hook này để "chọn lại workspace cũ" nữa. Việc còn lại của
+ * nó là cờ `holds_seat` — chỉ ra email nào đang ngồi ở không gian NGOÀI danh sách
+ * đích, thứ mà danh sách member không đọc được (`assert_workspace_access` chặn).
+ *
  * Với danh sách email dán vào, hỏi backend những workspace mà mỗi email đã có mặt
  * (do chính tài khoản này mời) để hiện cột chọn lại workspace cũ. Bản ghi có hạn sử
  * dụng luôn được kể, kể cả khi email chưa vào được lần nào — mời lại phải trỏ về

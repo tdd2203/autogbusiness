@@ -1604,6 +1604,8 @@
   "inviteMembers.wsUsedMonths": "已使用 {n} 个月",
   "inviteMembers.wsUsedDays": "已使用 {n} 天",
   "inviteMembers.wsOption": "{name} · {used}",
+  "inviteMembers.wsPinned": "{name} · 该邮箱已在此工作区，只能重新邀请回这里",
+  "inviteMembers.batchWsHint": "本次邀请的全部邮箱都进入所选的同一个工作区。",
   "inviteMembers.inviteBlockedTitle": "暂停邀请",
   "inviteMembers.inviteBlockedRow": "{name} · {time} 恢复",
   "inviteMembers.inviteBlockedHint": "ChatGPT 在开启外部域邀请开关时出错。没有邮箱收到邀请。立刻重试只会被继续锁定 — 请等待恢复，或让管理员提前解除。",

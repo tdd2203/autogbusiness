@@ -2,15 +2,15 @@
  * Trang "Mời thành viên" — PHÍA NGƯỜI DÙNG (tính năng TEST, gate super-admin).
  *
  * Mô hình: mỗi người dùng được cấp 1 hoặc NHIỀU workspace đích (resolve qua
- * /api/v1/auto-invite/targets). Email đã từng tham gia (≥30 ngày, do chính user mời)
- * có thể chọn lại workspace cũ; email MỚI mặc định vào 1 workspace ngẫu nhiên trong
- * danh sách được cấp và (từ 2026-08-22) ĐỔI ĐƯỢC bằng dropdown ở cột "Không gian".
+ * /api/v1/auto-invite/targets). Từ 2026-09-12 CẢ MẺ email dán vào đi chung MỘT không
+ * gian, chọn ngay trên dải suất đầu thẻ và mặc định là không gian đông thành viên
+ * nhất trong số được cấp. Cột "Không gian" trong bảng chỉ còn để xem.
  *
  * Giao diện: theo mockup "Emerald Fresh" (2026-07-19) — card mời (ô dán email + bảng
  * preview với chip workspace, stepper tháng, ngày hết hạn) + cột phải task/lịch sử.
  * Logic mời/phí TÁI SỬ DỤNG bulk-invite; gom nhóm theo workspace đích khi dán trộn.
  */
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   useMutation,
@@ -22,6 +22,7 @@ import { api, ApiError } from "../lib/api";
 import { useFormatDate, useI18n, useT, useTranslateEnum } from "../i18n";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { buildSeatRun } from "../lib/seatRun";
+import { pickBatchWorkspace } from "../lib/inviteTarget";
 import { useAuth } from "../hooks/useAuth";
 import { usePlatform } from "../hooks/usePlatform";
 import { parseEmailsFromText } from "../lib/emailParser";
@@ -156,8 +157,6 @@ export default function InviteMembers() {
     () => targets.data?.workspaces ?? [],
     [targets.data],
   );
-  // Workspace "chính" (cho ExtensionPill + invalidate) = phần tử đầu danh sách đích.
-  const workspaceId = eligibleWs[0]?.workspace_id;
   const eligibleIds = useMemo(() => eligibleWs.map((w) => w.workspace_id), [eligibleWs]);
   /**
    * Suất còn trống của từng không gian — nguồn DÙNG CHUNG `useWorkspaceSeats`
@@ -182,8 +181,27 @@ export default function InviteMembers() {
     const open = eligibleIds.filter((id) => !cappedIds.has(id));
     return open.length > 0 ? open : eligibleIds;
   }, [eligibleIds, cappedIds]);
-  // Đích NGẪU NHIÊN đã gán cho từng email MỚI (ổn định giữa các lần render nhờ ref).
-  const randomWsRef = useRef<Record<string, string>>({});
+  /** Đích người dùng tự chọn ở dải suất. null = chưa đụng tới → theo mặc định. */
+  const [pickedWs, setPickedWs] = useState<string | null>(null);
+  /**
+   * ĐÍCH CỦA CẢ MẺ: người dùng chọn ở dải suất, mặc định là không gian ĐÔNG THÀNH
+   * VIÊN NHẤT trong số còn nhận được email (luật + ca biên nằm ở `lib/inviteTarget`).
+   * `seat_used` = thành viên + lời mời đang chờ, backend đếm lại trong DB mỗi nhịp
+   * poll nên không phải con số scrape đã thiu.
+   */
+  const batchWs = useMemo(
+    () =>
+      pickBatchWorkspace({
+        picked: pickedWs,
+        eligibleIds,
+        invitableIds,
+        memberCount: (id) => seatMap.get(id)?.seat_used ?? 0,
+      }),
+    [pickedWs, eligibleIds, invitableIds, seatMap],
+  );
+  // Workspace "chính" (ExtensionPill + panel task + invalidate) = ĐÍCH CỦA CẢ MẺ:
+  // đang mời vào đâu thì phải soi trạng thái extension và hàng đợi của đúng chỗ đó.
+  const workspaceId = batchWs ?? eligibleWs[0]?.workspace_id;
   const [configOpen, setConfigOpen] = useState(false);
 
   const [emailsText, setEmailsText] = useState("");
@@ -191,10 +209,6 @@ export default function InviteMembers() {
   // chi tiết là thứ mở ra khi có ai hỏi "sao email này rẻ hơn email kia".
   const [feeDetailOpen, setFeeDetailOpen] = useState(false);
   const [monthsByEmail, setMonthsByEmail] = useState<Record<string, number>>({});
-  // Workspace ĐÍCH do user tự chọn ở cột "Không gian" (key = email lowercase) — áp cho
-  // CẢ email cũ lẫn email mới. Vắng mặt → default lịch sử (email cũ) / đích cố định
-  // hoặc ngẫu nhiên (email mới).
-  const [workspaceByEmail, setWorkspaceByEmail] = useState<Record<string, string>>({});
   const [qrOrder, setQrOrder] = useState<OrderQr | null>(null);
 
   const { validUnique, validRaw, invalid, duplicates } = useMemo(
@@ -234,65 +248,66 @@ export default function InviteMembers() {
     for (const x of members) m.set(x.email.toLowerCase(), x);
     return m;
   }, [members]);
+  // Lịch sử workspace của email đang dán. Trang này chỉ còn đọc cờ `holds_seat` của
+  // nó — xem `lockedWsByEmail` ngay dưới.
+  const emailHistory = useEmailHistory(validUnique, platform);
+  const historyMap = emailHistory.data;
+  /**
+   * Email ĐANG GIỮ CHỖ ở một không gian (đã vào đội, hoặc đang chờ nhận lời mời) →
+   * email đó chỉ mời lại được vào ĐÚNG chỗ đang ngồi, không đi theo đích chung được.
+   * Backend chặn cứng "1 email chỉ ở 1 không gian" (`_assert_single_workspace`), ép
+   * sang chỗ khác là cả nhóm ăn 409 và không ai trong nhóm được mời.
+   *
+   * HAI NGUỒN, thiếu cái nào cũng hở:
+   *  1. danh sách member của các không gian ĐÍCH — chính xác nhất, có sẵn;
+   *  2. cờ `holds_seat` của `/auto-invite/email-history` — cho những chỗ NGOÀI danh
+   *     sách đích, nơi đại lý không đọc được member (`assert_workspace_access` chặn)
+   *     nhưng vẫn mời lại được khách cũ của mình. Ca thật: admin chỉ được cấp đúng 1
+   *     không gian, khách cũ nằm ở không gian thứ hai.
+   *
+   * Email đã rời đội (kể cả còn hạn) KHÔNG nằm đây: nó đi theo đích chung, hạn cũ
+   * được chuyển sang cùng và không tính phí (`find_movable_paid_members`).
+   */
+  const lockedWsByEmail = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const x of members) {
+      if (x.status === "removed") continue;
+      m.set(x.email.toLowerCase(), x.workspace_id);
+    }
+    for (const [email, h] of Object.entries(historyMap ?? {})) {
+      if (m.has(email)) continue;
+      const seat = h.workspaces.find((w) => w.holds_seat);
+      if (seat) m.set(email, seat.workspace_id);
+    }
+    return m;
+  }, [members, historyMap]);
   const nowMs = Date.now();
   const isRenew = (email: string) =>
     membersByEmail.get(email.toLowerCase())?.status === "active";
   const renewCount = entries.filter((e) => isRenew(e.email)).length;
 
-  // Lịch sử workspace của email đã từng tham gia (≥30 ngày, do chính user này mời).
-  const emailHistory = useEmailHistory(validUnique, platform);
-  const historyMap = emailHistory.data ?? {};
-  const historyFor = (email: string) => historyMap[email.toLowerCase()];
-  /** Workspace ĐÍCH của 1 email. Email cũ (có lịch sử): user chọn > default lịch sử.
-   * Email MỚI: 1 workspace đích, user chọn (nếu được cấp ≥2), ngược lại NGẪU NHIÊN
-   * (ổn định theo email nhờ ref).
+  /**
+   * ĐÍCH của 1 email = ĐÍCH CỦA CẢ MẺ, chọn ở dải suất (chốt user 2026-09-12).
+   * Trong bảng không còn đổi lẻ từng email nữa.
    *
-   * Lịch sử THẮNG phần workspace được cấp, kể cả khi tài khoản không còn được gán
-   * không gian đó: email cũ phải mời lại đúng chỗ đang giữ hạn của nó, chứ không
-   * được bốc sang không gian khác (backend nới đúng chỗ này —
-   * `_assert_invite_workspace_access`). Nhánh ngẫu nhiên bên dưới CHỈ dành cho email
-   * chưa từng có mặt ở đâu. */
-  const targetWsId = (email: string): string | undefined => {
-    const key = email.toLowerCase();
-    const picked = workspaceByEmail[key];
-    const h = historyFor(email);
-    if (h) {
-      // Chỉ nhận lựa chọn NẰM TRONG lịch sử: lúc mới dán, lịch sử còn đang tải nên
-      // email hiện ra như email mới và dropdown cho chọn cả workspace được cấp —
-      // lựa chọn lỡ tay đó không được phép sống sót và kéo email cũ sang chỗ khác.
-      const ok = picked && h.workspaces.some((w) => w.workspace_id === picked);
-      return ok ? picked : h.default_workspace_id;
+   * NGOẠI LỆ DUY NHẤT: email đang giữ chỗ ở không gian khác thì ở nguyên đó — xem
+   * `lockedWsByEmail`. Đây là chỗ backend chặn cứng chứ không phải tuỳ chọn.
+   */
+  const targetWsId = (email: string): string | undefined =>
+    lockedWsByEmail.get(email.toLowerCase()) ?? batchWs;
+  /** Tên không gian để hiển thị — ưu tiên nguồn suất (tươi nhất), rồi danh sách đích,
+   *  cuối cùng là lịch sử email (chỗ ngoài tầm nhìn thường chỉ có tên ở đó). */
+  const wsNameOf = (id: string | undefined): string => {
+    if (!id) return "—";
+    const known =
+      seatMap.get(id)?.name ??
+      eligibleWs.find((w) => w.workspace_id === id)?.name;
+    if (known) return known;
+    for (const h of Object.values(historyMap ?? {})) {
+      const hit = h.workspaces.find((w) => w.workspace_id === id);
+      if (hit) return hit.name;
     }
-    if (eligibleIds.length <= 1) return eligibleIds[0];
-    // Email mới nhưng user đã tự chọn không gian ở cột "Không gian" → tôn trọng.
-    if (picked && eligibleIds.includes(picked)) return picked;
-    const prev = randomWsRef.current[key];
-    // Đích đã bốc mà nay chạm trần thì bốc lại: trần không tự hết giờ như dải ngưng
-    // mời, giữ nguyên là đẩy cả mẻ email vào chỗ chắc chắn bị backend từ chối.
-    if (!prev || !invitableIds.includes(prev)) {
-      randomWsRef.current[key] =
-        invitableIds[Math.floor(Math.random() * invitableIds.length)];
-    }
-    return randomWsRef.current[key];
-  };
-  /** Không gian CHỌN ĐƯỢC cho 1 email (dùng chung desktop + mobile):
-   * - email CŨ (có lịch sử): các workspace lịch sử — giữ nguyên ý nghĩa "chọn lại
-   *   không gian cũ" (kèm usageDays để hiện "đã dùng X tháng" ở tooltip;
-   *   `null` = chưa vào được lần nào, ví dụ vừa chuyển hạn sang mà lệnh mời hỏng);
-   * - email MỚI: toàn bộ workspace đích được cấp → user đổi được thay vì chịu bản
-   *   ngẫu nhiên (yêu cầu user 2026-08-22).
-   * ≥2 phần tử thì UI hiện dropdown, 1 phần tử hiện chữ tĩnh. */
-  const wsOptionsFor = (
-    email: string,
-  ): { id: string; name: string; usageDays?: number | null }[] => {
-    const h = historyFor(email);
-    if (h)
-      return h.workspaces.map((w) => ({
-        id: w.workspace_id,
-        name: w.name,
-        usageDays: w.usage_days,
-      }));
-    return eligibleWs.map((w) => ({ id: w.workspace_id, name: w.name }));
+    return "—";
   };
 
   // Dự tính phí THẬT từ server. Footer trước đây hard-code 0đ nên "Tổng phí" luôn
@@ -445,11 +460,6 @@ export default function InviteMembers() {
           for (const e of set) delete next[e];
           return next;
         });
-        setWorkspaceByEmail((w) => {
-          const next = { ...w };
-          for (const e of set) delete next[e];
-          return next;
-        });
       }
       if (invited > 0 && renewed > 0)
         toast.success(t("invite.resultMixed", { invited, renewed }));
@@ -517,11 +527,6 @@ export default function InviteMembers() {
       delete next[emailLower];
       return next;
     });
-    setWorkspaceByEmail((w) => {
-      const next = { ...w };
-      delete next[emailLower];
-      return next;
-    });
   }
   const formatExpiresDate = (months: number) => {
     const d = new Date();
@@ -574,12 +579,6 @@ export default function InviteMembers() {
       ? // Rất hẹp: ẩn cột Không gian → chỉ Email · Số tháng · Hết hạn (+ xoá).
         "minmax(max-content,2fr) minmax(92px,1fr) minmax(110px,1.1fr) 28px"
       : "minmax(max-content,1.4fr) minmax(0,0.85fr) minmax(96px,1fr) minmax(112px,1.05fr) 28px";
-  const usedText = (days: number) => {
-    const months = Math.floor(days / DAYS_PER_MONTH);
-    return months >= 1
-      ? t("inviteMembers.wsUsedMonths", { n: months })
-      : t("inviteMembers.wsUsedDays", { n: days });
-  };
   /**
    * Không gian ĐANG BỊ NGƯNG MỜI: ChatGPT hỏng cú bấm công tắc "mời ngoài tên
    * miền", hệ thống tự lùi 1 tiếng (backend `services/invite_block.py`). Backend
@@ -615,19 +614,15 @@ export default function InviteMembers() {
    * cách đếm `seat_used` của backend.
    */
   const seatPlan = (() => {
-    // Tra theo CẶP (email, workspace) chứ không qua `membersByEmail` (khoá chỉ có
-    // email, nhiều workspace đè lên nhau): một email có bản ghi `removed` ở ws này
-    // và bản ghi đang sống ở ws kia là chuyện thường.
-    const holders = new Set(
-      members
-        .filter((m) => m.status !== "removed")
-        .map((m) => `${m.email.toLowerCase()}|${m.workspace_id}`),
-    );
     const need = new Map<string, number>();
     for (const e of entries) {
       const ws = targetWsId(e.email);
       if (!ws) continue;
-      if (!holders.has(`${e.email.toLowerCase()}|${ws}`))
+      // Đang giữ chỗ SẴN ở chính không gian đó (gia hạn / mời lại chỗ cũ) thì không
+      // ăn thêm suất — nó đã nằm trong `seat_used` rồi. `lockedWsByEmail` là nguồn
+      // duy nhất trả lời câu này: nó tra theo CẶP (email, workspace) và nhìn được cả
+      // không gian ngoài danh sách đích, nơi danh sách member đọc không tới.
+      if (lockedWsByEmail.get(e.email.toLowerCase()) !== ws)
         need.set(ws, (need.get(ws) ?? 0) + 1);
     }
     return need;
@@ -716,20 +711,17 @@ export default function InviteMembers() {
     return after > 0 ? t("inviteMembers.seatsLeft", { n: after }) : t("inviteMembers.seatsNone");
   };
   /**
-   * Không gian hiện trên DẢI SUẤT ở đầu thẻ: mọi đích được cấp + đích của email cũ
-   * (lịch sử) nếu nằm ngoài danh sách cấp — nếu không, dán một email cũ vào là dải
-   * suất im lặng bỏ qua đúng cái không gian sắp bị trừ suất.
+   * Không gian hiện trên DẢI SUẤT ở đầu thẻ: ĐÍCH ĐANG CHỌN đứng đầu (khối đầu tiên
+   * cũng chính là chỗ đổi đích — xem phần render), rồi tới không gian nào khác đang
+   * có email trong mẻ này chảy vào (email bị ghim ở chỗ cũ). KHÔNG kể hết mọi đích
+   * được cấp nữa: một lần mời chỉ vào một chỗ, bày cả dãy là bắt người bán đọc số
+   * của những nơi không liên quan. Muốn so suất giữa các nơi thì mở dropdown ra xem.
    */
   const seatBarWs = (() => {
-    const ids = eligibleWs.map((w) => w.workspace_id);
+    const ids: string[] = [];
+    if (batchWs) ids.push(batchWs);
     for (const id of seatPlan.keys()) if (!ids.includes(id)) ids.push(id);
-    return ids.map((id) => ({
-      id,
-      name:
-        seatMap.get(id)?.name ??
-        eligibleWs.find((w) => w.workspace_id === id)?.name ??
-        "—",
-    }));
+    return ids.map((id) => ({ id, name: wsNameOf(id) }));
   })();
   /**
    * CHU KỲ THANH TOÁN đang chạy của từng không gian trên dải suất.
@@ -775,15 +767,7 @@ export default function InviteMembers() {
         workspaceId: wsId,
         // Email đang giữ suất ở CHÍNH không gian đích thì mời lại không tốn suất mới
         // (mirror seatPlan + cách đếm seat_used của backend).
-        takesSeat: !(
-          wsId &&
-          members.some(
-            (m) =>
-              m.status !== "removed" &&
-              m.workspace_id === wsId &&
-              m.email.toLowerCase() === e.email.toLowerCase(),
-          )
-        ),
+        takesSeat: lockedWsByEmail.get(e.email.toLowerCase()) !== wsId,
       };
     }),
     (wsId) => seatMap.get(wsId)?.seat_left ?? null,
@@ -822,7 +806,6 @@ export default function InviteMembers() {
             setQrOrder(null);
             setEmailsText("");
             setMonthsByEmail({});
-            setWorkspaceByEmail({});
             qc.invalidateQueries({ queryKey: ["invite-queue", workspaceId] });
             invalidateWorkspaceSeats(qc);
           }}
@@ -1156,21 +1139,95 @@ export default function InviteMembers() {
                         borderLeft: i === 0 ? "none" : "1px solid var(--border)",
                       }}
                     >
-                      <div
-                        style={{
-                          fontFamily: "var(--font-mono)",
-                          fontSize: 10,
-                          textTransform: "uppercase",
-                          letterSpacing: "0.06em",
-                          color: "var(--ink-3)",
-                          maxWidth: 190,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {w.name}
-                      </div>
+                      {/* ĐỔI ĐÍCH NGAY TẠI ĐÂY (chốt user 2026-09-12): dòng tên của
+                          khối ĐẦU — khối của đích đang chọn — là một dropdown, cả mẻ
+                          email đi theo nó. Đặt ở đây thay vì thêm một ô riêng trên
+                          thanh: tên không gian, suất còn trống và mốc chốt chu kỳ là
+                          ba thứ đọc cùng một lúc trước khi bấm gửi. Các khối sau là
+                          email bị ghim ở chỗ cũ, không đổi được nên để chữ tĩnh. */}
+                      {i === 0 && eligibleWs.length > 1 ? (
+                        // Select TRONG SUỐT phủ lên chữ: select thường tự nong rộng
+                        // bằng lựa chọn dài nhất, nên mũi tên bị đẩy ra xa tên và cả
+                        // dòng nhãn trông như bị lỗi. Vẽ chữ + mũi tên như nhãn tĩnh
+                        // rồi đặt select đè lên, bấm đâu cũng mở được danh sách.
+                        <div
+                          className="flex items-center"
+                          style={{
+                            position: "relative",
+                            gap: 4,
+                            maxWidth: 190,
+                            cursor: "pointer",
+                          }}
+                          title={t("inviteMembers.batchWsHint")}
+                        >
+                          <span
+                            style={{
+                              fontFamily: "var(--font-mono)",
+                              fontSize: 10,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.06em",
+                              color: "var(--ink-3)",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {w.name}
+                          </span>
+                          <span
+                            style={{
+                              flex: "none",
+                              color: "var(--ink-2)",
+                              fontSize: 11,
+                              lineHeight: 1,
+                            }}
+                          >
+                            ▾
+                          </span>
+                          <select
+                            value={batchWs ?? ""}
+                            onChange={(e) => setPickedWs(e.target.value)}
+                            disabled={bulkInvite.isPending}
+                            aria-label={t("inviteMembers.colWorkspace")}
+                            style={{
+                              position: "absolute",
+                              inset: 0,
+                              width: "100%",
+                              height: "100%",
+                              opacity: 0,
+                              border: "none",
+                              padding: 0,
+                              cursor: "pointer",
+                            }}
+                          >
+                            {eligibleWs.map((o) => (
+                              // Suất trống kèm trong lựa chọn để đổi chỗ là biết ngay
+                              // nơi nào còn chỗ.
+                              <option key={o.workspace_id} value={o.workspace_id}>
+                                {seatLabel(o.workspace_id)
+                                  ? `${o.name} \u00b7 ${seatLabel(o.workspace_id)}`
+                                  : o.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ) : (
+                        <div
+                          style={{
+                            fontFamily: "var(--font-mono)",
+                            fontSize: 10,
+                            textTransform: "uppercase",
+                            letterSpacing: "0.06em",
+                            color: "var(--ink-3)",
+                            maxWidth: 190,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {w.name}
+                        </div>
+                      )}
                       <div
                         style={{
                           display: "flex",
@@ -1460,18 +1517,10 @@ export default function InviteMembers() {
                             row={row}
                             renew={renew}
                             free={free}
-                            wsOptions={wsOptionsFor(row.email)}
-                            selectedWs={selectedWs}
+                            wsName={wsNameOf(selectedWs)}
+                            wsPinned={!!selectedWs && selectedWs !== batchWs}
                             busy={bulkInvite.isPending}
-                            usedText={usedText}
-                            seatLabel={seatLabel}
                             seatCell={seatCell(row.email)}
-                            onWs={(v) =>
-                              setWorkspaceByEmail((w) => ({
-                                ...w,
-                                [row.email.toLowerCase()]: v,
-                              }))
-                            }
                             onDec={() => setMonthsFor(row.email, row.months - 1)}
                             onInc={() => setMonthsFor(row.email, row.months + 1)}
                             onRemove={() => removeEntry(row.email)}
@@ -1528,122 +1577,72 @@ export default function InviteMembers() {
                             ) : null}
                           </div>
 
-                          {/* workspace: chip + select (khi có ≥2 lựa chọn) / chữ
-                              tĩnh. Hiện tên không gian + SUẤT CÒN TRỐNG (để biết
-                              trước khi add); "đã dùng X tháng" (email cũ) ở tooltip.
-                              Ẩn hẳn cột khi màn hình rất hẹp (compact). */}
+                          {/* Không gian: CHỈ ĐỂ XEM — đích chọn ở dải suất và áp
+                              cho cả mẻ. Vẫn hiện SUẤT CÒN TRỐNG (biết trước khi add).
+                              Dòng nào hiện tên khác đích chung là email đang giữ chỗ
+                              ở đó, chấm đổi màu + tooltip nói rõ. Ẩn hẳn cột khi màn
+                              hình rất hẹp (compact). */}
                           {!compact &&
                             (() => {
-                              const opts = wsOptionsFor(row.email);
-                              const sel = opts.find((o) => o.id === selectedWs);
                               const info = seatInfo(selectedWs);
                               // Ô suất của ĐÚNG dòng này trong dãy (số đầu · mũi
                               // tên · số cuối), không phải nhãn chung của không gian.
                               const cell = seatCell(row.email);
                               const seatText = cell.text;
+                              const pinned = !!selectedWs && selectedWs !== batchWs;
                               const seatTitle =
                                 info.left === null
                                   ? t("inviteMembers.seatsUnknownHint")
                                   : t("inviteMembers.seatsHint", { left: info.left });
+                              const name = wsNameOf(selectedWs);
                               const selTitle =
-                                (sel === undefined
-                                  ? t("inviteMembers.colWorkspace")
-                                  : sel.usageDays == null
-                                    ? sel.name
-                                    : t("inviteMembers.wsOption", {
-                                        name: sel.name,
-                                        used: usedText(sel.usageDays),
-                                      })) +
+                                (pinned
+                                  ? t("inviteMembers.wsPinned", { name })
+                                  : name) +
                                 " · " +
                                 seatTitle;
                               // Nhãn đỏ CHỈ ở dòng thật sự không còn suất — mời tiếp
                               // là extension đi mua thêm suất bằng tiền thật.
                               const alarm = cell.alarm;
-                              const seatBadge = seatText ? (
-                                <span
-                                  style={{
-                                    flex: "none",
-                                    fontFamily: "var(--font-mono)",
-                                    fontSize: 11.5,
-                                    fontWeight: 600,
-                                    padding: "1px 6px",
-                                    borderRadius: 5,
-                                    background: alarm ? "var(--danger-bg)" : "var(--surface-2)",
-                                    color: alarm ? "var(--danger)" : "var(--ink-2)",
-                                  }}
-                                >
-                                  {seatText}
-                                </span>
-                              ) : null;
-                              // Chỉ 1 không gian khả dĩ → chữ tĩnh (không dropdown
-                              // rườm rà). ≥2 mới cho chọn bằng select.
-                              if (opts.length <= 1) {
-                                return (
-                                  <div style={chipBase} title={selTitle}>
-                                    <span style={wsDot} />
-                                    <span
-                                      style={{
-                                        fontSize: 12.5,
-                                        color: "var(--ink)",
-                                        overflow: "hidden",
-                                        textOverflow: "ellipsis",
-                                        whiteSpace: "nowrap",
-                                      }}
-                                    >
-                                      {sel?.name ?? opts[0]?.name ?? "—"}
-                                    </span>
-                                    {seatBadge}
-                                  </div>
-                                );
-                              }
                               return (
                                 <div style={chipBase} title={selTitle}>
-                                  <span style={wsDot} />
-                                  <select
-                                    value={selectedWs ?? ""}
-                                    onChange={(e) =>
-                                      setWorkspaceByEmail((w) => ({
-                                        ...w,
-                                        [row.email.toLowerCase()]: e.target.value,
-                                      }))
-                                    }
-                                    disabled={bulkInvite.isPending}
-                                    title={selTitle}
+                                  <span
                                     style={{
-                                      border: "none",
-                                      background: "transparent",
-                                      fontFamily: "var(--font-sans)",
+                                      ...wsDot,
+                                      background: pinned
+                                        ? "var(--warning)"
+                                        : "var(--success)",
+                                    }}
+                                  />
+                                  <span
+                                    style={{
                                       fontSize: 12.5,
                                       color: "var(--ink)",
-                                      outline: "none",
-                                      cursor: "pointer",
-                                      minWidth: 0,
-                                      width: "fit-content",
-                                      maxWidth: 150,
-                                      WebkitAppearance: "none",
-                                      appearance: "none",
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
                                     }}
                                   >
-                                    {opts.map((o) => (
-                                      <option
-                                        key={o.id}
-                                        value={o.id}
-                                        title={
-                                          o.usageDays == null
-                                            ? undefined
-                                            : usedText(o.usageDays)
-                                        }
-                                      >
-                                        {/* Suất trống ngay trong lựa chọn: đổi không
-                                            gian là biết ngay chỗ nào còn chỗ. */}
-                                        {seatLabel(o.id)
-                                          ? `${o.name} · ${seatLabel(o.id)}`
-                                          : o.name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <span style={{ color: "var(--ink-3)", fontSize: 9 }}>▾</span>
-                                  {seatBadge}
+                                    {name}
+                                  </span>
+                                  {seatText ? (
+                                    <span
+                                      style={{
+                                        flex: "none",
+                                        fontFamily: "var(--font-mono)",
+                                        fontSize: 11.5,
+                                        fontWeight: 600,
+                                        padding: "1px 6px",
+                                        borderRadius: 5,
+                                        background: alarm
+                                          ? "var(--danger-bg)"
+                                          : "var(--surface-2)",
+                                        color: alarm ? "var(--danger)" : "var(--ink-2)",
+                                      }}
+                                    >
+                                      {seatText}
+                                    </span>
+                                  ) : null}
                                 </div>
                               );
                             })()}
@@ -1822,7 +1821,6 @@ export default function InviteMembers() {
                   onClick={() => {
                     setEmailsText("");
                     setMonthsByEmail({});
-                    setWorkspaceByEmail({});
                   }}
                   disabled={bulkInvite.isPending || entries.length === 0}
                   className="btn btn-ghost"
@@ -1903,13 +1901,10 @@ function MobileInviteCard({
   row,
   renew,
   free,
-  wsOptions,
-  selectedWs,
+  wsName,
+  wsPinned,
   busy,
-  usedText,
-  seatLabel,
   seatCell,
-  onWs,
   onDec,
   onInc,
   onRemove,
@@ -1920,17 +1915,14 @@ function MobileInviteCard({
   row: { email: string; emailRaw: string; months: number };
   renew: boolean;
   free: boolean;
-  // Không gian chọn được (lịch sử cho email cũ / đích được cấp cho email mới).
-  wsOptions: { id: string; name: string; usageDays?: number | null }[];
-  selectedWs: string | undefined;
+  /** Tên không gian ĐÍCH của dòng này — chỉ để xem, chọn ở dải suất. */
+  wsName: string;
+  /** Dòng này không đi theo đích chung vì email đang giữ chỗ ở không gian khác. */
+  wsPinned: boolean;
   busy: boolean;
-  usedText: (days: number) => string;
-  /** Nhãn suất còn trống của 1 không gian ("còn 4" / "hết suất"), "" khi chưa biết tổng. */
-  seatLabel: (wsId: string | undefined) => string;
   /** Ô suất của riêng dòng này trong dãy — xem `seatRunByEmail`. */
   /** Hết suất hoặc không đủ cho danh sách đang dán → nhãn suất chuyển đỏ. */
   seatCell: { text: string; alarm: boolean };
-  onWs: (v: string) => void;
   onDec: () => void;
   onInc: () => void;
   onRemove: () => void;
@@ -1946,17 +1938,8 @@ function MobileInviteCard({
     color: "var(--ink-3)",
     marginBottom: 6,
   };
-  const selectedOpt = wsOptions.find((o) => o.id === selectedWs);
-  // Tooltip ô Không gian: email cũ kèm "đã dùng X tháng", email mới chỉ tên.
-  const selectedTitle =
-    selectedOpt === undefined
-      ? undefined
-      : selectedOpt.usageDays == null
-        ? selectedOpt.name
-        : t("inviteMembers.wsOption", {
-            name: selectedOpt.name,
-            used: usedText(selectedOpt.usageDays),
-          });
+  // Tooltip ô Không gian: chỉ nói thêm khi dòng này không đi theo đích chung.
+  const selectedTitle = wsPinned ? t("inviteMembers.wsPinned", { name: wsName }) : wsName;
   return (
     <div
       style={{
@@ -2035,54 +2018,25 @@ function MobileInviteCard({
             }}
             title={selectedTitle}
           >
-            <span style={wsDot} />
-            {wsOptions.length > 1 ? (
-              <>
-                <select
-                  value={selectedWs ?? ""}
-                  onChange={(e) => onWs(e.target.value)}
-                  disabled={busy}
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    border: "none",
-                    background: "transparent",
-                    fontFamily: "var(--font-sans)",
-                    fontSize: 13.5,
-                    color: "var(--ink)",
-                    outline: "none",
-                    cursor: "pointer",
-                    WebkitAppearance: "none",
-                    appearance: "none",
-                  }}
-                >
-                  {wsOptions.map((o) => (
-                    <option
-                      key={o.id}
-                      value={o.id}
-                      title={o.usageDays == null ? undefined : usedText(o.usageDays)}
-                    >
-                      {seatLabel(o.id) ? `${o.name} · ${seatLabel(o.id)}` : o.name}
-                    </option>
-                  ))}
-                </select>
-                <span style={{ color: "var(--ink-3)", fontSize: 10 }}>▾</span>
-              </>
-            ) : (
-              <span
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  fontSize: 13.5,
-                  color: "var(--ink-2)",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {selectedOpt?.name ?? wsOptions[0]?.name ?? "—"}
-              </span>
-            )}
+            <span
+              style={{
+                ...wsDot,
+                background: wsPinned ? "var(--warning)" : "var(--success)",
+              }}
+            />
+            <span
+              style={{
+                flex: 1,
+                minWidth: 0,
+                fontSize: 13.5,
+                color: "var(--ink-2)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {wsName}
+            </span>
             {/* Suất còn trống của không gian đang chọn — đỏ khi không đủ cho
                 danh sách đang dán (mời tiếp = mua thêm suất bằng tiền thật). */}
             {seatCell.text ? (
