@@ -270,55 +270,6 @@ async function probePendingInvites(
   };
 }
 
-/**
- * SAU KHI XOÁ XONG ở tab "Người dùng": ghé tab "Lời mời đang chờ xử lý" tra ĐÚNG
- * MỘT LẦN cho chắc, có thì thu hồi luôn (user 6/9/2026).
- *
- * Vì sao cần: gỡ người đã tham gia xong KHÔNG có nghĩa email đó sạch bóng khỏi
- * workspace — nó vẫn có thể còn một lời mời treo (mời lại rồi chưa bấm nhận,
- * hoặc lời mời cũ chưa từng được dọn). Lời mời treo cũng ăn một suất y như thành
- * viên thật, mà dashboard thì đã coi email này xong việc.
- *
- * KHÔNG BAO GIỜ lật ngược kết quả xoá: cú gỡ đã có bằng chứng dương rồi. Thu hồi
- * hỏng thì ghi nhãn vào kết quả để dashboard/đồng bộ dọn sau, chứ báo cả lệnh
- * hỏng là đẩy member đã rời thật quay về `active`.
- */
-async function sweepPendingAfterRemove(
-  taskId: string,
-  email: string,
-): Promise<"none" | "revoked" | "failed" | "skipped"> {
-  await reportProgress(
-    taskId,
-    { phase: "verifying", message: `Xem ${email} còn lời mời chờ nào không...` },
-    true,
-  );
-  if (!(await ensurePendingInvitesTab())) {
-    console.warn(`${LOG} ${email}: không sang được tab Lời mời để quét lần cuối`);
-    return "skipped";
-  }
-  // Ngân sách xác minh 20s (mặc định 60s): đây là bước quét thêm cho chắc, nó
-  // không được ăn hết ngân sách 150s của lệnh gỡ vốn đã chạy gần xong.
-  const r = await revokeInvite(email, 20_000);
-  if (r.inconclusive) {
-    // Quét thêm cho chắc mà không tra được thì im lặng bỏ qua: cú gỡ chính đã có
-    // bằng chứng dương rồi, đồng bộ sẽ dọn lời mời sót (nếu có).
-    console.warn(`${LOG} ${email}: không tra được tab Lời mời khi quét lần cuối (${r.reason})`);
-    return "skipped";
-  }
-  if (r.notInPending) {
-    console.log(`${LOG} ${email}: tab Lời mời cũng không còn gì → sạch`);
-    return "none";
-  }
-  if (r.ok) {
-    console.log(`${LOG} ${email}: còn lời mời treo → đã thu hồi nốt`);
-    return "revoked";
-  }
-  console.warn(
-    `${LOG} ${email}: còn lời mời treo nhưng thu hồi không ăn (${r.reason ?? "không rõ lý do"})`,
-  );
-  return "failed";
-}
-
 /** Tuỳ chọn của một lệnh gỡ. */
 export type RemoveOptions = {
   /**
@@ -702,17 +653,16 @@ export async function executeRemove(
   }
 
   console.log(`${LOG} ${email}: đã BIẾN MẤT khỏi list sau khi xoá → verified → COMPLETED`);
-  // `allowPendingFallback` tắt = chính lệnh THU HỒI gọi vào đây làm đường lui, ta
-  // vừa từ tab Lời mời sang → quay lại đó tra nữa là ping-pong vô ích.
-  const pendingSweep = allowPendingFallback
-    ? await sweepPendingAfterRemove(taskId, email)
-    : "skipped";
+  // Xoá xong là XONG: bằng chứng nằm ở tab "Người dùng" (dòng biến mất + tra lại
+  // một lần). KHÔNG ghé tab "Lời mời đang chờ xử lý" quét thêm nữa (user
+  // 12/9/2026 rút lại luật 6/9): cú quét ấy không lật được kết quả nào, chỉ tốn
+  // thêm một lần chuyển tab và tới 20s gõ ô tìm kiếm; lời mời treo (nếu có) để
+  // đồng bộ dọn.
   return {
     ok: true,
     data: {
       email,
       verified: true,
-      pending_sweep: pendingSweep,
       dialog_stuck: dialogStuck,
       // Có tận mắt thấy dòng rời danh sách trước khi tra lại hay không.
       row_gone: waited.gone,

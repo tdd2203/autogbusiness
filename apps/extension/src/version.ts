@@ -25,7 +25,7 @@
  * chỉ hiện 8 mục đầu, phần còn lại nằm sau nút "Xem thêm".
  */
 
-export const VERSION = "0.16.10";
+export const VERSION = "0.16.11";
 
 export type ChangelogEntry = {
   version: string;
@@ -44,6 +44,13 @@ export const KIND_COLOR: Record<ChangelogEntry["kind"], string> = {
 };
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: "0.16.11",
+    date: "2026-09-12",
+    kind: "fix",
+    title: "Gỡ thành viên",
+    note: "Gỡ xong báo xong ngay, bỏ bước kiểm tra thừa làm mỗi lệnh chậm thêm.",
+  },
   {
     version: "0.16.10",
     date: "2026-09-12",

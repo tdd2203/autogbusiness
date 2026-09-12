@@ -37,6 +37,13 @@ const answerPaidSeatDialog = vi.fn(
 );
 /** Mọi cú ESC đi qua `document.dispatchEvent`. */
 const dispatchEvent = vi.fn((_e: unknown) => true);
+/** Tab "Lời mời đang chờ xử lý" — đường gỡ bình thường KHÔNG được đụng tới. */
+const ensurePendingInvitesTab = vi.fn(async () => true);
+const revokeInvite = vi.fn(async (email: string) => ({
+  email,
+  ok: false,
+  notInPending: true,
+}));
 
 vi.mock("../../human", () => ({
   humanClick: vi.fn(async () => {}),
@@ -85,14 +92,10 @@ vi.mock("../paid-seat-guard", async () => {
   return { releaseWindowOpen: real.releaseWindowOpen };
 });
 vi.mock("../revoke/pending-tab", () => ({
-  ensurePendingInvitesTab: vi.fn(async () => true),
+  ensurePendingInvitesTab: () => ensurePendingInvitesTab(),
 }));
 vi.mock("../revoke/revoke-invite", () => ({
-  revokeInvite: vi.fn(async (email: string) => ({
-    email,
-    ok: false,
-    notInPending: true,
-  })),
+  revokeInvite: (email: string) => revokeInvite(email),
 }));
 vi.mock("../invite/pending-list-loaded", () => ({
   LOAD_BUDGET_MS: 30_000,
@@ -136,6 +139,8 @@ beforeEach(() => {
   findMemberRow.mockReset().mockReturnValue(null);
   answerPaidSeatDialog.mockReset().mockResolvedValue("none");
   dispatchEvent.mockClear();
+  ensurePendingInvitesTab.mockClear();
+  revokeInvite.mockClear();
 });
 
 describe("executeRemove — sau khi bấm xoá", () => {
@@ -231,6 +236,20 @@ describe("executeRemove — sau khi bấm xoá", () => {
     await executeRemove("t1", EMAIL);
 
     expect(filterOnceAndResolve).toHaveBeenCalledTimes(2); // 1 lần tìm + 1 lần tra lại
+  });
+
+  // User 12/9/2026 rút lại luật 6/9: xoá xong chỉ tra ở tab "Người dùng", KHÔNG
+  // ghé tab "Lời mời đang chờ xử lý" quét thêm. Cú quét ấy không lật được kết quả
+  // nào (gỡ đã có bằng chứng dương) mà tốn thêm một lần chuyển tab và tới 20s gõ
+  // ô tìm kiếm.
+  it("xoá xong KHÔNG ghé tab Lời mời đang chờ xử lý", async () => {
+    filterOutcomes.push(FOUND, ABSENT);
+
+    const r = await executeRemove("t1", EMAIL);
+
+    expect(r.ok).toBe(true);
+    expect(ensurePendingInvitesTab).not.toHaveBeenCalled();
+    expect(revokeInvite).not.toHaveBeenCalled();
   });
 });
 
