@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import {
   describeSeatCards,
+  looksLikeSeatModal,
   parseSeatCards,
   seatIncrease,
   seatTotalsOf,
@@ -253,5 +254,61 @@ describe("seatTotalsOf / seatIncrease — so số suất trước và sau khi mu
     );
     expect(before.standard).toBeNull();
     expect(seatIncrease(before, after)).toEqual({ delta: 2, basis: "total" });
+  });
+});
+
+
+/**
+ * Trang /admin ngày 12/9/2026 (ảnh user, workspace CHAT GPT PRO): 405 suất đã
+ * mua, 399 người đã vào, 6 suất còn trống. User chốt con số lớn 405 CHÍNH LÀ
+ * tổng suất đã mua.
+ */
+const MEMBERS_PAGE_12_9 =
+  "Members Business · 399 members " +
+  "Users Pending invites Pending requests " +
+  "405 Manage Standard seats 399 Assigned 6 Available " +
+  "0 Manage Premium seats 0 Assigned 0 Available " +
+  "Filter by name All roles + Invite member";
+
+/** Nguyên văn hộp "Quản lý suất" (task SYNC_DATA 11/9/2026). */
+const SEAT_MODAL_TEXT =
+  "Quản lý suất Thêm hoặc xóa các suất trong không gian làm việc của bạn. " +
+  "Tiêu chuẩn 260.500 ₫ + thuế/tháng 410 người dùng · 401/410 đã gán " +
+  "Cao cấp 3.245.000 ₫ + thuế/tháng 0 người dùng · 0/0 đã gán Quay lại Tiếp tục";
+
+describe("looksLikeSeatModal — phân biệt hộp đè lên trang với chính khung /admin", () => {
+  it("hộp 'Quản lý suất' đang mở ⇒ bỏ đường đọc nhanh", () => {
+    expect(looksLikeSeatModal(SEAT_MODAL_TEXT)).toBe(true);
+  });
+
+  it("khung /admin (cũng là [role=dialog] từ 4/9/2026) KHÔNG phải hộp đè", () => {
+    // Đây là cả con bug 4/9 → 12/9/2026: khung /admin có thẻ suất nên bản trước
+    // coi là "hộp đang mở" rồi tắt luôn đường đọc nhanh, khiến tổng suất trên
+    // dashboard đứng im ở 410 trong khi ChatGPT đã 405.
+    expect(parseSeatCards(MEMBERS_PAGE_12_9)).not.toBeNull();
+    expect(looksLikeSeatModal(MEMBERS_PAGE_12_9)).toBe(false);
+  });
+
+  it("khối text dài (cả bảng thành viên) không bị nhận là hộp", () => {
+    const longPage = `${SEAT_MODAL_TEXT} ${"Nguyễn Văn A Thành viên Tiêu chuẩn 1 thg 9, 2026 ".repeat(60)}`;
+    expect(longPage.length).toBeGreaterThan(2_000);
+    expect(looksLikeSeatModal(longPage)).toBe(false);
+  });
+});
+
+describe("parseSeatCards — trang 12/9/2026", () => {
+  it("tổng suất đã mua = 405, đang dùng 399, còn trống 6", () => {
+    const r = parseSeatCards(MEMBERS_PAGE_12_9)!;
+    expect(r.total).toBe(405);
+    expect(r.assigned).toBe(399);
+    expect(r.free).toBe(6);
+  });
+
+  it("dấu chấm câu / biểu tượng chen giữa con số và nhãn vẫn đọc được", () => {
+    const r = parseSeatCards(
+      "405 Manage Standard seats 399 · Assigned 6 · Available",
+    )!;
+    expect(r.total).toBe(405);
+    expect(r.assigned).toBe(399);
   });
 });

@@ -63,7 +63,7 @@ export async function executeSyncMember(
 
   // Đứng sẵn ở tab "Người dùng" thì đọc luôn hàng thẻ suất — không tốn cú bấm
   // nào, backend ghi vào workspace (xem `read-seat-fields.ts`).
-  const seatFields = readSeatFields(LOG);
+  const seatFields = await readSeatFields(LOG);
 
   const row = await locateMemberRow(target, {
     pageThrough: false,

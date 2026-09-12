@@ -95,7 +95,7 @@ const BADGE_RE =
  * lời mời treo vẫn phải đếm riêng ở tab "Lời mời đang chờ xử lý" — y như DẠNG 1.
  */
 const CARD_RE =
-  /(\d{1,4})[^\d]{0,24}?(tieu\s*chuan|standard|cao\s*cap|premium|标准|高级)[^\d]{0,24}?(\d{1,4})\s*(?:da\s*gan|assigned|已分配)\s*(\d{1,4})\s*(?:kha\s*dung|con\s*trong|con\s*lai|available|可用)/gi;
+  /(\d{1,4})[^\d]{0,24}?(tieu\s*chuan|standard|cao\s*cap|premium|标准|高级)[^\d]{0,24}?(\d{1,4})[^\d]{0,12}?(?:da\s*gan|assigned|已分配)[^\d]{0,12}?(\d{1,4})[^\d]{0,12}?(?:kha\s*dung|con\s*trong|con\s*lai|available|可用)/gi;
 
 /**
  * Lưới đỡ của `CARD_RE`: chỉ cặp ô "340 Đã gán · 20 Khả dụng", không đòi con số
@@ -104,9 +104,14 @@ const CARD_RE =
  * Dùng khi ChatGPT xếp lại thẻ (con số lớn rơi xuống dưới nhãn, nhãn đổi chữ…).
  * Khi đó tổng đành lấy ĐÃ GÁN + KHẢ DỤNG — kém chắc hơn nên chỉ dùng khi đường
  * chính trượt, và loại suất suy từ nhãn đứng gần nhất như DẠNG 1.
+ *
+ * ⚠️ Giữa con số và nhãn của nó chừa `[^\d]{0,12}` chứ không đòi DÍNH LIỀN: ô
+ * nào cũng có thể mọc thêm dấu chấm câu hay một biểu tượng chú thích chen vào,
+ * mà đòi dính liền thì cả hàng thẻ coi như không đọc được. Rào "không có chữ
+ * số" giữ cho nó không với sang con số của ô kế bên.
  */
 const TILE_RE =
-  /(\d{1,4})\s*(?:da\s*gan|assigned|已分配)\s*(\d{1,4})\s*(?:kha\s*dung|con\s*trong|con\s*lai|available|可用)/gi;
+  /(\d{1,4})[^\d]{0,12}?(?:da\s*gan|assigned|已分配)[^\d]{0,12}?(\d{1,4})[^\d]{0,12}?(?:kha\s*dung|con\s*trong|con\s*lai|available|可用)/gi;
 
 /** Bao nhiêu ký tự trước ô "Đã gán" được coi là nhãn của thẻ. */
 const LOOKBACK = 80;
@@ -262,6 +267,36 @@ const REAL_DIALOG_SELECTOR =
   '[role="dialog"], [role="alertdialog"], [aria-modal="true"]';
 
 /**
+ * Text dài nhất mà một HỘP ĐÈ LÊN TRANG có thể có.
+ *
+ * Từ 4/9/2026 ChatGPT dựng NGUYÊN trang /admin như một lớp phủ `[role=dialog]`
+ * trên ứng dụng chat — nên "có dialog chứa số suất" không còn nghĩa là có hộp
+ * đè lên hàng thẻ: chính TRANG là dialog đó. Hộp "Quản lý suất" chỉ vài dòng,
+ * còn khung /admin ôm cả bảng vài trăm thành viên, nên độ dài tách được hai thứ
+ * mà không phụ thuộc ngôn ngữ hay tên lớp CSS.
+ */
+const OVERLAY_TEXT_MAX = 2_000;
+
+/** Bản KHÔNG cờ `g` của `BADGE_RE` — regex có `g` nhớ `lastIndex` giữa 2 lượt. */
+const BADGE_ONE = new RegExp(BADGE_RE.source, "i");
+
+/**
+ * Có phải hộp "Quản lý suất" đang mở ĐÈ LÊN trang hay không.
+ *
+ * Chữ ký của nó là DÒNG TỈ LỆ ("401/410 đã gán") trong một khối text ngắn. Hàng
+ * thẻ trên trang (DẠNG 2) không có dòng đó, còn khung /admin thì quá dài.
+ *
+ * Xuất khẩu để test được: nhận nhầm khung /admin là hộp đè thì đường đọc nhanh
+ * tắt ngấm, và tổng suất trên dashboard đứng im hàng tuần (đúng chuyện đã xảy
+ * ra từ 4/9 tới 12/9/2026).
+ */
+export function looksLikeSeatModal(text: string): boolean {
+  const collapsed = (text ?? "").replace(/\s+/g, " ").trim();
+  if (!collapsed || collapsed.length > OVERLAY_TEXT_MAX) return false;
+  return BADGE_ONE.test(normalizeForMatch(collapsed));
+}
+
+/**
  * Đọc hàng thẻ suất trên trang Thành viên đang mở.
  *
  * Trả null khi không đọc được — caller phải giữ nguyên đường cũ (mở hộp "Quản
@@ -270,13 +305,14 @@ const REAL_DIALOG_SELECTOR =
 export function readSeatCardsFromPage(): SeatCardsReading | null {
   const body = document.body;
   if (!body) return null;
-  // Hộp thoại đang mở in LẠI chính những con số này (hộp "Quản lý suất" có dòng
-  // tỉ lệ riêng) → cộng dồn hai nguồn là ra số sai. Thấy hộp nào có ô "Đã gán"
-  // thì bỏ hẳn đường đọc nhanh.
+  // Hộp "Quản lý suất" đang mở in LẠI chính những con số này bằng dòng tỉ lệ
+  // riêng → cộng dồn hai nguồn là ra số sai. Chỉ bỏ đường đọc nhanh khi thấy
+  // ĐÚNG cái hộp đó (xem `looksLikeSeatModal`), chứ không phải hễ thấy dialog
+  // nào chứa số suất.
   for (const d of Array.from(
     document.querySelectorAll<HTMLElement>(REAL_DIALOG_SELECTOR),
   )) {
-    if (parseSeatCards(d.textContent ?? "")) return null;
+    if (looksLikeSeatModal(d.textContent ?? "")) return null;
   }
   return parseSeatCards(body.innerText || body.textContent || "");
 }

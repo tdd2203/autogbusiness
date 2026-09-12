@@ -104,7 +104,7 @@ export async function executeSyncMembersBatch(
   // Đang đứng sẵn ở tab "Người dùng" — đọc luôn hàng thẻ suất TRƯỚC khi lọc
   // (lọc chỉ đổi danh sách bên dưới, nhưng đọc lúc trang còn nguyên là chắc
   // nhất). Xem `read-seat-fields.ts`: không mở hộp nào, hỏng cũng không sao.
-  const seatFields = readSeatFields(LOG);
+  const seatFields = await readSeatFields(LOG);
 
   // ----- Tìm từng email bằng ô search của tab "Người dùng" -----
   // Ô lọc đã PHẢN HỒI query ít nhất một lần trong mẻ này ⇒ nó còn sống ⇒ từ đây

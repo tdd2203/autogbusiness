@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { parseSeatCards } from "../purchase-seat/read-seat-cards";
-import { seatFieldsOf } from "./read-seat-fields";
+import { seatFieldsOf, seatTextProbe } from "./read-seat-fields";
 
 /** Nguyên văn tab "Người dùng" của CHATGPT PRO ngày 31/8/2026 (rút gọn). */
 const MEMBERS_PAGE =
@@ -35,5 +35,23 @@ describe("seatFieldsOf — số suất nhặt trong lúc đồng bộ lời mờ
 
   it("workspace 0 suất (chưa mua gì) cũng không ghi đè số cũ", () => {
     expect(seatFieldsOf(parseSeatCards("Suất Tiêu chuẩn Đã gán 0/0 0"))).toEqual({});
+  });
+});
+
+describe("seatTextProbe — manh mối khi hàng thẻ đọc không ra", () => {
+  it("cắt đúng khúc quanh chữ 'Đã gán' và xoá email", () => {
+    const probe = seatTextProbe(
+      "Thành viên Business · 399 thành viên 405 Quản lý Suất Tiêu chuẩn " +
+        "399 Đã gán 6 Khả dụng Lọc theo tên khach@gmail.com",
+    );
+    expect(probe).toContain("Đã gán");
+    expect(probe).not.toContain("khach@gmail.com");
+    expect(probe.length).toBeLessThanOrEqual(240);
+  });
+
+  it("trang không có chữ nào về suất thì nói thẳng, không kéo theo tên ai", () => {
+    expect(seatTextProbe("Tên Vai trò Nguyễn Văn A Thành viên 1 thg 9, 2026")).toBe(
+      "(không có chữ nào về suất trong 49 ký tự)",
+    );
   });
 });
