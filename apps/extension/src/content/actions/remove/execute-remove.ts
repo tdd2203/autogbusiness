@@ -26,6 +26,7 @@ import {
   paidSeatDialogOpen,
   visibleDialogEl,
   waitForModalLockGone,
+  type PaidSeatOutcome,
 } from "../dialog-commit";
 import { releaseWindowOpen } from "../paid-seat-guard";
 import { ensurePendingInvitesTab } from "../revoke/pending-tab";
@@ -303,6 +304,36 @@ export async function executeRemove(
     };
   }
 
+  // Hộp "Gỡ suất trả phí?": GIỮ giữa kỳ, GỠ trong ngày chốt chu kỳ (xem
+  // `RemoveOptions.releasePaidSeatUntil`). So đồng hồ đúng lúc hộp hiện ra.
+  const releaseNow = (): boolean => {
+    const release = releaseWindowOpen(releasePaidSeatUntil);
+    if (releasePaidSeatUntil && !release) {
+      console.log(
+        `${LOG} ${email}: lệnh mang mốc trả suất ${releasePaidSeatUntil} nhưng đã qua giờ → giữ suất`,
+      );
+    }
+    return release;
+  };
+
+  // HỘP SUẤT CỦA LỆNH GỠ TRƯỚC CÒN NẰM LẠI? Hộp này có thể hiện muộn hơn lúc lệnh
+  // trước kết thúc (xem `wait-row-gone.ts`), và nó phủ lên cả trang: gõ ô lọc hay
+  // bấm tab lúc này đều rơi vào lớp phủ. Trả lời nó trước theo đúng luật giữ/gỡ
+  // của lúc này — suất trả phí không gắn với ai, gỡ hộp cũ trong ngày chốt vẫn là
+  // bớt đúng một ghế cho hoá đơn kỳ mới. Ghi vào kết quả để backend biết lệnh này
+  // đã dọn thêm một hộp của lệnh trước.
+  let leftoverPaidSeat: PaidSeatOutcome = "none";
+  if (confirmDialogOpen() && paidSeatDialogOpen()) {
+    leftoverPaidSeat = await answerPaidSeatDialog(LOG, { release: releaseNow() });
+    if (leftoverPaidSeat === "unknown") await escapeDialog();
+    await waitForModalLockGone(2000, LOG);
+    console.log(
+      `${LOG} ${email}: hộp "Gỡ suất trả phí?" của lệnh gỡ trước còn nằm lại → đã trả lời (${leftoverPaidSeat}) trước khi bắt đầu`,
+    );
+  }
+  const leftoverData =
+    leftoverPaidSeat === "none" ? {} : { leftover_paid_seat: leftoverPaidSeat };
+
   // Đảm bảo đang ở tab "Người dùng" — REMOVE chỉ làm được trên active member
   // list, không phải tab "Lời mời" / "Yêu cầu". Best-effort, không fail nếu tab
   // button không có (có thể đã ở đúng tab rồi).
@@ -402,7 +433,13 @@ export async function executeRemove(
       );
       return {
         ok: true,
-        data: { email, verified: true, absent: true, rows_before: found.rows_before },
+        data: {
+          email,
+          verified: true,
+          absent: true,
+          rows_before: found.rows_before,
+          ...leftoverData,
+        },
       };
     }
 
@@ -547,17 +584,9 @@ export async function executeRemove(
     { phase: "verifying", message: `Chờ ${email} biến mất khỏi danh sách...` },
     true,
   );
-  // Hộp "Gỡ suất trả phí?": GIỮ giữa kỳ, GỠ trong ngày chốt chu kỳ (xem
-  // `RemoveOptions.releasePaidSeatUntil`). So đồng hồ đúng lúc hộp hiện ra.
-  const releaseNow = (): boolean => {
-    const release = releaseWindowOpen(releasePaidSeatUntil);
-    if (releasePaidSeatUntil && !release) {
-      console.log(
-        `${LOG} ${email}: lệnh mang mốc trả suất ${releasePaidSeatUntil} nhưng đã qua giờ → giữ suất`,
-      );
-    }
-    return release;
-  };
+  // Hộp suất hiện ra lúc nào cũng trả lời theo `releaseNow()` (đã khai báo ở đầu
+  // hàm) — kể cả khi nó hiện MUỘN sau khi dòng đã rời danh sách: `waitForRowGone`
+  // nán lại một quãng chờ nó rồi mới trả về, để ô lọc không gõ đè lên hộp.
   const waited = await waitForRowGone({
     read: () => ({
       dialog: confirmDialogOpen(),
@@ -566,12 +595,15 @@ export async function executeRemove(
       row: findMemberRow(email) !== null,
     }),
     answerPaidSeat: () => answerPaidSeatDialog(LOG, { release: releaseNow() }),
-    beat: (ms) =>
+    beat: (ms, stage) =>
       reportProgress(
         taskId,
         {
           phase: "verifying",
-          message: `Chờ ${email} biến mất khỏi danh sách (${Math.round(ms / 1000)}s)...`,
+          message:
+            stage === "row"
+              ? `Chờ ${email} biến mất khỏi danh sách (${Math.round(ms / 1000)}s)...`
+              : `${email} đã rời danh sách, chờ ChatGPT hỏi về suất trả phí (${Math.round(ms / 1000)}s)...`,
         },
         true,
       ),
@@ -607,6 +639,11 @@ export async function executeRemove(
       (waited.gone
         ? `dòng đã biến mất sau ~${waitedS}s`
         : `chờ ${waitedS}s dòng vẫn chưa biến mất`) +
+      (waited.gone && waited.paidSeat !== "none" && waited.graceMs > 0
+        ? `, hộp suất hiện muộn ~${Math.round(waited.graceMs / 1000)}s sau đó (suất: ${waited.paidSeat})`
+        : waited.gone && waited.paidSeat === "none"
+          ? `, nán ${Math.round(waited.graceMs / 1000)}s không thấy hộp suất`
+          : "") +
       `${dialogStuck ? `, hộp thoại còn nằm lại (đã dẹp, suất: ${paidSeat})` : ""} → tra lại bằng ô lọc`,
   );
 
@@ -669,6 +706,8 @@ export async function executeRemove(
       // Backend ghi vào audit MEMBER_REMOVED_SYNCED để đếm "kỳ này trả được bao
       // nhiêu suất" mà không phải đoán từ hoá đơn.
       paid_seat: paidSeat,
+      // Hộp suất của lệnh gỡ TRƯỚC còn nằm lại và được lệnh này trả lời hộ.
+      ...leftoverData,
     },
   };
 }

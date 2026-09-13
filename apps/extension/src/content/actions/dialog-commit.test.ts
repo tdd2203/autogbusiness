@@ -56,7 +56,11 @@ function fakeDialog(spec: DialogSpec) {
 
 function stubDialogs(...specs: DialogSpec[]): void {
   const nodes = specs.map(fakeDialog);
-  vi.stubGlobal("document", { querySelectorAll: () => nodes });
+  // Chỉ selector hộp thoại mới ra khung; quét `button` toàn trang (đường lui nhận
+  // hộp suất theo cặp nút) ra rỗng — trang không có nút nào ngoài hộp.
+  vi.stubGlobal("document", {
+    querySelectorAll: (sel: string) => (sel.includes("dialog") ? nodes : []),
+  });
 }
 
 const CONFIRM = {
@@ -137,5 +141,103 @@ describe("answerPaidSeatDialog — giữ giữa kỳ, gỡ trong ngày chốt", 
 
     await expect(answerPaidSeatDialog("[t]", { release: true })).resolves.toBe("none");
     expect(humanClick).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * ĐƯỜNG LUI: hộp "Gỡ suất trả phí?" không mang `role="dialog"` thì nhận theo CẶP
+ * nút giữ/gỡ. Hai lệnh gỡ 12–13/9/2026 kết thúc "không còn hộp nào" mà ảnh user
+ * chụp ngay sau đó hộp vẫn nằm trên trang; DOM thật của hộp chưa quan sát được
+ * nên chừa đường này bên cạnh quãng nán chờ hộp hiện muộn.
+ */
+describe("hộp suất KHÔNG mang role=dialog → nhận theo cặp nút giữ/gỡ", () => {
+  type FakeNode = {
+    isButton: boolean;
+    textContent: string;
+    parentElement: FakeNode | null;
+    children: FakeNode[];
+    contains: (n: unknown) => boolean;
+    closest: (sel: string) => FakeNode | null;
+    getAttribute: (name: string) => string | null;
+    hasAttribute: (name: string) => boolean;
+    querySelector: (sel: string) => FakeNode | null;
+    querySelectorAll: (sel: string) => FakeNode[];
+  };
+  const buttonsIn = (n: FakeNode): FakeNode[] =>
+    n.children.flatMap((c) => (c.isButton ? [c] : buttonsIn(c)));
+  function node(
+    text: string,
+    children: FakeNode[] = [],
+    opts: { button?: boolean; closed?: boolean } = {},
+  ): FakeNode {
+    const self: FakeNode = {
+      isButton: opts.button === true,
+      textContent: text + children.map((c) => c.textContent).join(""),
+      parentElement: null,
+      children,
+      contains: (n) => n === self || children.some((c) => c.contains(n)),
+      closest: (sel) =>
+        opts.closed && sel.includes("closed") ? self : (self.parentElement?.closest(sel) ?? null),
+      getAttribute: () => null,
+      hasAttribute: () => false,
+      querySelector: (sel) => (sel.includes("button") ? (buttonsIn(self)[0] ?? null) : null),
+      querySelectorAll: (sel) => (sel === "button" ? buttonsIn(self) : []),
+    };
+    for (const c of children) c.parentElement = self;
+    return self;
+  }
+  const button = (label: string) => node(label, [], { button: true });
+
+  /** Trang: không có `role="dialog"` nào sống, chỉ có các nút ở đâu đó trong cây. */
+  function stubPage(body: FakeNode): void {
+    vi.stubGlobal("document", {
+      body,
+      querySelectorAll: (sel: string) => (sel === "button" ? buttonsIn(body) : []),
+    });
+  }
+  const clickedText = () =>
+    (vi.mocked(humanClick).mock.calls.at(-1)?.[0] as { textContent: string }).textContent;
+
+  function pageWithPaidSeatBox(opts: { closed?: boolean } = {}) {
+    const keep = button("Keep paid seat");
+    const remove = button("Remove paid seat");
+    const row = node("", [keep, remove]);
+    const panel = node(PAID_SEAT.text, [row], { closed: opts.closed });
+    const page = node("Members · 402 members · 405 Standard seats", [button("Invite member"), panel]);
+    const body = node("", [page]);
+    return { body, panel, keep, remove };
+  }
+
+  it("có đủ cặp nút → khung có thân chữ suất + tiền là hộp suất; giữa kỳ bấm Giữ", async () => {
+    const { body, panel } = pageWithPaidSeatBox();
+    stubPage(body);
+
+    expect(confirmDialogOpen()).toBe(true);
+    expect(visibleDialogEl()).toBe(panel);
+    expect(openDialogText()).toContain("Remove the paid seat?");
+    expect(paidSeatDialogOpen()).toBe(true);
+    expect(await answerPaidSeatDialog("[t]")).toBe("kept");
+    expect(clickedText()).toBe("Keep paid seat");
+  });
+
+  it("ngày chốt (release) → bấm Gỡ suất qua đường lui này", async () => {
+    stubPage(pageWithPaidSeatBox().body);
+
+    expect(await answerPaidSeatDialog("[t]", { release: true })).toBe("released");
+    expect(clickedText()).toBe("Remove paid seat");
+  });
+
+  it("chỉ một nút lẻ 'Remove seat' ngoài trang (hộp Quản lý suất) → không phải hộp suất", () => {
+    const body = node("", [node("Standard seats", [button("Add seat"), button("Remove seat")])]);
+    stubPage(body);
+
+    expect(confirmDialogOpen()).toBe(false);
+    expect(paidSeatDialogOpen()).toBe(false);
+  });
+
+  it("cặp nút nằm trong khung đã đóng → không tính", () => {
+    stubPage(pageWithPaidSeatBox({ closed: true }).body);
+
+    expect(confirmDialogOpen()).toBe(false);
   });
 });

@@ -254,9 +254,19 @@ describe("executeRemove — sau khi bấm xoá", () => {
 });
 
 describe("executeRemove — hộp \"Gỡ suất trả phí?\" theo ngày chốt chu kỳ", () => {
-  /** Hộp suất bồi sau xác nhận: còn hộp tới khi được trả lời. */
-  function paidSeatDialogOnce(answer: string): void {
-    let open = true;
+  /**
+   * Hộp suất bồi SAU xác nhận: mở ở lượt soi thứ `atRead` sau cú bấm (lượt soi =
+   * một lần đọc dòng), còn hộp tới khi được trả lời. Mặc định mở ngay lượt đầu;
+   * `atRead` lớn hơn số nhịp dòng-vắng là ca hộp hiện MUỘN sau khi dòng đã mất.
+   */
+  function paidSeatDialogOnce(answer: string, atRead = 1): void {
+    let open = false;
+    let reads = 0;
+    findMemberRow.mockImplementation(() => {
+      reads += 1;
+      if (reads === atRead) open = true;
+      return null;
+    });
     confirmDialogOpen.mockImplementation(() => open);
     paidSeatDialogOpen.mockImplementation(() => open);
     answerPaidSeatDialog.mockImplementation(async () => {
@@ -264,6 +274,44 @@ describe("executeRemove — hộp \"Gỡ suất trả phí?\" theo ngày chốt 
       return answer;
     });
   }
+
+  it("hộp suất hiện MUỘN sau khi dòng đã mất → vẫn trả lời, rồi mới tra lại", async () => {
+    paidSeatDialogOnce("kept", 9); // dòng vắng đủ 4 nhịp từ lâu, hộp mới hiện
+    filterOutcomes.push(FOUND, ABSENT);
+
+    const r = await executeRemove("t1", EMAIL);
+
+    expect(r.ok).toBe(true);
+    expect(answerPaidSeatDialog).toHaveBeenCalledTimes(1);
+    expect(dataOf(r)).toMatchObject({ paid_seat: "kept", row_gone: true, dialog_stuck: false });
+    // Tra lại (lượt gọi ô lọc thứ hai) phải diễn ra SAU khi hộp đã được trả lời.
+    const answeredAt = answerPaidSeatDialog.mock.invocationCallOrder[0];
+    const recheckAt = filterOnceAndResolve.mock.invocationCallOrder[1];
+    expect(recheckAt).toBeGreaterThan(answeredAt);
+    expect(dispatchEvent).not.toHaveBeenCalled();
+  });
+
+  it("hộp suất của lệnh gỡ TRƯỚC còn nằm lại → trả lời trước khi bắt đầu, ghi vào kết quả", async () => {
+    let open = true; // đã mở sẵn từ trước khi lệnh này chạy
+    confirmDialogOpen.mockImplementation(() => open);
+    paidSeatDialogOpen.mockImplementation(() => open);
+    answerPaidSeatDialog.mockImplementation(async () => {
+      open = false;
+      return "kept";
+    });
+    filterOutcomes.push(FOUND, ABSENT);
+
+    const r = await executeRemove("t1", EMAIL);
+
+    expect(r.ok).toBe(true);
+    expect(answerPaidSeatDialog).toHaveBeenCalledTimes(1);
+    expect(answerPaidSeatDialog.mock.calls[0][1]).toEqual({ release: false });
+    // Trả lời xong mới đi tìm dòng để bấm xoá.
+    expect(answerPaidSeatDialog.mock.invocationCallOrder[0]).toBeLessThan(
+      filterOnceAndResolve.mock.invocationCallOrder[0],
+    );
+    expect(dataOf(r)).toMatchObject({ leftover_paid_seat: "kept", paid_seat: "none" });
+  });
 
   it("KHÔNG có mốc trả suất (giữa kỳ) → hỏi giữ suất, đúng một lần", async () => {
     paidSeatDialogOnce("kept");

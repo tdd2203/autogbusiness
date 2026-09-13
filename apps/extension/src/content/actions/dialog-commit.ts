@@ -27,7 +27,12 @@
  */
 
 import { humanClick, sleep } from "../human";
-import { decidePaidSeatDialog } from "./paid-seat-guard";
+import {
+  decidePaidSeatDialog,
+  isKeepPaidSeatText,
+  isPaidSeatDialogText,
+  isRemovePaidSeatText,
+} from "./paid-seat-guard";
 
 /**
  * Hộp thoại này còn SỐNG không — đang hiện trên trang và có nội dung.
@@ -64,7 +69,43 @@ function openDialogEl(): HTMLElement | null {
   const alive = Array.from(
     document.querySelectorAll<HTMLElement>('[role="alertdialog"], [role="dialog"]'),
   ).filter(dialogAlive);
-  return alive.length > 0 ? alive[alive.length - 1] : null;
+  if (alive.length > 0) return alive[alive.length - 1];
+  return paidSeatDialogByButtons();
+}
+
+/**
+ * Đường lui cho hộp "Gỡ suất trả phí?" KHÔNG mang `role="dialog"`.
+ *
+ * Hai lệnh gỡ 12–13/9/2026 kết thúc với `dialog_stuck: false` (không thấy khung
+ * `role="dialog"` nào còn sống sau khi dòng rời danh sách) mà ảnh user chụp ngay
+ * sau đó hộp vẫn nằm trên trang. Khả năng lớn là hộp hiện MUỘN (đã chữa bằng quãng
+ * nán ở `remove/wait-row-gone.ts`), nhưng DOM thật của hộp này chưa quan sát được
+ * nên chừa thêm đường nhận theo NÚT: trang có đồng thời nút "Giữ suất trả phí" và
+ * nút "Gỡ suất trả phí" thì khung chứa cả hai chính là hộp đó. Đòi CẢ HAI nhãn để
+ * không vơ nhầm một nút lẻ ngoài trang (nút trừ ở hộp "Quản lý suất" chẳng hạn);
+ * nút nằm trong khung đã đóng / bị ẩn không tính.
+ */
+function paidSeatDialogByButtons(): HTMLElement | null {
+  const buttons = Array.from(document.querySelectorAll<HTMLElement>("button"));
+  const text = (b: HTMLElement) => (b.textContent ?? "").trim();
+  const keep = buttons.find((b) => isKeepPaidSeatText(text(b)));
+  const remove = buttons.find((b) => isRemovePaidSeatText(text(b)));
+  if (!keep || !remove) return null;
+  if (keep.closest('[aria-hidden="true"], [hidden], [data-state="closed"]')) return null;
+  // Tổ tiên chung gần nhất của hai nút (không lấy body)...
+  let box: HTMLElement | null = keep.parentElement;
+  while (box && box !== document.body && !box.contains(remove)) box = box.parentElement;
+  if (!box || box === document.body) return null;
+  // ...rồi nới lên tới khung có thân chữ nói suất + tiền, để `decidePaidSeatDialog`
+  // và `openDialogText` đọc được đúng thân hộp chứ không chỉ hai nhãn nút.
+  while (
+    box.parentElement &&
+    box.parentElement !== document.body &&
+    !isPaidSeatDialogText(box.textContent ?? "")
+  ) {
+    box = box.parentElement;
+  }
+  return box;
 }
 
 /** Hộp thoại đang mở — cho các action tự tìm nút bên trong nó. */
