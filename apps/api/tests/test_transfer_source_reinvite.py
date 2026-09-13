@@ -241,3 +241,142 @@ def test_email_moi_toanh_khong_bi_anh_huong(client: TestClient, auth_header: dic
 
     resp = _bulk(client, ws, sub["header"], email="khac.han@example.org")
     assert resp.status_code == 202, resp.text
+
+
+# ── Lịch sử của ca được mời lại phải khớp ────────────────────────────────────
+
+
+def test_tab_da_xoa_giu_dong_chuyen_han_cua_email_duoc_moi_lai(
+    client: TestClient, auth_header: dict
+) -> None:
+    ws, sub = _agent_with_ws(client, auth_header)
+    source_id, target_id, hop = _seed_pair(ws, sub["id"], came_back="pending")
+
+    removed = client.get(
+        "/api/v1/added-members?removed=true&platform=gpt", headers=sub["header"]
+    )
+    assert removed.status_code == 200, removed.text
+    rows = [r for r in removed.json() if r["email"] == OLD]
+    assert len(rows) == 1, rows
+    row = rows[0]
+    assert row["id"] == source_id
+    assert row["status"] == "removed"
+    assert row["removed_reason"] == "subscription_transferred"
+    assert row["email_changed_to"] == [NEW]
+    assert row["email_changed_to_ids"] == [target_id]
+    removed_at = datetime.fromisoformat(row["removed_at"].replace("Z", "+00:00"))
+    assert abs((removed_at - hop).total_seconds()) < 1
+
+    live = client.get("/api/v1/added-members?platform=gpt", headers=sub["header"])
+    assert live.status_code == 200, live.text
+    assert [r["status"] for r in live.json() if r["email"] == OLD] == ["pending"]
+
+
+def test_tab_da_xoa_khong_nhan_doi_email_chua_moi_lai(
+    client: TestClient, auth_header: dict
+) -> None:
+    ws, sub = _agent_with_ws(client, auth_header)
+    _seed_pair(ws, sub["id"])
+
+    removed = client.get(
+        "/api/v1/added-members?removed=true&platform=gpt", headers=sub["header"]
+    )
+    assert removed.status_code == 200, removed.text
+    rows = [r for r in removed.json() if r["email"] == OLD]
+    assert [r["removed_reason"] for r in rows] == ["subscription_transferred"]
+
+
+def test_email_nhan_khong_gom_tien_luot_moi_moi_cua_email_cu(
+    client: TestClient, auth_header: dict
+) -> None:
+    ws, sub = _agent_with_ws(client, auth_header)
+    source_id, target_id, hop = _seed_pair(ws, sub["id"], came_back="pending")
+    _fee(sub["id"], email=OLD, amount=100_000, at=hop - timedelta(days=5))
+    _fee(sub["id"], email=OLD, amount=50_000, at=hop + timedelta(minutes=9))
+
+    target = client.get(
+        f"/api/v1/workspaces/{ws}/members/{target_id}/payments", headers=sub["header"]
+    ).json()
+    assert target["charged_total"] == 100_000, target
+    assert {e["from_email"] for e in target["entries"]} == {OLD}
+
+    source = client.get(
+        f"/api/v1/workspaces/{ws}/members/{source_id}/payments", headers=sub["header"]
+    ).json()
+    assert source["charged_total"] == 150_000, source
+
+
+def test_chuoi_binh_thuong_van_gom_tien_nhu_cu(
+    client: TestClient, auth_header: dict
+) -> None:
+    ws, sub = _agent_with_ws(client, auth_header)
+    _source_id, target_id, hop = _seed_pair(ws, sub["id"])
+    _fee(sub["id"], email=OLD, amount=100_000, at=hop - timedelta(days=5))
+    _fee(sub["id"], email=OLD, amount=50_000, at=hop + timedelta(minutes=9))
+
+    target = client.get(
+        f"/api/v1/workspaces/{ws}/members/{target_id}/payments", headers=sub["header"]
+    ).json()
+    assert target["charged_total"] == 150_000, target
+
+
+def _seed_logs(ws: str, source_id: str, target_id: str, hop: datetime) -> None:
+    _log(
+        "MEMBER_INVITE_QUEUED",
+        source_id,
+        {"workspace_id": ws, "email": OLD},
+        hop - timedelta(days=30),
+    )
+    _log(
+        "MEMBER_SUBSCRIPTION_TRANSFERRED",
+        target_id,
+        {
+            "workspace_id": ws,
+            "source_member_id": source_id,
+            "source_email": OLD,
+            "target_email": NEW,
+        },
+        hop,
+    )
+    _log(
+        "MEMBER_MANUAL_FIX",
+        source_id,
+        {"workspace_id": ws, "email": OLD},
+        hop + timedelta(hours=1),
+    )
+
+
+def test_email_nhan_khong_ke_thua_nhat_ky_sau_moc_chuyen(
+    client: TestClient, auth_header: dict
+) -> None:
+    ws, sub = _agent_with_ws(client, auth_header)
+    source_id, target_id, hop = _seed_pair(ws, sub["id"], came_back="pending")
+    _seed_logs(ws, source_id, target_id, hop)
+
+    target = client.get(
+        f"/api/v1/workspaces/{ws}/members/{target_id}/logs", headers=sub["header"]
+    )
+    assert target.status_code == 200, target.text
+    actions = {r["action"] for r in target.json()}
+    assert "MEMBER_SUBSCRIPTION_TRANSFERRED" in actions
+    assert "MEMBER_INVITE_QUEUED" in actions
+    assert "MEMBER_MANUAL_FIX" not in actions
+
+    source = client.get(
+        f"/api/v1/workspaces/{ws}/members/{source_id}/logs", headers=sub["header"]
+    )
+    assert "MEMBER_MANUAL_FIX" in {r["action"] for r in source.json()}
+
+
+def test_chuoi_binh_thuong_van_ke_thua_nhat_ky_nhu_cu(
+    client: TestClient, auth_header: dict
+) -> None:
+    ws, sub = _agent_with_ws(client, auth_header)
+    source_id, target_id, hop = _seed_pair(ws, sub["id"])
+    _seed_logs(ws, source_id, target_id, hop)
+
+    target = client.get(
+        f"/api/v1/workspaces/{ws}/members/{target_id}/logs", headers=sub["header"]
+    )
+    assert target.status_code == 200, target.text
+    assert "MEMBER_MANUAL_FIX" in {r["action"] for r in target.json()}

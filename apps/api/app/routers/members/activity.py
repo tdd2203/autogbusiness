@@ -36,9 +36,10 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.deps import get_session, require_permission
-from app.models import AuditLog, User
+from app.models import AuditLog, Member, User
 from app.permissions import Permission
 from app.schemas import AuditLogOut
+from app.services import transfer_link
 
 from ._shared import router, _get_workspace_or_404, _member_or_404_visible
 
@@ -151,43 +152,69 @@ def list_member_logs(
         )
     )
 
+    # Email CHO được mời lại SAU lần chuyển (ngoại lệ user cho phép 14/9/2026, ca
+    # `cmsgpshp`): phần đời sau mốc chuyển là của một lượt bán mới, không thuộc lịch sử
+    # mà email nhận kế thừa. Không cắt thì thẻ email nhận hiện luôn lần mời mới và dòng
+    # sửa tay của email cho. Chỉ cắt đúng ca đó, mọi chuỗi khác giữ cách gom cũ.
+    inherit_until = None
+    if old_mid_from_change and old_mid_from_change != mid:
+        try:
+            previous = db.get(Member, UUID(old_mid_from_change))
+        except ValueError:
+            previous = None
+        if previous is not None and transfer_link.came_back_after(
+            previous, member.transferred_in_at
+        ):
+            inherit_until = member.transferred_in_at
+
+    def _inherited(clause):
+        if inherit_until is None:
+            return clause
+        return and_(clause, AuditLog.timestamp <= inherit_until)
+
     if old_email_from_change and old_email_from_change != member.email.lower():
         ors.append(
-            and_(
-                AuditLog.action == "MEMBER_BULK_INVITE_QUEUED",
-                AuditLog.data.contains(
-                    {
-                        "workspace_id": ws_s,
-                        "entries": [{"email": old_email_from_change}],
-                    }
-                ),
+            _inherited(
+                and_(
+                    AuditLog.action == "MEMBER_BULK_INVITE_QUEUED",
+                    AuditLog.data.contains(
+                        {
+                            "workspace_id": ws_s,
+                            "entries": [{"email": old_email_from_change}],
+                        }
+                    ),
+                )
             )
         )
         ors.append(
-            and_(
-                AuditLog.action.in_(
-                    (
-                        "MEMBER_INVITE_QUEUED",
-                        "MEMBER_INVITE_VERIFIED",
-                        "MEMBER_INVITE_FAILED",
-                    )
-                ),
-                AuditLog.data.contains(
-                    {
-                        "workspace_id": ws_s,
-                        "email": old_email_from_change,
-                    }
-                ),
+            _inherited(
+                and_(
+                    AuditLog.action.in_(
+                        (
+                            "MEMBER_INVITE_QUEUED",
+                            "MEMBER_INVITE_VERIFIED",
+                            "MEMBER_INVITE_FAILED",
+                        )
+                    ),
+                    AuditLog.data.contains(
+                        {
+                            "workspace_id": ws_s,
+                            "email": old_email_from_change,
+                        }
+                    ),
+                )
             )
         )
     if old_mid_from_change and old_mid_from_change != mid:
         ors.append(
-            and_(
-                AuditLog.target_type == "MEMBER",
-                or_(
-                    AuditLog.target_id == old_mid_from_change,
-                    AuditLog.data.contains({"member_ids": [old_mid_from_change]}),
-                ),
+            _inherited(
+                and_(
+                    AuditLog.target_type == "MEMBER",
+                    or_(
+                        AuditLog.target_id == old_mid_from_change,
+                        AuditLog.data.contains({"member_ids": [old_mid_from_change]}),
+                    ),
+                )
             )
         )
     if invite_qid_from_change:

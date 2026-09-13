@@ -46,7 +46,7 @@ from app.schemas import (
     PaymentRequestNotice,
     SubscriptionCycleOut,
 )
-from app.services import payment_flow, wallet_service
+from app.services import payment_flow, transfer_link, wallet_service
 
 router = APIRouter(prefix="/api/v1/added-members", tags=["added-members"])
 
@@ -120,6 +120,70 @@ def _email_change_chain(
         seen.add(next_id)
         cursor = next_id
     return emails, ids
+
+
+def _transferred_then_readded_rows(
+    db: Session,
+    *,
+    platform: str | None,
+    unassigned: bool,
+    target_user_id: UUID | None,
+    cutoff: datetime,
+    next_email_map: dict[str, tuple[str, str]],
+) -> list[AddedMemberOut]:
+    """Dòng "đã chuyển hạn sang …" của email được mời lại SAU lần chuyển.
+
+    Mỗi (không gian, email) chỉ có MỘT bản ghi. Khi super-admin mời lại một email đã
+    chuyển hạn đi (ngoại lệ user cho phép 14/9/2026, ca `cmsgpshp`) thì chính bản ghi
+    đó quay về `pending`, nên dòng chuyển hạn biến khỏi tab này — lịch sử cũ của email
+    mất dấu trong khi email nhận vẫn ghi "nhận hạn từ" nó. Dựng lại dòng đó từ các cột
+    chuyển hạn (`transferred_out_at`, `transferred_to_*`), không đụng dữ liệu.
+
+    Bỏ qua ca đổi email CHƯA XONG (`email_change_stuck_at`): email đó chưa hề được mời
+    lại, nó vẫn đang ăn ghế cũ và đã có nhãn riêng ở danh sách chính."""
+    stmt = select(Member).options(
+        selectinload(Member.workspace), selectinload(Member.invited_by)
+    )
+    if platform is not None:
+        stmt = stmt.join(Workspace, Member.workspace_id == Workspace.id).where(
+            Workspace.platform == platform
+        )
+    stmt = stmt.where(
+        Member.status != "removed",
+        Member.transferred_out_at.isnot(None),
+        Member.transferred_out_at >= cutoff,
+        Member.email_change_stuck_at.is_(None),
+    )
+    if unassigned:
+        stmt = stmt.where(Member.invited_by_user_id.is_(None))
+    elif target_user_id is not None:
+        stmt = stmt.where(Member.invited_by_user_id == target_user_id)
+    out: list[AddedMemberOut] = []
+    for member in db.execute(stmt).scalars():
+        if not transfer_link.came_back_after(member, member.transferred_out_at):
+            continue
+        chain, chain_ids = _email_change_chain(member, next_email_map)
+        row = AddedMemberOut.model_validate(member)
+        out.append(
+            row.model_copy(
+                update={
+                    "status": "removed",
+                    "removed_at": member.transferred_out_at,
+                    "removed_reason": "subscription_transferred",
+                    # Lần chuyển đóng hạn của email cho đúng lúc chuyển, kỳ đã trả thì
+                    # đi theo email nhận — không kể lại ở dòng này.
+                    "subscription_end_at": member.transferred_out_at,
+                    "cycles": [],
+                    "workspace_name": member.workspace.name if member.workspace else None,
+                    "invited_by_username": (
+                        member.invited_by.username if member.invited_by else None
+                    ),
+                    "email_changed_to": chain,
+                    "email_changed_to_ids": chain_ids,
+                }
+            )
+        )
+    return out
 
 
 def _recompute_member_payment_status(member: Member) -> None:
@@ -286,6 +350,19 @@ def list_added_members(
             rows.append(out)
         for member in chunk:
             db.expunge(member)
+    if removed:
+        extra = _transferred_then_readded_rows(
+            db,
+            platform=platform,
+            unassigned=unassigned,
+            target_user_id=target_user_id,
+            cutoff=cutoff,
+            next_email_map=next_email_map,
+        )
+        if extra:
+            rows.extend(extra)
+            oldest = datetime.min.replace(tzinfo=timezone.utc)
+            rows.sort(key=lambda r: r.removed_at or oldest, reverse=True)
     return rows
 
 

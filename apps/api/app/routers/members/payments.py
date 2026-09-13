@@ -35,6 +35,7 @@ Endpoint:
 """
 
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import Depends, Query
@@ -50,6 +51,7 @@ from app.schemas import (
     MemberPaymentOrderOut,
     MemberPaymentsOut,
 )
+from app.services import transfer_link
 
 from ._shared import router, _get_workspace_or_404, _member_or_404_visible
 
@@ -126,6 +128,20 @@ def list_member_payments(
         )
         for o in orders
     }
+    # Email cũ được mời lại SAU lần chuyển: khoản sau mốc chuyển là của riêng nó, gom
+    # sang đây là đếm cùng một đồng tiền ở hai thẻ (xem `_inherit_cutoffs`).
+    cutoffs = _inherit_cutoffs(db, member)
+    if cutoffs:
+        txns = [
+            t
+            for t in txns
+            if not _after_cutoff(cutoffs, txn_owner.get(t.id), t.created_at)
+        ]
+        orders = [
+            o
+            for o in orders
+            if not _after_cutoff(cutoffs, order_owner.get(o.id), o.created_at)
+        ]
 
     voided_orders = _orders_with_all_fees_refunded(db, orders)
     allocations = _order_allocations(db, orders, user, order_owner, email)
@@ -190,6 +206,47 @@ def _predecessor_emails(db: Session, member: Member) -> list[tuple[str, str]]:
         out.append((str(old_id), old_email))
         cursor = db.get(Member, old_id)
     return out
+
+
+def _inherit_cutoffs(db: Session, member: Member) -> dict[str, datetime]:
+    """Email cũ nào chỉ được gom tiền TỚI mốc chuyển hạn, và mốc đó là khi nào.
+
+    Thường thì email cho rời đội ngay sau lần chuyển, nên mọi khoản của nó đều thuộc
+    chuỗi. Ngoại lệ user cho phép 14/9/2026 (ca `cmsgpshp`): email cho được super-admin
+    mời lại SAU lần chuyển, và khoản nó trả cho lượt mời mới là của RIÊNG nó. Chỉ cắt
+    ở đúng ca đó để mọi chuỗi khác giữ nguyên cách gom cũ."""
+    out: dict[str, datetime] = {}
+    seen = {str(member.id)}
+    cursor: Member | None = member
+    for _ in range(_EMAIL_CHAIN_MAX_HOPS):
+        if cursor is None:
+            break
+        old_id = cursor.transferred_from_member_id
+        if old_id is None or str(old_id) in seen:
+            break
+        seen.add(str(old_id))
+        previous = db.get(Member, old_id)
+        if previous is None:
+            break
+        hop = cursor.transferred_in_at
+        email = (cursor.transferred_from_email or previous.email or "").strip().lower()
+        if email and transfer_link.came_back_after(previous, hop):
+            out[email] = hop if hop.tzinfo else hop.replace(tzinfo=timezone.utc)
+        cursor = previous
+    return out
+
+
+def _after_cutoff(
+    cutoffs: dict[str, datetime], owner: str | None, created_at: datetime | None
+) -> bool:
+    """Khoản của email cũ `owner` phát sinh SAU mốc chuyển hạn của nó?"""
+    if not owner or created_at is None:
+        return False
+    cut = cutoffs.get(owner.lower())
+    if cut is None:
+        return False
+    at = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
+    return at > cut
 
 
 def _order_payload_emails(
