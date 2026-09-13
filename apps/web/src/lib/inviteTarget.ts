@@ -51,3 +51,64 @@ export function pickBatchWorkspace({
   }
   return best;
 }
+
+/**
+ * GHIM của từng email đang dán — những email KHÔNG đi theo đích của cả mẻ. Cả hai
+ * loại đều là chỗ backend chặn cứng (409 cả nhóm), không phải tuỳ chọn:
+ *
+ *  - `seat`: email ĐANG GIỮ CHỖ (đã vào đội hoặc đang chờ nhận lời mời) ở một không
+ *    gian → chỉ mời lại được vào đúng đó (`_assert_single_workspace`), và mời lại ở
+ *    chính chỗ đó không tốn suất mới.
+ *  - `home`: email ĐÃ TỪNG DÙNG một không gian → mời lại vào đúng chỗ cũ (chốt user
+ *    2026-09-13, ca khách cũ CHATGPT PRO bị dồn vào GPT1). "Chỗ cũ" do backend chọn
+ *    (`home_workspace_id`) bằng đúng hàm nó dùng để chặn — web không tự suy thứ tự
+ *    ưu tiên, suy lệch một chút là trang ghim một chỗ còn backend đòi chỗ khác.
+ *
+ * Danh sách member chỉ phủ các không gian ĐÍCH; chỗ ngoài danh sách đích (đại lý
+ * không đọc được member ở đó) chỉ lộ ra qua lịch sử email.
+ */
+export type EmailPinInput = {
+  /** Member của các không gian đích, kể cả dòng đã gỡ. */
+  members: { email: string; workspace_id: string; status: string }[];
+  /** `/auto-invite/email-history` — map email (lowercase) → lịch sử. */
+  history:
+    | Record<
+        string,
+        {
+          home_workspace_id?: string | null;
+          workspaces: { workspace_id: string; holds_seat?: boolean }[];
+        }
+      >
+    | undefined;
+};
+
+export type EmailPins = {
+  seat: Map<string, string>;
+  home: Map<string, string>;
+};
+
+export function buildEmailPins({ members, history }: EmailPinInput): EmailPins {
+  const seatWs = new Map<string, string>();
+  for (const m of members) {
+    if (m.status === "removed") continue;
+    seatWs.set(m.email.toLowerCase(), m.workspace_id);
+  }
+  const homeWs = new Map<string, string>();
+  for (const [email, h] of Object.entries(history ?? {})) {
+    const key = email.toLowerCase();
+    const held = h.workspaces.find((w) => w.holds_seat);
+    if (held && seatWs.has(key) === false) seatWs.set(key, held.workspace_id);
+    if (h.home_workspace_id) homeWs.set(key, h.home_workspace_id);
+  }
+  return { seat: seatWs, home: homeWs };
+}
+
+/** Đích thật của 1 email: chỗ đang giữ > chỗ cũ > đích của cả mẻ. */
+export function emailTargetWorkspace(
+  email: string,
+  pins: EmailPins,
+  batchWs: string | undefined,
+): string | undefined {
+  const key = email.toLowerCase();
+  return pins.seat.get(key) ?? pins.home.get(key) ?? batchWs;
+}

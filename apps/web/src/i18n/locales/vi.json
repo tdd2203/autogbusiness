@@ -1604,7 +1604,7 @@
   "inviteMembers.wsUsedMonths": "Đã dùng {n} tháng",
   "inviteMembers.wsUsedDays": "Đã dùng {n} ngày",
   "inviteMembers.wsOption": "{name} · {used}",
-  "inviteMembers.wsPinned": "{name} · email đang ở không gian này nên mời lại vào đúng đây",
+  "inviteMembers.wsPinned": "{name} · email đã có ở không gian này nên mời lại vào đúng đây",
   "inviteMembers.batchWsHint": "Cả danh sách email trong lần mời này vào chung không gian đang chọn.",
   "inviteMembers.inviteBlockedTitle": "Tạm ngưng mời",
   "inviteMembers.inviteBlockedRow": "{name} · mở lại lúc {time}",

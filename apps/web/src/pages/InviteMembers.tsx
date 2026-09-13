@@ -22,7 +22,11 @@ import { api, ApiError } from "../lib/api";
 import { useFormatDate, useI18n, useT, useTranslateEnum } from "../i18n";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { buildSeatRun } from "../lib/seatRun";
-import { pickBatchWorkspace } from "../lib/inviteTarget";
+import {
+  buildEmailPins,
+  emailTargetWorkspace,
+  pickBatchWorkspace,
+} from "../lib/inviteTarget";
 import { useAuth } from "../hooks/useAuth";
 import { usePlatform } from "../hooks/usePlatform";
 import { parseEmailsFromText } from "../lib/emailParser";
@@ -248,39 +252,28 @@ export default function InviteMembers() {
     for (const x of members) m.set(x.email.toLowerCase(), x);
     return m;
   }, [members]);
-  // Lịch sử workspace của email đang dán. Trang này chỉ còn đọc cờ `holds_seat` của
-  // nó — xem `lockedWsByEmail` ngay dưới.
+  // Lịch sử workspace của email đang dán — nguồn ghim của những email KHÔNG đi theo
+  // đích chung (xem `pins` ngay dưới).
   const emailHistory = useEmailHistory(validUnique, platform);
   const historyMap = emailHistory.data;
   /**
-   * Email ĐANG GIỮ CHỖ ở một không gian (đã vào đội, hoặc đang chờ nhận lời mời) →
-   * email đó chỉ mời lại được vào ĐÚNG chỗ đang ngồi, không đi theo đích chung được.
-   * Backend chặn cứng "1 email chỉ ở 1 không gian" (`_assert_single_workspace`), ép
-   * sang chỗ khác là cả nhóm ăn 409 và không ai trong nhóm được mời.
+   * GHIM của từng email (luật + ca biên ở `lib/inviteTarget.buildEmailPins`):
+   *  - email ĐANG GIỮ CHỖ ở một không gian → chỉ mời lại được vào đúng đó;
+   *  - email ĐÃ TỪNG DÙNG một không gian → mời lại vào đúng chỗ cũ (chốt user
+   *    2026-09-13: khách cũ của CHATGPT PRO bị dồn vào GPT1 theo đích chung).
+   * Gửi sai chỗ thì backend chặn cứng, cả nhóm ăn 409.
    *
-   * HAI NGUỒN, thiếu cái nào cũng hở:
-   *  1. danh sách member của các không gian ĐÍCH — chính xác nhất, có sẵn;
-   *  2. cờ `holds_seat` của `/auto-invite/email-history` — cho những chỗ NGOÀI danh
-   *     sách đích, nơi đại lý không đọc được member (`assert_workspace_access` chặn)
-   *     nhưng vẫn mời lại được khách cũ của mình. Ca thật: admin chỉ được cấp đúng 1
-   *     không gian, khách cũ nằm ở không gian thứ hai.
-   *
-   * Email đã rời đội (kể cả còn hạn) KHÔNG nằm đây: nó đi theo đích chung, hạn cũ
-   * được chuyển sang cùng và không tính phí (`find_movable_paid_members`).
+   * HAI NGUỒN, thiếu cái nào cũng hở: danh sách member của các không gian ĐÍCH, và
+   * `/auto-invite/email-history` cho những chỗ NGOÀI danh sách đích — nơi đại lý không
+   * đọc được member (`assert_workspace_access` chặn) nhưng vẫn mời lại được khách cũ
+   * của mình. Ca thật: đại lý chỉ được cấp GPT1, khách cũ nằm ở CHATGPT PRO.
    */
-  const lockedWsByEmail = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const x of members) {
-      if (x.status === "removed") continue;
-      m.set(x.email.toLowerCase(), x.workspace_id);
-    }
-    for (const [email, h] of Object.entries(historyMap ?? {})) {
-      if (m.has(email)) continue;
-      const seat = h.workspaces.find((w) => w.holds_seat);
-      if (seat) m.set(email, seat.workspace_id);
-    }
-    return m;
-  }, [members, historyMap]);
+  const pins = useMemo(
+    () => buildEmailPins({ members, history: historyMap }),
+    [members, historyMap],
+  );
+  /** Email đang giữ chỗ → không gian đó. Mời lại ở chính chỗ đó không tốn suất mới. */
+  const lockedWsByEmail = pins.seat;
   const nowMs = Date.now();
   const isRenew = (email: string) =>
     membersByEmail.get(email.toLowerCase())?.status === "active";
@@ -290,11 +283,11 @@ export default function InviteMembers() {
    * ĐÍCH của 1 email = ĐÍCH CỦA CẢ MẺ, chọn ở dải suất (chốt user 2026-09-12).
    * Trong bảng không còn đổi lẻ từng email nữa.
    *
-   * NGOẠI LỆ DUY NHẤT: email đang giữ chỗ ở không gian khác thì ở nguyên đó — xem
-   * `lockedWsByEmail`. Đây là chỗ backend chặn cứng chứ không phải tuỳ chọn.
+   * Ngoại lệ là email bị ghim (`pins`): đang giữ chỗ ở không gian khác thì ở nguyên
+   * đó, từng dùng không gian khác thì về lại chỗ cũ.
    */
   const targetWsId = (email: string): string | undefined =>
-    lockedWsByEmail.get(email.toLowerCase()) ?? batchWs;
+    emailTargetWorkspace(email, pins, batchWs);
   /** Tên không gian để hiển thị — ưu tiên nguồn suất (tươi nhất), rồi danh sách đích,
    *  cuối cùng là lịch sử email (chỗ ngoài tầm nhìn thường chỉ có tên ở đó). */
   const wsNameOf = (id: string | undefined): string => {
@@ -794,7 +787,11 @@ export default function InviteMembers() {
     }
   };
 
-  const canSubmit = !!workspaceId && entries.length > 0 && !bulkInvite.isPending;
+  // Lịch sử email chưa về thì chưa biết email nào phải về chỗ cũ: bấm Mời lúc đó là
+  // gửi cả nhóm vào đích chung và ăn 409 (ca bấm ngay sau khi dán).
+  const historyReady = emailHistory.isLoading === false;
+  const canSubmit =
+    !!workspaceId && entries.length > 0 && !bulkInvite.isPending && historyReady;
 
   return (
     <div className="page-fade">

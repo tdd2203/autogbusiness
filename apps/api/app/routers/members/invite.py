@@ -45,7 +45,7 @@ from app.models import (
 )
 from app.permissions import Permission
 from app.routers.wallet._shared import get_payment_settings
-from app.services import invite_block, payment_flow, seats, wallet_service
+from app.services import email_home, invite_block, payment_flow, seats, wallet_service
 from app.sse import publish_task_event
 from app.schemas import (
     MemberBulkInviteIn,
@@ -998,7 +998,8 @@ def _assert_single_workspace(
     Không xét member `removed` (đã rời workspace cũ → được add sang ws mới; luồng
     chuyển/hợp nhất giữ hạn ở perform_invite_core vẫn chạy, xem
     [[cross-workspace-move-keeps-paid]]). Áp cho MỌI tài khoản (kể cả super-admin),
-    độc lập cơ chế chủ sở hữu.
+    độc lập cơ chế chủ sở hữu. Email đã rời đi thì từ 13/9/2026 có chốt riêng cho tài
+    khoản phụ: mời lại vào đúng không gian cũ (`services/email_home.py`).
 
     "Một" ở đây là một workspace TRONG CÙNG NHÁNH (user 2026-09-01): cùng một email
     được vừa ngồi trong workspace ChatGPT vừa ngồi trong team Canva, vì đó là hai dịch
@@ -1135,6 +1136,8 @@ def invite_member(
     _assert_email_ownership(db, [email], user, ws.platform)
     # 1 email chỉ ở 1 workspace: chặn nếu đang active/pending ở workspace khác.
     _assert_single_workspace(db, [email], workspace_id)
+    # Email cũ chỉ mời lại vào không gian cũ (xem `services/email_home.py`).
+    email_home.assert_invite_into_home(db, user, [email], ws)
     existing = db.execute(
         select(Member).where(
             Member.workspace_id == workspace_id, Member.email == email
@@ -1250,6 +1253,9 @@ def reinvite_member(
     _unblock_active_if_sync_missing(member)
 
     email = member.email.lower()
+    # Bấm "Mời lại" trên bản ghi của một lần mời nhầm chỗ không được là cửa sau đưa
+    # khách về lại chỗ nhầm (xem `services/email_home.py`).
+    email_home.assert_invite_into_home(db, user, [email], ws)
     # Trần thành viên: mời lại người ĐANG giữ chỗ (`pending`/`active`) không đẩy con
     # số lên nên vẫn chạy được kể cả khi đã chạm trần. Ca `removed` cũng qua nếu họ
     # ĐÃ TRẢ TIỀN và còn hạn — tiền đã thu thì chỗ ngồi là nợ phải trả, không phải
@@ -1377,6 +1383,7 @@ def reinvite_members_batch(
     # Thu hồi (đánh dấu superseded) MỌI lời mời pending cũ của các email này — extension
     # thu hồi bản thật trên ChatGPT ở tiền tố. Làm TRƯỚC khi core tạo Invite mới.
     emails = [m.email.lower() for m in targets]
+    email_home.assert_invite_into_home(db, user, emails, ws)
     # Trần thành viên: mẻ này toàn email CÒN HẠN, phần lớn đang giữ chỗ sẵn nên con số
     # này thường bằng 0 — và email `removed` đã trả tiền cũng được miễn.
     seats.assert_under_cap(db, ws, seats.cap_new_seats(db, ws.id, emails))
@@ -1469,6 +1476,9 @@ def bulk_invite_members(
     _assert_email_ownership(db, [e for e, _ in entries], user, ws.platform)
     # 1 email chỉ ở 1 workspace: chặn nếu email nào đang active/pending ở ws khác.
     _assert_single_workspace(db, [e for e, _ in entries], workspace_id)
+    # Email cũ chỉ mời lại vào không gian cũ — trang Mời đã ghim sẵn, chốt ở đây cho
+    # client cũ và lúc bấm Mời trước khi lịch sử email kịp tải xong.
+    email_home.assert_invite_into_home(db, user, [e for e, _ in entries], ws)
     settings_row = get_payment_settings(db)
     default_fee = int(settings_row.invite_fee_vnd or 0)
 

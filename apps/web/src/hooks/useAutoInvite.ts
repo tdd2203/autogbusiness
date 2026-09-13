@@ -63,6 +63,10 @@ export type EmailWorkspaceUsage = {
 };
 export type EmailHistoryEntry = {
   default_workspace_id: string;
+  /** Không gian CŨ mà email phải được mời lại vào (chốt user 2026-09-13) — backend
+   *  chọn bằng đúng hàm nó dùng để chặn lời mời sai chỗ. null = không có chỗ cũ nào
+   *  tài khoản này mời vào được ⇒ email đi theo đích của cả mẻ. */
+  home_workspace_id?: string | null;
   workspaces: EmailWorkspaceUsage[];
 };
 /** Map email (đã lowercase) → lịch sử workspace. Email không đủ điều kiện thì vắng mặt. */
@@ -70,9 +74,11 @@ export type EmailHistory = Record<string, EmailHistoryEntry>;
 
 /**
  * ĐỔI VAI TỪ 2026-09-12: cả mẻ email đi chung một không gian chọn ở dải suất, nên
- * trang Mời không còn dùng hook này để "chọn lại workspace cũ" nữa. Việc còn lại của
- * nó là cờ `holds_seat` — chỉ ra email nào đang ngồi ở không gian NGOÀI danh sách
- * đích, thứ mà danh sách member không đọc được (`assert_workspace_access` chặn).
+ * trang Mời không còn cho chọn lại workspace cũ theo từng dòng. Hook này trả hai thứ
+ * để ghim email KHÔNG đi theo đích chung (`lib/inviteTarget.buildEmailPins`): cờ
+ * `holds_seat` — email đang ngồi ở không gian NGOÀI danh sách đích, thứ mà danh sách
+ * member không đọc được (`assert_workspace_access` chặn); và từ 2026-09-13
+ * `home_workspace_id` — email đã rời đội vẫn phải về đúng không gian cũ.
  *
  * Với danh sách email dán vào, hỏi backend những workspace mà mỗi email đã có mặt
  * (do chính tài khoản này mời) để hiện cột chọn lại workspace cũ. Bản ghi có hạn sử

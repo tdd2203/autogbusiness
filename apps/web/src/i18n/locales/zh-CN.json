@@ -1604,7 +1604,7 @@
   "inviteMembers.wsUsedMonths": "已使用 {n} 个月",
   "inviteMembers.wsUsedDays": "已使用 {n} 天",
   "inviteMembers.wsOption": "{name} · {used}",
-  "inviteMembers.wsPinned": "{name} · 该邮箱已在此工作区，只能重新邀请回这里",
+  "inviteMembers.wsPinned": "{name} · 该邮箱曾在此工作区，只能重新邀请回这里",
   "inviteMembers.batchWsHint": "本次邀请的全部邮箱都进入所选的同一个工作区。",
   "inviteMembers.inviteBlockedTitle": "暂停邀请",
   "inviteMembers.inviteBlockedRow": "{name} · {time} 恢复",

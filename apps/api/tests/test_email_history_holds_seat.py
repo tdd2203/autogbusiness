@@ -148,7 +148,8 @@ def test_moi_hom_qua_chua_co_han_van_lo_ra(client: TestClient, auth_header: dict
 
 
 def test_da_roi_doi_thi_khong_mang_co(client: TestClient, auth_header: dict) -> None:
-    """Email đã rời đội đi theo đích chung được — hạn cũ dời sang cùng, không tính phí."""
+    """Email đã rời đội không mang cờ đang ngồi — nhưng chỗ cũ vẫn là nơi phải mời lại
+    vào (xem test_invite_email_home_workspace.py)."""
     pro = _ws(client, auth_header, "CHATGPT PRO")
     gpt1 = _ws(client, auth_header, "GPT1")
     sub = _sub_admin(client, auth_header)
@@ -165,6 +166,7 @@ def test_da_roi_doi_thi_khong_mang_co(client: TestClient, auth_header: dict) -> 
     entry = _history(client, sub["header"])[EMAIL]
     assert entry["workspaces"][0]["holds_seat"] is False
     assert entry["workspaces"][0]["holds_subscription"] is True
+    assert entry["home_workspace_id"] == pro
 
 
 def test_dang_ngoi_xep_tren_ca_cho_dang_giu_han(
