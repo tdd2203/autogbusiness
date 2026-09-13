@@ -30,9 +30,11 @@ là sửa ĐÚNG một dòng, không đi lục logic hay câu chữ (câu từ c
 
 from datetime import datetime, timezone
 
+from fastapi import HTTPException, status
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Member, User
+from app.models import Member, User, Workspace
 
 # Kiểu chuyển ghi trên bản ghi CHO.
 TRANSFER_KIND_TAKEOVER = "takeover"  # email nhận tiếp quản danh tính (có mời vào)
@@ -62,6 +64,13 @@ SUPER_ADMIN_EXEMPT = True
 # Mốc = lúc luật lên production, không phải 0h: sáng 4/9 vẫn còn một lần đổi email
 # chạy theo luật cũ, lấy đầu ngày là phạt oan đúng khách đó.
 REPEAT_RULE_FROM = datetime(2026, 9, 4, 8, 0, tzinfo=timezone.utc)
+
+# EMAIL ĐÃ CHUYỂN HẠN ĐI THÌ KHÔNG MỜI LẠI ĐƯỢC (user chốt 14/9/2026). Người dùng đã
+# sang email khác thì email cũ coi như bỏ; mời lại nó là bán thêm một chỗ cho chính
+# người vừa chuyển hạn đi. Ngoại lệ DUY NHẤT user cho phép là ca `cmsgpshp` (13/9/2026)
+# — super-admin mời lại bằng tay, và từ lúc được mời lại email đó thành bình thường
+# (`came_back_after`). Miễn trừ đi theo `SUPER_ADMIN_EXEMPT` ở trên. False = mở lại.
+BLOCK_REINVITE_AFTER_TRANSFER = True
 
 
 def _counts_for_rule(moment: datetime | None) -> bool:
@@ -171,3 +180,68 @@ def record_transfer(
         target.transferred_from_email = source.email
         target.transferred_in_at = now
         target.origin_email = origin_email_of(source)
+
+
+def _aware(moment: datetime | None) -> datetime | None:
+    if moment is None:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def came_back_after(member: Member, moment: datetime | None) -> bool:
+    """Bản ghi này có được mời lại (hoặc nhận hạn lại) SAU mốc `moment` không.
+
+    Mỗi (không gian, email) chỉ có một bản ghi, nên email đã chuyển hạn đi mà được mời
+    lại thì chính bản ghi đó sống tiếp. Phần đời sau mốc chuyển là của một lượt bán
+    mới: không thuộc chuỗi đã trao cho email nhận, và email đó không còn bị chặn mời
+    lại nữa."""
+    at = _aware(moment)
+    if at is None:
+        return False
+    for mark in (member.last_invited_at, member.transferred_in_at):
+        seen = _aware(mark)
+        if seen is not None and seen > at:
+            return True
+    return False
+
+
+def transferred_away(member: Member) -> bool:
+    """Bản ghi đã trao hạn cho email khác và CHƯA được mời lại từ lúc đó."""
+    return member.transferred_out_at is not None and not came_back_after(
+        member, member.transferred_out_at
+    )
+
+
+def assert_not_transferred_away(
+    db: Session, user: User, emails: list[str], platform: str
+) -> None:
+    """Chặn mời lại email đã chuyển hạn sang email khác — 409, cả lô không ai được mời.
+
+    Xét mọi bản ghi của email trong CÙNG NHÁNH: chuyển hạn ở không gian nào thì email
+    đó cũng đã là của người dùng khác rồi. Tài khoản được miễn (`actor_exempt`) thì
+    không chặn — đó là đường duy nhất cho ngoại lệ kiểu `cmsgpshp`."""
+    if not BLOCK_REINVITE_AFTER_TRANSFER or not emails or actor_exempt(user):
+        return
+    wanted = sorted({e.strip().lower() for e in emails if e and e.strip()})
+    if not wanted:
+        return
+    rows = db.execute(
+        select(Member)
+        .join(Workspace, Workspace.id == Member.workspace_id)
+        .where(
+            func.lower(Member.email).in_(wanted),
+            Workspace.platform == platform,
+            Member.transferred_out_at.isnot(None),
+        )
+        .order_by(Member.transferred_out_at.desc())
+    ).scalars().all()
+    for m in rows:
+        if transferred_away(m):
+            to = m.transferred_to_email or "email khác"
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"{m.email} đã chuyển hạn sang {to} — email đã chuyển hạn đi thì "
+                    f"không mời lại được."
+                ),
+            )

@@ -45,7 +45,14 @@ from app.models import (
 )
 from app.permissions import Permission
 from app.routers.wallet._shared import get_payment_settings
-from app.services import email_home, invite_block, payment_flow, seats, wallet_service
+from app.services import (
+    email_home,
+    invite_block,
+    payment_flow,
+    seats,
+    transfer_link,
+    wallet_service,
+)
 from app.sse import publish_task_event
 from app.schemas import (
     MemberBulkInviteIn,
@@ -1136,6 +1143,8 @@ def invite_member(
     _assert_email_ownership(db, [email], user, ws.platform)
     # 1 email chỉ ở 1 workspace: chặn nếu đang active/pending ở workspace khác.
     _assert_single_workspace(db, [email], workspace_id)
+    # Email đã chuyển hạn sang email khác thì không mời lại được (`transfer_link`).
+    transfer_link.assert_not_transferred_away(db, user, [email], ws.platform)
     # Email cũ chỉ mời lại vào không gian cũ (xem `services/email_home.py`).
     email_home.assert_invite_into_home(db, user, [email], ws)
     existing = db.execute(
@@ -1253,6 +1262,7 @@ def reinvite_member(
     _unblock_active_if_sync_missing(member)
 
     email = member.email.lower()
+    transfer_link.assert_not_transferred_away(db, user, [email], ws.platform)
     # Bấm "Mời lại" trên bản ghi của một lần mời nhầm chỗ không được là cửa sau đưa
     # khách về lại chỗ nhầm (xem `services/email_home.py`).
     email_home.assert_invite_into_home(db, user, [email], ws)
@@ -1383,6 +1393,7 @@ def reinvite_members_batch(
     # Thu hồi (đánh dấu superseded) MỌI lời mời pending cũ của các email này — extension
     # thu hồi bản thật trên ChatGPT ở tiền tố. Làm TRƯỚC khi core tạo Invite mới.
     emails = [m.email.lower() for m in targets]
+    transfer_link.assert_not_transferred_away(db, user, emails, ws.platform)
     email_home.assert_invite_into_home(db, user, emails, ws)
     # Trần thành viên: mẻ này toàn email CÒN HẠN, phần lớn đang giữ chỗ sẵn nên con số
     # này thường bằng 0 — và email `removed` đã trả tiền cũng được miễn.
@@ -1476,6 +1487,9 @@ def bulk_invite_members(
     _assert_email_ownership(db, [e for e, _ in entries], user, ws.platform)
     # 1 email chỉ ở 1 workspace: chặn nếu email nào đang active/pending ở ws khác.
     _assert_single_workspace(db, [e for e, _ in entries], workspace_id)
+    transfer_link.assert_not_transferred_away(
+        db, user, [e for e, _ in entries], ws.platform
+    )
     # Email cũ chỉ mời lại vào không gian cũ — trang Mời đã ghim sẵn, chốt ở đây cho
     # client cũ và lúc bấm Mời trước khi lịch sử email kịp tải xong.
     email_home.assert_invite_into_home(db, user, [e for e, _ in entries], ws)

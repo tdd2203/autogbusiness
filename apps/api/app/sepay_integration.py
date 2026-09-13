@@ -267,7 +267,7 @@ def _fulfill_order(db: Session, order: PaymentOrder, events: list | None = None)
     from app.routers.members.subscription import perform_subscription_core
     from app.routers.wallet._shared import get_payment_settings
     from app.schemas import MemberUpdateSubscriptionIn
-    from app.services import email_home, payment_flow, seats, wallet_service
+    from app.services import email_home, payment_flow, seats, transfer_link, wallet_service
     from app.sse import publish_task_event
 
     user = db.get(User, order.user_id) if order.user_id else None
@@ -300,6 +300,9 @@ def _fulfill_order(db: Session, order: PaymentOrder, events: list | None = None)
         _assert_email_ownership(db, [e for e, _ in entries], user, ws.platform)
         # Email cũ về đúng không gian cũ — kiểm lại vì hoá đơn có thể tạo từ trang Mời
         # bản cũ (chưa ghim) trước lúc có luật này.
+        transfer_link.assert_not_transferred_away(
+            db, user, [e for e, _ in entries], ws.platform
+        )
         email_home.assert_invite_into_home(db, user, [e for e, _ in entries], ws)
         # Chỉ đếm email chiếm seat MỚI (email active = gia hạn, không thêm seat).
         _assert_seat_available(
