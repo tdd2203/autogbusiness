@@ -523,6 +523,7 @@ const ACT_TITLE: Record<string, string> = {
   MEMBER_EMAIL_CHANGED: "Đổi email thành viên",
   MEMBER_SUBSCRIPTION_TRANSFERRED: "Chuyển hạn sử dụng",
   MEMBER_ADD_DATE_CORRECTED: "Sửa ngày thêm",
+  MEMBER_MANUAL_FIX: "Sửa thủ công",
   MEMBER_EXPIRY_BULK_SET: "Đặt hạn hàng loạt",
   MEMBER_ROLE_SYNCED: "Đồng bộ vai trò",
   MEMBER_CHANGE_ROLE_QUEUED: "Xếp lịch đổi vai trò",

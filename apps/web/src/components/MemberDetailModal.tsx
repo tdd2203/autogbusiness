@@ -145,6 +145,7 @@ const KNOWN_ACTIONS = new Set([
   "MEMBER_BULK_UPSERT",
   "MEMBER_SYNC_PROMOTED_ACTIVE",
   "MEMBER_INVITE_VERIFY_RECONCILE",
+  "MEMBER_MANUAL_FIX",
 ]);
 
 // Timeline chi tiết thành viên (yêu cầu user 2026-07-20) CHỈ hiển thị 4 nhóm
@@ -181,6 +182,8 @@ const MODAL_TIMELINE_ACTIONS = new Set([
   // đổi email (thay thế 1-đổi-1: gỡ email cũ + mời email mới)
   "MEMBER_EMAIL_CHANGED",
   "MEMBER_SUBSCRIPTION_TRANSFERRED",
+  // sửa tay: admin chữa một ca lệch dữ liệu, dòng này ghi rõ đổi gì
+  "MEMBER_MANUAL_FIX",
 ]);
 
 // Dòng phải nói RÕ NƠI xảy ra: MỜI vào workspace nào, GỠ/XOÁ khỏi workspace nào.
@@ -198,6 +201,7 @@ const WORKSPACE_CHIP_ACTIONS = new Set([
   "MEMBER_REMOVE_STUCK",
   "MEMBER_REMOVE_FAKE_DETECTED",
   "MEMBER_EMAIL_CHANGE_REMOVE_RETRY",
+  "MEMBER_MANUAL_FIX",
 ]);
 
 const PAYMENT_BADGE: Record<string, string> = {
@@ -228,6 +232,7 @@ const LOG_PAIRS: Record<string, [string, string, string, FieldType][]> = {
     ["renewAt", "old_purchased_at", "new_purchased_at", "date"],
     ["subscriptionEnd", "old_end_at", "new_end_at", "date"],
   ],
+  MEMBER_MANUAL_FIX: [["subscriptionEnd", "old_end_at", "new_end_at", "date"]],
   MEMBER_EMAIL_CHANGED: [["email", "old_email", "new_email", "text"]],
   MEMBER_SUBSCRIPTION_TRANSFERRED: [
     ["email", "source_email", "target_email", "text"],
