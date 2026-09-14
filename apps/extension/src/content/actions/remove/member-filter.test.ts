@@ -38,6 +38,8 @@ type ListOptions = {
   filterDead?: boolean;
   /** Clear ô lọc KHÔNG làm list đầy lại (ô lọc/list đã chết giữa chừng). */
   neverRestores?: boolean;
+  /** Tới mốc này trang còn đang tải dữ liệu: danh sách 0 dòng, kể cả tiêu đề. */
+  loadUntilMs?: number;
 };
 
 /** Mô phỏng tab "Người dùng" của ChatGPT: stream lúc mở + lọc server-side. */
@@ -57,7 +59,12 @@ class FakeList {
     this.typedAt = now;
   }
 
+  private loading(): boolean {
+    return now < (this.o.loadUntilMs ?? 0);
+  }
+
   rendered(): string[] {
+    if (this.loading()) return [];
     if (this.filter === "") {
       const windowSize = this.o.windowSize ?? this.o.members.length;
       // Lúc mới mở tab, list đổ row dần → số row tự tăng theo thời gian.
@@ -73,6 +80,7 @@ class FakeList {
   }
 
   rowCount(): number {
+    if (this.loading()) return 0;
     // +1 = hàng tiêu đề của bảng, luôn hiện diện (giống DOM thật).
     return this.rendered().length + 1;
   }
@@ -169,6 +177,26 @@ describe("filterOnceAndResolve — chống xoá-giả", () => {
     const r = await filterOnceAndResolve(TARGET);
     expect(r.outcome).toBe("inconclusive");
     if (r.outcome === "inconclusive") expect(r.reason).toBe("list_never_settled");
+  });
+
+  it("trang tải chậm, danh sách 0 dòng suốt 15s → chờ tải xong rồi mới tra, không bỏ cuộc", async () => {
+    // Ca 14/9: ô lọc hiện trước, dữ liệu thành viên về sau. Bản cũ chờ 8s rồi
+    // báo `list_never_settled`, trong khi chờ thêm một lúc là trang tải xong.
+    setup({ members: OTHERS, serverLagMs: 300, loadUntilMs: 15_000 });
+    const beats: number[] = [];
+    const r = await filterOnceAndResolve(TARGET, {
+      onListWait: (ms) => beats.push(ms),
+    });
+    expect(r.outcome).toBe("absent");
+    // Khúc chờ dài phải báo nhịp, kẻo lệnh bị coi là treo.
+    expect(beats.length).toBeGreaterThan(0);
+  });
+
+  it("danh sách mãi 0 dòng → 'inconclusive' list_never_loaded, không chốt absent", async () => {
+    setup({ members: OTHERS, serverLagMs: 300, loadUntilMs: Number.MAX_SAFE_INTEGER });
+    const r = await filterOnceAndResolve(TARGET);
+    expect(r.outcome).toBe("inconclusive");
+    if (r.outcome === "inconclusive") expect(r.reason).toBe("list_never_loaded");
   });
 
   it("gõ ô lọc không tác động gì (event bị nuốt) → 'inconclusive'", async () => {

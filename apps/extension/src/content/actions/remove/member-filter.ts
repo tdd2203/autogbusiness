@@ -268,6 +268,11 @@ export type FilterResolveOptions = {
    * yên" chỉ đốt thời gian.
    */
   requireStableList?: boolean;
+  /**
+   * Gọi định kỳ trong lúc chờ trang tải danh sách, để caller báo tiến độ — khúc
+   * chờ này có thể dài hàng chục giây.
+   */
+  onListWait?: (waitedMs: number) => unknown;
 };
 
 /** Tổng thời gian chờ list phản hồi query lọc (mỗi vòng gõ). */
@@ -288,6 +293,36 @@ const LIST_SETTLE_TIMEOUT_MS = 8000;
 const LIST_RESTORE_TIMEOUT_MS = 8000;
 /** Mặc định: 2 vòng lọc độc lập cùng trống mới kết luận vắng mặt. */
 const ABSENCE_CONFIRM_ROUNDS = 2;
+/** Nhịp soi lúc chờ trang tải danh sách. */
+const LIST_LOAD_POLL_MS = 500;
+/** Số nhịp tối đa chờ danh sách hiện dòng đầu tiên (~30s). */
+const LIST_LOAD_MAX_TICKS = 60;
+/** Cứ ngần này nhịp báo tiến độ một lần (~5s), kẻo lệnh bị coi là treo. */
+const LIST_LOAD_BEAT_TICKS = 10;
+
+/**
+ * Chờ trang tải xong phần danh sách: có ít nhất một dòng. Trả false nếu hết nhịp
+ * mà vẫn trống. Đếm theo nhịp chứ không theo đồng hồ.
+ *
+ * Vì sao tách khỏi `waitForStableRowCount` (ca 14/9/2026): ô lọc đã hiện nhưng dữ
+ * liệu thành viên về chậm, danh sách nằm 0 dòng suốt 8s nên lệnh gỡ bỏ cuộc với
+ * `list_never_settled`, trong khi chờ thêm một lúc là trang tải xong. Workspace
+ * luôn có ít nhất chính admin nên 0 dòng chỉ có nghĩa là CHƯA TẢI, không bao giờ
+ * là danh sách rỗng thật — cứ chờ. Còn "đang đổ dòng" mới là dấu hiệu danh sách
+ * chưa đứng yên, và vẫn giữ trần ngặt 8s như cũ.
+ */
+async function waitForFirstRows(
+  onWait?: (waitedMs: number) => unknown,
+): Promise<boolean> {
+  for (let tick = 0; tick < LIST_LOAD_MAX_TICKS; tick++) {
+    if (visibleRowCount() > 0) return true;
+    if (tick > 0 && tick % LIST_LOAD_BEAT_TICKS === 0) {
+      await onWait?.(tick * LIST_LOAD_POLL_MS);
+    }
+    await sleep(LIST_LOAD_POLL_MS);
+  }
+  return visibleRowCount() > 0;
+}
 
 /**
  * Poll `visibleRowCount()` tới khi ĐỨNG YÊN (STABLE_HITS lần đọc liên tiếp bằng
@@ -379,9 +414,10 @@ async function filterRound(
  * Nên giờ đòi ĐÚNG hợp đồng mà `completion.py` vẫn ghi (nhưng bản cũ chưa hề
  * thực thi): *"lọc không ra email VÀ đã chứng minh ô lọc còn sống"*:
  *
- *   1. Ô lọc trống → chờ list ĐỨNG YÊN → `rows_before` (list đầy đủ, đã load
- *      xong). Không đứng yên nổi trong 8s → `inconclusive` (list còn đang load,
- *      mọi kết luận vắng mặt đều vô nghĩa).
+ *   1. Ô lọc trống → chờ trang tải ra dòng đầu tiên (tới ~30s, có báo nhịp) →
+ *      chờ list ĐỨNG YÊN → `rows_before` (list đầy đủ, đã load xong). Không đứng
+ *      yên nổi trong 8s → `inconclusive` (list còn đang load, mọi kết luận vắng
+ *      mặt đều vô nghĩa).
  *   2. Vòng lọc: gõ TOÀN BỘ email → chờ tới 12s cho list phản hồi → nếu trống
  *      thì soi thêm 6s bắt row về trễ.
  *   3. POSITIVE CONTROL: clear ô lọc, list PHẢI đầy lại. Không đầy lại →
@@ -421,6 +457,13 @@ export async function filterOnceAndResolve(
   }
   let rowsBefore = visibleRowCount();
   if (requireStableList) {
+    if (!(await waitForFirstRows(opts.onListWait))) {
+      console.warn(
+        `${LOG} danh sách vẫn 0 dòng sau ${LIST_LOAD_MAX_TICKS * LIST_LOAD_POLL_MS}ms ` +
+          `→ trang chưa tải xong → KHÔNG kết luận vắng mặt`,
+      );
+      return { outcome: "inconclusive", reason: "list_never_loaded", rows_before: 0 };
+    }
     const stable = await waitForStableRowCount(LIST_SETTLE_TIMEOUT_MS);
     if (stable === null) {
       console.warn(

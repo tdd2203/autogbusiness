@@ -369,7 +369,17 @@ export async function executeRemove(
   // Đây là lần tra NGUY HIỂM NHẤT: `absent` ở đây khiến backend mark removed mà
   // KHÔNG click xoá lần nào. Nên để nguyên mặc định NGHIÊM NGẶT (chờ list đứng
   // yên + 2 vòng lọc độc lập + positive control) — xem sự cố xoá-giả 03→12/8/2026.
-  const found = await filterOnceAndResolve(email);
+  const found = await filterOnceAndResolve(email, {
+    onListWait: (ms) =>
+      reportProgress(
+        taskId,
+        {
+          phase: "searching",
+          message: `Chờ trang ChatGPT tải danh sách thành viên (${Math.round(ms / 1000)}s)...`,
+        },
+        true,
+      ),
+  });
 
   if (found.outcome !== "found") {
     // GUARD chống mark-removed OAN (bug user 2026-06-29): chỉ kết luận "đã rời
@@ -420,10 +430,7 @@ export async function executeRemove(
           return {
             ok: false,
             error_code: "MEMBER_NOT_IN_WORKSPACE",
-            error_message:
-              `Không thấy ${email} ở tab "Người dùng", và KHÔNG tra được tab "Lời mời ` +
-              `đang chờ xử lý" (${probe.reason}) → chưa chứng minh được là đã rời hay ` +
-              `vẫn còn lời mời treo → GIỮ nguyên (không đánh dấu removed), sẽ thử lại.`,
+            error_message: `Chưa kiểm tra được ${email} ở tab Lời mời đang chờ (${probe.reason}). Sẽ tự thử lại.`,
           };
         }
       }
@@ -443,17 +450,24 @@ export async function executeRemove(
       };
     }
 
-    // `inconclusive`: list KHÔNG hề phản hồi query (không có ô lọc, hoặc event
-    // `input` bị Chrome throttle nuốt nên fetch chưa từng chạy). "Không thấy" ở
-    // đây vô nghĩa → giữ member, FAILED để tick sau thử lại. Thà chậm còn hơn
-    // xoá-giả.
+    // `inconclusive`: trang chưa tải xong danh sách, hoặc list KHÔNG hề phản hồi
+    // query (không có ô lọc, hoặc event `input` bị Chrome throttle nuốt nên fetch
+    // chưa từng chạy). "Không thấy" ở đây vô nghĩa → giữ member, FAILED để tick
+    // sau thử lại. Thà chậm còn hơn xoá-giả. Câu lỗi chỉ nói chuyện gì xảy ra,
+    // lý do kỹ thuật để ở log.
+    console.warn(
+      `${LOG} ${email}: không kết luận được (${found.reason}, ${found.rows_before} row) → giữ nguyên, thử lại sau`,
+    );
+    const pageLoading =
+      found.reason === "list_never_loaded" ||
+      found.reason === "list_never_settled" ||
+      found.reason === "empty_list_before_filter";
     return {
       ok: false,
       error_code: "MEMBER_NOT_IN_WORKSPACE",
-      error_message:
-        `Không tìm thấy ${email} trong tab Người dùng NHƯNG ô lọc không chạy ` +
-        `(${found.reason}, list đứng im ở ${found.rows_before} row) → chưa kết luận ` +
-        `được là đã rời hay chưa → GIỮ nguyên (không đánh dấu removed), sẽ thử lại.`,
+      error_message: pageLoading
+        ? `Trang ChatGPT chưa tải xong danh sách thành viên nên chưa tìm được ${email}. Sẽ tự thử lại.`
+        : `Ô tìm kiếm của ChatGPT không phản hồi nên chưa tìm được ${email}. Sẽ tự thử lại.`,
     };
   }
   const row = found.row;
