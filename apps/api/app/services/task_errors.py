@@ -146,6 +146,18 @@ _FRIENDLY: dict[str, str] = {
     "HARVEST_UPSERT_FAILED": "Chưa lưu được dữ liệu vừa đồng bộ. Vui lòng thử lại sau.",
 }
 
+# Cùng một mã nhưng khác nghĩa theo loại lệnh — tra bảng này TRƯỚC `_FRIENDLY`.
+# `MEMBER_NOT_IN_WORKSPACE` ở lệnh xuất/xoá dữ liệu nghĩa là email không có trong
+# không gian thật; còn ở lệnh gỡ thành viên nó nghĩa là CHƯA KIỂM TRA ĐƯỢC (trang
+# ChatGPT tải chậm, ô tìm kiếm không phản hồi): thành viên được giữ nguyên và hệ
+# thống tự xếp lại lệnh. Nói "không còn trong không gian" ở đó là nói ngược sự
+# thật (chốt user 14/9/2026).
+_FRIENDLY_BY_TYPE: dict[tuple[str, str], str] = {
+    ("REMOVE_MEMBER", "MEMBER_NOT_IN_WORKSPACE"): (
+        "Chưa kiểm tra được email này. Hệ thống sẽ tự thử lại."
+    ),
+}
+
 # Mã lạ (extension mới thêm mà chưa kịp khai ở đây) vẫn KHÔNG được rò nhật ký kỹ
 # thuật ra ngoài — thà nói chung chung còn hơn dán đoạn chẩn đoán khó hiểu.
 FALLBACK = (
@@ -154,13 +166,21 @@ FALLBACK = (
 )
 
 
-def friendly_error_message(error_code: str | None, error_message: str | None) -> str | None:
+def friendly_error_message(
+    error_code: str | None,
+    error_message: str | None,
+    task_type: str | None = None,
+) -> str | None:
     """Câu ngắn thay cho `error_message` kỹ thuật khi người xem KHÔNG phải admin.
 
     Trả `None` khi task không có lỗi gì — để chỗ gọi giữ nguyên giá trị `None`.
+    `task_type` cho những mã mang nghĩa khác nhau theo loại lệnh
+    (xem `_FRIENDLY_BY_TYPE`).
     """
     if not error_code and not error_message:
         return None
+    if error_code and task_type and (task_type, error_code) in _FRIENDLY_BY_TYPE:
+        return _FRIENDLY_BY_TYPE[(task_type, error_code)]
     if error_code and error_code in _FRIENDLY:
         return _FRIENDLY[error_code]
     return FALLBACK

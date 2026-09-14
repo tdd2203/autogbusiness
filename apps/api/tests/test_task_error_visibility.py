@@ -41,6 +41,22 @@ def test_khong_co_loi_thi_giu_none() -> None:
     assert friendly_error_message(None, None) is None
 
 
+def test_go_thanh_vien_chua_kiem_tra_duoc_khong_noi_la_da_roi() -> None:
+    """Lệnh gỡ trả `MEMBER_NOT_IN_WORKSPACE` khi trang ChatGPT chưa tải xong —
+    thành viên vẫn được giữ, nên câu cho đại lý không được nói "không còn"."""
+    msg = friendly_error_message(
+        "MEMBER_NOT_IN_WORKSPACE", "Trang ChatGPT chưa tải xong...", "REMOVE_MEMBER"
+    )
+    assert msg is not None
+    assert "không còn" not in msg
+    assert "thử lại" in msg
+    # Lệnh xuất/xoá dữ liệu vẫn giữ nghĩa cũ: email không có trong không gian.
+    other = friendly_error_message(
+        "MEMBER_NOT_IN_WORKSPACE", "Không thấy ...", "EXPORT_MEMBER_DATA"
+    )
+    assert other is not None and "không còn" in other
+
+
 def _make_failed_task(
     client: TestClient, auth_header: dict, ws_id: str, sub_token: dict
 ) -> str:

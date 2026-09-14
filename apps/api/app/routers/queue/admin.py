@@ -173,7 +173,9 @@ def list_tasks(
             # còn gắn session là mở đường cho một cú autoflush ghi đè nhật ký lỗi
             # xuống DB. Tách khỏi session rồi thì không cách nào ghi nhầm được.
             db.expunge(it)
-            it.error_message = friendly_error_message(it.error_code, it.error_message)
+            it.error_message = friendly_error_message(
+                it.error_code, it.error_message, it.type
+            )
     return items
 
 
